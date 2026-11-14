@@ -120,3 +120,11 @@ jobs:
       # never requested), a moment invite, foreign origins.
       - name: Scan-code pins
         run: npx tsx scripts/tests/scan-code-units.ts
+
+      # The username validator (@verre/core username.ts, usernames § 4): the
+      # format table, the reserved set with its lookalike and brand rules, the
+      # read-side normalisers, the share path, and the route-word test (the
+      # first URL segment of every route in app/ and apps/mobile/src/app must
+      # be reserved, so a new route word can't be forgotten). Pure, no DB.
+      - name: Username pins
+        run: npx tsx scripts/tests/username-units.ts

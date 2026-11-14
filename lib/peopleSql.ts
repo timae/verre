@@ -4,6 +4,7 @@
 // than its rows could exceed them and name a blocker.
 
 import { Prisma } from '@prisma/client'
+import { usernameQuery } from '@verre/core'
 import { prisma } from '@/lib/prisma'
 
 type Id = number | Prisma.Sql
@@ -16,6 +17,28 @@ export const blockScrub = (a: Id, b: Id, col: Prisma.Sql) => Prisma.sql`NOT EXIS
   SELECT 1 FROM user_blocks b
   WHERE (b.blocker_id IN (${id(a)}, ${id(b)}) AND b.blocked_id = ${col})
      OR (b.blocked_id IN (${id(a)}, ${id(b)}) AND b.blocker_id = ${col}))`
+
+// People search over `users u`: the display name, or the username (usernames
+// § 7). ONE definition for /api/users/search and the People lists' `q`.
+//  - `q` starts with `@` → the username only. If what follows can't be part of
+//    a username (`@sim on`), or is under 2 characters: null = NO row matches,
+//    never a fallback to names.
+//  - otherwise the name, plus the username when `q` could be part of one (a
+//    query with a space can only match names).
+// `usernameQuery` is the lenient normaliser (a partial query is fine). `_` is
+// a legal username character AND a LIKE wildcard: both patterns are escaped.
+// `uq` (the username part, or null) lets the search route rank an exact and a
+// prefix match first. Index: the two trigram GINs on users (a BitmapOr from 3
+// characters; a 2-character pattern has no trigram and scans, as before).
+const likeEscape = (s: string) => s.replace(/[\\%_]/g, '\\$&')
+export function personSearch(q: string): { clause: Prisma.Sql; uq: string | null; prefix: string | null } | null {
+  const uq = usernameQuery(q)
+  const ulike = uq ? Prisma.sql`u.username LIKE ${'%' + likeEscape(uq) + '%'}` : null
+  const prefix = uq ? likeEscape(uq) + '%' : null
+  if (q.startsWith('@')) return ulike && uq && uq.length >= 2 ? { clause: ulike, uq, prefix } : null
+  const name = Prisma.sql`u.name ILIKE ${'%' + likeEscape(q) + '%'}`
+  return ulike ? { clause: Prisma.sql`(${name} OR ${ulike})`, uq, prefix } : { clause: name, uq: null, prefix: null }
+}
 
 // The together predicate (momentsTogether, tasted-with): one row per moment
 // the viewer shares with `other_id`. Both member rows exist and neither is

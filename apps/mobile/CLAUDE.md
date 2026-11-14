@@ -328,8 +328,15 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   checked after the async cookie read. `authClient.getCookie()` is async
   since 1.7 — await it. Never add a BA request path that bypasses
   `customFetchImpl`.
-- Sign-up is a **two-step flow** (signUp then signIn) because the server sets
-  `autoSignIn: false` for enumeration posture — don't "fix" it.
+- Sign-up needs a `username` and is **one step on the server** since usernames
+  (`docs/dev/proposals/usernames.md` § 9): `/sign-up/email` returns the session
+  (cookie + token) itself and answers a taken email or username honestly (422
+  `EMAIL_TAKEN` / `USERNAME_TAKEN` / `EMAIL_AND_USERNAME_TAKEN`, 400
+  `INVALID_USERNAME`). ⚠️ The app's sign-up screen still does the old
+  signUp-then-signIn and sends no username, so it FAILS against this server
+  until the usernames UI session rewrites it (drop the follow-up sign-in: it
+  would add a second device row). `user.username` on every auth response is
+  fresh; `null` = not chosen yet (the blocking screen's cue).
 - All Verre API calls go through **`src/lib/apiFetch.ts`** (cookie +
   `X-Verre-Client` header + the 426 update-required handshake + an
   AbortController timeout, default 12s — RN fetch has none). Never bare

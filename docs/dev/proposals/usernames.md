@@ -1,6 +1,6 @@
 # Usernames
 
-**Status:** DRAFT (planning session 2026-11-13). Decisions D1 to D5 ruled (§ 14). APPROVED 2026-11-13. Reviewed: one Claude reviewer converged after two rounds, Codex approved after three (§ 17). Not built: the server session is next, then the UI session.
+**Status:** APPROVED 2026-11-13 (decisions D1 to D5, § 14; one Claude reviewer converged after two rounds, Codex approved after three, § 17). **SERVER HALF BUILT 2026-11-14** on `feature/usernames-server` (as built: § 18). The UI session is next (§ 13).
 
 Three sessions: this plan (one reviewer), the server build, the UI build. Where the username shows in the UI is NOT decided here (§ 13 lists what the UI session gets).
 
@@ -81,7 +81,7 @@ Shared by web, app and server. Platform-pure like the rest of `@verre/core`.
   - route words, web: `api join legal login register me session u`; app: `about attributions feed moments you soon signin signup`; future: `place places producer producers wine wines catalog moment impression impressions craving cravings settings search explore home profile user users account privacy terms contact press blog jobs security logout`;
   - file-like names that only matter if `/name` URLs ever exist: `robots.txt sitemap.xml favicon.ico favicon.png index.html manifest.json`;
   - brand and staff: `verre verreapp gastro administrator curator verified anonymous guest everyone all here nobody unknown`.
-  - **Lookalikes (D3):** a name is also reserved when it equals a reserved word after its dots and underscores are removed (`v.e.r.r.e`, `_admin_`, `support_`). The brand rule: refused when, with dots and underscores removed, it contains `verre` AND one of the staff words `official team support staff admin app help mod hq` (`verre_official`, `teamverre`, `verre.support`). Verre is the French word for glass, so `unverredevin`, `verre.a.pied` and `verre_lover` stay allowed. The staff-word list is one exported constant. The operator script can still assign any refused name.
+  - **Lookalikes (D3):** a name is also reserved when it equals a reserved word after its dots and underscores are removed (`v.e.r.r.e`, `_admin_`, `support_`). The brand rule (**narrowed 2026-11-14**, § 14 D3): refused when, with dots and underscores removed, it is made ONLY of `verre` and the staff words `official team support staff admin app help mod hq`, in any order (`verre_official`, `teamverre`, `verre.support.hq`). Verre is the French word for glass, so `unverredevin`, `verre.a.pied` and `verre_lover` stay allowed, and so do `happyverre` and `verremodern` (a staff word inside another word). Any other word lets a name through (`verre_official_ch`): accepted. The staff-word list is one exported constant. The operator script can still assign any refused name.
 - 🔒 **A unit test collects the first URL segment of every route** in `app/` and `apps/mobile/src/app` (descending through `(group)` folders, taking route FILES as well as folders, skipping `_layout`, `+not-found` and dynamic segments, dropping hyphens) and fails when one is not reserved, so a new route word cannot be forgotten.
 - **Nothing needs to stop a username looking like a public id or an all-digit old QR.** `/@name` and `/u/<id>` are separate paths, the scanner's legacy rule (`apps/mobile/src/lib/scanCode.ts:42`) applies under `/u/` only, and the API takes them in separate routes (§ 5). A 12-character name such as `abcdefgh1234` looks like a lowercase profile link but is never parsed in the same slot. 🔒 The rule that keeps it so: **no parameter ever accepts "public id or username"**. It goes into `app/api/CLAUDE.md`.
 
@@ -208,7 +208,7 @@ For Simon to answer there, not here:
 
 - **D1, holds:** enforced by the database, with a plain SHA-256 (guessable by someone who holds the database: accepted). A deleted account's name is held 14 days, like a renamed one.
 - **D2, dots at the edges:** a username cannot start or end with a dot.
-- **D3, lookalikes:** reserved words also match with dots and underscores removed; `verre` is refused only together with a staff word (first ruled "anything containing verre", narrowed the same day: it is the French word for glass). § 4.
+- **D3, lookalikes:** reserved words also match with dots and underscores removed; `verre` is refused only together with a staff word (first ruled "anything containing verre", narrowed the same day: it is the French word for glass). § 4. **Narrowed again 2026-11-14 (Simon, after the server build):** only a name made of NOTHING BUT `verre` and staff words is refused. "Contains both" also caught `happyverre` and `apple_verre` (`app`), `verremodern` (`mod`), `verre.appellation`. The price, accepted: any extra word passes (`verre_official_ch`); "we can observe and block accounts".
 - **D4, the app version:** the usernames build keeps 0.1.5 (nobody else has a 0.1.5 build). The floor in `lib/clientVersion.ts` is untouched.
 - **D5, taken in the plan, open to objection:** switching back to a held name counts as one of the 5 changes; a first choice and an operator rename do not; "3 months" is a rolling 90 days; no server-side lock for accounts without a username; no redirect from an old name; the username stays nullable for good; a rename hold keeps the old name in clear text for its 14 days (so the owner can be shown it), a deleted account's never; someone who alternates between two names keeps the second one reserved for most of the time, at the price of all 5 changes (one extra name per person, accepted).
 
@@ -240,3 +240,38 @@ For Simon to answer there, not here:
 - **Round 2** (2026-11-13, the same reviewer): CONVERGED, no blocker or major, every round-1 item resolved. Four minors folded: the hold predicate spelled out for a caller with no user and a hold with no user; the session-lifetime suite needs zero sessions after its fixtures, not one; the daily prune in its own `try`, and the delete trigger's prune skip-locked; `@` with an impossible remainder answers `[]`.
 - **Codex round 1** (2026-11-13, `xhigh`): one major, four minors, all folded. Lookups applied the reserved list, so an account given a reserved name by the operator would have had a dead `/@name` link (reads are format-only now); the migration's lock is held through the index builds, not "an instant"; the shared profile page keeps parse → limiter → resolve; a concurrent test for the rename quota; the held-name difference named in § 15.
 - **Codex round 2:** all five resolved; one minor folded (each race test gets the negative control of its own invariant: the BEFORE trigger for release-versus-claim, the missing row lock for the quota). **Round 3: APPROVED.**
+
+## 18. As built: the server half (2026-11-14, `feature/usernames-server`)
+
+Built to the plan. What differs from it, what it left open and how each was settled, and what the build checks found.
+
+**Deviations and additions**
+
+- **Two read-side normalisers, not one.** `normalizeUsername` (typed input: trims, drops one leading `@`) and `usernameFromPath` (a URL segment: nothing trimmed, no `@` dropped). With one function `/@@simon` and `/@%20simon` were second spellings of a profile. The web page, the by-username API route and the scanner use `usernameFromPath`.
+- **`checkUsername`** is the validator without the throw (`{ ok, username } | { ok: false, reason: 'invalid' | 'reserved', message }`); `validateUsername` wraps it. The availability route needs the reason, and the PUT answers 400 with `code: 'invalid' | 'reserved'` beside the message.
+- **One trigger function, three triggers.** `users_username_hold()` serves the two AFTER claim triggers AND the BEFORE DELETE one (branching on `TG_OP`), so the 14 days have one home. `username_hash(name)` is its own SQL function, called by `username_is_held` and by the trigger's inserts: the hash still has one spelling.
+- **The expired-holds prune runs under the session prune's lock**, in its own `try` (`pruneLocked`, `lib/nativeSessionPrune.ts`), as planned; no second lock key.
+- **A fourth limiter key:** `rl:username-read` (60/min/user) on `GET /api/me/username`, beside `rl:username-set` and `rl:username-check` (user + address).
+- **`/api/me/account` GET carries `username`**, and `resolveUser` reads it on both branches (the app reads its own name from this route). Not in § 6's list; it follows from the rule (a person object with `name`).
+- **The check-in POST / PATCH echo is unchanged.** § 6 lists it, but the echo holds no person object (only `userId`), so the rule adds nothing; the feed's `author` and `tags[]` carry the username.
+- **Web register** answers `{ user: { name, username, … } }` on success; a missing username reads "username is required" on both sign-ups.
+- **Reserved words:** `updaterequired` joined the list (the app's `update-required` route; the route-word test found it).
+- **The scanner** knows `/@name` (`profile-username`, units in `scripts/tests/scan-code-units.ts`). The app's scan result shows "This code isn’t available." for it until the UI session wires the lookup (§ 13 item 7).
+- **The writes census** (`scripts/check-username-writes.mjs`) also matches an assignment to a `.username` property (a `data` object built in steps). Two wire-object assignments are therefore expected sites (`auth.ts`, the native route wrapper).
+- **The web suite** (`scripts/tests/usernames-web.mts`) drives `node .next/standalone/server.js` (what the image runs) and, with `--next-start`, `next start`; `check-schema.yml` builds the app for it.
+- **Search order** uses `u.username IS NOT DISTINCT FROM $q` and a COALESCEd prefix test (no NULL ordering to reason about); the username side is a substring match like the name side.
+
+**Build checks (the plan named them)**
+
+- **The rewrite holds end to end:** `/@name`, `/@Name` and `/%40name` open the profile under both server modes; a deeper path, a malformed, unknown or renamed-away name is a 404; no redirect in either direction. Not yet checked: behind the host's proxy (a release-day check: open `/@<name>` and `/%40<name>` on the deployed site).
+- **One-step sign-up:** the session carries the same device label as a sign-in ("iPhone 15 Pro · Verre App"), no raw address; Connected devices lists it as This Device; it revokes like any session. The real `@better-auth/expo` client is signed in by the sign-up call alone (cookie and session cache written, `user.username` on get-session): the app's follow-up sign-in can go.
+- **A web login right after an app sign-up** works (the password mirror ran).
+- **A password mirror that throws at sign-up:** the call answers a 500 with no cookie; the user row (with its username), the credential row and ONE session row stay. The next sign-in succeeds and completes the mirror; Connected devices then shows the stranded session as another device, removable like any. Pinned in § 21 e.
+- **`returnHeaders`** on `auth.api.signUpEmail` gives the signed cookie (the fixtures use it).
+- **The search plan** on 200,000 seeded users: a BitmapOr over `users_name_idx` and `users_username_idx` from 3 characters (about 5 ms), the username index alone for `@…` (about 3 ms), the name index alone for a query with a space; a 2-character query scans (about 95 ms), as the name search always did.
+- **The migration** on a copy of the dev database (33 users): under 10 ms in total.
+- **`user.update.before` refusing a username** makes Better Auth log one error line ("Failed to refresh committed user sessions"): its `updateUser` then has no row to refresh from. Reachable only by code that calls `updateUser` with a username, which nothing does.
+
+**Decided after the build (Simon, 2026-11-14)**
+
+- **The brand rule is narrowed** (§ 4, § 14 D3). As first built ("contains `verre` and a staff word anywhere") it refused `happyverre`, `apple_verre`, `verremodern`, `modeverre` and `verre.appellation`, because the short staff words match inside ordinary words. Now only a name made of nothing but `verre` and staff words is refused. An impersonator can add any other word (`verre_official_ch`): accepted, accounts are watched and blocked by hand.

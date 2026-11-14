@@ -137,12 +137,12 @@ export async function setBlock(
 // Muted. Blocking accepts anyone and unblocking is uncapped, so a photo here
 // made block, read the photo, unblock a repeatable bypass of that person's
 // photo visibility. `id` is the PUBLIC id.
-export async function listBlockedUsers(blockerId: number): Promise<Array<{ id: string; name: string; createdAt: Date }>> {
+export async function listBlockedUsers(blockerId: number): Promise<Array<{ id: string; name: string; username: string | null; createdAt: Date }>> {
   const rows = await prisma.userBlock.findMany({
     where: { blockerId },
     select: {
       createdAt: true,
-      blocked: { select: { publicId: true, name: true } },
+      blocked: { select: { publicId: true, name: true, username: true } },
     },
     orderBy: { createdAt: 'desc' },
     take: BLOCK_PAIR_CAP,
@@ -150,6 +150,7 @@ export async function listBlockedUsers(blockerId: number): Promise<Array<{ id: s
   return rows.map(r => ({
     id: r.blocked.publicId,
     name: r.blocked.name,
+    username: r.blocked.username,
     createdAt: r.createdAt,
   }))
 }

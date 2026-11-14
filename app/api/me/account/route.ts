@@ -19,9 +19,10 @@ import { propagateRename } from '@/lib/displayName.server'
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
-  const u = session.user as { name?: string | null; email?: string | null; pro?: boolean }
+  const u = session.user as { name?: string | null; username?: string | null; email?: string | null; pro?: boolean }
   return NextResponse.json(
-    { name: u.name ?? null, email: u.email ?? null, pro: !!u.pro },
+    // `username`: null = not chosen yet (usernames § 10).
+    { name: u.name ?? null, username: u.username ?? null, email: u.email ?? null, pro: !!u.pro },
     // Viewer-dependent body — never shared-cacheable.
     { headers: { 'Cache-Control': 'private, no-store' } },
   )

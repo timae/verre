@@ -471,7 +471,8 @@ What v1 needs, in order:
    note) — no logic changes beyond the `/update-session` deny.
    **PR #39 review (Tim + agents), two rounds, 2026-06-10.** Round 1: name-validation parity
    (validateDisplayName on the native sign-up hook), deterministic synthetic id (HMAC, closes the
-   repeat-probe tell), comment-accuracy fixes. Round 2 — two findings:
+   repeat-probe tell; ⚠️ the synthetic sign-up was REMOVED 2026-11-13, `docs/dev/proposals/usernames.md`
+   § 9), comment-accuracy fixes. Round 2 — two findings:
    (i) **HIGH** native `/change-password` was IP-keyed only → an attacker with a stolen native cookie
    could rotate IPs to bypass the 20/h current-password brute-force cap. Fixed: the before-hook now
    also charges the shared per-user `rl:account:user:<id>:1h` budget (the same key the web account
@@ -530,6 +531,11 @@ What v1 needs, in order:
      `/sign-in/email` (10/min), `/sign-up/email` (10/min), `/change-password` (20/h), keyed on
      `getClientIp` (missing IP → shared `unknown` bucket, never a skip). BA's own limiter stays as a
      belt. Pinned `_ba-e2e-signup.ts` §10 + `getclientip-units.ts`.
+   - ⚠️ **SUPERSEDED 2026-11-13** (`docs/dev/proposals/usernames.md` § 2 + § 9): the fake success
+     described in the next item is removed. `autoSignIn` is back at its default (sign-up creates the
+     session in the same call), there is no `customSyntheticUser`, and `/sign-up/email` answers 422
+     `EMAIL_TAKEN` / `USERNAME_TAKEN` / `EMAIL_AND_USERNAME_TAKEN` honestly; the IP limiters are the
+     bound on probing. The item stays as the record of what shipped in PR #39.
    - **Enumeration oracle — format tell removed, residual remains (NOT fully closed)**: `autoSignIn:
      false` flips BA to a generic synthetic-success for an existing email (sign-up.mjs:161-205), but
      under our `generateId:'serial'` the synthetic id defaults to a random STRING vs a real integer id
@@ -576,7 +582,9 @@ even if those specific ones are fixed (pin a known-good version + test the actua
   rests on the atomic IP rate limiter alone; social sign-up is inherently bot-resistant.
 - **Email-verification gating** — the strongest anti-spam lever (unverified rows inert + reaped), and
   it ALSO flips BA's `requireEmailVerification` path so the enumeration-oracle fix no longer depends on
-  `autoSignIn: false`. Blocked on the (separate, deferred) email-pipeline feature — sequence it after
+  `autoSignIn: false` (⚠️ which was removed 2026-11-13, usernames § 9: with the email pipeline a
+  generic "check your inbox" answer becomes real, and that is when sign-up should stop naming a taken
+  email again). Blocked on the (separate, deferred) email-pipeline feature — sequence it after
   that lands.
 
 Everything visual ([05](05-design-system.md), [06](06-ios-app.md)) proceeds in parallel; no real authed

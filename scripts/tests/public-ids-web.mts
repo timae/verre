@@ -120,6 +120,17 @@ try {
     try { body = JSON.parse(text) } catch {}
     check(`${method} /api/auth/session: user.id is the PUBLIC id, no userSessionId, no integer anywhere`, res.status === 200 && body?.user?.id === user.publicId && !('userSessionId' in (body?.user ?? {})) && !('publicId' in (body?.user ?? {})) && !text.includes(String(user.id)), { status: res.status, text: text.slice(0, 200) })
   }
+  // Usernames (§ 10): the web session carries `user.username`, read fresh on
+  // every call (null = not chosen yet, the cue for the blocking screen).
+  const sessionUser = async () => ((await (await sessionRoute.GET(new NextRequest(`${BASE}/api/auth/session`, { headers: { cookie: `authjs.session-token=${tok}` } }))).json()) as { user?: Record<string, unknown> }).user
+  const before = await sessionUser()
+  check('/api/auth/session: username is null until the person chose one (the key is present)', !!before && 'username' in before && before.username === null, before)
+  const chosen = `web_${Date.now().toString(36)}`
+  const { changeUsername } = await import('../../lib/username.ts')
+  await changeUsername(user.id, chosen)
+  const after = await sessionUser()
+  check('…and the chosen name on the very next call, with the same cookie', after?.username === chosen, after)
+
   const anon = await sessionRoute.GET(new NextRequest(`${BASE}/api/auth/session`))
   const anonText = await anon.text()
   check('signed out: the body passes through (no user)', anon.status === 200 && !/"user"/.test(anonText), anonText)

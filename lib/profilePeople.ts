@@ -6,7 +6,7 @@ import { checkRates, getClientIp } from '@/lib/rateLimit'
 import { resolveProfileViewer, viewableProfiles } from '@/lib/profileVisibility'
 import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
 import { sealPeopleCursor, openPeopleCursor, type PeopleCursorScope } from '@/lib/peopleCursor'
-import { blockScrub, friendsInCommon, momentsTogether } from '@/lib/peopleSql'
+import { blockScrub, friendsInCommon, momentsTogether, personSearch } from '@/lib/peopleSql'
 
 const PAGE = 30
 const SEARCH_MIN = 2
@@ -94,10 +94,11 @@ export async function listProfilePeople(
     ? Prisma.sql`AND NOT EXISTS (SELECT 1 FROM follows fr WHERE fr.follower_id = ${reverseFollower} AND fr.following_id = ${reverseFollowing})`
     : Prisma.empty
 
-  // Substring match — escape ILIKE wildcards so a literal `%`/`_` in `q`
-  // doesn't act as a wildcard, then wrap in `%…%` for substring semantics.
-  const qEscaped = q.replace(/[\\%_]/g, '\\$&')
-  const qClause = q ? Prisma.sql`AND u.name ILIKE ${'%' + qEscaped + '%'}` : Prisma.empty
+  // Substring match on the name or the username, wildcards escaped
+  // (`personSearch`, the search route's own clause; `@…` = the username only,
+  // and an `@` query no username could contain matches no one).
+  const search = q ? personSearch(q) : undefined
+  const qClause = search === undefined ? Prisma.empty : search === null ? Prisma.sql`AND FALSE` : Prisma.sql`AND ${search.clause}`
   // Exact µs: the bound is rebuilt from the integer, never through a float.
   const atBound = after ? Prisma.sql`('epoch'::timestamptz + ${after.atUs.toString()}::bigint * interval '1 microsecond')` : null
   const cursorClause = after
@@ -114,8 +115,8 @@ export async function listProfilePeople(
   const knownClause = Prisma.sql`AND EXISTS (SELECT 1 FROM follows fk WHERE fk.follower_id = ${viewerId} AND fk.following_id = ${otherCol})`
 
   const [rows, knownCount] = await Promise.all([
-    prisma.$queryRaw<{ id: number; public_id: string; name: string; xp: number; image_url: string | null; at_us: string }[]>`
-      SELECT u.id, u.public_id, u.name, u.xp, u.image_url,
+    prisma.$queryRaw<{ id: number; public_id: string; name: string; username: string | null; xp: number; image_url: string | null; at_us: string }[]>`
+      SELECT u.id, u.public_id, u.name, u.username, u.xp, u.image_url,
              (EXTRACT(EPOCH FROM f.created_at) * 1000000)::bigint::text AS at_us
       FROM follows f
       JOIN users u ON u.id = ${otherCol}
@@ -174,6 +175,7 @@ export async function listProfilePeople(
         return {
           id: r.public_id,
           name: r.name,
+          username: r.username,
           xp: sees ? r.xp : null,
           imageUrl: sees ? r.image_url : null,
           isFollowing: v?.followsProfile ?? false,

@@ -75,8 +75,8 @@ export async function loadProfileHeaderExtras(
     // about signup order): a photo-first ORDER BY on the raw column would
     // choose by photos the gate may hide.
     inCommonViewer !== null
-      ? prisma.$queryRaw<{ id: number; public_id: string; name: string; image_url: string | null; total: number }[]>`
-          SELECT u.id, u.public_id, u.name, u.image_url, COUNT(*) OVER ()::int AS total
+      ? prisma.$queryRaw<{ id: number; public_id: string; name: string; username: string | null; image_url: string | null; total: number }[]>`
+          SELECT u.id, u.public_id, u.name, u.username, u.image_url, COUNT(*) OVER ()::int AS total
           FROM follows f1
           JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
           JOIN follows fv ON fv.follower_id = ${inCommonViewer} AND fv.following_id = f1.following_id
@@ -114,7 +114,7 @@ export async function loadProfileHeaderExtras(
   let inCommon: ProfileHeaderExtras['inCommon']
   if (inCommonRows && inCommonViewer !== null) {
     const { admitted } = await viewableProfiles(inCommonViewer, inCommonRows.map(r => r.id))
-    const faces = inCommonRows.map(r => ({ id: r.public_id, name: r.name, imageUrl: admitted.has(r.id) ? r.image_url : null }))
+    const faces = inCommonRows.map(r => ({ id: r.public_id, name: r.name, username: r.username, imageUrl: admitted.has(r.id) ? r.image_url : null }))
     faces.sort((a, b) => Number(a.imageUrl === null) - Number(b.imageUrl === null))
     inCommon = { count: inCommonRows[0]?.total ?? 0, faces: faces.slice(0, FACES) }
   }

@@ -17,6 +17,7 @@
 // --worker) and SIGKILL it at a hook; assertions run here, in a separate
 // process, so no cleanup of the dead worker can help it.
 import { toWire, fromWire, wireParams } from './lib/wireIds.mts'
+import { fixtureUsername } from './lib/fixtureUsername.mjs'
 import { spawn } from 'node:child_process'
 import { registerHooks } from 'node:module'
 import { readFileSync } from 'node:fs'
@@ -132,8 +133,11 @@ async function mkUser(name: string, opts: { webPassword?: boolean } = {}): Promi
   await resetLimits()
   const email = `${TAG}-${++userSeq}@example.test`
   const password = `pw-${TAG}-${userSeq}`
-  await betterAuthServer.api.signUpEmail({ body: { name, email, password } })
-  const { headers } = await betterAuthServer.api.signInEmail({ body: { email, password }, returnHeaders: true })
+  // One step since usernames (§ 9): sign-up needs a username and creates the
+  // session itself, so the cookie comes FROM the sign-up (`returnHeaders`: the
+  // signed set-cookie; the body's `token` is the raw token) and a fixture user
+  // still has exactly one native session.
+  const { headers } = await betterAuthServer.api.signUpEmail({ body: { name, email, password, username: fixtureUsername() } as never, returnHeaders: true })
   const cookie = (headers.get('set-cookie') ?? '').split(';')[0]
   const row = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } })
   if (opts.webPassword) await syncCredential(row.id, await bcrypt.hash(password, 4))

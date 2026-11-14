@@ -1,0 +1,114 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { resolveUser } from '@/lib/resolveUser'
+import { resolveProfileViewer } from '@/lib/profileVisibility'
+import { checkRate, getClientIp } from '@/lib/rateLimit'
+import { loadProfile } from '@/lib/profileLoad'
+import { loadProfileHeaderExtras } from '@/lib/profileHeader'
+import { isMuted } from '@/lib/userMute'
+import { prisma } from '@/lib/prisma'
+
+// The ONE profile GET, behind `GET /api/users/[id]` and `GET
+// /api/users/by-username/[username]` (usernames § 5): the by-username route
+// cannot return anything the id route would not (blocked view, shell, full,
+// `?view=header`, `private, no-store` on every path). Each route parses ONLY
+// its own format (malformed → its 400) and hands over a resolver; this
+// function charges the shared limiter FIRST and resolves after it. Every
+// answer carries `id` (the public id) and `username`.
+//
+// 🔒 No parameter ever accepts "public id or username" (app/api/CLAUDE.md):
+// the two formats overlap (`abcdefgh1234` is both), so they stay in separate
+// routes.
+export const PROFILE_NO_STORE = { 'Cache-Control': 'private, no-store' }
+export type ProfileTarget = { id: number; publicId: string }
+
+export async function serveProfile(req: NextRequest, resolve: () => Promise<ProfileTarget | null>): Promise<NextResponse> {
+  // Every return path carries `private, no-store`. The 200/404 split is
+  // viewer-dependent (gate state), so a shared cache must never serve
+  // one viewer's response to another.
+  const noStore = PROFILE_NO_STORE
+  const session = await resolveUser(req)
+
+  // Public, anonymous-readable. Rate-limited per-IP to prevent
+  // enumeration + DB-load amplification. The IP from getClientIp (a
+  // multi-entry XFF is untrusted and buckets into one shared key).
+  const rl = await checkRate(`rl:profile:${getClientIp(req)}:1m`, 60, 60)
+  if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: noStore })
+
+  const viewerId = session?.user ? Number(session.user.id) : null
+  // Resolution AFTER the limiter: a spent budget runs no lookup, and an
+  // unknown target (an unknown id; an unknown, held or renamed-away username)
+  // takes the 'gone' path.
+  const target = await resolve()
+  const gate = target === null ? { status: 'gone' as const } : await resolveProfileViewer(target.id, viewerId)
+  if (target === null || gate.status === 'gone') return NextResponse.json(
+    { error: 'not found' },
+    { status: 404, headers: noStore },
+  )
+  const { id: userId, publicId } = target
+
+  // Blocker-side stripped view: viewer blocked this profile. Render the
+  // name (so they recognise who they blocked) but nothing else — no
+  // imageUrl, no XP, no check-ins, no isFollowing affordance. Only an
+  // unblock button surfaces on the frontend via the `blocked: true`
+  // discriminator. Cache-Control private so a CDN can't serve another
+  // viewer the same response.
+  if (gate.status === 'blocked-by-me') {
+    return NextResponse.json(
+      { id: publicId, name: gate.name, username: gate.username, blocked: true },
+      { headers: noStore },
+    )
+  }
+
+  // Tier-gated: shell payload only. Display name + id + isFollowing +
+  // followsYou (the Follow Back label; the viewer can read that edge from
+  // their own followers list anyway) — never the avatar, XP, badges,
+  // check-ins, or social-graph data. The shell tells the viewer "this user
+  // exists, here's the follow button" without leaking content.
+  if (gate.status === 'shell') {
+    const edge = (followerId: number, followingId: number) => prisma.follow
+      .findUnique({ where: { followerId_followingId: { followerId, followingId } }, select: { followerId: true } })
+      .then(r => r !== null)
+    const [isFollowing, followsYou] = viewerId
+      ? await Promise.all([edge(viewerId, userId), edge(userId, viewerId)])
+      : [false, false]
+    return NextResponse.json(
+      { id: publicId, name: gate.name, username: gate.username, gated: true, isFollowing, followsYou },
+      { headers: noStore },
+    )
+  }
+
+  // `?view=header` (the native app): no recent posts — the app reads them
+  // from `/api/feed?user=`. The default (web) payload is unchanged.
+  const headerView = req.nextUrl.searchParams.get('view') === 'header'
+  const profile = await loadProfile({ userId, gate, recent: !headerView })
+  if (!profile) return NextResponse.json(
+    { error: 'not found' },
+    { status: 404, headers: noStore },
+  )
+  // viewerMutes is included only in the full payload (not the shell).
+  // Per product decision: the mute button only appears on the full
+  // profile view, where the viewer has chosen to look at content.
+  const [viewerMutes, extras] = await Promise.all([
+    viewerId !== null && viewerId !== userId ? isMuted(viewerId, userId) : Promise.resolve(false),
+    // Additive app-header fields (friendsCount, inCommon, tiles,
+    // checkinsAudience) — full payload only, never the shell or blocked
+    // views. The web ignores them. 🔒 `gate` itself is never serialized
+    // (it carries the owner's settings).
+    loadProfileHeaderExtras(userId, gate, profile.stats.checkins ?? 0),
+  ])
+  const { recentCheckins, recentSessionPosts, ...head } = profile
+  // Response varies by viewer (viewerMutes, isFollowing, followsYou,
+  // inCommon, viewer-dependent counts after block-pair adjustment). Force
+  // `private, no-store` so a CDN can't serve one viewer's payload to another.
+  return NextResponse.json(
+    {
+      ...head,
+      ...(headerView ? {} : { recentCheckins, recentSessionPosts }),
+      viewerMutes,
+      // The profile owner follows the viewer (drives "Follow Back").
+      followsYou: gate.viewer.profileFollowsViewer,
+      ...extras,
+    },
+    { headers: noStore },
+  )
+}

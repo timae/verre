@@ -210,6 +210,9 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
   }
   // An old QR (`/u/<digits>`, from before public ids): recognised, never looked up.
   if (result.kind === 'profile-legacy') return <Message text="This code isn’t available." />;
+  // A shared `/@name` link: recognised (lib/scanCode.ts). Resolving it through
+  // `GET /api/users/by-username/<name>?view=header` is the usernames UI session's.
+  if (result.kind === 'profile-username') return <Message text="This code isn’t available." />;
   if (result.id === meId) return <Message text="This is your code." />;
   if (profileQ.isPending) return <Spinner />;
   const profile = profileQ.data;

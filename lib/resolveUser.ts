@@ -126,7 +126,7 @@ export async function resolveUser(req: NextRequest): Promise<ResolvedSession | n
       // deletion must bite on the next request, not at token mint time.
       const dbUser = await prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, name: true, email: true, role: true, pro: true },
+        select: { id: true, name: true, username: true, email: true, role: true, pro: true },
       })
       if (!dbUser) return null
       nativeLastSeenHooks.started(bumpNativeLastSeen(dbUser.id, ba.session).catch((e) => console.error('resolveUser: native last-seen bump failed', e)))
@@ -135,6 +135,7 @@ export async function resolveUser(req: NextRequest): Promise<ResolvedSession | n
         user: {
           id: String(dbUser.id),
           name: dbUser.name,
+          username: dbUser.username,
           email: dbUser.email,
           role: dbUser.role,
           pro: dbUser.pro,

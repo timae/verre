@@ -29,6 +29,17 @@ model User {
   // § 18). The integer stays the internal id everywhere; lib/publicIds.ts
   // translates at the edge.
   publicId                  String                 @unique @default(dbgenerated("gen_public_user_id()")) @map("public_id") @db.VarChar(12)
+  // The unique lookup and display name, `@simon` (docs/dev/proposals/usernames.md).
+  // NULL = has not chosen yet, for good (no later NOT NULL). Carries no trust.
+  // 🔒 Hand-written in `20261114090000_usernames`, invisible to migrate diff,
+  // pinned by the you-profile suite § 19: the format CHECK
+  // `users_username_format_chk` (= `isUsernameFormat`, @verre/core), the hold
+  // triggers on `users_username_hold()` (a renamed or deleted name is held 14
+  // days; a held name fails like a taken one), `users_username_keep` (set once,
+  // never back to NULL). 🔒 Written only under READ COMMITTED and only through
+  // MODEL calls (a raw statement surfaces a conflict as P2010, not P2002);
+  // lib/username.ts and the two sign-ups are the only writers (CI census).
+  username                  String?                @unique @db.VarChar(30)
   name                      String                 @db.VarChar(64)
   email                     String                 @unique @db.VarChar(255)
   // Nullable since native auth (Better Auth): a social-only user (Google/Apple)
@@ -121,6 +132,8 @@ model User {
   userSessions              UserSession[]
   authAccounts              AuthAccount[]
   authSessions              AuthSession[]
+  usernameHolds             UsernameHold[]
+  usernameChanges           UsernameChange[]
   staffRoles                StaffRole[]            @relation("StaffRoleHolder")
   staffRolesGranted         StaffRole[]            @relation("StaffRoleGranter")
   // Catalog attribution. All SetNull — community catalog rows are never
@@ -138,7 +151,40 @@ model User {
   // index-eligible; without it the index would only support the default
   // tsvector lookups.
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  // The same for the username side of people search (`u.username LIKE …`).
+  @@index([username(ops: raw("gin_trgm_ops"))], type: Gin)
   @@map("users")
+}
+
+// A username nobody else may take yet (usernames § 3): the most recent old
+// name after a rename (held for its former owner, clear text kept so they can
+// be shown "switch back") or a deleted account's name (no user, no clear
+// text: the one row that survives a deleted account on purpose). Written ONLY
+// by the triggers on `users`; `username_is_held(name, for_user)` is the one
+// spelling of the hash and of "a live hold by someone else". The hash is a
+// plain SHA-256: guessable by whoever holds the database (ruled, D1).
+model UsernameHold {
+  nameHash  Bytes    @id @map("name_hash")
+  userId    Int?     @map("user_id")
+  username  String?  @db.VarChar(30)
+  heldUntil DateTime @map("held_until") @db.Timestamptz(6)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([heldUntil])
+  @@map("username_holds")
+}
+
+// The rename quota's durable home (5 per rolling 90 days, lib/username.ts).
+// One row per counted change; a first choice and an operator rename add none.
+model UsernameChange {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  changedAt DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, changedAt])
+  @@map("username_changes")
 }
 
 // Audit trail of every change to the visibility settings (profile tier, FoF,

@@ -2,20 +2,41 @@ import { NextRequest, NextResponse } from 'next/server'
 import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
-import { validateDisplayName } from '@verre/core'
+import { validateDisplayName, validateUsername } from '@verre/core'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { verifyRegisterToken } from '@/lib/registerToken'
 import { isSameOrigin } from '@/lib/csrf'
 import { syncCredential } from '@/lib/identityStore'
 import { AUDIT_SAME_AS_PROFILE } from '@/lib/profileVisibility'
+import { usernameTaken } from '@/lib/username'
 
 const schema = z.object({
   name:       z.string(),
+  // Required since usernames (§ 9); a missing one is a 400 with its own message.
+  username:   z.unknown().optional(),
   email:      z.email(),
   password:   z.string().min(8),
   formToken:  z.string(),
   website:  z.string().optional(),
 })
+
+// 409 { error, fields: { email?: 'taken', username?: 'taken' } }: both at once,
+// honestly (the rate limit is the bound on probing, app/api/rate-limits.md).
+// `error` keeps "email already registered" when only the email is taken. A
+// HELD username answers like a taken one (`usernameTaken` includes holds).
+async function conflicts(email: string, username: string): Promise<NextResponse | null> {
+  const [emailRow, nameTaken] = await Promise.all([
+    prisma.user.findUnique({ where: { email }, select: { id: true } }),
+    usernameTaken(username),
+  ])
+  if (!emailRow && !nameTaken) return null
+  const fields: { email?: 'taken'; username?: 'taken' } = {
+    ...(emailRow ? { email: 'taken' as const } : {}),
+    ...(nameTaken ? { username: 'taken' as const } : {}),
+  }
+  const error = emailRow && nameTaken ? 'email and username already taken' : emailRow ? 'email already registered' : 'username already taken'
+  return NextResponse.json({ error, fields }, { status: 409 })
+}
 
 export async function POST(req: NextRequest) {
   // Origin guard — first thing on every state-changing route, per
@@ -59,8 +80,14 @@ export async function POST(req: NextRequest) {
   let name: string
   try { name = validateDisplayName(parsed.data.name) }
   catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }) }
+  let username: string
+  try { username = validateUsername(parsed.data.username) }
+  catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }) }
 
-  const { email, password } = parsed.data
+  const { password } = parsed.data
+  const email = parsed.data.email.toLowerCase()
+  const taken = await conflicts(email, username)
+  if (taken) return taken
   try {
     const hash = await bcrypt.hash(password, 12)
     // User row + credential + initial visibility audit log row in one
@@ -71,8 +98,10 @@ export async function POST(req: NextRequest) {
     // fromTier=NULL/fromFof=NULL — the convention distinguishing initial-state
     // from user-driven changes.
     const user = await prisma.$transaction(async (tx) => {
+      // The username rides the SAME insert (no user row without one). A model
+      // call, so a taken or held name is P2002 (lib/username.ts).
       const created = await tx.user.create({
-        data: { name, email: email.toLowerCase() },
+        data: { name, email, username },
         select: {
           id: true, name: true, email: true, role: true, pro: true, profileVisibility: true, visibilityFof: true,
           checkinVisibility: true, showCravings: true, showMoments: true, showLocations: true,
@@ -94,10 +123,14 @@ export async function POST(req: NextRequest) {
     })
     // No user id (public-user-ids § 5): the client signs in next and learns its
     // own (public) id from the session.
-    return NextResponse.json({ user: { name: user.name, email: user.email, role: user.role, pro: user.pro } })
+    return NextResponse.json({ user: { name: user.name, username, email: user.email, role: user.role, pro: user.pro } })
   } catch (err: unknown) {
+    // A lost race after the pre-check: re-run it to name the field (Prisma's
+    // error shape depends on the driver adapter, so it isn't parsed). If the
+    // re-check names neither, the generic failure.
     if ((err as { code?: string }).code === 'P2002') {
-      return NextResponse.json({ error: 'email already registered' }, { status: 409 })
+      const lost = await conflicts(email, username).catch(() => null)
+      if (lost) return lost
     }
     return NextResponse.json({ error: 'registration failed' }, { status: 500 })
   }

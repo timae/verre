@@ -255,6 +255,37 @@ D2: no image address may point to a person. New uploads use `lib/imageKeys.ts`; 
 5. 🔒 The manifest pairs integer-bearing old keys with new ones: keep it OPERATOR-LOCAL (the default is `.local/rekey/rekey-user-images.manifest.jsonl`, git-ignored; the script refuses a path inside the checkout that git would track, writes it owner-only, and takes a lock file beside it so an apply and a reclaim never overlap; never committed, never uploaded) and delete it after the reclaim.
 6. Check that anonymous `ListObjects` on the bucket is DENIED (D2 rests on it: a listable bucket would hand out every key): `curl -s -o /dev/null -w '%{http_code}' "$S3_ENDPOINT/$S3_BUCKET?list-type=2"` must not be 200. The local policy grants only `s3:GetObject` (README).
 
+## Usernames — release day and the operator script
+
+Plan of record: `docs/dev/proposals/usernames.md`. Ships in the same release as public ids: `20261114090000_usernames` applies right after `20261112230000_public_user_ids` in the one `migrate deploy`. Additive: the previous release never reads or writes `users.username`, so a rolling deploy is safe (an old instance's register creates a row without a username; that person chooses at their next login).
+
+**Before merging** (the merge is the deploy), on top of the public-ids list above:
+1. Record the row count and the migration's duration on a copy: `SELECT count(*) FROM users`, then run the migration file against a restored copy with `\timing`. It holds ACCESS EXCLUSIVE on `users` from its `ALTER` to `COMMIT`, through two index builds and the CHECK's scan; `lock_timeout = '5s'` bounds only the WAIT for the lock, not how long it is held. Measured 2026-11-14 on a copy of the dev database (33 users): under 10 ms in total. Past roughly 100k users the index builds move into their own `CREATE INDEX CONCURRENTLY` migrations first.
+2. `pg_locks` on `users` (the § PRE-DEPLOY CHECK query with `c.relname = 'users'`): already covered by step 3 of the public-ids list. On a lock timeout: the P3009 recovery with `20261114090000_usernames` (the transaction applied nothing).
+3. Count the accounts that will have to choose: `SELECT count(*) FROM users WHERE username IS NULL` is every existing account right after the deploy. Each sees the "choose your username" screen at their next login (app and web); there is no server-side lock, the client blocks. Test accounts are cleaned out of prod first; stragglers get a name from the operator script below.
+
+🔒 **Sign-up now requires a username** (web register and the app's `/sign-up/email`), and the app's sign-up signs in in the same call. A client build from before the change cannot sign up (it sends no username → 400); the 0.1.5 floor covers the app, the web form ships with the server.
+
+🔒 **Restores**: the hold triggers fire on `COPY` like the public-id mint trigger does, so a DATA-ONLY restore needs `--disable-triggers` here too (the public-ids note above); with triggers on, restoring `users` rows with usernames would be refused for any name still in `username_holds`.
+
+### The operator script (`scripts/set-username.mts`)
+
+From a checkout, with `DATABASE_URL` set (it needs no Redis). DRY RUN by default; `--apply` writes. One JSON object on stdout; exit 0 done, 1 refused, 2 usage or an invalid name.
+
+```bash
+npx tsx scripts/set-username.mts <email> <username>                       # dry run
+npx tsx scripts/set-username.mts <email> <username> --apply
+npx tsx scripts/set-username.mts <email> verre --apply --allow-reserved  # the brand's own account
+npx tsx scripts/set-username.mts --release-hold <username> --apply
+```
+
+- For stragglers who never chose, the brand's own account, and a moderation rename. It goes through the app's writer (`changeUsername`, `skipQuota`): it spends none of the person's 5 changes, and a rename holds the old name for its owner for 14 days like any rename.
+- The format is always checked. A reserved name needs `--allow-reserved`. 🔒 A taken or HELD name can never be assigned: the database refuses, whatever flags are passed. To hand over a held name (a deleted account's, or a renamed-away one) first `--release-hold` it.
+- `--release-hold` also cleans up after a sign-up whose credential insert failed: delete the user row (the name is then held 14 days), then release the hold.
+- A person's `/@name` link dies at a rename; `/u/<publicId>` and the QR do not.
+
+Expired holds are removed by the daily in-process prune (`lib/nativeSessionPrune.ts`, with the native-session prune, once a day fleet-wide), so a deleted account's hash and a rename's clear-text old name are gone within a day or two of their 14 days.
+
 ## Leak fixes — release-day checks (before the deploy)
 
 Plan: `.local/leak-fixes/plan.md` (operator-local). Facts only the operator can check, read-only, before the merge:

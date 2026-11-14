@@ -29,3 +29,12 @@ jobs:
       # tracked files via `git ls-files`.
       - name: Check credential/revocation writes go through identityStore
         run: node scripts/check-identity-writes.mjs
+
+      # users.username has ONE writer, lib/username.ts, besides the web
+      # register's insert (docs/dev/proposals/usernames.md § 8): the rename
+      # quota, the taken / held answers and the READ COMMITTED rule live there.
+      # A census: every write site the matchers find is compared with an
+      # expected list, and the script runs its own negative control first (each
+      # write idiom must be caught, each read idiom must pass).
+      - name: Check username writes go through lib/username.ts
+        run: node scripts/check-username-writes.mjs

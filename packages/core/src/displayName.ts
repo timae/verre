@@ -4,7 +4,8 @@
 
 // Reserved names — case-insensitive after lowercasing.
 // Blocks impersonation of system actors and the deletion placeholder.
-const RESERVED = new Set([
+// Exported for the username rules (username.ts), which reserve the same words.
+export const RESERVED_DISPLAY_NAMES: ReadonlySet<string> = new Set([
   'admin', 'verre', 'support', 'host', 'system',
   '[deleted]', 'deleted', 'moderator', 'mod', 'help', 'api',
   'staff', 'official', 'team', 'root', 'null', 'undefined',
@@ -75,7 +76,7 @@ export function validateDisplayName(raw: unknown): string {
   if (trimmed.length < DISPLAY_NAME_MIN) throw new Error(`name must be at least ${DISPLAY_NAME_MIN} characters`)
   if (trimmed.length > 64) throw new Error('name must be at most 64 characters')
   if (!ALLOWED.test(trimmed)) throw new Error('name contains invalid characters')
-  if (RESERVED.has(trimmed.toLowerCase())) throw new Error('name is reserved')
+  if (RESERVED_DISPLAY_NAMES.has(trimmed.toLowerCase())) throw new Error('name is reserved')
   // Mixed-script reject. NFKC above already collapses Roman-numeral
   // Ⅴ → Latin V, ﬁ → fi etc. (compatibility decompositions), so
   // confusable single-script names still get caught here on the next

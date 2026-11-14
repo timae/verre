@@ -4,12 +4,12 @@ import { checkRate } from '@/lib/rateLimit'
 import { prisma } from '@/lib/prisma'
 import { Prisma } from '@prisma/client'
 import { viewableProfiles } from '@/lib/profileVisibility'
-import { blockScrub, friendsInCommon, momentsTogether } from '@/lib/peopleSql'
+import { blockScrub, friendsInCommon, momentsTogether, personSearch } from '@/lib/peopleSql'
 
-// Discovery lookup — finds users by display-name substring so they can
-// be followed/tagged. Display names are presentation-only (see CLAUDE.md
-// Auth section); this lookup never participates in identification or
-// authorization.
+// Discovery lookup — finds users by display-name or username substring so
+// they can be followed/tagged (`@sim` = the username only; usernames § 7).
+// Both are presentation-only (see CLAUDE.md § Trust model); this lookup never
+// participates in identification or authorization.
 //
 // Auth required: anonymous callers get 401. Otherwise this endpoint would
 // be an open enumeration channel.
@@ -42,22 +42,27 @@ export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams.get('q')?.trim() ?? ''
   if (q.length < 2) return NextResponse.json([], { headers: noStore })
 
-  // Substring search; the pg_trgm GIN index on users.name (added in the
-  // privacy-tiers migration) makes this scale. Block pairs (either direction,
+  // Substring search; the pg_trgm GIN indexes on users.name and
+  // users.username make this scale. Exact username first, then a username
+  // prefix, then by name. Block pairs (either direction,
   // anyone the viewer blocked AND anyone who blocked the viewer) are dropped
   // in SQL BEFORE the limit, so ten results stay ten (locked design: no
   // surface in search reveals block-pair existence). You never find yourself
   // (Add Friends has nothing to offer on your own row), also before the limit.
-  // ILIKE wildcards in `q` are escaped (lib/profilePeople.ts).
-  const like = '%' + q.slice(0, 64).replace(/[\\%_]/g, '\\$&') + '%'
-  const candidates = await prisma.$queryRaw<{ id: number; public_id: string; name: string; xp: number; image_url: string | null; badge_count: number }[]>`
-    SELECT u.id, u.public_id, u.name, u.xp, u.image_url,
+  // LIKE wildcards in `q` are escaped (`personSearch`, lib/peopleSql.ts).
+  const search = personSearch(q.slice(0, 64))
+  if (!search) return NextResponse.json([], { headers: noStore })
+  const rank = search.uq
+    ? Prisma.sql`(u.username IS NOT DISTINCT FROM ${search.uq}) DESC, COALESCE(u.username LIKE ${search.prefix}, FALSE) DESC,`
+    : Prisma.empty
+  const candidates = await prisma.$queryRaw<{ id: number; public_id: string; name: string; username: string | null; xp: number; image_url: string | null; badge_count: number }[]>`
+    SELECT u.id, u.public_id, u.name, u.username, u.xp, u.image_url,
       (SELECT COUNT(*) FROM user_badges ub WHERE ub.user_id = u.id)::int AS badge_count
     FROM users u
-    WHERE u.name ILIKE ${like}
+    WHERE ${search.clause}
       AND u.id <> ${viewerId}
       AND ${blockScrub(viewerId, viewerId, Prisma.raw('u.id'))}
-    ORDER BY u.name ASC, u.public_id ASC
+    ORDER BY ${rank} u.name ASC, u.public_id ASC
     LIMIT 10
   `
   if (candidates.length === 0) return NextResponse.json([], { headers: noStore })
@@ -80,10 +85,10 @@ export async function GET(req: NextRequest) {
       momentsTogether: together.get(c.id) ?? 0,
     }
     if (admitted.has(c.id)) {
-      return { id: c.public_id, name: c.name, xp: c.xp, badgeCount: c.badge_count, imageUrl: c.image_url, ...rel, friendsInCommon: inCommon.get(c.id) ?? 0 }
+      return { id: c.public_id, name: c.name, username: c.username, xp: c.xp, badgeCount: c.badge_count, imageUrl: c.image_url, ...rel, friendsInCommon: inCommon.get(c.id) ?? 0 }
     }
     // Tier-denied: stub shape — name only, no activity-level data.
-    return { id: c.public_id, name: c.name, gated: true, imageUrl: null, ...rel, friendsInCommon: null }
+    return { id: c.public_id, name: c.name, username: c.username, gated: true, imageUrl: null, ...rel, friendsInCommon: null }
   })
 
   return NextResponse.json(result, { headers: noStore })

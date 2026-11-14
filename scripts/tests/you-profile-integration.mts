@@ -67,6 +67,12 @@
 //        code alike on every moment route, nothing rebuilt, members pass),
 //        the budgets per surface and code length, the atomic charge, the
 //        joins, the kicked bounce, the primitive, the admission query
+//   Usernames (docs/dev/proposals/usernames.md § 12), scripts/tests/usernames-section.mts:
+//   § 21 the format CHECK vs the core validator, the hold triggers, the rename
+//        quota, races on two connections with their negative controls, honest
+//        one-step sign-up (app + web), by-username = the id route, `username`
+//        on every person outside a moment and never inside one, search, the
+//        limits, the writes census
 //   + the CANARY over every response of the run (no user integer leaves)
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
@@ -138,6 +144,7 @@ const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJA
 const { prisma } = await import('../../lib/prisma.ts')
 const { redis, k, scanKeys } = await import('../../lib/redis.ts')
 const { betterAuthServer } = await import('../../lib/betterAuth.ts')
+const { fixtureUsername } = await import('./lib/fixtureUsername.mjs')
 const { normalizeBio, BIO_MAX } = await import('../../packages/core/src/index.ts')
 const sessionRoute = await import('../../app/api/session/route.ts')
 const codeRoute = await import('../../app/api/session/[code]/route.ts')
@@ -176,6 +183,8 @@ const bookmarkRoute = await import('../../app/api/session/[code]/wines/[wineId]/
 const { outsideViewMatrix } = await import('./outside-view-matrix.mts')
 // § 20 the leak fixes (.local/leak-fixes/plan.md)
 const { leakFixes } = await import('./leak-fixes-section.mts')
+// § 21 usernames (docs/dev/proposals/usernames.md § 12)
+const { usernames } = await import('./usernames-section.mts')
 // § 18 public user ids
 const stateRoute = await import('../../app/api/session/[code]/state/route.ts')
 const visitRoute = await import('../../app/api/session/[code]/visit/route.ts')
@@ -290,8 +299,11 @@ async function mkUser(name: string): Promise<User> {
   await resetLimits()
   const email = `${TAG}-${++userSeq}@example.test`
   const password = `pw-${TAG}-${userSeq}`
-  await betterAuthServer.api.signUpEmail({ body: { name, email, password } })
-  const { headers } = await betterAuthServer.api.signInEmail({ body: { email, password }, returnHeaders: true })
+  // One step since usernames (§ 9): sign-up needs a username and creates the
+  // session itself, so the cookie comes FROM the sign-up (`returnHeaders`: the
+  // signed set-cookie; the body's `token` is the raw token) and a fixture user
+  // still has exactly one native session.
+  const { headers } = await betterAuthServer.api.signUpEmail({ body: { name, email, password, username: fixtureUsername() } as never, returnHeaders: true })
   const row = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true, publicId: true } })
   return { id: row.id, pid: row.publicId, cookie: (headers.get('set-cookie') ?? '').split(';')[0], email, password }
 }
@@ -1657,25 +1669,26 @@ try {
     try { json = text ? JSON.parse(text) : null } catch { json = text }
     return { status: res.status, headers: res.headers, json }
   }
+  // Sign-up answers HONESTLY and in ONE step since usernames (§ 9): the fake
+  // success for a taken email is gone (the conflict answers, a held name and
+  // the rest of the sign-up matrix: § 21, usernames-section.mts).
   const freeEmail = `${TAG}-free@example.test`
-  const suFree = await ba('POST', '/sign-up/email', { name: 'Fran Free', email: freeEmail, password: 'pw-free-12345' })
-  const suTaken = await ba('POST', '/sign-up/email', { name: 'Fran Free', email: Ap.email, password: 'pw-free-12345' })
-  const freeRow = await prisma.user.findUnique({ where: { email: freeEmail }, select: { publicId: true } })
-  // Minus id, timestamps and the request's own email (the two sign-ups differ there by design).
-  const strip = (u: Record<string, unknown>) => Object.fromEntries(Object.entries(u).filter(([key]) => !['id', 'publicId', 'createdAt', 'updatedAt', 'email'].includes(key)))
-  check('sign-up (free): user.id is the new account\'s public id, no image', suFree.status === 200 && suFree.json.user.id === freeRow?.publicId && !('image' in suFree.json.user), suFree.json)
-  check('🔒 sign-up free vs taken: the same status and body (minus id + timestamps)', suTaken.status === 200 && JSON.stringify(strip(suFree.json.user)) === JSON.stringify(strip(suTaken.json.user)) && suFree.json.token === suTaken.json.token, { free: strip(suFree.json.user), taken: strip(suTaken.json.user) })
-  check('…a public-id-shaped synthetic id, no image', isPid(suTaken.json.user.id) && !('image' in suTaken.json.user))
-  const hdrNames = (h: Headers) => [...h.keys()].filter(x => x !== 'date').sort().join()
-  check('…and the same header NAMES', hdrNames(suFree.headers) === hdrNames(suTaken.headers), { free: hdrNames(suFree.headers), taken: hdrNames(suTaken.headers) })
-  const suTaken2 = await ba('POST', '/sign-up/email', { name: 'Fran Free', email: Ap.email, password: 'pw-free-12345' })
-  check('a taken email: the same synthetic id twice', suTaken2.json.user.id === suTaken.json.user.id)
-  const badFree = await ba('POST', '/sign-up/email', { name: 'x', email: `${TAG}-bad@example.test`, password: 'pw-free-12345' })
-  const badTaken = await ba('POST', '/sign-up/email', { name: 'x', email: Ap.email, password: 'pw-free-12345' })
-  check('🔒 an invalid name → 400 for a free AND a taken email, the same body', badFree.status === 400 && badTaken.status === 400 && JSON.stringify(badFree.json) === JSON.stringify(badTaken.json) && !(await prisma.user.findUnique({ where: { email: `${TAG}-bad@example.test` } })), { badFree: badFree.json, badTaken: badTaken.json })
-  const pidFree = await ba('POST', '/sign-up/email', { name: 'Pia Pick', email: `${TAG}-pick@example.test`, password: 'pw-free-12345', publicId: 'AAAAAAAAAAAA' })
-  const pidTaken = await ba('POST', '/sign-up/email', { name: 'Pia Pick', email: Ap.email, password: 'pw-free-12345', publicId: 'AAAAAAAAAAAA' })
-  check('🔒 a sign-up body carrying publicId → 400 for a free and a taken email alike', pidFree.status === 400 && pidTaken.status === 400 && !(await prisma.user.findUnique({ where: { email: `${TAG}-pick@example.test` } })), { pidFree: pidFree.json, pidTaken: pidTaken.json })
+  const freeName = fixtureUsername('free')
+  const suFree = await ba('POST', '/sign-up/email', { name: 'Fran Free', email: freeEmail, password: 'pw-free-12345', username: freeName.toUpperCase() })
+  const freeRow = await prisma.user.findUnique({ where: { email: freeEmail }, select: { id: true, publicId: true, username: true } })
+  const suCookie = (suFree.headers.get('set-cookie') ?? '').split(';')[0]
+  check('sign-up (free): user.id is the new account\'s public id, the canonical username, no image', suFree.status === 200 && suFree.json.user.id === freeRow?.publicId && suFree.json.user.username === freeName && freeRow?.username === freeName && !('image' in suFree.json.user), suFree.json)
+  check('🔒 sign-up is ONE step: a token, a session cookie, exactly one device row', typeof suFree.json.token === 'string' && suCookie.startsWith('better-auth.session_token=') && (await prisma.authSession.count({ where: { userId: freeRow!.id } })) === 1, { token: suFree.json.token, suCookie: suCookie.slice(0, 30) })
+  const suTaken = await ba('POST', '/sign-up/email', { name: 'Fran Free', email: Ap.email, password: 'pw-free-12345', username: fixtureUsername('free') })
+  check('🔒 a taken email answers honestly: 422 EMAIL_TAKEN, no token, no cookie, no user object', suTaken.status === 422 && suTaken.json.code === 'EMAIL_TAKEN' && !('user' in suTaken.json) && !('token' in suTaken.json) && !suTaken.headers.get('set-cookie'), suTaken.json)
+  const badEmail = `${TAG}-bad@example.test`
+  const badFree = await ba('POST', '/sign-up/email', { name: 'x', email: badEmail, password: 'pw-free-12345', username: fixtureUsername('free') })
+  check('an invalid name → 400 INVALID_NAME, nothing created', badFree.status === 400 && badFree.json.code === 'INVALID_NAME' && !(await prisma.user.findUnique({ where: { email: badEmail } })), badFree.json)
+  const pidFree = await ba('POST', '/sign-up/email', { name: 'Pia Pick', email: `${TAG}-pick@example.test`, password: 'pw-free-12345', username: fixtureUsername('free'), publicId: 'AAAAAAAAAAAA' })
+  check('🔒 a sign-up body carrying publicId → 400 for a free email, nothing created', pidFree.status === 400 && !(await prisma.user.findUnique({ where: { email: `${TAG}-pick@example.test` } })), pidFree.json)
+  // The sign-up's own session is retired through Better Auth: the checks below
+  // are about a session a SIGN-IN created.
+  await (await betterAuthServer.$context).internalAdapter.deleteSession(suFree.json.token)
   const si = await ba('POST', '/sign-in/email', { email: freeEmail, password: 'pw-free-12345' })
   const siCookie = (si.headers.get('set-cookie') ?? '').split(';')[0]
   check('sign-in: user.id public, no image, a session cookie', si.status === 200 && si.json.user.id === freeRow?.publicId && !('image' in si.json.user) && siCookie.startsWith('better-auth.session_token='), si.json)
@@ -2158,6 +2171,8 @@ try {
   await leakFixes({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, s3: { store, mtimes, puts, deletes, urlOf, keyOf, endpoint: S3 }, PNG })
 
   // ── The canary over the whole run (every call() above and below) ─────────
+  await usernames({ call, check, section, mkUser, createSession, resetLimits, canary, prisma, redis, scanKeys, betterAuthServer, TAG, DB })
+
   section('canary: no response carried a user integer')
   check('🔒 no response body or header carried a fixture user integer, a u:<digit>, or a public id inside a URL', canaryViolations.length === 0, [...new Set(canaryViolations)].slice(0, 20))
 } catch (err) {

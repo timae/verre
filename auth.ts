@@ -165,7 +165,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // upgrade) take effect immediately without requiring re-login.
       const dbUser = await prisma.user.findUnique({
         where: { id: Number(token.id) },
-        select: { id: true, publicId: true, name: true, role: true, pro: true },
+        select: { id: true, publicId: true, name: true, username: true, role: true, pro: true },
       })
       if (!dbUser) return { ...session, user: undefined as never }
       if (session.user) {
@@ -175,6 +175,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // anything reaches a client (public-user-ids § 5).
         session.user.publicId = dbUser.publicId
         session.user.name = dbUser.name
+        // Fresh on every call (usernames § 10). null = not chosen yet: the web
+        // shows its "choose your username" screen; after the PUT it calls update().
+        session.user.username = dbUser.username
         session.user.role = dbUser.role
         session.user.pro  = dbUser.pro
         // Surface the current per-device session id so callers (password-change

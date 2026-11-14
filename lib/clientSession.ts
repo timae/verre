@@ -8,14 +8,14 @@ import type { Session } from 'next-auth'
 // /u/[id], and the /api/auth/session route wrapper (same rewrite on the JSON).
 // A session whose public id is unknown (none loaded) leaves with no user.
 export type ClientSession = Omit<Session, 'user'> & {
-  user?: { id: string; name: string; email: string; role: string; pro: boolean }
+  user?: { id: string; name: string; username: string | null; email: string; role: string; pro: boolean }
 }
 
 export function clientSession(session: Session | null | undefined): ClientSession | null {
   if (!session) return null
   const { user, ...rest } = session
   if (!user?.publicId) return { ...rest }
-  return { ...rest, user: { id: user.publicId, name: user.name, email: user.email, role: user.role, pro: user.pro } }
+  return { ...rest, user: { id: user.publicId, name: user.name, username: user.username ?? null, email: user.email, role: user.role, pro: user.pro } }
 }
 
 // The same rewrite on a parsed /api/auth/session body (an object or null).

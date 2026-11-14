@@ -39,14 +39,14 @@ export async function mutedUserIds(muterId: number): Promise<Set<number>> {
 // which sidesteps the avatar tier gate.
 const MUTE_LIST_CAP = 1000
 // `id` is the PUBLIC id.
-export async function listMutedUsers(muterId: number): Promise<Array<{ id: string; name: string; createdAt: Date }>> {
+export async function listMutedUsers(muterId: number): Promise<Array<{ id: string; name: string; username: string | null; createdAt: Date }>> {
   const rows = await prisma.userMute.findMany({
     where: { muterId, muted: { blocks: { none: { blockedId: muterId } } } },
-    select: { createdAt: true, muted: { select: { publicId: true, name: true } } },
+    select: { createdAt: true, muted: { select: { publicId: true, name: true, username: true } } },
     orderBy: { createdAt: 'desc' },
     take: MUTE_LIST_CAP,
   })
-  return rows.map(r => ({ id: r.muted.publicId, name: r.muted.name, createdAt: r.createdAt }))
+  return rows.map(r => ({ id: r.muted.publicId, name: r.muted.name, username: r.muted.username, createdAt: r.createdAt }))
 }
 
 export type SetMuteResult =

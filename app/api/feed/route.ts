@@ -23,9 +23,10 @@ const PAGE = 20
 const NO_STORE = { 'Cache-Control': 'private, no-store' }
 
 // 🔒 The author leaves with the PUBLIC id only (public-user-ids § 4).
-type WireAuthor = { id: string; name: string; xp: number; imageUrl: string | null }
-const wireAuthor = (u: { publicId: string; name: string; xp: number; imageUrl: string | null }): WireAuthor =>
-  ({ id: u.publicId, name: u.name, xp: u.xp, imageUrl: u.imageUrl })
+// `username`: null until the person chose one (usernames § 6).
+type WireAuthor = { id: string; name: string; username: string | null; xp: number; imageUrl: string | null }
+const wireAuthor = (u: { publicId: string; name: string; username: string | null; xp: number; imageUrl: string | null }): WireAuthor =>
+  ({ id: u.publicId, name: u.name, username: u.username, xp: u.xp, imageUrl: u.imageUrl })
 
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
@@ -110,9 +111,9 @@ export async function GET(req: NextRequest) {
       ...notHiddenPosts(hidden),
     },
     include: {
-      user: { select: { id: true, publicId: true, name: true, xp: true, imageUrl: true } },
+      user: { select: { id: true, publicId: true, name: true, username: true, xp: true, imageUrl: true } },
       _count: { select: { likes: true } },
-      tags: { include: { user: { select: { id: true, publicId: true, name: true } } } },
+      tags: { include: { user: { select: { id: true, publicId: true, name: true, username: true } } } },
       rating: {
         include: {
           wine: true,
@@ -290,7 +291,7 @@ export async function GET(req: NextRequest) {
             // Tag filter: drop GLOBALLY block-pair tags. Same rule as
             // the like-count subtraction. Render-time only — the tag row
             // stays in DB.
-            tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`) && !viewerTagBlocked.has(t.user.id)).map(t => ({ id: t.user.publicId, name: t.user.name })),
+            tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`) && !viewerTagBlocked.has(t.user.id)).map(t => ({ id: t.user.publicId, name: t.user.name, username: t.user.username })),
             liked: myLikes.has(f.id),
             viewerFollowsAuthor: myFollowing.has(f.user.id),
           },

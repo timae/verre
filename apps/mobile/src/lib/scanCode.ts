@@ -1,4 +1,4 @@
-import { normalizeCode, normalizePublicUserId } from '@verre/core';
+import { normalizeCode, normalizePublicUserId, usernameFromPath } from '@verre/core';
 
 // What an in-app scan (Add Friends → Scan) may open: a profile QR
 // (`${WEB_BASE}/u/<id>`, your Add Friends card) or a moment's invite QR
@@ -18,9 +18,15 @@ import { normalizeCode, normalizePublicUserId } from '@verre/core';
 // from before public ids) stays a RECOGNISED Verre code, `profile-legacy`:
 // the result says "This code isn’t available." and nothing is requested (old
 // links break on purpose, public-user-ids § 2).
+//
+// A shared profile LINK is `/@<username>` (or `/%40<username>`): the FORMAT
+// only (a reserved name an operator assigned opens too), canonical lowercase
+// out; the caller resolves it (`GET /api/users/by-username/<name>`). A
+// malformed name is not a Verre code.
 export type VerreCode =
   | { kind: 'profile'; id: string }
   | { kind: 'profile-legacy' }
+  | { kind: 'profile-username'; username: string }
   | { kind: 'moment'; code: string };
 
 const URL_RE = /^(https?:\/\/[^/?#\s]+)(\/[^?#\s]*)?(?:[?#]\S*)?$/i;
@@ -40,6 +46,11 @@ export function parseVerreCode(data: string, webBase: string): VerreCode | null 
     const id = normalizePublicUserId(u[1]);
     if (id) return { kind: 'profile', id };
     return /^[1-9]\d{0,9}$/.test(u[1]) ? { kind: 'profile-legacy' } : null;
+  }
+  const at = /^\/(?:@|%40)([^/]+)\/?$/.exec(path);
+  if (at) {
+    const username = usernameFromPath(at[1]);
+    return username ? { kind: 'profile-username', username } : null;
   }
   const j = /^\/join\/([A-Za-z0-9-]+)\/?$/.exec(path);
   if (j) {

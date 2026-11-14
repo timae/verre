@@ -16,6 +16,7 @@ Next.js 16 App Router (Turbopack builds). UI lives under `app/` (route segments)
 - `/session/<code>/compare` — overlay/per-rater comparison view
 - `/join/<code>` — invite landing page (anon name entry, or one-tap join for logged-in users; renders "session not found" for invalid codes)
 - `/u/<publicId>` — public user profile + recent posts. 🔒 The id is the PUBLIC id (`users.public_id`); `/u/<int>` (an old link) or anything malformed is a 404, never a redirect (public-user-ids § 7). Every prop the page hands to client components carries the public id (`clientSession`). Every link to it is built with `profilePath(id)` (`@verre/core`: lowercase; the page accepts any case), never a hand-written `/u/${id}`.
+- `/@<username>` — the same profile page by username (usernames, `docs/dev/proposals/usernames.md` § 5). An `@folder` is a parallel-routes slot, so `next.config.ts` REWRITES `/@:username` (and the encoded `/%40:username`) to `app/u/by-username/[username]`. Both pages are thin entries over one server component (`components/profile/ProfilePageView.tsx`): each parses only its own format and passes a resolver that runs after the shared `rl:profile` limiter. Case-insensitive; malformed, unknown, renamed away or held → 404, never a redirect (and none from `/u/<id>` to `/@name`). Pinned against `next start` by `scripts/tests/usernames-web.mts`. The link people share is `profileSharePath(person)` (`/@name`, or the `/u/` path while someone has no username); the QR keeps `profilePath(id)`.
 
 ## State management
 

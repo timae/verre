@@ -108,6 +108,17 @@ Logged-in sessions are gated per-device via the `user_sessions` table (one row p
 
 Per-endpoint usage patterns (which helper for which route, shared-counter pairs): see `app/api/CLAUDE.md`.
 
+## Usernames go through `lib/username.ts`
+
+The chokepoint for `users.username` (`docs/dev/proposals/usernames.md` § 8), the `mutateWines` / `identityStore` pattern. CI census: `scripts/check-username-writes.mjs` (`check-identity-writes.yml`) compares every write site it finds with an expected list (this module, the web register's insert, two wire-object assignments) and runs its own negative control first.
+
+- `changeUsername(userId, name, { skipQuota? })`: ONE READ COMMITTED transaction: the user's row `FOR UPDATE` (two changes by one account serialise, so the quota can't be raced), stop if unchanged, the quota (5 counted changes per rolling 90 days; a first choice from NULL is free, switching back counts, `skipQuota` is the operator's rename), `tx.user.update`, a `username_changes` row, old change rows dropped. A refusal rolls back: no quota spent. Returns `ok` / `taken` / `quota` / `not-found`.
+- 🔒 **Every write of `users.username` is a MODEL call** (`tx.user.update`, `tx.user.create`), never `$executeRaw`: a taken name (the unique index) and a HELD one (the trigger raises the same SQLSTATE 23505) both come back as `P2002` through a model call, but as `P2010` carrying the original code through a raw statement. `isUsernameConflict(err)` recognises both shapes.
+- 🔒 **Never inside a transaction above READ COMMITTED**: the hold trigger refuses (its queries must see a hold committed while the write waited on the unique index). Two routes use REPEATABLE READ for other work (`me/bookmarks`, `me/ratings`); neither touches `users`.
+- `usernameTaken(name, forUser?)`: THE pre-check (availability route, the PUT's callers, both sign-ups): someone else's live name OR `username_is_held` (the trigger's own SQL predicate, so the two can't disagree). Advisory: the write's answer from the database is the authority.
+- Holds are NOT here: they are triggers on `users` (`prisma/CLAUDE.md` § Usernames), so the four writers and every delete path are covered. `pruneExpiredUsernameHolds` only deletes expired rows from the daily tick in `lib/nativeSessionPrune.ts` (same lock, its own `try`).
+- `userForUsername(name)`: the lookup (canonical name → `{ id, publicId }`); a held or renamed-away name resolves to nothing. The validator and the normalisers (`validateUsername`, `usernameFromPath`, `usernameQuery`, `profileSharePath`) are in `@verre/core` (`packages/core/src/username.ts`).
+
 ## Display name disambiguation
 
 - `disambiguateDisplayName(name, identities)` (in `lib/displayName.server.ts`) — appends a random food emoji on collision. Server-side only (imports `lib/redis`).

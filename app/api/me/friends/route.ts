@@ -12,8 +12,10 @@ export async function GET(req: NextRequest) {
   const userId = Number(session.user.id)
 
   // `id` is the PUBLIC id (the tag picker sends it back as `taggedUserIds`).
-  const friends = await prisma.$queryRaw<{ id: string; name: string; imageUrl: string | null }[]>`
-    SELECT u.public_id AS id, u.name, u.image_url AS "imageUrl"
+  // `username` (null = not chosen yet): the Invite sheet's friend search runs
+  // on the phone and matches it too (usernames § 7).
+  const friends = await prisma.$queryRaw<{ id: string; name: string; username: string | null; imageUrl: string | null }[]>`
+    SELECT u.public_id AS id, u.name, u.username, u.image_url AS "imageUrl"
     FROM follows f1
     JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
     JOIN users u ON u.id = f1.following_id

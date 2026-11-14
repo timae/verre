@@ -4,6 +4,7 @@ import { isPublicUserId } from '@verre/core'
 import { betterAuthServer } from '@/lib/betterAuth'
 import { clientVersionGate } from '@/lib/clientVersion'
 import { publicIdsFor } from '@/lib/publicIds'
+import { prisma } from '@/lib/prisma'
 
 // Better Auth's catch-all, mounted under /api/auth/native so it never collides
 // with NextAuth's [...nextauth] catch-all (Next.js forbids two catch-alls at one
@@ -27,8 +28,14 @@ const handlers = toNextJsHandler(betterAuthServer)
 //   and `session.userId`; `user.image` is DELETED (BA's Redis copy snapshots
 //   the user at sign-in, so its `image` is a stale avatar URL for up to a year;
 //   the app never reads it).
-// - Every JSON body is re-serialized UNCONDITIONALLY (always write `id`, always
-//   delete `image`), so a real and a synthetic sign-up come back alike.
+// - `user.username` is written FRESH from one primary-key read on every
+//   response that carries a user (usernames § 10): BA's Redis session copy
+//   snapshots the user at sign-in, so its own value would stay null for up to
+//   a year after the person chose (that copy still HOLDS the sign-in-time
+//   name at rest; nothing reads it for the wire). `null` = not chosen yet:
+//   the app shows its "choose your username" screen.
+// - Every JSON body is re-serialized UNCONDITIONALLY (always write `id` and
+//   `username`, always delete `image`).
 // - Every other header is kept (the heartbeat's Set-Cookie is the device's only
 //   record of the extended expiry); Content-Length goes.
 type Obj = Record<string, unknown>
@@ -48,7 +55,11 @@ async function toWire(body: unknown): Promise<unknown> {
   if (user) {
     const userInt = intOf(user.id)
     const pid = pidOf(user.id, user.publicId)
+    const row = userInt != null
+      ? await prisma.user.findUnique({ where: { id: userInt }, select: { username: true } })
+      : isPublicUserId(pid) ? await prisma.user.findUnique({ where: { publicId: pid }, select: { username: true } }) : null
     user.id = pid
+    user.username = row?.username ?? null
     delete user.image
     if (session) session.userId = intOf(session.userId) === userInt ? pid : pidOf(session.userId, null)
   } else if (session) {

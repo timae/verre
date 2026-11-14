@@ -25,8 +25,8 @@ export async function GET(req: NextRequest) {
       { status: 429, headers: { ...NO_STORE, 'Retry-After': String(rl.retryAfter) } },
     )
   }
-  const rows = await prisma.$queryRaw<{ id: number; public_id: string; name: string; image_url: string | null; last_name: string | null; last_at: Date }[]>`
-    SELECT t.other_id AS id, u.public_id, u.name, u.image_url,
+  const rows = await prisma.$queryRaw<{ id: number; public_id: string; name: string; username: string | null; image_url: string | null; last_name: string | null; last_at: Date }[]>`
+    SELECT t.other_id AS id, u.public_id, u.name, u.username, u.image_url,
       (array_agg(t.name ORDER BY t.at DESC, t.session_id DESC))[1] AS last_name,
       MAX(t.at) AS last_at
     FROM ${together(viewerId)} t
@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
     WHERE ${blockScrub(viewerId, viewerId, Prisma.raw('t.other_id'))}
       AND NOT EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = ${viewerId} AND f.following_id = t.other_id)
       AND NOT EXISTS (SELECT 1 FROM user_mutes m WHERE m.muter_id = ${viewerId} AND m.muted_id = t.other_id)
-    GROUP BY t.other_id, u.public_id, u.name, u.image_url
+    GROUP BY t.other_id, u.public_id, u.name, u.username, u.image_url
     ORDER BY MAX(t.at) DESC, COUNT(*) DESC, u.public_id DESC
     LIMIT ${LIMIT}
   `
@@ -43,6 +43,7 @@ export async function GET(req: NextRequest) {
     people: rows.map(r => ({
       id: r.public_id,
       name: r.name,
+      username: r.username,
       imageUrl: admitted.has(r.id) ? r.image_url : null,
       followsViewer: viewers.get(r.id)?.profileFollowsViewer ?? false,
       lastMoment: { name: r.last_name, at: r.last_at.toISOString() },
