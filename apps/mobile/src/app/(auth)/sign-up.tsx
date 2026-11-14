@@ -35,8 +35,9 @@ export default function SignUp() {
     if (password.length < 8) { setError('Password must be at least 8 characters'); return; }
     if (password !== confirm) { setError("Passwords don't match"); return; }
     setBusy(true);
-    // Server uses autoSignIn: false (enumeration posture) — sign-up then
-    // sign-in as a deliberate second step (proposal 01).
+    // ⚠️ STALE until the usernames UI session (docs/dev/proposals/usernames.md
+    // § 13): the server now requires `username` and signs in in the same call,
+    // so this sign-up fails (400) and the follow-up sign-in below must go.
     const signUpRes = await authClient.signUp.email({ email: email.trim(), password, name: cleanName });
     if (signUpRes.error) {
       setBusy(false);

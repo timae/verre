@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { checkUsername } from '@verre/core'
+import { checkUsername, normalizeUsername } from '@verre/core'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { isSameOrigin } from '@/lib/csrf'
 import { changeUsername, usernameState } from '@/lib/username'
+import { prisma } from '@/lib/prisma'
 
 // Your own username (docs/dev/proposals/usernames.md § 8). Its own route, not
 // the profile PATCH: it has a quota, its own conflict answers and its own
@@ -36,13 +37,21 @@ export async function PUT(req: NextRequest) {
   const userId = Number(session.user.id)
 
   const body = await req.json().catch(() => null)
-  const checked = checkUsername(body && typeof body === 'object' ? (body as { username?: unknown }).username : undefined)
-  if (!checked.ok) return NextResponse.json({ error: checked.message, code: checked.reason }, { status: 400, headers: noStore })
+  const raw = body && typeof body === 'object' ? (body as { username?: unknown }).username : undefined
+  const checked = checkUsername(raw)
+  if (!checked.ok && checked.reason === 'invalid') return NextResponse.json({ error: checked.message, code: checked.reason }, { status: 400, headers: noStore })
 
-  // The same name again answers before the charge.
-  const before = await usernameState(userId)
-  if (!before) return NextResponse.json({ error: 'user not found' }, { status: 404, headers: noStore })
-  if (before.username === checked.username) return NextResponse.json(before, { headers: noStore })
+  // The same name again is a READ of your own state: it is answered before
+  // the reserved list (an account an operator gave a reserved name can
+  // re-submit it) and metered like the GET, never against the change budget.
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { username: true } })
+  if (!me) return NextResponse.json({ error: 'user not found' }, { status: 404, headers: noStore })
+  if (me.username !== null && me.username === (checked.ok ? checked.username : normalizeUsername(raw))) {
+    const read = await checkRate(`rl:username-read:user:${userId}:1m`, 60, 60)
+    if (!read.allowed) return limited('requests', read.retryAfter)
+    return NextResponse.json(await usernameState(userId), { headers: noStore })
+  }
+  if (!checked.ok) return NextResponse.json({ error: checked.message, code: checked.reason }, { status: 400, headers: noStore })
 
   const rl = await checkRate(`rl:username-set:user:${userId}:1h`, 20, 3600)
   if (!rl.allowed) return limited('username changes', rl.retryAfter)

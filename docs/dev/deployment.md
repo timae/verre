@@ -276,11 +276,14 @@ From a checkout, with `DATABASE_URL` set (it needs no Redis). DRY RUN by default
 npx tsx scripts/set-username.mts <email> <username>                       # dry run
 npx tsx scripts/set-username.mts <email> <username> --apply
 npx tsx scripts/set-username.mts <email> verre --apply --allow-reserved  # the brand's own account
+npx tsx scripts/set-username.mts <email> <username> --apply --block-old  # a moderation rename
 npx tsx scripts/set-username.mts --release-hold <username> --apply
 ```
 
 - For stragglers who never chose, the brand's own account, and a moderation rename. It goes through the app's writer (`changeUsername`, `skipQuota`): it spends none of the person's 5 changes, and a rename holds the old name for its owner for 14 days like any rename.
+- 🔒 **A moderation rename needs `--block-old`.** Without it the old name is held FOR the renamed person, who can switch straight back (it costs them one change). With it the old name is blocked for everyone, its former owner included, with no end date, until you `--release-hold` it. Blocked names are stored as hashes only: keep your own note of what you blocked, the table cannot list them. (Impersonation is handled this way, by watching and blocking: the reserved rules only refuse names made of nothing but the brand and staff words.)
 - The format is always checked. A reserved name needs `--allow-reserved`. 🔒 A taken or HELD name can never be assigned: the database refuses, whatever flags are passed. To hand over a held name (a deleted account's, or a renamed-away one) first `--release-hold` it.
+- A name someone gave up stays unavailable for its own 14 days even after they rename again; `--release-hold` frees any of them early.
 - `--release-hold` also cleans up after a sign-up whose credential insert failed: delete the user row (the name is then held 14 days), then release the hold.
 - A person's `/@name` link dies at a rename; `/u/<publicId>` and the QR do not.
 

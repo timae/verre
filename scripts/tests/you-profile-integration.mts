@@ -145,6 +145,8 @@ const { prisma } = await import('../../lib/prisma.ts')
 const { redis, k, scanKeys } = await import('../../lib/redis.ts')
 const { betterAuthServer } = await import('../../lib/betterAuth.ts')
 const { fixtureUsername } = await import('./lib/fixtureUsername.mjs')
+const { syncCredential } = await import('../../lib/identityStore.ts')
+const { default: bcrypt } = await import('bcrypt')
 const { normalizeBio, BIO_MAX } = await import('../../packages/core/src/index.ts')
 const sessionRoute = await import('../../app/api/session/route.ts')
 const codeRoute = await import('../../app/api/session/[code]/route.ts')
@@ -295,10 +297,19 @@ async function call(handler: unknown, method: string, path: string, actor: Actor
   return { status: res.status, json: (await toInternal(wire)) as Record<string, any>, wire: wire as Record<string, any>, headers: res.headers } // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON in a test harness
 }
 let userSeq = 0
-async function mkUser(name: string): Promise<User> {
+// Every other fixture user has NO username: an account from before usernames
+// (a credential and a sign-in, no sign-up), which is what every account is
+// right after the deploy. `username: true` forces one (§ 21 needs them).
+async function mkUser(name: string, opts: { username?: boolean } = {}): Promise<User> {
   await resetLimits()
   const email = `${TAG}-${++userSeq}@example.test`
   const password = `pw-${TAG}-${userSeq}`
+  if (!(opts.username ?? userSeq % 2 === 0)) {
+    const created = await prisma.user.create({ data: { name, email }, select: { id: true, publicId: true } })
+    await syncCredential(created.id, await bcrypt.hash(password, 4))
+    const signedIn = await betterAuthServer.api.signInEmail({ body: { email, password }, returnHeaders: true })
+    return { id: created.id, pid: created.publicId, cookie: (signedIn.headers.get('set-cookie') ?? '').split(';')[0], email, password }
+  }
   // One step since usernames (§ 9): sign-up needs a username and creates the
   // session itself, so the cookie comes FROM the sign-up (`returnHeaders`: the
   // signed set-cookie; the body's `token` is the raw token) and a fixture user
@@ -2171,7 +2182,7 @@ try {
   await leakFixes({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, s3: { store, mtimes, puts, deletes, urlOf, keyOf, endpoint: S3 }, PNG })
 
   // ── The canary over the whole run (every call() above and below) ─────────
-  await usernames({ call, check, section, mkUser, createSession, resetLimits, canary, prisma, redis, scanKeys, betterAuthServer, TAG, DB })
+  await usernames({ call, check, section, mkUser: (name: string) => mkUser(name, { username: true }), createSession, resetLimits, canary, prisma, redis, scanKeys, betterAuthServer, TAG, DB })
 
   section('canary: no response carried a user integer')
   check('🔒 no response body or header carried a fixture user integer, a u:<digit>, or a public id inside a URL', canaryViolations.length === 0, [...new Set(canaryViolations)].slice(0, 20))

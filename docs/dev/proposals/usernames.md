@@ -75,7 +75,7 @@ Shared by web, app and server. Platform-pure like the rest of `@verre/core`.
 
 - `normalizeUsername(input)`: for READS (links, the scanner, lookups, search). Trims, drops ONE leading `@`, accepts ASCII `[A-Za-z0-9._]` only BEFORE lowercasing (the `ß` → `SS` lesson from `normalizePublicUserId`), lowercases, then tests the format. Returns the canonical name or null. So `/@Simon` opens `@simon`.
 - `validateUsername(raw)`: for WRITES. The same normalisation (a typed `Simon` is stored as `simon`, the response echoes the canonical form), then throws a user-facing message on a format failure or a reserved name. Messages follow `validateDisplayName`'s style, no em dashes.
-- **Format:** `^[a-z0-9._]{3,30}$`, no `..`, no dot at the start or the end (D2).
+- **Format:** `^[a-z0-9._]{3,30}$`, no `..`, no dot at the start or the end (D2), at least one letter or digit (ruled 2026-11-14 after the review: `___` and `_._` were valid).
 - **Reserved** (`isReservedUsername`), one exported set, built from:
   - the display-name set, exported from `displayName.ts` instead of copied (`admin verre support host system deleted moderator mod help api staff official team root null undefined you`);
   - route words, web: `api join legal login register me session u`; app: `about attributions feed moments you soon signin signup`; future: `place places producer producers wine wines catalog moment impression impressions craving cravings settings search explore home profile user users account privacy terms contact press blog jobs security logout`;
@@ -274,4 +274,26 @@ Built to the plan. What differs from it, what it left open and how each was sett
 
 **Decided after the build (Simon, 2026-11-14)**
 
-- **The brand rule is narrowed** (§ 4, § 14 D3). As first built ("contains `verre` and a staff word anywhere") it refused `happyverre`, `apple_verre`, `verremodern`, `modeverre` and `verre.appellation`, because the short staff words match inside ordinary words. Now only a name made of nothing but `verre` and staff words is refused. An impersonator can add any other word (`verre_official_ch`): accepted, accounts are watched and blocked by hand.
+These override the sections above where they differ (§ 2 "the most recent old name is held", § 3 step 3, § 4, § 8, § 14 D3 / D5).
+
+- **The staff rule** (§ 4, § 14 D3), in two steps. First narrowed: as built ("contains `verre` and a staff word anywhere") it refused `happyverre`, `apple_verre`, `verremodern`, `modeverre` and `verre.appellation`, because the short staff words match inside ordinary words; now only a name made of nothing but `verre` and staff words. Then, from the security review, widened to staff words WITHOUT the brand: `official_support`, `admin.team` and `support_team` passed, and `app` alone was never reserved. Final rule: a name is refused when, with dots and underscores removed, it is made ONLY of `verre` and / or staff words; `app`, `admins`, `administrators`, `moderators` and `mods` are reserved as single words. Any other word lets a name through (`verre_official_ch`, `support_simon`): accepted, "we can observe and block accounts".
+- **Every old name is held for its own 14 days** (security review). As planned, a second rename freed the first old name at once (`simon` → `simn` → `simon_f` released `simon` the same minute, and every `/@simon` link in circulation with it). Now the earlier hold stays until its date, without its owner and clear text. Only the most recent old name can be switched back to. Cost, accepted: one person can keep up to 5 extra names unavailable for 14 days (the quota bounds it).
+- **A moderation rename can take the name away** (both reviewers: the one major finding). The trigger holds the old name FOR the renamed person, so they could switch straight back. `scripts/set-username.mts --block-old` blocks the old name for everyone, its former owner included, with no end date, until `--release-hold`. Stored as a hash; the operator keeps their own note of what is blocked.
+- **At least one letter or digit** (security review): `___` and `_._` were valid names. In the validator and in the CHECK.
+
+**From the review, fixed without a ruling**
+
+- The PUT answered 400 `reserved` to an account re-submitting its own operator-assigned reserved name, and read the full state (three queries) before any limiter. Now: the format first, then one read of the current name; the same name is answered as a read of your own state (metered like the GET), before the reserved list and before the change budget.
+- The writes census missed the ordinary `const data = { name, username }; prisma.user.update({ where, data })`, a spread, `UPDATE public.users`, the row form `SET (name, username) =`, a bracket assignment and Better Auth's `updateUser`. It matches them now (its self-test grew from 16 to 26 cases); the account PATCH's update object is typed to its two fields.
+- Tests that did not pin what their label said: the "not chosen yet" cue is now asserted on a native auth response; "switching back counts" asserts `code: 'quota'`; the INSERT claim (the sign-up path) is raced, not only the UPDATE; the web register's lost-race branch runs against an uncommitted insert on a second connection.
+- `/u/by-username/<name>` (the rewrite's target) also answers directly: the same page, gate and limiter, a third spelling. Left as is and pinned in the web suite.
+- The trigger also accepts `read uncommitted` (Postgres runs it as READ COMMITTED). `nextChangeAt` is rounded up by a millisecond (the stored time has microseconds).
+- Half of the suite's fixture users now have NO username (a credential and a sign-in instead of a sign-up), so the older sections also run against the shape production is in right after the deploy.
+
+**For the UI half (release gate)**
+
+- Search now returns and ranks people by username (an exact username first, then prefixes). Until rows show `@username`, a result can look unexplained: "sim" may list "Anna Meier" (`@simmental`) first. The rows must show the username before this ships.
+
+**Not done**
+
+- The new CI steps (a `next build` and the web suite in `check-schema.yml`) have never run on a GitHub runner (hold mode). Locally they pass from a build made with no `.env` and only the three variables the workflow sets.

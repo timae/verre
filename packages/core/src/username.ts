@@ -1,7 +1,7 @@
 // Usernames (docs/dev/proposals/usernames.md § 4): a unique lookup and display
 // name, `@simon`. Carries NO trust: never an identity, never authorises, never
 // inside a moment. Lowercase `a-z 0-9 . _`, 3 to 30 characters, no two dots in
-// a row, no dot at either end. The FORMAT half here is byte-for-byte the
+// a row, no dot at either end, at least one letter or digit. The FORMAT half here is byte-for-byte the
 // database CHECK `users_username_format_chk` (pinned both ways by the
 // you-profile suite); the RESERVED half is policy, for writes only.
 //
@@ -20,7 +20,7 @@ const FORMAT_RE = /^[a-z0-9._]{3,30}$/
 const ASCII_RE = /^[A-Za-z0-9._]*$/
 
 export function isUsernameFormat(s: string): boolean {
-  return FORMAT_RE.test(s) && !s.includes('..') && !s.startsWith('.') && !s.endsWith('.')
+  return FORMAT_RE.test(s) && !s.includes('..') && !s.startsWith('.') && !s.endsWith('.') && /[a-z0-9]/.test(s)
 }
 
 function canonical(input: string): string | null {
@@ -54,10 +54,11 @@ export function usernameQuery(input: unknown): string | null {
   return s ? s : null
 }
 
-// Staff words of the brand rule (D3): refused together with `verre`.
+// Staff words (D3): each is reserved alone, and so is any name made ONLY of
+// them and the brand (`STAFF_ONLY_RE`).
 export const USERNAME_STAFF_WORDS = ['official', 'team', 'support', 'staff', 'admin', 'app', 'help', 'mod', 'hq'] as const
-// The whole name is `verre` and staff words, nothing else, in any order.
-const BRAND_ONLY_RE = new RegExp(`^(?:verre|${USERNAME_STAFF_WORDS.join('|')})+$`)
+// The whole name is `verre` and / or staff words, nothing else, in any order.
+const STAFF_ONLY_RE = new RegExp(`^(?:verre|${USERNAME_STAFF_WORDS.join('|')})+$`)
 
 const ROUTE_WORDS = [
   // web
@@ -72,7 +73,7 @@ const ROUTE_WORDS = [
 // Only matter if `/name` URLs ever exist.
 const FILE_NAMES = ['robots.txt', 'sitemap.xml', 'favicon.ico', 'favicon.png', 'index.html', 'manifest.json']
 const BRAND_AND_STAFF = [
-  'verre', 'verreapp', 'gastro', 'administrator', 'curator', 'verified', 'anonymous', 'guest', 'everyone', 'all',
+  'verre', 'verreapp', 'gastro', 'app', 'admins', 'administrator', 'administrators', 'moderators', 'mods', 'curator', 'verified', 'anonymous', 'guest', 'everyone', 'all',
   'here', 'nobody', 'unknown',
 ]
 
@@ -85,17 +86,18 @@ const RESERVED_STRIPPED: ReadonlySet<string> = new Set([...RESERVED_USERNAMES].m
 
 // A WRITE rule. Takes a canonical name. Reserved: a reserved word, a lookalike
 // (equal to one once dots and underscores are removed: `v.e.r.r.e`, `_admin_`),
-// or the brand rule: with dots and underscores removed the name is made ONLY
-// of `verre` and staff words (`verre_official`, `teamverre`, `verre.support.hq`).
-// Narrowed 2026-11-14 from "contains verre and a staff word": the short staff
-// words match inside ordinary words (`happyverre`, `verremodern`), and verre is
-// the French word for glass. Any other word lets a name through
-// (`verre_official_ch`): accepted, impersonators are watched and blocked by hand.
+// or the staff rule: with dots and underscores removed the name is made ONLY
+// of `verre` and staff words (`verre_official`, `teamverre`, `official_support`,
+// `admin.team`). Ruled 2026-11-14: first "contains verre and a staff word",
+// which caught ordinary words (`happyverre`, `verremodern`: the short staff
+// words match inside them, and verre is French for glass); then widened to
+// staff words without the brand. Any other word lets a name through
+// (`verre_official_ch`, `support_simon`): accepted, impersonators are watched
+// and blocked by hand (scripts/set-username.mts --block-old).
 export function isReservedUsername(name: string): boolean {
   if (RESERVED_USERNAMES.has(name)) return true
   const bare = strip(name)
-  if (RESERVED_STRIPPED.has(bare)) return true
-  return bare.includes('verre') && BRAND_ONLY_RE.test(bare)
+  return RESERVED_STRIPPED.has(bare) || STAFF_ONLY_RE.test(bare)
 }
 
 export type UsernameCheck =
@@ -116,6 +118,7 @@ export function checkUsername(raw: unknown): UsernameCheck {
   if (s.length > USERNAME_MAX) return invalid(`username must be at most ${USERNAME_MAX} characters`)
   if (s.includes('..')) return invalid('username cannot have two dots in a row')
   if (s.startsWith('.') || s.endsWith('.')) return invalid('username cannot start or end with a dot')
+  if (!/[a-z0-9]/.test(s)) return invalid('username must contain a letter or a number')
   if (!isUsernameFormat(s)) return invalid('username is invalid')
   if (isReservedUsername(s)) return { ok: false, reason: 'reserved', message: 'username is reserved' }
   return { ok: true, username: s }

@@ -270,8 +270,12 @@ jobs:
       # renamed away is a 404, and with the limiter spent neither page entry
       # touches `users`. The build needs no database or secret (the image's
       # builder stage has none either).
+      # AUTH_SECRET only quiets Better Auth's "default secret" log line while
+      # Next collects page data; the build passes without it.
       - name: Build the web app
         run: npm run build
+        env:
+          AUTH_SECRET: ci-only-usernames-web-secret-0123456789
 
       - name: Usernames (the /@name rewrite against the built server)
         run: npx tsx scripts/tests/usernames-web.mts

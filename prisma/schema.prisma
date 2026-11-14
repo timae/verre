@@ -158,8 +158,9 @@ model User {
 
 // A username nobody else may take yet (usernames § 3): the most recent old
 // name after a rename (held for its former owner, clear text kept so they can
-// be shown "switch back") or a deleted account's name (no user, no clear
-// text: the one row that survives a deleted account on purpose). Written ONLY
+// be shown "switch back"), an earlier old name or a deleted account's name (no
+// user, no clear text, until its own date: the one row that survives a deleted
+// account on purpose), or a moderation block (no user, no end date). Written ONLY
 // by the triggers on `users`; `username_is_held(name, for_user)` is the one
 // spelling of the hash and of "a live hold by someone else". The hash is a
 // plain SHA-256: guessable by whoever holds the database (ruled, D1).

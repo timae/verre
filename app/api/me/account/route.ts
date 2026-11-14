@@ -50,7 +50,9 @@ export async function PATCH(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { name, email, currentPassword, newPassword } = body
-  const updates: Record<string, unknown> = {}
+  // Typed to its two fields: a username can never ride this update (it has its
+  // own route, quota and writer: lib/username.ts; scripts/check-username-writes.mjs).
+  const updates: { name?: string; email?: string } = {}
 
   if (name !== undefined) {
     try { updates.name = validateDisplayName(name) }
@@ -117,7 +119,7 @@ export async function PATCH(req: NextRequest) {
 
   // After commit: the shared rename tail (host_name mirror + live session
   // snapshots, best-effort).
-  if (updates.name !== undefined) await propagateRename(userId, updates.name as string)
+  if (updates.name !== undefined) await propagateRename(userId, updates.name)
 
   // After a password change, revoke every OTHER device's session so a stolen
   // session can't outlive the rotation — the load-bearing invariant. This

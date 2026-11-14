@@ -5,9 +5,10 @@
 //   § 21 a schema: the format CHECK against the core validator (both ways),
 //          never-NULL-again, the isolation refusal and its other half, a NULL
 //          insert untouched, the trigger timing
-//   § 21 b holds and quota: rename / switch back / second rename / deleted
-//          account / expiry before and after a prune / 5 changes then `quota` /
-//          a refused change spends nothing / the operator path
+//   § 21 b holds and quota: rename / switch back / a second rename keeps the
+//          earlier name held / deleted account / expiry before and after a
+//          prune / 5 changes then `quota` / a refused change spends nothing /
+//          the operator path, its moderation block included
 //   § 21 c the answer matrix (live, held, free × availability, both sign-ups,
 //          the PUT, the logged-out lookup) and the two error shapes
 //   § 21 d races on two real connections, each with its own negative control
@@ -55,6 +56,7 @@ export async function usernames(h: UsernamesHarness) {
   const core = await import('../../packages/core/src/username.ts')
   const lib = await import('../../lib/username.ts')
   const { changeUsername, usernameTaken, usernameState, isUsernameConflict, usernameChangeSeams, USERNAME_CHANGE_LIMIT } = lib
+  const { syncCredential } = await import('../../lib/identityStore.ts')
   const { pruneLocked } = await import('../../lib/nativeSessionPrune.ts')
   const { signRegisterToken } = await import('../../lib/registerToken.ts')
   const { resolveUser } = await import('../../lib/resolveUser.ts')
@@ -200,22 +202,26 @@ export async function usernames(h: UsernamesHarness) {
   check('the state names the held old name ("switch back")', st1?.previous?.username === h1 && st1.changesLeft === USERNAME_CHANGE_LIMIT - 1 && st1.nextChangeAt === null, st1)
   check('the owner switches back', (await changeUsername(H.id, h1)).status === 'ok' && (await nameOf(H.id)) === h1)
   check('…which counts as a change, and now holds the OTHER name', (await changes(H.id)) === 2 && (await holds(h1)).length === 0 && (await holds(h2))[0]?.user_id === H.id)
-  check('a second rename frees the first old name: only the most recent is held', (await changeUsername(H.id, h3)).status === 'ok' && (await holds(h2)).length === 0 && (await holds(h1))[0]?.username === h1)
-  check('…so anyone can take the freed one', (await changeUsername(O.id, h2)).status === 'ok')
-  const oOld = O.username!
+  const [h2Before] = await holds(h2)
+  check('a second rename goes through; the newest old name is held for its owner', (await changeUsername(H.id, h3)).status === 'ok' && (await holds(h1))[0]?.username === h1 && (await holds(h1))[0]?.user_id === H.id)
+  const [h2After] = await holds(h2)
+  check('🔒 …and the EARLIER old name is not freed: still held until its own date, with no owner and no clear text', h2After?.live === true && h2After.user_id === null && h2After.username === null && h2After.held_until.getTime() === h2Before.held_until.getTime(), h2After)
+  check('…so nobody can take it early, and its former owner can only switch back to the most recent one', (await changeUsername(O.id, h2)).status === 'taken' && (await changeUsername(H.id, h2)).status === 'taken' && (await usernameState(H.id))?.previous?.username === h1)
+  const oOld = O.username!, o2 = fixtureUsername()
+  check('fixture: the other user renames once', (await changeUsername(O.id, o2)).status === 'ok')
   // A deleted account: its current name AND its own rename hold.
   await prisma.$executeRaw`DELETE FROM users WHERE id = ${O.id}`
-  const [dCur] = await holds(h2), [dOld] = await holds(oOld)
+  const [dCur] = await holds(o2), [dOld] = await holds(oOld)
   check('🔒 a deleted account\'s name is held 14 days with no user and no clear text', dCur?.user_id === null && dCur.username === null && Math.abs(dCur.held_until.getTime() - (Date.now() + 14 * DAY)) < 120_000, dCur)
   check('🔒 …its own rename hold loses the user and the clear text, keeps its date', dOld?.user_id === null && dOld.username === null && dOld.live, dOld)
-  check('…both refuse everyone', (await usernameTaken(h2, H.id)) && (await usernameTaken(oOld)) && (await changeUsername(H.id, h2)).status === 'taken')
+  check('…both refuse everyone', (await usernameTaken(o2, H.id)) && (await usernameTaken(oOld)) && (await changeUsername(H.id, o2)).status === 'taken')
   check('no hold row carries the deleted user anywhere', Number((await prisma.usernameHold.count({ where: { userId: O.id } }))) === 0 && Number((await prisma.usernameChange.count({ where: { userId: O.id } }))) === 0)
   // Expiry: the claim tests the date itself, before any prune ran.
-  await prisma.$executeRaw`UPDATE username_holds SET held_until = now() - interval '1 second' WHERE name_hash = username_hash(${h2})`
-  check('🔒 an expired hold no longer refuses, though its row is still there', (await holds(h2)).length === 1 && !(await usernameTaken(h2, H.id)))
+  await prisma.$executeRaw`UPDATE username_holds SET held_until = now() - interval '1 second' WHERE name_hash = username_hash(${o2})`
+  check('🔒 an expired hold no longer refuses, though its row is still there', (await holds(o2)).length === 1 && !(await usernameTaken(o2, H.id)))
   const E = await bare('Exp Expiry', null)
-  check('…the name can be claimed', (await changeUsername(E.id, h2)).status === 'ok' && (await nameOf(E.id)) === h2)
-  check('…and the trigger\'s own prune removed the expired row', (await holds(h2)).length === 0)
+  check('…the name can be claimed', (await changeUsername(E.id, o2)).status === 'ok' && (await nameOf(E.id)) === o2)
+  check('…and the trigger\'s own prune removed the expired row', (await holds(o2)).length === 0)
   await prisma.$executeRaw`UPDATE username_holds SET held_until = now() - interval '1 second' WHERE name_hash = username_hash(${oOld})`
   await pruneLocked()
   check('the daily job removes an expired hold with no username write at all', (await holds(oOld)).length === 0 && (await holds(h1)).length === 1)
@@ -227,13 +233,15 @@ export async function usernames(h: UsernamesHarness) {
   for (let i = 0; i < USERNAME_CHANGE_LIMIT; i++) { used.push(fixtureUsername('q')); lastOk = await put(Q, used[i]) }
   check('5 changes pass; the PUT answers the GET\'s shape', lastOk?.status === 200 && lastOk.wire.username === used[4] && lastOk.wire.changesLeft === 0 && lastOk.wire.previous?.username === used[3] && noStore(lastOk), lastOk?.wire)
   const oldest = (await prisma.usernameChange.findFirstOrThrow({ where: { userId: Q.id }, orderBy: { changedAt: 'asc' } })).changedAt as Date
-  const nextAt = new Date(oldest.getTime() + 90 * DAY).toISOString()
+  // + 1 ms: the stored time has microseconds, and the date handed out must never be early.
+  const nextAt = new Date(oldest.getTime() + 90 * DAY + 1).toISOString()
   check('…and names when the next one is possible (the oldest change + 90 days)', lastOk?.wire.nextChangeAt === nextAt, { got: lastOk?.wire.nextChangeAt, nextAt })
   const got = await getState(Q)
   check('GET /api/me/username answers the same state, no-store; 401 signed out', got.status === 200 && JSON.stringify(got.wire) === JSON.stringify(lastOk?.wire) && noStore(got) && (await getState({})).status === 401, got.wire)
   const sixth = await put(Q, fixtureUsername('q'))
   check('🔒 the 6th answers 409 quota with that date, nothing written', sixth.status === 409 && sixth.wire.code === 'quota' && sixth.wire.nextChangeAt === nextAt && (await nameOf(Q.id)) === used[4] && (await changes(Q.id)) === 5 && noStore(sixth), sixth.wire)
-  check('…switching back counts too (D5)', (await put(Q, used[3])).status === 409)
+  const backAtQuota = await put(Q, used[3])
+  check('…switching back counts too (D5): quota, not taken', backAtQuota.status === 409 && backAtQuota.wire.code === 'quota', backAtQuota.wire)
   const opAtQuota = await operator.run([Q.email, fixtureUsername('op'), '--apply'])
   check('🔒 the operator path skips the quota and adds no change row', opAtQuota.exit === 0 && opAtQuota.out.result === 'set' && (await changes(Q.id)) === 5, opAtQuota)
   await prisma.$executeRaw`UPDATE username_changes SET changed_at = now() - interval '91 days' WHERE user_id = ${Q.id} AND changed_at = ${oldest}`
@@ -248,6 +256,7 @@ export async function usernames(h: UsernamesHarness) {
   const typed = await put(R, `  @${fixtureUsername('r').toUpperCase()} `)
   check('a typed name is stored and echoed in the canonical form', typed.status === 200 && typed.wire.username === (await nameOf(R.id)) && /^[a-z0-9._]+$/.test(typed.wire.username), typed.wire)
   const invalid = await put(R, 'a..b'), reserved = await put(R, 'verre_official'), missing = await put(R, undefined)
+  check('a name with no letter or digit, and a staff-only name, are refused', (await put(R, '_._')).wire.code === 'invalid' && (await put(R, '___')).wire.error === 'username must contain a letter or a number' && (await put(R, 'official_support')).wire.code === 'reserved')
   const glass = await available(R, `verremodern_${Date.now().toString(36)}`)
   check('a name with the brand and a staff word inside ANOTHER word is not reserved (the narrowed brand rule)', glass.wire.available === true, glass.wire)
   check('invalid / reserved / missing → 400 with the validator\'s message and reason', invalid.status === 400 && invalid.wire.code === 'invalid' && reserved.status === 400 && reserved.wire.code === 'reserved' && missing.status === 400 && missing.wire.error === 'username is required', { invalid: invalid.wire, reserved: reserved.wire, missing: missing.wire })
@@ -263,6 +272,30 @@ export async function usernames(h: UsernamesHarness) {
   const opHeld = await operator.run([R.email, h1, '--apply'])
   check('🔒 operator: a taken or a held name is refused by the database', opTaken.exit === 1 && opHeld.exit === 1 && (await nameOf(R.id)) === typed.wire.username, { opTaken, opHeld })
   check('operator: an invalid name / an unknown email / a bad flag', (await operator.run([R.email, 'a..b', '--apply'])).exit === 2 && (await operator.run([`${TAG}-nobody@example.test`, fixtureUsername(), '--apply'])).exit === 1 && (await operator.run([R.email, fixtureUsername(), '--force'])).exit === 2)
+  // A moderation rename: without --block-old the renamed person switches straight back.
+  const Mod = await mkUser('Mod Target'), modOld = (await nameOf(Mod.id))!
+  const plain = await operator.run([Mod.email, fixtureUsername('op'), '--apply'])
+  const undone = await put(Mod, modOld)
+  check('operator: a plain rename can be undone by the user (the old name is held FOR them)', plain.exit === 0 && undone.status === 200 && (await nameOf(Mod.id)) === modOld, undone.wire)
+  const blocked = await operator.run([Mod.email, fixtureUsername('op'), '--apply', '--block-old'])
+  const [blk] = await holds(modOld)
+  check('🔒 operator: --block-old blocks the old name for everyone: no owner, no clear text, no end date', blocked.exit === 0 && blk?.user_id === null && blk.username === null && blk.held_until.getUTCFullYear() === 9999, { blocked, blk })
+  const modState = await getState(Mod)
+  check('🔒 …the renamed person cannot switch back, and is not offered it', (await put(Mod, modOld)).wire.code === 'taken' && modState.wire.previous === null && (await available(Mod, modOld)).wire.reason === 'taken')
+  check('…a later rename by them does not touch the block', (await put(Mod, fixtureUsername('m'))).status === 200 && (await holds(modOld))[0]?.held_until.getUTCFullYear() === 9999)
+  await pruneLocked()
+  check('…no prune removes it', (await holds(modOld)).length === 1)
+  const unblock = await operator.run(['--release-hold', modOld, '--apply'])
+  check('…only --release-hold frees it', unblock.out.released === 1 && !(await usernameTaken(modOld)))
+  // An account holding an operator-assigned reserved name can re-submit it.
+  const Rsv = await mkUser('Res Erved'), rsvName = reservedFixtureUsername()
+  await operator.run(['--release-hold', rsvName, '--apply'])
+  const rsvSet = await operator.run([Rsv.email, rsvName, '--apply', '--allow-reserved'])
+  const rsvSame = await put(Rsv, rsvName, false)
+  check('the same RESERVED name again → 200 (answered as a read, before the reserved list and the change budget)', rsvSet.exit === 0 && rsvSame.status === 200 && rsvSame.wire.username === rsvName && (await redis.get(`rl:username-set:user:${Rsv.id}:1h`)) === null, { rsvSet, rsvSame: rsvSame.wire })
+  await operator.run([Rsv.email, fixtureUsername('op'), '--apply', '--block-old'])
+  await operator.run(['--release-hold', rsvName, '--apply'])
+
   const relDry = await operator.run(['--release-hold', h1])
   const rel = await operator.run(['--release-hold', h1, '--apply'])
   check('operator: --release-hold frees a held name at once (dry run first)', relDry.out.held === true && (await holds(h1)).length === 0 && rel.out.released === 1 && !(await usernameTaken(h1)), { relDry, rel })
@@ -281,7 +314,7 @@ export async function usernames(h: UsernamesHarness) {
   const rows: Record<string, string> = {}
   for (const [kind, name] of [['live', L.username!], ['rename-hold', renamedAway], ['deleted-hold', deletedName], ['free', freeName]] as const) {
     const av = await available(V, name)
-    const app = await appSignUp({ username: name, ...(kind === 'free' ? {} : {}) })
+    const app = await appSignUp({ username: name })
     const web = kind === 'free' ? null : await webRegister({ username: name })
     const P = await mkUser(`Put ${kind}`)
     const p = await put(P, name)
@@ -314,29 +347,39 @@ export async function usernames(h: UsernamesHarness) {
   const rawHeld = await sqlErr(prisma.$executeRaw`UPDATE users SET username = ${renamedAway} WHERE id = ${shapeUser.id}`)
   check('🔒 a taken AND a held name are P2002 through a model call', modelTaken?.code === 'P2002' && modelHeld?.code === 'P2002', { modelTaken: modelTaken?.code, modelHeld: modelHeld?.code })
   check('🔒 …and P2010 carrying 23505 through a raw statement (why every app write is a model call)', rawTaken?.code === 'P2010' && rawHeld?.code === 'P2010' && JSON.stringify(rawHeld?.meta).includes('23505'), { rawTaken: rawTaken?.code, rawHeld: rawHeld?.code })
-  check('isUsernameConflict takes all four, and nothing else', [modelTaken, rawTaken, modelHeld, rawHeld].every(isUsernameConflict) && !isUsernameConflict(badWrite) && !isUsernameConflict(new Error('x')) && !isUsernameConflict(null))
+  const emailDup = await sqlErr(prisma.user.create({ data: { name: 'Dup Email', email: V.email } }))
+  check('isUsernameConflict takes all four; it is ANY unique violation (an email collision too), never another error', [modelTaken, rawTaken, modelHeld, rawHeld, emailDup].every(isUsernameConflict) && !isUsernameConflict(badWrite) && !isUsernameConflict(new Error('x')) && !isUsernameConflict(null))
 
   // ── § 21 d races ────────────────────────────────────────────────────────────
   section('§ 21 d usernames: races on two real connections')
   // (1) A claim against an UNCOMMITTED rename, then against an uncommitted deletion.
-  const claimRace = async (release: 'rename' | 'delete') => {
+  // The claim is an UPDATE (a rename) or an INSERT (both sign-ups).
+  const claimRace = async (release: 'rename' | 'delete', claimBy: 'update' | 'insert' = 'update') => {
     const A = await bare('Race Releaser'), B = await bare('Race Claimer')
     const name = A.username!
+    const insertEmail = `${TAG}-un-race-${++bareSeq}@example.test`
     const holder = await conn()
     try {
       await holder.query('BEGIN')
       if (release === 'rename') await holder.query('UPDATE users SET username = $1 WHERE id = $2', [fixtureUsername(), A.id])
       else await holder.query('DELETE FROM users WHERE id = $1', [A.id])
-      const claim = prisma.user.update({ where: { id: B.id }, data: { username: name }, select: { id: true } }).then(() => 'claimed', (e: { code?: string }) => e.code ?? 'error') as Promise<string>
+      const write = claimBy === 'update'
+        ? prisma.user.update({ where: { id: B.id }, data: { username: name }, select: { id: true } })
+        : prisma.user.create({ data: { name: 'Race Insert', email: insertEmail, username: name }, select: { id: true } })
+      const claim = write.then(() => 'claimed', (e: { code?: string }) => e.code ?? 'error') as Promise<string>
       const waited = await blockedOnLock(claim)
       await holder.query('COMMIT')
-      return { waited, outcome: await claim, owner: await nameOf(B.id), name }
+      const outcome = await claim
+      const owner = claimBy === 'update' ? await nameOf(B.id) : ((await prisma.user.findUnique({ where: { email: insertEmail }, select: { username: true } }))?.username ?? null)
+      return { waited, outcome, owner, name }
     } finally { await holder.end() }
   }
   const r1 = await claimRace('rename')
   check('🔒 a claim against an uncommitted RENAME waits, then is refused once the hold commits', r1.waited && r1.outcome === 'P2002' && r1.owner !== r1.name, r1)
   const r2 = await claimRace('delete')
   check('🔒 a claim against an uncommitted DELETION: the same', r2.waited && r2.outcome === 'P2002' && r2.owner !== r2.name, r2)
+  const r3 = await claimRace('rename', 'insert'), r4 = await claimRace('delete', 'insert')
+  check('🔒 an INSERT claim (the sign-up path) against either: waits, refused, no row created', [r3, r4].every(r => r.waited && r.outcome === 'P2002' && r.owner === null), { r3, r4 })
   // Control: the same race with the trigger switched to BEFORE must let the
   // claim through (it looks before the wait on the unique index).
   const [{ def: fn }] = await prisma.$queryRaw`SELECT pg_get_functiondef('public.users_username_hold()'::regprocedure) AS def` as { def: string }[]
@@ -449,6 +492,20 @@ export async function usernames(h: UsernamesHarness) {
   check('…`error` keeps today\'s text when only the email is taken', w1.wire.error === 'email already registered')
   const wInv = await webRegister({ username: 'a..b' }), wRes = await webRegister({ username: 'administrator' }), wMis = await webRegister({ username: undefined })
   check('web: an invalid, a reserved or a missing username → 400 with the validator\'s message', wInv.status === 400 && wInv.wire.error === 'username cannot have two dots in a row' && wRes.status === 400 && wRes.wire.error === 'username is reserved' && wMis.status === 400 && wMis.wire.error === 'username is required', [wInv.wire, wRes.wire, wMis.wire])
+  // The lost race after the pre-check: someone's uncommitted insert holds the
+  // name, so the pre-check sees it free and the insert waits on the unique index.
+  const lostName = fixtureUsername('lost'), lostEmail = `${TAG}-un-lost@example.test`
+  const racer = await conn()
+  let lost: Res
+  try {
+    await racer.query('BEGIN')
+    await racer.query('INSERT INTO users (name, email, username) VALUES ($1, $2, $3)', ['Race Winner', `${TAG}-un-winner@example.test`, lostName])
+    const pending = webRegister({ email: lostEmail, username: lostName })
+    const waited = await blockedOnLock(pending)
+    await racer.query('COMMIT')
+    lost = await pending
+    check('🔒 web: a register that loses a same-instant race for the name waits, then names the field (the re-run pre-check), nothing created', waited && lost.status === 409 && JSON.stringify(lost.wire.fields) === JSON.stringify({ username: 'taken' }) && !(await prisma.user.findUnique({ where: { email: lostEmail } })), lost.wire)
+  } finally { await racer.query('ROLLBACK').catch(() => {}); await racer.end() }
   const webEmail = `${TAG}-un-webok@example.test`, webName = fixtureUsername('web')
   const wOk = await webRegister({ email: webEmail, username: webName.toUpperCase() })
   check('web: the canonical name rides the user insert', wOk.status === 200 && wOk.wire.user.username === webName && (await prisma.user.findUnique({ where: { email: webEmail }, select: { username: true } }))?.username === webName, wOk.wire)
@@ -468,9 +525,19 @@ export async function usernames(h: UsernamesHarness) {
   await resetLimits()
   const acct = await call(accountRoute.GET, 'GET', '/api/me/account', Me)
   check('GET /api/me/account carries it too', acct.wire.username === meNew, acct.wire)
+  // An account from before usernames: a credential, no username. The cue for
+  // the blocking screen is `user.username === null` on its own auth responses.
   const NoName = await bare('Nia NoName', null)
-  await prisma.authSession.deleteMany({ where: { userId: NoName.id } })
-  check('an account that has not chosen yet reads null (the client\'s cue for its blocking screen)', (await usernameState(NoName.id))?.username === null)
+  const noNameEmail = (await prisma.user.findUniqueOrThrow({ where: { id: NoName.id }, select: { email: true } })).email as string
+  await syncCredential(NoName.id, await bcrypt.hash('pw-noname-12345', 4))
+  const nnIn = await ba('POST', '/sign-in/email', { email: noNameEmail, password: 'pw-noname-12345' })
+  const nnGs = await ba('GET', '/get-session', undefined, cookieOf(nnIn.headers))
+  check('🔒 an account that has not chosen yet: user.username is null (the key present) on sign-in and get-session', nnIn.status === 200 && 'username' in nnIn.json.user && nnIn.json.user.username === null && 'username' in nnGs.json.user && nnGs.json.user.username === null, { signIn: nnIn.json?.user, getSession: nnGs.json?.user })
+  await resetLimits()
+  const nnAcct = await call(accountRoute.GET, 'GET', '/api/me/account', { cookie: cookieOf(nnIn.headers) })
+  check('…and on /api/me/account and its own state', nnAcct.wire.username === null && (await usernameState(NoName.id))?.username === null, nnAcct.wire)
+  const first = await put({ cookie: cookieOf(nnIn.headers) }, fixtureUsername('first'))
+  check('…its first choice is free and shows on the next get-session', first.status === 200 && first.wire.changesLeft === USERNAME_CHANGE_LIMIT && (await ba('GET', '/get-session', undefined, cookieOf(nnIn.headers))).json.user.username === first.wire.username, first.wire)
 
   // ── § 21 g lookup ───────────────────────────────────────────────────────────
   section('§ 21 g usernames: GET /api/users/by-username equals the id route')
@@ -565,7 +632,8 @@ export async function usernames(h: UsernamesHarness) {
   await prisma.sessionMember.createMany({ data: [{ userId: A.id, sessionCode: twCode }, { userId: Tw.id, sessionCode: twCode }] })
   const tw = await get(tastedWithRoute.GET, '/api/me/tasted-with', A)
   check('tasted-with', (tw.wire.people as J[]).find(p => p.id === Tw.pid)?.username === Tw.username, tw.wire.people)
-  const none = await byId(A, NoName.pid)
+  const StillNone = await bare('Sten StillNone', null)
+  const none = await byId(A, StillNone.pid)
   check('a person who has not chosen yet carries username: null (never absent)', none.status === 200 && 'username' in none.wire && none.wire.username === null, none.wire)
 
   // 🔒 The reverse canary: a moment both are in. No moment response and no

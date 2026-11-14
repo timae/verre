@@ -34,9 +34,13 @@ export async function usernameTaken(name: string, forUser?: number | null, db: D
   return rows[0].taken
 }
 
-// A unique violation in either shape: P2002 from a model call (the adapter
-// maps any SQLSTATE 23505, the trigger's included), P2010 carrying the
-// original code from a raw statement (the operator script's psql-like paths).
+// ANY unique violation, in either shape: P2002 from a model call (the adapter
+// maps every SQLSTATE 23505, the trigger's included), P2010 carrying the
+// original code from a raw statement. It does not look at WHICH constraint
+// (Prisma's error shape depends on the driver adapter), so only use it around
+// a write whose sole unique column is the username (`changeUsername`'s
+// update); the web register, whose insert can also collide on the email,
+// re-runs the pre-check instead.
 export function isUsernameConflict(err: unknown): boolean {
   const e = err as { code?: string; meta?: { code?: string; driverAdapterError?: { cause?: { originalCode?: string } } } } | null
   if (!e || typeof e !== 'object') return false
@@ -59,7 +63,9 @@ async function quota(userId: number, db: Db): Promise<{ used: number; nextChange
       FROM username_changes
      WHERE user_id = ${userId} AND changed_at > now() - make_interval(days => ${USERNAME_CHANGE_WINDOW_DAYS}::int)`
   const { used, oldest } = rows[0]
-  return { used, nextChangeAt: used >= USERNAME_CHANGE_LIMIT && oldest ? new Date(oldest.getTime() + WINDOW_MS) : null }
+  // + 1 ms: `changed_at` carries microseconds and a JS Date drops them, so the
+  // date handed out is never a moment BEFORE the database lets the change through.
+  return { used, nextChangeAt: used >= USERNAME_CHANGE_LIMIT && oldest ? new Date(oldest.getTime() + WINDOW_MS + 1) : null }
 }
 
 export async function usernameState(userId: number, db: Db = prisma): Promise<UsernameState | null> {
@@ -84,8 +90,10 @@ export type ChangeUsernameResult =
   | { status: 'quota'; nextChangeAt: string }
   | { status: 'not-found' }
 
-// Test seams (scripts/tests/you-profile-integration.mts § 19): the quota race
+// Test seams (scripts/tests/usernames-section.mts § 21 d): the quota race
 // needs a fixed schedule, and its negative control needs the row lock off.
+// 🔒 Never set outside a test: `lockRow: false` removes what serialises two
+// changes by one account.
 export const usernameChangeSeams: { afterQuotaRead: () => Promise<void>; lockRow: boolean } = {
   afterQuotaRead: async () => {},
   lockRow: true,
@@ -98,8 +106,13 @@ export const usernameChangeSeams: { afterQuotaRead: () => Promise<void>; lockRow
 // the quota, write through the model, record the change. A refused change
 // (taken, held) rolls back: no quota spent, no row left. A first choice from
 // NULL is free; every later change counts, switching back included.
-// `skipQuota` is the operator's rename.
-export async function changeUsername(userId: number, name: string, opts: { skipQuota?: boolean } = {}): Promise<ChangeUsernameResult> {
+// `skipQuota` is the operator's rename. `blockOld` (operator, a moderation
+// rename) takes the old name away for good: the trigger has just held it FOR
+// its former owner, who could switch straight back; in the same transaction
+// that hold loses its owner and its clear text and gets NO END DATE
+// (`NO_END`), so it refuses everyone until `releaseUsernameHold`.
+export const USERNAME_HOLD_NO_END = '9999-12-31T00:00:00Z'
+export async function changeUsername(userId: number, name: string, opts: { skipQuota?: boolean; blockOld?: boolean } = {}): Promise<ChangeUsernameResult> {
   try {
     return await prisma.$transaction(async (tx): Promise<ChangeUsernameResult> => {
       const rows = usernameChangeSeams.lockRow
@@ -116,6 +129,11 @@ export async function changeUsername(userId: number, name: string, opts: { skipQ
       }
       await tx.user.update({ where: { id: userId }, data: { username: name }, select: { id: true } })
       if (counted) await tx.usernameChange.create({ data: { userId }, select: { id: true } })
+      if (opts.blockOld && current !== null) {
+        await tx.$executeRaw`
+          UPDATE username_holds SET user_id = NULL, username = NULL, held_until = ${USERNAME_HOLD_NO_END}::timestamptz
+           WHERE name_hash = username_hash(${current})`
+      }
       await tx.$executeRaw`
         DELETE FROM username_changes
          WHERE user_id = ${userId} AND changed_at <= now() - make_interval(days => ${USERNAME_CHANGE_WINDOW_DAYS}::int)`
@@ -129,13 +147,14 @@ export async function changeUsername(userId: number, name: string, opts: { skipQ
 
 // Expired holds, deleted outside any username write: the daily in-process
 // prune (lib/nativeSessionPrune.ts), so a deleted account's hash and a
-// rename's clear-text old name are gone within a day or two of their 14.
+// rename's clear-text old name are gone within a day or two of their 14. A
+// moderation block (`blockOld`) has no end date and stays until released.
 export async function pruneExpiredUsernameHolds(): Promise<number> {
   return prisma.$executeRaw`DELETE FROM username_holds WHERE held_until <= now()`
 }
 
 // Operator only (scripts/set-username.mts --release-hold): frees a held name
-// at once, whoever held it.
+// at once, whoever held it, a moderation block included.
 export async function releaseUsernameHold(name: string): Promise<number> {
   return prisma.$executeRaw`DELETE FROM username_holds WHERE name_hash = username_hash(${name})`
 }

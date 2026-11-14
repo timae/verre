@@ -19,15 +19,28 @@
 //     updateMany|upsert(`) whose argument text mentions `username`.
 //  2. Raw SQL: `UPDATE users … SET … username =` or an `INSERT INTO users (…
 //     username …)`.
-//  3. An assignment to a `.username` property (`data.username = …`): the
-//     variable-built `data` object the call matcher can't see through.
-//     (`session.user.username = …` in auth.ts is the one expected site: it
-//     fills the session object, not the table.)
+//  3. An assignment to a `.username` / `['username']` property
+//     (`data.username = …`): a `data` object built in steps.
+//     (`session.user.username = …` in auth.ts is an expected site: it fills
+//     the session object, not the table.)
+//  4. A user write whose `data` the matcher can't read (an identifier, the
+//     `{ where, data }` shorthand, or a spread inside the call) in a file
+//     that has `username` as an object KEY anywhere (`{ name, username }`,
+//     `username: x`): the ordinary `const data = { name, username };
+//     prisma.user.update({ where, data })`. Coarse on purpose: a user write
+//     with opaque data next to a username key gets a human's eyes.
+//  5. Better Auth's adapter: `updateUser(…)` / `createUser(…)` with `username`
+//     in the argument text.
 //
 // KNOWN LIMITS (a text census, not a type system): an aliased delegate
 // (`const u = prisma.user; u.update(…)`), a computed key, a `data` object
-// built in another file. The `ProfileFields` type (lib/profileImage.ts) has no
-// `username`, so the profile PATCH cannot carry one through its helper.
+// built in ANOTHER file, a nested relation write from another model
+// (`follow.update({ data: { follower: { update: { username } } } })`),
+// `Object.assign(data, { username })` in a file with no user write of its
+// own. The database still enforces uniqueness and holds for all of them; what
+// such a writer would skip is the quota. The `ProfileFields` type
+// (lib/profileImage.ts) has no `username`, so the profile PATCH cannot carry
+// one through its helper.
 //
 // Run: node scripts/check-username-writes.mjs   (exits 1 on any difference)
 //      node scripts/check-username-writes.mjs --self-test
@@ -45,6 +58,9 @@ const EXPECTED = {
   // user.username = row?.username on the native auth RESPONSE body (the fresh
   // read; a wire object, not a table).
   'app/api/auth/native/[...all]/route.ts': 1,
+  // The account PATCH's `data: updates` (opaque to the matcher) beside the
+  // GET's `username` key. Reviewed: `updates` is typed `{ name?, email? }`.
+  'app/api/me/account/route.ts': 1,
 }
 
 const inScope = (f) =>
@@ -66,16 +82,28 @@ function callText(src, open) {
 }
 
 const WRITE_CALL = /\buser\s*\.\s*(?:create|createMany|createManyAndReturn|update|updateMany|updateManyAndReturn|upsert)\s*\(/g
-const RAW_UPDATE = /\bUPDATE\s+"?users"?\b[^;`]*?\bSET\b[^;`]*?\busername\b\s*=/gi
-const RAW_INSERT = /\bINSERT\s+INTO\s+"?users"?\s*\([^)]*\busername\b/gi
-const ASSIGN = /\.username\s*=(?!=)/g
+// `"?username"?\s*=` or the row form `SET (name, username) = (…)`.
+const RAW_UPDATE = /\bUPDATE\s+(?:public\s*\.\s*)?"?users"?\b[^;`]*?\bSET\b[^;`]*?(?:"?\busername\b"?\s*=|\([^)]*\busername\b[^)]*\)\s*=)/gi
+const RAW_INSERT = /\bINSERT\s+INTO\s+(?:public\s*\.\s*)?"?users"?\s*\([^)]*\busername\b/gi
+const ASSIGN = /(?:\.username|\[\s*['"]username['"]\s*\])\s*=(?!=)/g
+const ADAPTER_CALL = /\b(?:updateUser|createUser)\s*\(/g
+// `data` the matcher can't see into: `data: ident`, the `data` shorthand, a spread.
+const OPAQUE_DATA = /\bdata\s*:\s*[A-Za-z_$][\w$.]*\s*[,})]|[{,]\s*data\s*[,}]|\.\.\./
+// `username` as an object key: `username:` (not a `?:` type member) or shorthand.
+const USERNAME_KEY = /[{,]\s*username\s*(?::|,|})/
 
 export function writeSites(source) {
   const src = stripComments(source)
   const lineOf = (i) => src.slice(0, i).split('\n').length
   const sites = []
+  const keyInFile = USERNAME_KEY.test(src)
   for (const m of src.matchAll(WRITE_CALL)) {
-    if (/\busername\b/.test(callText(src, m.index + m[0].length - 1))) sites.push({ line: lineOf(m.index), kind: 'model write' })
+    const call = callText(src, m.index + m[0].length - 1)
+    if (/\busername\b/.test(call)) sites.push({ line: lineOf(m.index), kind: 'model write' })
+    else if (keyInFile && OPAQUE_DATA.test(call)) sites.push({ line: lineOf(m.index), kind: 'model write with opaque data in a file that has a username key' })
+  }
+  for (const m of src.matchAll(ADAPTER_CALL)) {
+    if (/\busername\b/.test(callText(src, m.index + m[0].length - 1))) sites.push({ line: lineOf(m.index), kind: 'Better Auth adapter write' })
   }
   for (const re of [RAW_UPDATE, RAW_INSERT]) for (const m of src.matchAll(re)) sites.push({ line: lineOf(m.index), kind: 'raw SQL' })
   for (const m of src.matchAll(ASSIGN)) sites.push({ line: lineOf(m.index), kind: 'assignment' })
@@ -94,6 +122,13 @@ function selfTest() {
     ['raw quoted update', 'await tx.$executeRaw`UPDATE "users"\n SET username = ${u}`'],
     ['raw insert', "prisma.$executeRaw`INSERT INTO users (name, email, username) VALUES (${a}, ${b}, ${c})`"],
     ['built data object', "const data = {}\ndata.username = name\nawait writeProfileFields(id, data)"],
+    ['bracket assignment', "data['username'] = name"],
+    ['data object by name', "const data = { name, username }\nawait prisma.user.update({ where: { id }, data })"],
+    ['data object by key', "const patch = { username: name }\nawait prisma.user.update({ where: { id }, data: patch })"],
+    ['spread data', "const patch = { name, username }\nawait tx.user.update({ where: { id }, data: { ...patch } })"],
+    ['schema-qualified raw update', "prisma.$executeRaw`UPDATE public.users SET username = ${u} WHERE id = ${id}`"],
+    ['row-form raw update', "prisma.$executeRaw`UPDATE users SET (name, username) = (${n}, ${u}) WHERE id = ${id}`"],
+    ['Better Auth adapter', "await ctx.internalAdapter.updateUser(String(id), { username: name })"],
   ]
   const mustNot = [
     ['select', "prisma.user.findUnique({ where: { id }, select: { username: true } })"],
@@ -104,6 +139,9 @@ function selfTest() {
     ['another column', "await prisma.user.update({ where: { id }, data: { name } })"],
     ['a comment', "// prisma.user.update({ data: { username } }) would skip the quota"],
     ['holds table', "prisma.$executeRaw`DELETE FROM username_holds WHERE held_until <= now()`"],
+    ['opaque data, no username key in the file', "const data = { name, bio }\nawait prisma.user.update({ where: { id }, data })"],
+    ['a typed field is not a key', "type U = { name: string; username?: string | null }\nawait prisma.user.update({ where: { id }, data: updates })"],
+    ['adapter call without it', "await internalAdapter.updateUser(String(id), { name })"],
   ]
   const bad = [
     ...must.filter(([, src]) => writeSites(src).length === 0).map(([n]) => `missed a write: ${n}`),

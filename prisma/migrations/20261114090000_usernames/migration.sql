@@ -1,11 +1,14 @@
 -- Usernames (docs/dev/proposals/usernames.md § 3). Additive only: the previous
--- release runs unchanged on the migrated database (it never reads or writes
--- the new column, so no trigger below fires for it; its register inserts a
--- NULL username, which passes untouched).
+-- release runs unchanged on the migrated database. It never reads or writes
+-- the new column, so the claim triggers never fire for it (its register
+-- inserts a NULL username, which passes untouched); the delete trigger does
+-- fire on its account deletions and, with a NULL username, only prunes.
 --
 --   1. users.username (NULL = has not chosen yet, for good), its unique index,
 --      its trigram index (people search), its format CHECK: byte-for-byte the
---      FORMAT half of the core validator (`isUsernameFormat`, @verre/core).
+--      FORMAT half of the core validator (`isUsernameFormat`, @verre/core):
+--      lowercase a-z 0-9 . _, 3 to 30, no `..`, no dot at either end, at least
+--      one letter or digit.
 --      🔒 The reserved list is NOT here: it is policy, it changes without a
 --      migration, and the operator script may assign a reserved name.
 --   2. username_holds (a name nobody else may take yet) and username_changes
@@ -61,7 +64,8 @@ ALTER TABLE "users"
       OR ("username" ~ '^[a-z0-9._]{3,30}$'
           AND "username" !~ '\.\.'
           AND "username" !~ '^\.'
-          AND "username" !~ '\.$'));
+          AND "username" !~ '\.$'
+          AND "username" ~ '[a-z0-9]'));
 
 -- 2. holds and changes
 CREATE TABLE "username_holds" (
@@ -140,7 +144,8 @@ BEGIN
   IF NEW.username IS NULL THEN RETURN NULL; END IF;
   IF TG_OP = 'UPDATE' AND NEW.username IS NOT DISTINCT FROM OLD.username THEN RETURN NULL; END IF;
 
-  IF current_setting('transaction_isolation') <> 'read committed' THEN
+  -- (Postgres runs READ UNCOMMITTED as READ COMMITTED.)
+  IF current_setting('transaction_isolation') NOT IN ('read committed', 'read uncommitted') THEN
     RAISE EXCEPTION 'users.username can only be written under READ COMMITTED'
       USING ERRCODE = 'feature_not_supported';
   END IF;
@@ -154,9 +159,13 @@ BEGIN
       USING ERRCODE = 'unique_violation', CONSTRAINT = 'users_username_held';
   END IF;
 
-  -- Release: only the MOST RECENT old name is held.
+  -- Release: the old name is held 14 days for its owner (who may switch back
+  -- to it). An EARLIER old name stays held until its own date, but for
+  -- nobody: it loses its owner and its clear text, so a second rename never
+  -- frees a name early (a long-used handle and its links don't change hands
+  -- the same minute), and only the most recent old name can be switched back to.
   IF TG_OP = 'UPDATE' AND OLD.username IS NOT NULL THEN
-    DELETE FROM public.username_holds WHERE user_id = NEW.id;
+    UPDATE public.username_holds SET user_id = NULL, username = NULL WHERE user_id = NEW.id;
     INSERT INTO public.username_holds (name_hash, user_id, username, held_until)
     VALUES (public.username_hash(OLD.username), NEW.id, OLD.username, now() + hold_period)
     ON CONFLICT (name_hash) DO UPDATE

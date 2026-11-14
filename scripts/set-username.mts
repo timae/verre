@@ -2,7 +2,7 @@
 // stragglers who never chose one, the brand's own account, and a moderation
 // rename. Run from a checkout, like scripts/rehydrate-sessions.mts.
 //
-//   npx tsx scripts/set-username.mts <email> <username> [--apply] [--allow-reserved]
+//   npx tsx scripts/set-username.mts <email> <username> [--apply] [--allow-reserved] [--block-old]
 //   npx tsx scripts/set-username.mts --release-hold <username> [--apply]
 //
 // DRY RUN by default: it reads, reports what would happen, and writes
@@ -14,9 +14,14 @@
 //    name (`verre`, `support`, …) only with `--allow-reserved`. A taken or
 //    HELD name can never be assigned: the database refuses (the hold
 //    triggers), whatever this script thinks. A rename holds the old name for
-//    its owner for 14 days, like any rename.
-//  - `--release-hold`: frees a held name at once (a renamed-away or deleted
-//    account's name inside its 14 days), whoever held it.
+//    its owner for 14 days, like any rename: THEY CAN SWITCH BACK TO IT.
+//  - `--block-old` (a moderation rename): the old name is taken away for good.
+//    It is blocked for everyone, its former owner included, with no end date,
+//    stored as a hash only. Only `--release-hold` frees it again.
+//  - `--release-hold`: frees a held or blocked name at once (a renamed-away
+//    or deleted account's name inside its 14 days, or a moderation block),
+//    whoever held it. Blocked names are stored as hashes: keep your own note
+//    of what you blocked, the table can't list them.
 //
 // stdout: one JSON object. Exit 0 done (or a clean dry run); 1 refused
 // (unknown email, taken, held); 2 usage or an invalid name.
@@ -26,13 +31,14 @@ import { checkUsername } from '@verre/core'
 
 export type Result = { exit: 0 | 1 | 2; out: Record<string, unknown> }
 
-const USAGE = 'usage: set-username.mts <email> <username> [--apply] [--allow-reserved] | --release-hold <username> [--apply]'
+const USAGE = 'usage: set-username.mts <email> <username> [--apply] [--allow-reserved] [--block-old] | --release-hold <username> [--apply]'
 
 export async function run(argv: string[]): Promise<Result> {
   const flags = new Set(argv.filter(a => a.startsWith('--')))
   const args = argv.filter(a => !a.startsWith('--'))
   const apply = flags.has('--apply')
-  const unknown = [...flags].filter(f => !['--apply', '--allow-reserved', '--release-hold'].includes(f))
+  const blockOld = flags.has('--block-old')
+  const unknown = [...flags].filter(f => !['--apply', '--allow-reserved', '--release-hold', '--block-old'].includes(f))
   if (unknown.length) return { exit: 2, out: { error: `unknown flag ${unknown[0]}`, usage: USAGE } }
 
   const { prisma } = await import('../lib/prisma.ts')
@@ -58,13 +64,13 @@ export async function run(argv: string[]): Promise<Result> {
 
   const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() }, select: { id: true, username: true } })
   if (!user) return { exit: 1, out: { error: 'no account with that email' } }
-  const base = { action: 'set', from: user.username, to: username, reserved: !checked.ok }
+  const base = { action: 'set', from: user.username, to: username, reserved: !checked.ok, ...(blockOld ? { oldName: user.username === null ? 'none to block' : `${apply ? 'blocked' : 'would be blocked'} for everyone until --release-hold` } : {}) }
   if (user.username === username) return { exit: 0, out: { ...base, mode: apply ? 'apply' : 'dry-run', result: 'unchanged' } }
   if (!apply) {
     const taken = await usernameTaken(username, user.id)
     return { exit: taken ? 1 : 0, out: { ...base, mode: 'dry-run', result: taken ? 'taken or held: would be refused' : 'would be set' } }
   }
-  const result = await changeUsername(user.id, username, { skipQuota: true })
+  const result = await changeUsername(user.id, username, { skipQuota: true, blockOld })
   if (result.status === 'ok') return { exit: 0, out: { ...base, mode: 'apply', result: 'set' } }
   return { exit: 1, out: { ...base, mode: 'apply', result: result.status === 'taken' ? 'taken or held: refused by the database' : result.status } }
 }

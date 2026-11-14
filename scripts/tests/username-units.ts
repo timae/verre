@@ -33,6 +33,7 @@ check('30 characters', reason('a'.repeat(30)), 'a'.repeat(30))
 check('31 characters', reason('a'.repeat(31)), 'invalid')
 check('every class', reason('a1._b'), 'a1._b')
 check('underscore at both ends', reason('_ab_'), '_ab_')
+check('🔒 at least one letter or digit', ['___', '_._', '_____', '_a_', '_1_'].map(reason), ['invalid', 'invalid', 'invalid', '_a_', '_1_'])
 check('two dots in a row', reason('a..b'), 'invalid')
 check('a dot first', reason('.abc'), 'invalid')
 check('a dot last', reason('abc.'), 'invalid')
@@ -57,7 +58,7 @@ check('usernameFromPath: no @, no trim, no aliases', ['@simon', ' simon', 'simon
 check('usernameFromPath takes a reserved name', usernameFromPath('admin'), 'admin')
 
 console.log('\n§3 messages (user-facing, no em dash)')
-const messages = ['', 'ab', 'a'.repeat(31), 'a b', 'a..b', '.ab', 'admin', 42, undefined].map(message)
+const messages = ['', 'ab', 'a'.repeat(31), 'a b', 'a..b', '.ab', 'admin', 42, undefined, '___'].map(message)
 check('each failure has its own line', messages, [
   'username is required',
   'username must be at least 3 characters',
@@ -68,6 +69,7 @@ check('each failure has its own line', messages, [
   'username is reserved',
   'username must be a string',
   'username is required',
+  'username must contain a letter or a number',
 ])
 check('no em dash in any message', messages.some(m => m.includes('—')), false)
 
@@ -80,7 +82,9 @@ check('the brand rule: ONLY `verre` and staff words', ['verre_official', 'teamve
 check('verre is the French word for glass', ['unverredevin', 'verre.a.pied', 'verre_lover', 'verres', 'leverre'].map(isReservedUsername), Array(5).fill(false))
 check('🔒 a staff word INSIDE another word is not the brand rule (narrowed 2026-11-14)', ['happyverre', 'apple_verre', 'verremodern', 'modeverre', 'verre.appellation', 'the_verre_app'].map(isReservedUsername), Array(6).fill(false))
 check('…any other word lets a name through (accepted: watched and blocked by hand)', ['verre_official_ch', 'verre_support_team2', 'teamverre1'].map(isReservedUsername), [false, false, false])
-check('staff words without the brand are not the brand rule', ['teamsupport', 'apphelp', 'hq_mod'].map(isReservedUsername), [false, false, false])
+check('🔒 names made ONLY of staff words are reserved too (ruled 2026-11-14)', ['official_support', 'admin.team', 'support_team', 'help.staff', 'teamsupport', 'hq_mod'].map(isReservedUsername), Array(6).fill(true))
+check('…and the single words app, admins, administrators, moderators, mods', ['app', 'admins', 'administrators', 'moderators', 'mods', 'a_p_p'].map(isReservedUsername), Array(6).fill(true))
+check('…a staff word with any other word passes', ['teamwork', 'apple', 'support_simon', 'security_team', 'help_desk', 'sysadmin', 'appetite'].map(isReservedUsername), Array(7).fill(false))
 check('ordinary names', ['simon', 'mara.k', 'wine_lover', 'apiary', 'homer', 'teamwork'].map(isReservedUsername), Array(6).fill(false))
 check('every staff word is covered', USERNAME_STAFF_WORDS.map(w => isReservedUsername(`verre_${w}`)), USERNAME_STAFF_WORDS.map(() => true))
 check('reserved → its own reason', reason('Verre_Official'), 'reserved')

@@ -106,6 +106,8 @@ try {
   const shell = await page(`/@${S.username}`)
   check('a non-public profile, logged out: the name-only shell, as on /u/<id>', shell.status === 200 && shell.text.includes(S.name), shell.status)
   check('/u/<id> does not redirect to /@name', byId.location === null)
+  const direct = await page(`/u/by-username/${P.username}`)
+  check('the rewrite\'s target also answers directly (/u/by-username/<name>): the same page, a third spelling, left as is', direct.status === 200 && direct.text.includes(P.name), direct.status)
 
   console.log('\n§ 2 everything else is a 404')
   const expect404 = async (label: string, path: string) => { const r = await page(path); check(`${label} → 404`, r.status === 404 && !r.text.includes(P.name), { path, status: r.status }) }

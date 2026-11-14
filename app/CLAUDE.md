@@ -36,7 +36,7 @@ Bootstrap params like `?name=`, `?id=`, `?host=1` exist solely to seed client UI
 
 ## `router.refresh()` fallback on SSR-rendered surfaces
 
-`/u/[id]` is a Server Component that calls `resolveProfileViewer(userId, viewerId)` at request time and branches to `<ProfileShell>` (tier-gated) / `<ProfileBlockedView>` (blocker-side) / full profile (`<ProfileHeader>` + `<ProfileTabs>`). When the viewer follows or unfollows a tier-gated profile, the gate result flips but the SSR'd shell wouldn't re-evaluate without a navigation.
+The profile page (`/u/[id]` and `/@<name>`, one Server Component: `components/profile/ProfilePageView.tsx`) calls `resolveProfileViewer(userId, viewerId)` at request time and branches to `<ProfileShell>` (tier-gated) / `<ProfileBlockedView>` (blocker-side) / full profile (`<ProfileHeader>` + `<ProfileTabs>`). When the viewer follows or unfollows a tier-gated profile, the gate result flips but the SSR'd shell wouldn't re-evaluate without a navigation.
 
 **Pattern**: `<ProfileShell>` and `<ProfileHeader>` are client components (`'use client'`). Their follow/mute/block toggle callbacks default to `router.refresh()` when no caller-supplied callback is wired — so the SSR /u/[id] path re-runs the server gate after every relationship change without the user navigating. Client-cached callers (`UserProfileModal`, `ProfilePreviewInline`) pass their own TanStack invalidation callbacks instead; the fallback only fires when no callback is provided. Apply the same pattern on any other server component that hosts an interactive relationship-toggle.
 
