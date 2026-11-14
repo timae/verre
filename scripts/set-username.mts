@@ -66,17 +66,22 @@ export async function run(argv: string[], hooks: { beforeWrite?: () => Promise<v
 
   const user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() }, select: { id: true, username: true } })
   if (!user) return { exit: 1, out: { error: 'no account with that email' } }
-  const base = { action: 'set', from: user.username, to: username, reserved: !checked.ok, ...(blockOld ? { oldName: user.username === null ? 'none to block' : `${apply ? 'blocked' : 'would be blocked'} for everyone until --release-hold` } : {}) }
+  const base = { action: 'set', from: user.username, to: username, reserved: !checked.ok }
+  // 🔒 "blocked" is reported ONLY for a change that was (or, in a dry run,
+  // would be) written: never on an unchanged or a refused outcome.
+  const block = (written: boolean) => !blockOld ? {} : { oldName: user.username === null ? 'none to block' : `${written ? 'blocked' : 'would be blocked'} for everyone until --release-hold` }
   if (user.username === username) return { exit: 0, out: { ...base, mode: apply ? 'apply' : 'dry-run', result: 'unchanged' } }
   if (!apply) {
     const taken = await usernameTaken(username, user.id)
-    return { exit: taken ? 1 : 0, out: { ...base, mode: 'dry-run', result: taken ? 'taken or held: would be refused' : 'would be set' } }
+    return taken
+      ? { exit: 1, out: { ...base, mode: 'dry-run', result: 'taken or held: would be refused' } }
+      : { exit: 0, out: { ...base, mode: 'dry-run', result: 'would be set', ...block(false) } }
   }
   await hooks.beforeWrite?.()
   // 🔒 Bound to the name read above: if the person renamed meanwhile, nothing
   // is written and nothing is reported as blocked (run it again).
   const result = await changeUsername(user.id, username, { skipQuota: true, blockOld, expectedCurrent: user.username })
-  if (result.status === 'ok') return { exit: 0, out: { ...base, mode: 'apply', result: 'set' } }
+  if (result.status === 'ok') return { exit: 0, out: { ...base, mode: 'apply', result: 'set', ...block(true) } }
   if (result.status === 'moved') {
     return { exit: 1, out: { action: 'set', from: user.username, to: username, mode: 'apply', result: 'refused: the username changed while this ran; nothing written, nothing blocked. Run it again.', now: result.current } }
   }

@@ -292,6 +292,14 @@ export async function usernames(h: UsernamesHarness) {
   check('🔒 …also when they take the destination themselves (no false "set", no false block)', racedSame.exit === 1 && racedSame.out.now === slyDest && (await holds(slyMoved))[0]?.user_id === Sly.id, racedSame)
   const rerun = await operator.run([Sly.email, fixtureUsername('op'), '--apply', '--block-old'])
   check('…running it again blocks the name they hold now', rerun.exit === 0 && (await holds(slyDest))[0]?.held_until.getUTCFullYear() === 9999 && (await holds(slyDest))[0]?.user_id === null, rerun)
+  // "blocked" is claimed only for a written (or, dry, a would-be-written) change.
+  const modNow = (await nameOf(Mod.id))!
+  const sameBlk = await operator.run([Mod.email, modNow, '--apply', '--block-old'])
+  const takenBlk = await operator.run([Mod.email, (await nameOf(Q.id))!, '--apply', '--block-old'])
+  const takenDry = await operator.run([Mod.email, (await nameOf(Q.id))!, '--block-old'])
+  const okDry = await operator.run([Mod.email, fixtureUsername('op'), '--block-old'])
+  check('🔒 operator: no "blocked" claim on an unchanged or a refused outcome, dry or applied', sameBlk.out.result === 'unchanged' && !('oldName' in sameBlk.out) && takenBlk.exit === 1 && !('oldName' in takenBlk.out) && takenDry.exit === 1 && !('oldName' in takenDry.out), { sameBlk, takenBlk, takenDry })
+  check('…a dry run that would go through says "would be blocked"; the applied one says "blocked"', /^would be blocked/.test(String(okDry.out.oldName)) && /^blocked/.test(String(blocked.out.oldName)) && (await holds(modNow)).length === 0, { okDry: okDry.out, blocked: blocked.out })
   const modState = await getState(Mod)
   check('🔒 …the renamed person cannot switch back, and is not offered it', (await put(Mod, modOld)).wire.code === 'taken' && modState.wire.previous === null && (await available(Mod, modOld)).wire.reason === 'taken')
   check('…a later rename by them does not touch the block', (await put(Mod, fixtureUsername('m'))).status === 200 && (await holds(modOld))[0]?.held_until.getUTCFullYear() === 9999)

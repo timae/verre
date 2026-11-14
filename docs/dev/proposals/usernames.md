@@ -295,6 +295,7 @@ These override the sections above where they differ (§ 2 "the most recent old n
 - **`--block-old` could report a block it had not made** (major). The script read the account, then `changeUsername` took the row lock: a rename by the person in between made the block land on the name they held at that moment, or on none when they had taken the destination themselves, while the script still reported the name it had read as blocked and that name stayed held FOR them. `changeUsername` now takes `expectedCurrent` and answers `moved` under the lock; the script refuses (exit 1, nothing written, nothing reported blocked) and is run again. Pinned with a hook between the script's read and its write (both interleavings).
 - The web suite's "name-only shell" check would have passed on a full profile. It now seeds a photo with a marker, asserts it is absent from the shell (by name and by id) and present on a public profile.
 - `docs/dev/deployment.md` described the blocking screen and the new web form as shipped. It now says the server half must not be deployed alone.
+- **Round 2: approve with minors**, the three resolved. One new minor, fixed: the script's output still said "blocked" on an unchanged or a refused outcome (and "would be blocked" beside "would be refused" in a dry run). It now makes that claim only for a change that was, or in a dry run would be, written.
 
 **For the UI half (release gate)**
 
