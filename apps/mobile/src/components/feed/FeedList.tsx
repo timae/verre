@@ -347,7 +347,23 @@ export function FeedList({
       const id = feedItemId(item);
       const isOwner = myUserId != null && item.author.id === myUserId;
       const card = renderCard(item, id, isOwner);
-      return inert ? <View pointerEvents="none" style={{ opacity: 0.35 }}>{card}</View> : card;
+      // ONE wrapper either way: wrapping only while inert remounted every card
+      // (photos reloaded, a flicker) when a profile edit started or ended.
+      // Inert = no touches and hidden from VoiceOver (an activation would push
+      // and drop the edit's draft). `collapsable={false}`: one wrapper
+      // natively too (flattened while not inert, it would become a real view
+      // on inert and re-parent the card's views; review 2026-11-14).
+      return (
+        <View
+          collapsable={false}
+          pointerEvents={inert ? 'none' : 'auto'}
+          style={inert ? { opacity: 0.35 } : undefined}
+          accessibilityElementsHidden={inert}
+          importantForAccessibility={inert ? 'no-hide-descendants' : 'auto'}
+        >
+          {card}
+        </View>
+      );
     },
     [inert, myUserId, renderCard],
   );

@@ -1,7 +1,7 @@
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import { Pressable, View, useWindowDimensions } from 'react-native';
+import { Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DateField, SelectField } from '@/components/moments/momentForm';
 import { Avatar } from '@/components/ui/Avatar';
@@ -12,14 +12,15 @@ import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
 import type { MomentQuery } from '@/lib/api/sessions';
-import { GUTTER, usePhoneTokens } from '@/lib/layout';
+import { usePhoneTokens } from '@/lib/layout';
 import { fuzzyIncludes } from '@/lib/search';
 import { useTheme } from '@/theme';
 
 // THE moments filter (lists plan D14): Date / role / Host / Friends There /
-// Category, the active chips and the stacked multi-pickers. Moved VERBATIM out
-// of Recent moments (app/(tabs)/moments/recents.tsx, on TestFlight: no visible
-// or behavioural change there) so every moments list shares it: Recent /
+// Category, the applied-filter chips and the stacked multi-pickers. Moved out
+// of Recent moments (app/(tabs)/moments/recents.tsx) so every moments list
+// shares it (since 2026-11-14 the chips sit at the top of the SHEET, not under
+// the list's tool row: the filter pill's count says it's on): Recent /
 // Upcoming, your Moments and someone's (components/profile/lists/). The facet
 // keys map 1:1 to the server params (lib/momentFacets.ts, shared by
 // /api/me/sessions and /api/users/:id/moments). On someone's list the role
@@ -129,75 +130,6 @@ export function useMomentFilterOptions(owner?: HostOption) {
   return { hostOptions, peopleOptions, friendKeys, categoryOptions };
 }
 
-// The applied-filter chips under the tool row (body tap edits that facet, ✕
-// clears it; "Clear All" from two).
-export function MomentFilterChips({
-  filters, onChange, onEdit, hostOptions, peopleOptions,
-}: {
-  filters: Filters;
-  onChange: (f: Filters) => void;
-  onEdit: (facet?: 'roles' | 'hosts' | 'people' | null) => void;
-  hostOptions: HostOption[];
-  peopleOptions: HostOption[];
-}) {
-  const activeCount = momentFilterCount(filters);
-  const setFilters = onChange;
-  const openFilter = onEdit;
-  return (
-    <>
-      {activeCount > 0 ? (
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: GUTTER, paddingTop: 8 }}>
-        {filters.from || filters.to ? (
-          <ActiveChip
-            label={
-              filters.from && filters.to
-                ? `${shortDay(filters.from)} – ${shortDay(filters.to)}`
-                : filters.from
-                  ? `From ${shortDay(filters.from)}`
-                  : `Until ${shortDay(filters.to!)}`
-            }
-            onEdit={() => openFilter()}
-            onClear={() => setFilters({ ...filters, from: null, to: null })}
-          />
-        ) : null}
-        {filters.roles.length > 0 ? (
-          <ActiveChip
-            label={summarize(ROLE_OPTIONS.filter((o) => filters.roles.includes(o.key)).map((o) => o.label))}
-            onEdit={() => openFilter('roles')}
-            onClear={() => setFilters({ ...filters, roles: [] })}
-          />
-        ) : null}
-        {filters.hosts.length > 0 ? (
-          <ActiveChip
-            // Fall back to a count when a selected key isn't in the current
-            // option list (e.g. a host who's no longer a friend) — never a
-            // blank pill the user can't read but can still clear.
-            label={summarize(hostOptions.filter((o) => filters.hosts.includes(o.key)).map((o) => o.label)) || `${filters.hosts.length} selected`}
-            onEdit={() => openFilter('hosts')}
-            onClear={() => setFilters({ ...filters, hosts: [] })}
-          />
-        ) : null}
-        {filters.people.length > 0 ? (
-          <ActiveChip
-            label={summarize(peopleOptions.filter((o) => filters.people.includes(o.key)).map((o) => o.label)) || `${filters.people.length} selected`}
-            onEdit={() => openFilter('people')}
-            onClear={() => setFilters({ ...filters, people: [] })}
-          />
-        ) : null}
-        {filters.category !== 'any' ? (
-          <ActiveChip label={categoryLabel(filters.category)} onEdit={() => openFilter()} onClear={() => setFilters({ ...filters, category: 'any' })} />
-        ) : null}
-        {activeCount > 1 ? (
-          <Pressable accessibilityRole="button" onPress={() => setFilters(NO_FILTERS)} hitSlop={6} style={({ pressed }) => ({ justifyContent: 'center', paddingHorizontal: 6, opacity: pressed ? 0.5 : 1 })}>
-            <VText variant="small" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Clear All</VText>
-          </Pressable>
-        ) : null}
-      </View>
-    ) : null}
-    </>
-  );
-}
-
 // ── filter sheet — Date / Your role / Host / People / Category ──────────────
 // Role, host and people are MULTI-select dropdowns (Simon's spec: "like the
 // impression type"): a SelectField row summarising the picks opens a stacked
@@ -206,23 +138,61 @@ export function MomentFilterChips({
 // Short day label for the active-date chip ("12 Jun").
 const shortDay = (d: Date) => d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 
-// .active-chip — one applied filter. Body tap EDITS (reopens the filter on
-// that facet); only the ✕ removes (Simon's ruling — the inner Pressable wins
-// the touch, same nesting pattern as the line-up row pills).
-export function ActiveChip({ label, onEdit, onClear }: { label: string; onEdit: () => void; onClear: () => void }) {
-  const { theme } = useTheme();
+// The date chip: "12 Jun – 20 Jun", "From 12 Jun", "Until 20 Jun".
+export function dateChipLabel(from: Date | null, to: Date | null): string {
+  if (from && to) return `${shortDay(from)} – ${shortDay(to)}`;
+  if (from) return `From ${shortDay(from)}`;
+  return to ? `Until ${shortDay(to)}` : '';
+}
+
+// A filter sheet's title with the applied filters as chips under it (Filter
+// Moments, Filter Impressions; moved off the lists, device pass 2026-11-14:
+// there the filter pill's count says a filter is on). Only the ✕ removes (the
+// inner Pressable wins the touch, same nesting pattern as the line-up row
+// pills); a body tap opens the facet's picker where it has one (role, host,
+// friends there), else the body is a plain label: its control is right
+// below. No "Clear All": the sheet's Reset does it. The row is ALWAYS one chip
+// line tall (ruled 2026-11-14: the sheet grew under you when the first chip
+// appeared): "No filters" in the placeholder grey while none is on, set in an
+// invisible chip box so it is a chip's height at every text size; chips that
+// don't fit scroll sideways, out to the sheet's edges (both filter sheets pad
+// 20), so the sheet never changes height.
+const SHEET_PAD = 20;
+const TOUCH_PAD = 8;
+const CHIP_BOX = { flexDirection: 'row', alignItems: 'center', minHeight: 28, borderRadius: 999, borderWidth: 1 } as const;
+export type ActiveFilter = { key: string; label: string; onClear: () => void; onEdit?: () => void };
+export function FilterTitle({ applied, children }: { applied: ActiveFilter[]; children: string }) {
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Edit filter ${label}`}
-      onPress={onEdit}
-      hitSlop={{ top: 5, bottom: 5 }}
-      style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: 3, minHeight: 28, paddingLeft: 11,
-        borderRadius: 999, borderWidth: 1, borderColor: theme.accentLine, backgroundColor: theme.accentTint,
-        opacity: pressed ? 0.6 : 1,
-      })}
-    >
+    <View style={{ gap: 10 }}>
+      <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{children}</VText>
+      {applied.length === 0 ? (
+        <View style={[CHIP_BOX, { borderColor: 'transparent' }]}>
+          <VText variant="small" color="inkFaint">No filters</VText>
+        </View>
+      ) : (
+        // TOUCH_PAD above and below, taken back by the margin: the row stays a
+        // chip tall, but the ✕'s hitSlop lies inside the scroll view's
+        // bounds (a scroll view only hit-tests inside itself; review
+        // 2026-11-14).
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ marginHorizontal: -SHEET_PAD, marginVertical: -TOUCH_PAD }}
+          contentContainerStyle={{ gap: 6, paddingHorizontal: SHEET_PAD, paddingVertical: TOUCH_PAD }}
+        >
+          {applied.map((f) => <ActiveChip key={f.key} label={f.label} onEdit={f.onEdit} onClear={f.onClear} />)}
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+
+// .active-chip — one applied filter.
+function ActiveChip({ label, onEdit, onClear }: { label: string; onEdit?: () => void; onClear: () => void }) {
+  const { theme } = useTheme();
+  const chip = [CHIP_BOX, { gap: 3, paddingLeft: 11, borderColor: theme.accentLine, backgroundColor: theme.accentTint }];
+  const inner = (
+    <>
       <VText variant="small" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} numberOfLines={1}>
         {label}
       </VText>
@@ -235,6 +205,18 @@ export function ActiveChip({ label, onEdit, onClear }: { label: string; onEdit: 
       >
         <Icon name="x" size={12} color={theme.accent} />
       </Pressable>
+    </>
+  );
+  if (!onEdit) return <View style={chip}>{inner}</View>;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Edit filter ${label}`}
+      onPress={onEdit}
+      hitSlop={{ top: 5, bottom: 5 }}
+      style={({ pressed }) => [chip, { opacity: pressed ? 0.6 : 1 }]}
+    >
+      {inner}
     </Pressable>
   );
 }
@@ -245,9 +227,9 @@ export function summarize(labels: string[]): string {
   return `${labels.slice(0, 2).join(', ')} +${labels.length - 2}`;
 }
 
-// The filter sheets' shared pieces (Filter Moments, Filter Impressions): a
-// choice chip, the uppercase section label, the From / To day pair, and the
-// Reset | Done footer.
+// The filter sheets' shared pieces (Filter Moments, Filter Impressions; the
+// title + chips is FilterTitle above): a choice chip, the uppercase section
+// label, the From / To day pair, and the Reset | Done footer.
 export function FilterChip({ label, on, onPress }: { label: string; on: boolean; onPress: () => void }) {
   const { theme } = useTheme();
   return (
@@ -294,7 +276,7 @@ export function FilterFooter({ onReset, onDone }: { onReset: () => void; onDone:
 }
 
 export function MomentFilterSheet({
-  open, onClose, filters, onChange, hostOptions, peopleOptions, categoryOptions, friendKeys, initialPicker,
+  open, onClose, filters, onChange, hostOptions, peopleOptions, categoryOptions, friendKeys,
   role = { title: 'Your Role', a11y: 'Filter by your role' },
 }: {
   open: boolean;
@@ -305,28 +287,35 @@ export function MomentFilterSheet({
   peopleOptions: { key: string; label: string; imageUrl: string | null }[];
   categoryOptions: { code: string; label: string }[];
   friendKeys: Set<string>;
-  /** Facet picker to open immediately (active-chip edit path). */
-  initialPicker: 'roles' | 'hosts' | 'people' | null;
   /** Whose role the role facet reads (yours by default; theirs on someone's list). */
   role?: { title: string; a11y: string };
 }) {
   const insets = useSafeAreaInsets();
   const [picker, setPicker] = useState<'roles' | 'hosts' | 'people' | null>(null);
-  // Jump straight to the tapped facet's picker when opened from an active
-  // chip (both sheets present this tick — parent mounts first, child stacks).
+  // Every opening starts on the sheet itself (a picker left open by an
+  // unmount must not come back with it).
   useEffect(() => {
-    if (open) setPicker(initialPicker);
-  }, [open, initialPicker]);
+    if (open) setPicker(null);
+  }, [open]);
   const roleLabels = ROLE_OPTIONS.filter((o) => filters.roles.includes(o.key)).map((o) => o.label);
   const hostLabels = hostOptions.filter((o) => filters.hosts.includes(o.key)).map((o) => o.label);
   const peopleLabels = peopleOptions.filter((o) => filters.people.includes(o.key)).map((o) => o.label);
+  // The chips, in the sections' order. A selected key missing from the
+  // current options (a host who's no longer a friend) reads as a count, never
+  // a blank chip you can't read but can still clear.
+  const applied: ActiveFilter[] = [];
+  if (filters.from || filters.to) applied.push({ key: 'date', label: dateChipLabel(filters.from, filters.to), onClear: () => onChange({ ...filters, from: null, to: null }) });
+  if (filters.roles.length > 0) applied.push({ key: 'roles', label: summarize(roleLabels), onEdit: () => setPicker('roles'), onClear: () => onChange({ ...filters, roles: [] }) });
+  if (filters.hosts.length > 0) applied.push({ key: 'hosts', label: summarize(hostLabels) || `${filters.hosts.length} selected`, onEdit: () => setPicker('hosts'), onClear: () => onChange({ ...filters, hosts: [] }) });
+  if (filters.people.length > 0) applied.push({ key: 'people', label: summarize(peopleLabels) || `${filters.people.length} selected`, onEdit: () => setPicker('people'), onClear: () => onChange({ ...filters, people: [] }) });
+  if (filters.category !== 'any') applied.push({ key: 'category', label: categoryLabel(filters.category), onClear: () => onChange({ ...filters, category: 'any' }) });
   const chip = (k: string, label: string, on: boolean, onPress: () => void) => <FilterChip key={k} label={label} on={on} onPress={onPress} />;
   const section = (label: string) => <FilterLabel>{label}</FilterLabel>;
   return (
     <>
       <Sheet open={open} onClose={onClose}>
         <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 12, paddingBottom: insets.bottom + 16, gap: 18 }}>
-          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Filter Moments</VText>
+          <FilterTitle applied={applied}>Filter Moments</FilterTitle>
           <View style={{ gap: 10 }}>
             {section('DATE')}
             {/* Whole days — the moment's shown date (or its created date when no

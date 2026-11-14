@@ -5,10 +5,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SheetSearchField } from '@/components/ui/SheetSearchField';
-import { MomentFilterChips, MomentFilterSheet, NO_FILTERS, momentFilterCount, toMomentParams, useMomentFilterOptions, type Filters } from '@/components/moments/MomentFilters';
+import { MomentFilterSheet, NO_FILTERS, momentFilterCount, toMomentParams, useMomentFilterOptions, type Filters } from '@/components/moments/MomentFilters';
 import { RoleChip } from '@/components/moments/RoleChip';
 import { Icon } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
+import { ToolButton } from '@/components/ui/ToolButton';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
@@ -52,12 +53,6 @@ export default function AllMoments() {
   const [query, setQuery] = useState('');
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [filterOpen, setFilterOpen] = useState(false);
-  // Which facet picker the filter sheet should open WITH (active-chip edit).
-  const [editPicker, setEditPicker] = useState<'roles' | 'hosts' | 'people' | null>(null);
-  const openFilter = (facet: 'roles' | 'hosts' | 'people' | null = null) => {
-    setEditPicker(facet);
-    setFilterOpen(true);
-  };
   const activeCount = momentFilterCount(filters);
   const narrowed = query.trim() !== '' || activeCount > 0;
 
@@ -176,34 +171,22 @@ export default function AllMoments() {
           on a truly-empty, never-narrowed history. */}
       {hasAnything ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: GUTTER, paddingTop: 6, paddingBottom: 2 }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={activeCount > 0 ? `Filters, ${activeCount} active` : 'Filters'}
-            onPress={() => openFilter()}
-            hitSlop={{ top: 4, bottom: 4 }}
-            style={({ pressed }) => ({
-              flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 36, paddingHorizontal: 11,
-              borderRadius: 999, borderWidth: 1, borderColor: theme.rule, backgroundColor: theme.surface,
-              opacity: pressed ? 0.6 : 1,
-            })}
-          >
-            <Icon name="funnel" size={16} color={activeCount > 0 ? theme.accent : theme.inkSoft} />
-            {activeCount > 0 ? (
-              <VText surface="badge" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
-                {activeCount}
-              </VText>
-            ) : null}
-          </Pressable>
+          <ToolButton
+            icon="funnel"
+            label={activeCount > 0 ? `Filters, ${activeCount} active` : 'Filters'}
+            active={activeCount > 0}
+            count={activeCount}
+            onPress={() => setFilterOpen(true)}
+          />
           <View style={{ flex: 1 }}>
             <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search moments" />
           </View>
         </View>
       ) : null}
-      <MomentFilterChips filters={filters} onChange={setFilters} onEdit={openFilter} hostOptions={hostOptions} peopleOptions={peopleOptions} />
       {/* Full-screen spinner ONLY on the genuine first load (no data yet). With
           keepPreviousData a filter/search key change keeps the prior pages up
-          and flips isPlaceholderData instead of isPending, so the pill + chips
-          + results stay on screen while the new query resolves. */}
+          and flips isPlaceholderData instead of isPending, so the pill +
+          results stay on screen while the new query resolves. */}
       {sessions.isPending && moments.length === 0 ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator />
@@ -268,7 +251,6 @@ export default function AllMoments() {
         peopleOptions={peopleOptions}
         categoryOptions={categoryOptions}
         friendKeys={friendKeys}
-        initialPicker={editPicker}
       />
     </View>
     </BottomSheetModalProvider>

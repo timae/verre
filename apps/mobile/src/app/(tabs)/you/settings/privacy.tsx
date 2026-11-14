@@ -4,7 +4,7 @@ import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { Alert, View } from 'react-native';
 import { OptionSheet } from '@/components/moments/momentForm';
-import { ChoiceRow, SetPage, SetTitle, ToggleRow } from '@/components/moments/settingsParts';
+import { ChoiceRow, SetPage, SetTitle, ToggleRow, failedReads } from '@/components/moments/settingsParts';
 import {
   BLOCKS_KEY, MUTES_KEY, VISIBILITY_KEY, getBlocks, getMutes, getVisibility, patchVisibility,
   type CheckinVisibility, type ListedPerson, type ProfileVisibility, type VisibilityChanges, type VisibilitySettings,
@@ -154,7 +154,7 @@ export default function Privacy() {
     // BottomSheetModalProvider in-screen: the OptionSheet needs a sized host
     // across the Stack boundary (no root provider, see app/_layout.tsx).
     <BottomSheetModalProvider>
-    <SetPage title="Privacy" gap={32} bottomPad={TAB_BAR_CLEARANCE + 100}>
+    <SetPage title="Privacy" gap={32} bottomPad={TAB_BAR_CLEARANCE + 100} offline={failedReads(vis, blocks, mutes)}>
       {/* The settings type (ruled 2026-11-11 on device, from the design): a
           SetTitle per topic, rows `body` regular, helpers `small`, no cards. */}
       <View>

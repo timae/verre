@@ -11,10 +11,10 @@ import { usePhoneTokens } from '@/lib/layout';
 import { useTheme } from '@/theme';
 
 // Shared anatomy of the profile tile lists (design 04·6 / 04·9 / 04·10,
-// vero-you.css `.yo-toolrow`, `.yo-month`, `.yo-right`, `.yo-you`). The round
-// tool button is `ui/ToolButton.tsx`.
+// vero-you.css `.yo-toolrow`, `.yo-month`, `.yo-right`, `.yo-you`). The tool
+// button (the Moments tab's outlined pill since 2026-11-14) is `ui/ToolButton.tsx`.
 
-// .yo-toolrow: the round button(s) + the search pill.
+// .yo-toolrow: the tool button(s) + the search pill.
 export function ToolRow({ children, query, onQuery, placeholder }: { children?: ReactNode; query: string; onQuery: (q: string) => void; placeholder: string }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}>

@@ -15,19 +15,20 @@ import { SHEET_RISE } from '@/components/profile/coverGeometry';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
-import { RESERVED_TEXT, TAKEN_TEXT, UsernameField } from '@/components/ui/UsernameField';
+import { RESERVED_TEXT, UsernameField } from '@/components/ui/UsernameField';
 import { VText } from '@/components/ui/VText';
 import { VBar } from '@/components/VBar';
 import {
   applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover, uploadTilePhoto, type TileKey, type TilePhoto,
 } from '@/lib/api/profile';
-import { USERNAME_KEY, UsernameError, getUsernameState, putUsername, type UsernameState } from '@/lib/api/username';
+import { USERNAME_KEY, getUsernameState } from '@/lib/api/username';
 import { profileKey, profileQueryOptions, type FullProfile, type Profile } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
 import { errorText, sentence } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
 import { FOOT_CLEARANCE, GUTTER, HERO_RATIO } from '@/lib/layout';
 import { DATE_LOCALE } from '@/lib/locale';
+import { saveUsername } from '@/lib/usernameSave';
 import { changeAgainText, usernameQuotaLine } from '@/lib/usernameCopy';
 import { useTheme } from '@/theme';
 import { useMeId } from '@/lib/meId';
@@ -44,9 +45,10 @@ import { useMeId } from '@/lib/meId';
 // didn't save. Pushed stack-relative (lib/sessionStack.ts profileEditHref);
 // the pill hides here (the sticky footer replaces it).
 //
-// Username (usernames, ruled 2026-11-14): the ONLY place to change it (the
-// profile's long-press edits name and bio). Live "Available" / taken under the
-// field; the limit (5 changes per 90 days) stays quiet until the last two,
+// Username (usernames, ruled 2026-11-14): the full field (the profile's
+// long-press edits it in place too since 2026-11-14, its feedback in the edit
+// bar; both save through lib/usernameSave.ts). Live "Available" / taken under
+// the field; the limit (5 changes per 90 days) stays quiet until the last two,
 // and with none left the field is read-only and names the date. Its own
 // request (`PUT /api/me/username`), saved FIRST: the one step someone else
 // can refuse (taken), before anything is uploaded.
@@ -186,36 +188,23 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
       return p?.state === 'ok' ? p.username : profile.username;
     })();
     if (nextUsername != null && nextUsername !== curUsername) {
-      try {
-        const state = await putUsername(nextUsername);
-        if (!sameViewer()) return;
-        queryClient.setQueryData<UsernameState>(USERNAME_KEY, state);
-        await applyOwnProfileChange(queryClient, userId, { username: state.username }, epoch);
-        // Better Auth's session carries the name too (fresh on every answer).
-        void refetchSession();
-      } catch (e) {
-        // 🔒 A refusal for the viewer the save started for only: after a
-        // sign-out (and another sign-in) it must not lock the next account.
-        if (!sameViewer()) return;
+      // lib/usernameSave.ts: the PUT + caches; `null` = the viewer changed.
+      const r = await saveUsername(queryClient, userId, nextUsername, { epoch, current: profile.username, locale: DATE_LOCALE });
+      if (r == null) return;
+      if (!r.ok) {
         setSaving(false);
-        if (e instanceof UsernameError && e.code === 'taken') setUsernameError(TAKEN_TEXT);
-        else if (e instanceof UsernameError && e.code === 'reserved') setUsernameError(RESERVED_TEXT);
-        else if (e instanceof UsernameError && e.code === 'invalid') setUsernameError(sentence(e.message));
-        else if (e instanceof UsernameError && e.code === 'quota') {
-          // None left after all: the refusal is the authority, so the field
-          // locks NOW (the effect then drops the draft; the rest of the page
-          // can still be saved) whether or not the re-read below succeeds.
-          const nextChangeAt = e.nextChangeAt;
-          queryClient.setQueryData<UsernameState>(USERNAME_KEY, (s) => ({
-            ...(s ?? { username: profile.username, previous: null }),
-            changesLeft: 0,
-            nextChangeAt,
-          }));
-          setUsername(profile.username ?? '');
-          void usernameQ.refetch();
-        } else setError(`Couldn’t save your username. ${errorText(e)}`);
+        if (r.kind === 'field') setUsernameError(r.message);
+        // None left after all: the field locks (the effect drops the draft;
+        // the rest of the page can still be saved) and names the date.
+        else if (r.kind === 'locked') setUsername(profile.username ?? '');
+        else setError(r.message);
         return;
       }
+      // The saved form (trimmed): a later step's failure must not leave the
+      // field "changed" against it (review 2026-11-14).
+      setUsername(nextUsername);
+      // Better Auth's session carries the name too (fresh on every answer).
+      void refetchSession();
     }
     if (!sameViewer()) return;
     if (avatar.kind !== 'keep') {
@@ -372,6 +361,7 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
       <TileCoverSheet
         tile={tileSheet}
         shown={tileSheet ? profile.tiles[tileSheet]?.imageUrl ?? null : null}
+        pinned={tileSheet ? profile.tiles[tileSheet]?.pinned === true : false}
         onClose={() => setTileSheet(null)}
         onUse={(tile, url) => saveTile(tile, async () => (await patchProfile({ tiles: { [tile]: url } })).tiles)}
         onUpload={(tile, dataUrl) => saveTile(tile, () => uploadTilePhoto(tile, dataUrl))}

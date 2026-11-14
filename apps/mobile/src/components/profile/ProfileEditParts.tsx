@@ -1,6 +1,7 @@
 import * as Haptics from 'expo-haptics';
 import { forwardRef, useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo, ActivityIndicator, Animated, Easing, Pressable, TextInput, View, type GestureResponderEvent, type StyleProp, type TextInputInstance, type TextStyle, type ViewStyle } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, { Easing as REasing, useAnimatedKeyboard, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VText } from '@/components/ui/VText';
@@ -15,14 +16,33 @@ const LONG_PRESS_MS = 480;
 // A long-press target (name, bio, photo, cover, tile): pressing scales it down
 // (`.is-press`, 0.97 / 0.85 opacity; tiles 0.95) over dur-2; at 480 ms it
 // fires with a haptic and springs back. `onPress` (optional) is a plain tap.
-// Disabled = an inert plain view. `fill`: the child fills the target's box (a photo tile
-// sized by its row, not by its own content).
+// Disabled = inert (no touch, no VoiceOver activation, not focusable) but the
+// SAME element tree: a plain View in its place remounted everything inside,
+// so the cover, the photo and the tiles reloaded and flickered each time an
+// edit started or ended (device pass 2026-11-14). `fill`: the child fills the
+// target's box (a photo tile sized by its row, not by its own content).
+// 🔒 `swapsOut`: the action REPLACES the pressed view (the name and the bio
+// become inputs). RN 0.88 drops a touch's end when its target view is gone
+// (no instance to dispatch to), so a swap under a held finger leaves the
+// responder stuck on the removed view and the NEXT touch negotiates from the
+// common ancestor down: it never reaches its button (the edit bar's first
+// Done was swallowed and the bar shook, device pass 2026-11-14). So the hold
+// is iOS's own long-press recognizer (gesture-handler): when it fires it
+// CANCELS React Native's touch while the view still exists
+// (`cancelsJSResponder`), and the swap waits until the Pressable has seen
+// that touch end (`onPressOut`), whichever of the two reaches JS first; a
+// hold for a touch this Pressable never held (no press-in) swaps at once,
+// nothing of ours to strand. Nothing carries over between touches. The
+// edit still starts at the hold, finger down (ruled 2026-11-14, over starting
+// on release). The Pressable stays: it keeps the touch from reaching a
+// pressable around it (the cover's own long-press holds the cover name).
 export function LongPressable({
-  onLongPress, onPress, disabled, pressedScale = 0.97, dim = true, fill, accessibilityLabel, accessibilityHint, style, children,
+  onLongPress, onPress, disabled, swapsOut, pressedScale = 0.97, dim = true, fill, accessibilityLabel, accessibilityHint, style, children,
 }: {
   onLongPress: () => void;
   onPress?: () => void;
   disabled?: boolean;
+  swapsOut?: boolean;
   pressedScale?: number;
   dim?: boolean;
   fill?: boolean;
@@ -32,24 +52,47 @@ export function LongPressable({
   children: React.ReactNode;
 }) {
   const v = useRef(new Animated.Value(0)).current;
+  // `swapsOut`: `pressed` = this Pressable holds the touch (press-in to
+  // press-out), `held` = the hold fired during it and waits for the press-out.
+  const sync = useRef({ pressed: false, held: false });
   const to = (value: number) =>
     Animated.timing(v, { toValue: value, duration: motion.dur2, easing: Easing.bezier(...motion.ease), useNativeDriver: true }).start();
-  if (disabled) return <View style={style}>{children}</View>;
-  return (
+  const answerHold = () => {
+    to(0);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+  };
+  // Once per hold, whichever of the two arrives second.
+  const swap = () => {
+    sync.current = { pressed: false, held: false };
+    onLongPress();
+  };
+  const pressable = (
     <Pressable
+      disabled={disabled}
+      // Disabled: its children (the name input inside the cover, a tile's
+      // label) stay reachable for VoiceOver, as with a plain View.
+      accessible={!disabled}
       accessibilityRole={onPress ? 'button' : undefined}
       accessibilityLabel={accessibilityLabel}
       accessibilityHint={accessibilityHint}
       delayLongPress={LONG_PRESS_MS}
-      onPressIn={() => to(1)}
-      onPressOut={() => to(0)}
-      onPress={onPress}
-      onLongPress={() => {
+      onPressIn={() => {
+        sync.current = { pressed: true, held: false };
+        to(1);
+      }}
+      onPressOut={() => {
         to(0);
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+        if (!swapsOut) return;
+        if (sync.current.held) swap();
+        else sync.current = { pressed: false, held: false };
+      }}
+      onPress={onPress}
+      onLongPress={swapsOut ? undefined : () => {
+        answerHold();
         onLongPress();
       }}
-      style={style}
+      // swapsOut: the wrapper below takes `style`; this fills it.
+      style={swapsOut ? (fill ? { flex: 1 } : undefined) : style}
     >
       <Animated.View
         style={{
@@ -62,12 +105,33 @@ export function LongPressable({
       </Animated.View>
     </Pressable>
   );
+  if (!swapsOut) return pressable;
+  const hold = Gesture.LongPress()
+    .enabled(!disabled)
+    .runOnJS(true)
+    .minDuration(LONG_PRESS_MS)
+    .onStart(() => {
+      answerHold();
+      // Still pressed: the cancel (or the release) is on its way, wait for
+      // it. Otherwise the touch is already over for the responder: swap.
+      if (sync.current.pressed) sync.current.held = true;
+      else swap();
+    });
+  return (
+    <GestureDetector gesture={hold}>
+      <View collapsable={false} style={style}>{pressable}</View>
+    </GestureDetector>
+  );
 }
 
 // The in-place editor (R5g3): no field chrome, the text just gets the accent
 // caret and, while focused, a soft 2pt accent underline (the mock's
 // background-gradient underline). Registered with the global outside-tap
-// keyboard dismissal (lib/keyboardDismiss.ts).
+// keyboard dismissal (lib/keyboardDismiss.ts). `username`: the Username
+// field's input traits (UsernameField): no capitals, autocorrect or
+// autofill; 🔒 never `textContentType="username"` (the EMAIL is the login for
+// password managers). `keepFocus`: Return submits WITHOUT leaving the field
+// (while Done is greyed: it would only close the keyboard and do nothing).
 export const InlineField = forwardRef<TextInputInstance, {
   value: string;
   onChangeText: (s: string) => void;
@@ -80,7 +144,9 @@ export const InlineField = forwardRef<TextInputInstance, {
   placeholderTextColor?: string;
   onSubmit: () => void;
   accessibilityLabel: string;
-}>(function InlineField({ value, onChangeText, onFocus, style, multiline, maxLength, autoFocus, placeholder, placeholderTextColor, onSubmit, accessibilityLabel }, ref) {
+  username?: boolean;
+  keepFocus?: boolean;
+}>(function InlineField({ value, onChangeText, onFocus, style, multiline, maxLength, autoFocus, placeholder, placeholderTextColor, onSubmit, accessibilityLabel, username, keepFocus }, ref) {
   const { theme } = useTheme();
   const own = useRef<TextInputInstance | null>(null);
   useRegisterInput(own);
@@ -103,9 +169,10 @@ export const InlineField = forwardRef<TextInputInstance, {
         selectionColor={theme.accent}
         keyboardAppearance={theme.scheme}
         accessibilityLabel={accessibilityLabel}
+        {...(username ? { autoCapitalize: 'none', autoCorrect: false, spellCheck: false, autoComplete: 'off', textContentType: 'none', importantForAutofill: 'no' } as const : null)}
         returnKeyType="done"
         // Return = Done (one paragraph, no newlines).
-        submitBehavior="blurAndSubmit"
+        submitBehavior={keepFocus ? 'submit' : 'blurAndSubmit'}
         onSubmitEditing={onSubmit}
         onFocus={() => {
           setFocused(true);
@@ -185,23 +252,44 @@ export function editTouchHandlers(onOutsideTap: () => void) {
   };
 }
 
-export function EditBar({ busy, onCancel, onDone, onHeight, shake = 0 }: { busy: boolean; onCancel: () => void; onDone: () => void; onHeight: (h: number) => void; shake?: number }) {
+// `line` REPLACES "Editing Profile" while there is something to say about the
+// username (ruled 2026-11-14: the bar is where your eyes are while typing):
+// the broken rule, taken, "Available", the changes left (quiet until the last
+// two, as on Edit Profile), the date once none are. Two caption lines at most,
+// so at the default text size it stays within the buttons' height (no jump).
+// `more` = a second sentence in soft ink after a coloured first one;
+// `transient` = shown, not read out ("Checking availability…").
+// `doneDisabled`: Done greyed while the username can't be saved (the line says
+// why).
+export type EditBarLine = { text: string; tone: 'critical' | 'positive' | 'inkSoft'; more?: string; transient?: boolean };
+
+export function EditBar({ busy, onCancel, onDone, onHeight, shake = 0, line, doneDisabled }: {
+  busy: boolean; onCancel: () => void; onDone: () => void; onHeight: (h: number) => void; shake?: number; line?: EditBarLine | null; doneDisabled?: boolean;
+}) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const kb = useAnimatedKeyboard();
   const sx = useSharedValue(0);
-  // Each bump of `shake` after mount: a short shake (left, right, left, home)
-  // on motion tokens. Transform-only, beside the keyboard ride.
+  // VoiceOver hears each new line (a live region only works on Android).
+  const spoken = line && !line.transient ? `${line.text}${line.more ? ` ${line.more}` : ''}` : null;
+  useEffect(() => {
+    if (spoken) AccessibilityInfo.announceForAccessibility(spoken);
+  }, [spoken]);
+  // Each bump of `shake` after mount: a quick shake (left, right, left,
+  // right, home: 60 ms swings, 240 ms in all) on motion tokens; twice the
+  // speed of the first cut, which read too soft to notice (device pass
+  // 2026-11-14). Transform-only, beside the keyboard ride.
   const shakeAtMount = useRef(shake);
   useEffect(() => {
     if (shake === shakeAtMount.current) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     AccessibilityInfo.announceForAccessibility('Still editing. Tap Done or Cancel.');
     const ease = REasing.bezier(...motion.ease);
+    const swing = motion.dur1 / 2;
     sx.value = withSequence(
-      withTiming(-SHAKE_X, { duration: motion.dur1 / 2, easing: ease }),
-      withRepeat(withTiming(SHAKE_X, { duration: motion.dur1, easing: ease }), 2, true),
-      withTiming(0, { duration: motion.dur1 / 2, easing: ease }),
+      withTiming(-SHAKE_X, { duration: swing / 2, easing: ease }),
+      withRepeat(withTiming(SHAKE_X, { duration: swing, easing: ease }), 3, true),
+      withTiming(0, { duration: swing / 2, easing: ease }),
     );
   }, [shake, sx]);
   const ride = useAnimatedStyle(() => ({ transform: [{ translateX: sx.value }, { translateY: -(Math.max(kb.height.value, insets.bottom) + KEYBOARD_GAP) }] }));
@@ -219,8 +307,24 @@ export function EditBar({ busy, onCancel, onDone, onHeight, shake = 0 }: { busy:
         <Pressable accessibilityRole="button" onPress={onCancel} disabled={busy} hitSlop={8} style={({ pressed }) => ({ paddingVertical: 6, paddingHorizontal: 4, opacity: pressed || busy ? 0.5 : 1 })}>
           <VText variant="body" color="inkSoft" style={{ fontFamily: 'InstrumentSans_500Medium' }}>Cancel</VText>
         </Pressable>
-        <VText variant="small" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Editing Profile</VText>
-        <Pressable accessibilityRole="button" onPress={onDone} disabled={busy} hitSlop={8} style={({ pressed }) => ({ paddingVertical: 6, paddingHorizontal: 4, opacity: pressed ? 0.5 : 1, minWidth: 44, alignItems: 'flex-end' })}>
+        <View style={{ flex: 1, marginHorizontal: 10, alignItems: 'center' }}>
+          {line ? (
+            <VText variant="caption" color={line.tone} numberOfLines={2} style={{ textAlign: 'center' }}>
+              {line.text}
+              {line.more ? <VText variant="caption" color="inkSoft">{` ${line.more}`}</VText> : null}
+            </VText>
+          ) : (
+            <VText variant="small" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Editing Profile</VText>
+          )}
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ disabled: busy || !!doneDisabled }}
+          onPress={onDone}
+          disabled={busy || doneDisabled}
+          hitSlop={8}
+          style={({ pressed }) => ({ paddingVertical: 6, paddingHorizontal: 4, opacity: pressed ? 0.5 : doneDisabled ? 0.4 : 1, minWidth: 44, alignItems: 'flex-end' })}
+        >
           {busy ? (
             <ActivityIndicator color={theme.accent} />
           ) : (

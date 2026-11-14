@@ -62,7 +62,9 @@ export type SharedMomentsPage = { items: SharedMomentRow[]; nextCursor: string |
 // screen's terminal state, not an error.
 export class ListGoneError extends Error {}
 
-export type ImpressionParams = { q?: string; from?: string | null; to?: string | null; category?: string; min?: number | null; max?: number | null; common?: boolean };
+// Mirrors lib/impressionsCursor.ts ImpressionSort (newest = the server's default).
+export type ImpressionSort = 'newest' | 'oldest' | 'highest' | 'lowest';
+export type ImpressionParams = { q?: string; from?: string | null; to?: string | null; category?: string; min?: number | null; max?: number | null; common?: boolean; sort?: ImpressionSort };
 export type SharedMomentParams = { q?: string; roles?: string[]; hosts?: string[]; people?: string[]; category?: string; from?: string | null; to?: string | null };
 
 async function get<T>(path: string): Promise<T> {
@@ -81,6 +83,7 @@ export function getImpressionsPage(id: string, p: ImpressionParams, cursor: stri
   if (p.min != null) qs.set('min', String(p.min));
   if (p.max != null) qs.set('max', String(p.max));
   if (p.common) qs.set('common', '1');
+  if (p.sort && p.sort !== 'newest') qs.set('sort', p.sort);
   if (cursor) qs.set('cursor', cursor);
   return get(`/api/users/${encodeURIComponent(id)}/impressions?${qs}`);
 }

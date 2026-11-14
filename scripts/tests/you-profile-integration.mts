@@ -2047,6 +2047,84 @@ try {
     && (await list('cravings', Pg, Oo, `sort=score&cursor=${encodeURIComponent(pc.json.nextCursor)}`)).json.items.length === 0
     && (await list('cravings', Pg, Vv, `sort=recent&cursor=${encodeURIComponent(pc.json.nextCursor)}`)).json.items.length === 0)
 
+  // The Impressions sorts (2026-11-14): 40 scored (17 quarter values, so score
+  // ties) + 35 unrated (NULL and 0 alike), three to a shared post time (time
+  // ties). Every sort pages 30 + 30 + 15 in exactly the order the comparator
+  // gives, the score sorts across the scored → unrated boundary inside page 3
+  // and on from an unrated cursor (page 3 ends unrated).
+  const Ss = await mkUser('Sonia Sorter')
+  for (let i = 0; i < 75; i++) {
+    const w = `ss${TAG.slice(-8)}${i}`
+    const at = new Date(base + Math.floor(i / 3) * 60_000)
+    const score = i < 40 ? 1 + (i % 17) * 0.25 : i % 2 === 0 ? null : 0
+    await prisma.$executeRaw`INSERT INTO wines (id, name) VALUES (${w}, ${`Sorter ${i}`})`
+    const [rt] = await prisma.$queryRaw<{ id: number }[]>`
+      INSERT INTO ratings (wine_id, user_id, origin, rater_name, score, rated_at) VALUES (${w}, ${Ss.id}, 'standalone', 'Sonia', ${score}::numeric, now()) RETURNING id`
+    await prisma.$executeRaw`INSERT INTO feed_items (user_id, kind, rating_id, created_at) VALUES (${Ss.id}, 'standalone', ${rt.id}, ${at})`
+  }
+  const sortPages = async (sort: string | null) => {
+    const pages: J[][] = []
+    let cur: string | null = null
+    do {
+      const qs = [sort ? `sort=${sort}` : '', cur ? `cursor=${encodeURIComponent(cur)}` : ''].filter(Boolean).join('&')
+      const c: { json: J } = await list('impressions', Ss, Vv, qs)
+      pages.push(c.json.items as J[]); cur = c.json.nextCursor
+    } while (cur && pages.length < 5)
+    return pages
+  }
+  const byDate = (a: J, b: J) => (a.hadAt < b.hadAt ? -1 : a.hadAt > b.hadAt ? 1 : a.id - b.id)
+  const want: Record<string, (a: J, b: J) => number> = {
+    newest: (a, b) => byDate(b, a),
+    oldest: byDate,
+    highest: (a, b) => (a.score === null) !== (b.score === null) ? (a.score === null ? 1 : -1) : a.score !== b.score ? b.score - a.score : byDate(b, a),
+    lowest: (a, b) => (a.score === null) !== (b.score === null) ? (a.score === null ? 1 : -1) : a.score !== b.score ? a.score - b.score : byDate(b, a),
+  }
+  const firstPages: Record<string, string> = {}
+  for (const sort of ['newest', 'oldest', 'highest', 'lowest']) {
+    const pages = await sortPages(sort)
+    const rows = pages.flat()
+    const expected = [...rows].sort(want[sort])
+    firstPages[sort] = JSON.stringify(pages[0]?.map(x => x.id))
+    check(`impressions ${sort}: 30 + 30 + 15, 75 distinct, exactly the ${sort} order (ties by time, then id)`,
+      JSON.stringify(pages.map(x => x.length)) === '[30,30,15]' && new Set(rows.map(x => x.id)).size === 75
+      && JSON.stringify(rows.map(x => x.id)) === JSON.stringify(expected.map(x => x.id))
+      && (sort === 'newest' || sort === 'oldest' || (rows.slice(0, 40).every(x => x.score !== null) && rows.slice(40).every(x => x.score === null))),
+      { sizes: pages.map(x => x.length), scores: rows.map(x => x.score) })
+  }
+  check('no sort and an unknown sort both read as newest', JSON.stringify((await sortPages(null))[0].map(x => x.id)) === firstPages.newest
+    && JSON.stringify((await sortPages('bogus'))[0].map(x => x.id)) === firstPages.newest)
+  const hi = await list('impressions', Ss, Vv, 'sort=highest')
+  const hiCur = encodeURIComponent(hi.json.nextCursor as string)
+  check('a cursor is bound to its sort: a highest cursor under lowest / newest / no sort → an empty page; garbage → empty',
+    (await list('impressions', Ss, Vv, `sort=lowest&cursor=${hiCur}`)).json.items.length === 0
+    && (await list('impressions', Ss, Vv, `sort=newest&cursor=${hiCur}`)).json.items.length === 0
+    && (await list('impressions', Ss, Vv, `cursor=${hiCur}`)).json.items.length === 0
+    && (await list('impressions', Ss, Vv, `sort=highest&cursor=${encodeURIComponent(Buffer.from(Buffer.from(hi.json.nextCursor as string, 'base64url').toString('utf8').replace(/^h\.[^.]+\./, 'h.1000.')).toString('base64url'))}`)).json.items.length === 0
+    && (await list('impressions', Ss, Vv, 'sort=oldest&cursor=%%%')).json.items.length === 0)
+  // A score OFF the quarter grid (no CHECK keeps the column on it, only the
+  // write boundaries) still pages: the cursor carries the exact hundredths.
+  // 31 rows at 4.30 + one at 2: page 2 must hold the 31st 4.30 and the 2.
+  const Og = await mkUser('Otto Offgrid')
+  for (let i = 0; i < 32; i++) {
+    const w = `og${TAG.slice(-8)}${i}`
+    await prisma.$executeRaw`INSERT INTO wines (id, name) VALUES (${w}, ${`Offgrid ${i}`})`
+    const [rt] = await prisma.$queryRaw<{ id: number }[]>`
+      INSERT INTO ratings (wine_id, user_id, origin, rater_name, score, rated_at) VALUES (${w}, ${Og.id}, 'standalone', 'Otto', ${i < 31 ? '4.30' : '2'}::numeric, now()) RETURNING id`
+    await prisma.$executeRaw`INSERT INTO feed_items (user_id, kind, rating_id, created_at) VALUES (${Og.id}, 'standalone', ${rt.id}, ${new Date(base + i * 1000)})`
+  }
+  const og1 = await list('impressions', Og, Vv, 'sort=highest')
+  const og2 = await list('impressions', Og, Vv, `sort=highest&cursor=${encodeURIComponent(og1.json.nextCursor as string)}`)
+  const ogAll = [...og1.json.items, ...og2.json.items] as J[]
+  check('an off-grid score pages exactly: 30 + 2, 32 distinct, the 2 last',
+    og1.json.items.length === 30 && og2.json.items.length === 2 && new Set(ogAll.map(x => x.id)).size === 32 && ogAll[31]?.score === 2,
+    { n1: og1.json.items.length, n2: og2.json.items.length })
+  const ol1 = await list('impressions', Og, Vv, 'sort=lowest')
+  const ol2 = await list('impressions', Og, Vv, `sort=lowest&cursor=${encodeURIComponent(ol1.json.nextCursor as string)}`)
+  const olAll = [...ol1.json.items, ...ol2.json.items] as J[]
+  check('…and under lowest: 30 + 2, 32 distinct, the 2 first (a rounded cursor repeated rows there)',
+    ol1.json.items.length === 30 && ol2.json.items.length === 2 && new Set(olAll.map(x => x.id)).size === 32 && olAll[0]?.score === 2,
+    { n1: ol1.json.items.length, n2: ol2.json.items.length })
+
   // ── someone's Moments: only shared ones, a code only where you are a member ──
   const M4 = await createWith(Hx, { sessionName: `${TAG} Odile only` }); await join(M4.code, Oo)
   const M5 = await createWith(Hx, { sessionName: `${TAG} Vera kicked` }); await join(M5.code, Oo); await join(M5.code, Vv)

@@ -18,7 +18,9 @@ import { radius, useTheme } from '@/theme';
 // A TAP opens the tile's list (Impressions / Moments / Cravings, the lists
 // step); on your own profile a LONG-PRESS still opens the tile's cover picker
 // (R5g2, scale 0.95 while held). Inert while you edit your name or bio
-// (`dimmed`).
+// (`dimmed`): dimmed, and every tile DISABLED in place (no touch, no
+// VoiceOver activation), never swapped for a plain tile, which remounted it
+// and reloaded its photo.
 //
 // Fewer than three (step 4: a tile the owner hides is absent, Q6 / Q10): the
 // rest SHARE THE ROW (two → halves, one → full width) at the SAME HEIGHT as
@@ -49,6 +51,7 @@ export function PhotoTiles({ tiles, dimmed }: { tiles: PhotoTile[]; dimmed?: boo
           t.onLongPress ? (
             <LongPressable
               key={t.label}
+              disabled={dimmed}
               onLongPress={t.onLongPress}
               onPress={t.onPress}
               accessibilityLabel={`${t.count} ${t.label}`}
@@ -63,6 +66,8 @@ export function PhotoTiles({ tiles, dimmed }: { tiles: PhotoTile[]; dimmed?: boo
           ) : t.onPress ? (
             <Pressable
               key={t.label}
+              disabled={dimmed}
+              accessible={!dimmed}
               accessibilityRole="button"
               accessibilityLabel={t.accessibilityLabel ?? `${t.count} ${t.label}`}
               accessibilityHint={t.accessibilityHint}

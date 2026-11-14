@@ -109,10 +109,12 @@ export function tabHomeHref(tab: SessionTab): Href {
 //     So the "post is gone" exits there are plain pops on the post's stack.
 //   • 'impressions' / 'moments' / 'cravings' — someone's (or your) tile lists
 //     (lists plan): like 'people', their own route on a post's stack.
+//   • 'palate' (someone's or yours) / 'status' (yours, no id) — the status
+//     line's placeholder pages (2026-11-14): likewise.
 //   `source: 'item'` (post / edit) = opened from a tile list: those screens
 //   read ONLY that post's item query (lib/useFeedPost.ts), and the edit's
 //   "post is gone" exit is a plain pop back to the list (closePost).
-type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile' | 'people' | ListSub;
+type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile' | 'people' | 'palate' | 'status' | ListSub;
 type ListSub = 'impressions' | 'moments' | 'cravings';
 type FeedTab = Exclude<SessionTab, 'moments'>;
 
@@ -170,6 +172,11 @@ export function feedHref(
       pathname = inPost ? `/(tabs)/${t}/[id]/edit/details` : `/(tabs)/${t}/edit/details`;
       out = { id: mount.post, user: params.user };
       break;
+    case 'status':
+      pathname = inPost ? `/(tabs)/${t}/[id]/status` : `/(tabs)/${t}/status`;
+      out = { id: mount.post };
+      break;
+    case 'palate':
     case 'impressions':
     case 'moments':
     case 'cravings':

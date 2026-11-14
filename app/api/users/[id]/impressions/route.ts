@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { scrub } from '@/lib/textSafe'
 import { loadImpressions } from '@/lib/profileLists'
+import { parseImpressionSort } from '@/lib/impressionsCursor'
 import { NO_STORE, openProfileList } from '@/lib/profileListRoute'
 
 // GET /api/users/:id/impressions — someone's (or your own) impressions: every
-// rating, through the post gate (lists plan D3 / D10). Newest first by when
-// they had it (the post's time). Filters: q, from / to (ISO instants), category,
+// rating, through the post gate (lists plan D3 / D10). ?sort=newest (default,
+// by when they had it: the post's time) | oldest | highest | lowest (their
+// score, unrated last; anything else reads as newest; the cursor binds the
+// sort, lib/impressionsCursor.ts). Filters: q, from / to (ISO instants), category,
 // min / max (quarter steps in 0.25..5, min ≤ max), common=1 (someone else's:
 // only the ones you both had). Blind rows (lib/outsideView.ts) show no
 // identity; hidden line-ups are left out.
@@ -36,6 +39,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     category: category === 'any' ? null : category,
     min, max,
     common: sp.get('common') === '1',
+    sort: parseImpressionSort(sp.get('sort')),
     cursor: sp.get('cursor'),
   })
   return NextResponse.json(body, { headers: NO_STORE })

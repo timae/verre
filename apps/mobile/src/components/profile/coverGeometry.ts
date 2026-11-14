@@ -147,6 +147,15 @@ export type NameFit =
 export type NameRing = { nameLeft: number; photoCx: number; photo: number; pad?: number; gap?: number; maxShift?: number };
 export type NameAnchor = { dy: number };
 
+// The anchored ring's shift of one name line (≤ 0 beside the photo): its
+// baseline `base` above the photo's centre, `capH` of ink above that. The
+// fitted name AND its edit input both place by it (the input sat right of
+// the name while it ignored the shift, device pass 2026-11-14).
+export function anchoredIndent(ring: NameRing, base: number, capH: number): number {
+  const x = curveLeft(ring.photoCx, ring.photo / 2, ring.gap ?? 0, base + capH, base);
+  return Math.max(-(ring.maxShift ?? Infinity), x - ring.nameLeft);
+}
+
 export function fitProfileName(m: {
   fs: number; w: number; splits: { w1: number; w2: number }[]; lineH: number; scale: number;
   avail: number; min: number; ring?: NameRing; anchor?: NameAnchor; maxLines?: 1 | 2;
@@ -158,11 +167,7 @@ export function fitProfileName(m: {
     if (!ring) return 0;
     const { nameLeft, photoCx, photo } = ring;
     const k = f / fs;
-    if (anchor) {
-      const base = anchor.dy + under * lineH * k;
-      const x = curveLeft(photoCx, photo / 2, ring.gap ?? 0, base + FONT.cap * f * scale, base);
-      return Math.max(-(ring.maxShift ?? Infinity), x - nameLeft);
-    }
+    if (anchor) return anchoredIndent(ring, anchor.dy + under * lineH * k, FONT.cap * f * scale);
     if (under === 0) return 0;
     // Before usernames: the ring circle (photo radius + 15) at line 1's
     // baseline height, measured from the photo centre (the sheet edge,

@@ -17,6 +17,7 @@ import { decimalToNumber } from '@verre/core'
 import { cravingSessionIdSql, hiddenSql, redactedSql } from '@/lib/outsideView'
 import type { ProfileGateOk } from '@/lib/profileVisibility'
 import { encodeKeyCursor, parseKeyCursor, usKeySql } from '@/lib/keyCursor'
+import { encodeImpressionsCursor, isScoreSort, parseImpressionsCursor, type ImpressionSort, type ImpressionsCursor } from '@/lib/impressionsCursor'
 import { openCravingsCursor, sealCravingsCursor, type CravingsCursor, type CravingsSort } from '@/lib/cravingsCursor'
 import { momentFacetWhere, type MomentFacets } from '@/lib/momentFacets'
 
@@ -65,7 +66,32 @@ export type ImpressionFilters = {
   min: number | null
   max: number | null
   common: boolean
+  sort: ImpressionSort
   cursor: string | null
+}
+
+// The sorts (Simon, 2026-11-14): by when they had it either way, or by their
+// score either way (unrated last in both; a tie newest first). The score is on
+// every row, blind ones included, so sorting by it shows nothing new.
+const SCORE_KEY = Prisma.sql`NULLIF(r.score, 0)`
+function impressionsOrder(sort: ImpressionSort): Prisma.Sql {
+  if (sort === 'oldest') return Prisma.sql`ORDER BY ${HAD_AT} ASC, r.id ASC`
+  if (sort === 'highest') return Prisma.sql`ORDER BY ${SCORE_KEY} DESC NULLS LAST, ${HAD_AT} DESC, r.id DESC`
+  if (sort === 'lowest') return Prisma.sql`ORDER BY ${SCORE_KEY} ASC NULLS LAST, ${HAD_AT} DESC, r.id DESC`
+  return Prisma.sql`ORDER BY ${HAD_AT} DESC, r.id DESC`
+}
+// Strictly after the cursor's row in that order. A score sort's unrated rows
+// come last, so a scored cursor lets every unrated row through and an unrated
+// one pages on the date alone.
+function impressionsAfter(sort: ImpressionSort, c: ImpressionsCursor): Prisma.Sql {
+  const at = Prisma.sql`(${HAD_AT}, r.id)`
+  const key = Prisma.sql`(${c.key}::timestamptz, ${c.id})`
+  if (sort === 'oldest') return Prisma.sql`${at} > ${key}`
+  if (!isScoreSort(sort)) return Prisma.sql`${at} < ${key}`
+  if (c.cents === null) return Prisma.sql`(${SCORE_KEY} IS NULL AND ${at} < ${key})`
+  const cents = Prisma.sql`${SCORE_KEY} * 100`
+  const beyond = sort === 'highest' ? Prisma.sql`${cents} < ${c.cents}` : Prisma.sql`${cents} > ${c.cents}`
+  return Prisma.sql`(${beyond} OR (${cents} = ${c.cents} AND ${at} < ${key}) OR ${SCORE_KEY} IS NULL)`
 }
 
 export type ImpressionRow = {
@@ -104,18 +130,18 @@ export async function loadImpressions(
   }
   const yours = Prisma.sql`EXISTS (SELECT 1 FROM ratings yr WHERE yr.user_id = ${other}::integer AND yr.wine_id = r.wine_id)`
   if (f.common && other !== null) where.push(Prisma.sql`NOT ${redacted} AND ${yours}`)
-  const cursor = parseKeyCursor(f.cursor)
+  const cursor = f.cursor ? parseImpressionsCursor(f.cursor, f.sort) : null
   if (f.cursor && !cursor) return { items: [], nextCursor: null }
-  if (cursor) where.push(Prisma.sql`(${HAD_AT}, r.id) < (${cursor.key}::timestamptz, ${cursor.id})`)
+  if (cursor) where.push(impressionsAfter(f.sort, cursor))
 
   const rows = await prisma.$queryRaw<{
     id: number; post_id: number | null; wine_id: string; name: string; vintage: string | null; producer: string | null
     style: string | null; category: string; image_url: string | null; score: Prisma.Decimal | null; had_at: Date
-    had_key: string; redacted: boolean; moment_name: string | null; your_score: Prisma.Decimal | null; in_session: boolean
+    had_key: string; score_cents: number | null; redacted: boolean; moment_name: string | null; your_score: Prisma.Decimal | null; in_session: boolean
   }[]>`
     SELECT r.id, ${POST_ID} AS post_id, r.wine_id, w.name, w.vintage, w.producer, w.style, w.category,
            COALESCE((SELECT ri.image_url FROM rating_images ri WHERE ri.rating_id = r.id ORDER BY ri.sort_order ASC LIMIT 1), w.image_url) AS image_url,
-           r.score, ${HAD_AT} AS had_at, ${usKeySql(HAD_AT)} AS had_key, ${redacted} AS redacted,
+           r.score, ${HAD_AT} AS had_at, ${usKeySql(HAD_AT)} AS had_key, (${SCORE_KEY} * 100)::int AS score_cents, ${redacted} AS redacted,
            CASE WHEN s.deleted_at IS NULL THEN s.name END AS moment_name,
            (r.session_id IS NOT NULL) AS in_session,
            ${other !== null
@@ -124,7 +150,7 @@ export async function loadImpressions(
     ${impressionsBase}
     ${POST_JOINS}
     WHERE ${Prisma.join(where, ' AND ')}
-    ORDER BY ${HAD_AT} DESC, r.id DESC
+    ${impressionsOrder(f.sort)}
     LIMIT ${PAGE + 1}`
   const more = rows.length > PAGE
   const page = more ? rows.slice(0, PAGE) : rows
@@ -150,7 +176,7 @@ export async function loadImpressions(
     }
   })
   const last = page[page.length - 1]
-  const nextCursor = more && last ? encodeKeyCursor(last.had_key, last.id) : null
+  const nextCursor = more && last ? encodeImpressionsCursor(f.sort, { key: last.had_key, id: last.id, cents: last.score_cents }) : null
   if (other === null || f.cursor) return { items, nextCursor }
   const common = await prisma.$queryRaw<{ n: number }[]>`
     SELECT COUNT(*)::int AS n ${impressionsBase}

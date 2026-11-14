@@ -9,9 +9,9 @@
 //
 // Run: npx tsx scripts/tests/username-ui-units.ts
 
-import { COVER_SPEC, FONT, NAME_LIFT, PLAIN_SPEC, coverLines, curveLeft, fitProfileName, plainLines } from '../../apps/mobile/src/components/profile/coverGeometry'
+import { COVER_SPEC, FONT, NAME_LIFT, PLAIN_SPEC, anchoredIndent, coverLines, curveLeft, fitProfileName, plainLines } from '../../apps/mobile/src/components/profile/coverGeometry'
 import { matchesPerson } from '../../apps/mobile/src/lib/search'
-import { changeAgainText, typedUsername, usernameQuotaLine } from '../../apps/mobile/src/lib/usernameCopy'
+import { changeAgainText, typedUsername, usernameBarLine, usernameQuotaLine } from '../../apps/mobile/src/lib/usernameCopy'
 
 let failures = 0
 const near = (a: number, b: number) => Math.abs(a - b) < 0.01
@@ -116,6 +116,10 @@ console.log('\n§2 the cover name with a username under it (COVER_SPEC, photo 10
   check('two lines: the lower keeps the same gap, the upper (above the photo\'s top) stops at maxShift', two.lines === 2 && near(two.indent2, one.indent) && two.indent === -26, JSON.stringify(two))
   const small = fitProfileName({ ...base, w: 262, splits: [] })
   check('a shrunk name keeps its baseline, so its edge barely moves', small.lines === 1 && small.fontSize < 30 && near(small.indent, one.indent), JSON.stringify(small))
+  // The edit input (ProfileName) places itself by anchoredIndent at its own
+  // size: it must land where the one-line name stood, shrunk or not.
+  const input = anchoredIndent(ring, nameRise, FONT.cap * 30)
+  check('the name\'s edit input starts where the one-line name does (no shift on long-press / Done)', near(input, one.indent) && near(input, small.indent) && input < 0, String(input))
 }
 
 console.log('\n§3 without a cover (PLAIN_SPEC, photo 104): every line follows the circle')
@@ -126,6 +130,7 @@ console.log('\n§3 without a cover (PLAIN_SPEC, photo 104): every line follows t
   const base = { fs, lineH: 30, scale: 1, avail: 220, min: 19, ring, anchor: { dy: r - nameB }, maxLines: 1 as const }
   const one = fitProfileName({ ...base, w: 150, splits: [] })
   check('the name is 26pt and sits 15 from the round edge at its baseline', fs === 26 && one.lines === 1 && near(ring.nameLeft + one.indent - (r + Math.sqrt(r * r - (r - nameB) ** 2)), 15), JSON.stringify(one))
+  check('its edit input starts where it does', near(anchoredIndent(ring, r - nameB, FONT.cap * fs), one.indent), String(one.indent))
   const long = fitProfileName({ ...base, w: 900, splits: [{ w1: 400, w2: 490 }] })
   check('one line only: a long name shrinks to the floor and is then cut, never wrapped', long.lines === 1 && long.fontSize === 19 && !long.wrap, JSON.stringify(long))
   const handleB = nameB + PLAIN_SPEC.nameToHandle, pillTop = handleB + PLAIN_SPEC.handleToPill, countsTop = pillTop + 24 + PLAIN_SPEC.pillToFriends
@@ -194,6 +199,24 @@ console.log('\n§6 Edit Profile\'s limit line: quiet until the last two')
   check('another year carries the year', changeAgainText(`${year + 1}-02-12T10:00:00.000Z`, 'en-GB') === `You can change it again on 12 Feb ${year + 1}.`)
   check('no date from the server: still a sentence', s(0).locked && s(0).text === 'You can’t change it again yet.')
   check('no username yet: a first choice is free, nothing shown', s(0, null, null).text === null && !s(0, null, null).locked)
+}
+
+console.log('\n§7 the profile\'s edit bar: what it says about the username (in place, ruled 2026-11-14)')
+{
+  const base = { active: true, refusal: null as string | null, checking: false, available: false, changed: false, locked: false, quotaText: null as string | null }
+  const at = (o: Partial<typeof base>) => usernameBarLine({ ...base, ...o })
+  check('not the field in use: nothing, the bar keeps "Editing Profile"', at({ active: false, refusal: 'x', quotaText: '2 changes left for now.' }) === null)
+  check('in use, nothing to say (3+ left, unchanged, or a failed check): nothing', at({}) === null && at({ changed: true }) === null)
+  check('typing / waiting for the answer: "Checking availability…", not read out (device pass: no fall-back to "Editing Profile" per keystroke)', JSON.stringify(at({ changed: true, checking: true })) === JSON.stringify({ text: 'Checking availability…', tone: 'inkSoft', transient: true }))
+  check('checking at the last two keeps the count beside it (the second sentence holds still while typing)', at({ changed: true, checking: true, quotaText: '2 changes left for now.' })?.more === '2 changes left for now.')
+  check('unchanged (back to your own name) never says checking', JSON.stringify(at({ checking: true, quotaText: '2 changes left for now.' })) === JSON.stringify({ text: '2 changes left for now.', tone: 'inkSoft' }))
+  check('a refusal still wins over checking', at({ changed: true, checking: true, refusal: 'This username is taken.' })?.tone === 'critical')
+  check('a refusal wins, in red', JSON.stringify(at({ changed: true, refusal: 'This username is taken.', available: true, quotaText: 'This is your last change for now.' })) === JSON.stringify({ text: 'This username is taken.', tone: 'critical' }))
+  check('available, 3+ left: "Available"', JSON.stringify(at({ changed: true, available: true })) === JSON.stringify({ text: 'Available', tone: 'positive' }))
+  check('available at the last two: both sentences, the count in soft ink', JSON.stringify(at({ changed: true, available: true, quotaText: '2 changes left for now.' })) === JSON.stringify({ text: 'Available.', tone: 'positive', more: '2 changes left for now.' }))
+  check('focused, unchanged, at the last two: the count alone', JSON.stringify(at({ quotaText: 'This is your last change for now.' })) === JSON.stringify({ text: 'This is your last change for now.', tone: 'inkSoft' }))
+  check('none left (the locked handle tapped): the date', JSON.stringify(at({ locked: true, quotaText: 'You can change it again on 24 Dec.' })) === JSON.stringify({ text: 'You can change it again on 24 Dec.', tone: 'inkSoft' }))
+  check('locked never says "Available" (a stale answer from before the lock)', at({ locked: true, changed: true, available: true, quotaText: 'You can change it again on 24 Dec.' })?.tone === 'inkSoft')
 }
 
 console.log(failures === 0 ? '\nOK — username UI pins pass.' : `\nFAILED — ${failures} username UI pin(s).`)

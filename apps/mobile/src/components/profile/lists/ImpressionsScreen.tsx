@@ -1,22 +1,22 @@
 import { BottomSheetView } from '@gorhom/bottom-sheet';
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, View } from 'react-native';
+import { ActivityIndicator, FlatList, RefreshControl, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { FilterChip, FilterDates, FilterFooter, FilterLabel, categoryLabel, dayEndISO, dayStartISO } from '@/components/moments/MomentFilters';
+import { FilterChip, FilterDates, FilterFooter, FilterLabel, FilterTitle, categoryLabel, dateChipLabel, dayEndISO, dayStartISO, type ActiveFilter } from '@/components/moments/MomentFilters';
 import { ToggleCard } from '@/components/moments/settingsParts';
-import { ScoreRange, ScoreRangeValue, RANGE_MAX, RANGE_MIN, isAnyRange } from '@/components/scoring/ScoreRange';
+import { ScoreRange, ScoreRangeValue, RANGE_MAX, RANGE_MIN, isAnyRange, rangeLabel } from '@/components/scoring/ScoreRange';
+import { AnchoredMenu, MenuItem } from '@/components/ui/AnchoredMenu';
 import { CenteredMessage, ErrorState } from '@/components/ui/ConnectionState';
 import { Sheet } from '@/components/ui/Sheet';
-import { VText } from '@/components/ui/VText';
-import { ListGoneError, getImpressionsPage, profileListKey, type ImpressionParams, type ImpressionRow } from '@/lib/api/lists';
+import { ListGoneError, getImpressionsPage, profileListKey, type ImpressionParams, type ImpressionRow, type ImpressionSort } from '@/lib/api/lists';
 import { profileQueryOptions } from '@/lib/api/users';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { useMeId } from '@/lib/meId';
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { useTheme } from '@/theme';
 import { ListNote, ListRow, MonthHeader, ScoreColumn, ToolRow, groupByMonth, type RowHandle } from './ListParts';
-import { ToolButton } from '@/components/ui/ToolButton';
+import { ToolButton, type ToolAnchor } from '@/components/ui/ToolButton';
 import { useListRefresh } from './useListRefresh';
 import { useOpenListPost } from './useOpenListPost';
 
@@ -24,20 +24,27 @@ import { useOpenListPost } from './useOpenListPost';
 // herImps): every rating, through their post visibility, newest post first,
 // grouped by month. Bar: "Impressions" + (yours, not on an opened post's
 // stack) "+ Check In" (the Feed's flow, on this stack). Tool row: filter +
-// search. Someone else's: "Only Ones We Both Had" (their rows you rated too,
-// your score under theirs; a blind row never counts). A row opens its post
-// like a post on the feed (useOpenListPost). The passport card and the
-// structure / aroma filters are later (Palate / Passport don't exist).
+// sort + search. Sorts (ruled 2026-11-14): Newest First (default) / Oldest
+// First / Highest Rated / Lowest Rated (unrated last); the month headings show
+// for the date sorts only (a score order jumps between months). Someone
+// else's: "Only Ones We Both Had" (their rows you rated too, your score under
+// theirs; a blind row never counts). A row opens its post like a post on the
+// feed (useOpenListPost). The passport card and the structure / aroma
+// filters are later (Palate / Passport don't exist).
 
 type ImpFilters = { from: Date | null; to: Date | null; category: string; lo: number; hi: number };
 const NO_IMP_FILTERS: ImpFilters = { from: null, to: null, category: 'any', lo: RANGE_MIN, hi: RANGE_MAX };
+const SORTS: [ImpressionSort, string][] = [['newest', 'Newest First'], ['oldest', 'Oldest First'], ['highest', 'Highest Rated'], ['lowest', 'Lowest Rated']];
 const filterCount = (f: ImpFilters) => (f.from || f.to ? 1 : 0) + (f.category !== 'any' ? 1 : 0) + (isAnyRange(f.lo, f.hi) ? 0 : 1);
 
 export function ImpressionsPane({ userId, active: shown }: { userId: string; active: boolean }) {
   const { theme } = useTheme();
+  const { width: windowW } = useWindowDimensions();
   const meId = useMeId();
   const own = meId === userId;
   const headerQ = useQuery(profileQueryOptions(userId));
+  const [sort, setSort] = useState<ImpressionSort>('newest');
+  const [menuAt, setMenuAt] = useState<ToolAnchor | null>(null);
 
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
@@ -75,7 +82,8 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
     min: isAnyRange(range.lo, range.hi) ? null : range.lo,
     max: isAnyRange(range.lo, range.hi) ? null : range.hi,
     common: both,
-  }), [search, filters.from, filters.to, filters.category, range, both]);
+    sort,
+  }), [search, filters.from, filters.to, filters.category, range, both, sort]);
   const listQ = useInfiniteQuery({
     queryKey: profileListKey('impressions', userId, params),
     queryFn: ({ pageParam }) => getImpressionsPage(userId, params, pageParam),
@@ -91,7 +99,18 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
     const seen = new Set<number>();
     return (listQ.data?.pages ?? []).flatMap((p) => p.items).filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
   }, [listQ.data]);
-  const grouped = useMemo(() => groupByMonth(rows, (r) => r.hadAt, (r) => String(r.id)), [rows]);
+  // Headings follow the sort of the rows ON SCREEN: while a new sort loads,
+  // keepPreviousData still shows the last settled sort's rows.
+  const [settledSort, setSettledSort] = useState(sort);
+  useEffect(() => {
+    if (listQ.data && !listQ.isPlaceholderData) setSettledSort(sort);
+  }, [listQ.data, listQ.isPlaceholderData, sort]);
+  const shownSort = listQ.isPlaceholderData ? settledSort : sort;
+  const byDate = shownSort === 'newest' || shownSort === 'oldest';
+  const grouped = useMemo(
+    () => (byDate ? groupByMonth(rows, (r) => r.hadAt, (r) => String(r.id)) : rows.map((row) => ({ kind: 'row' as const, key: String(row.id), row }))),
+    [rows, byDate],
+  );
 
   // "N in common", from the first unfiltered page (kept while a filter runs).
   const [commonCount, setCommonCount] = useState<number | null>(null);
@@ -138,7 +157,8 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
       <View style={{ flex: 1, display: shown ? 'flex' : 'none' }}>
         <View style={{ paddingHorizontal: GUTTER }}>
           <ToolRow query={query} onQuery={setQuery} placeholder="Search impressions">
-            <ToolButton icon="funnel" label={active > 0 ? `Filter, ${active} active` : 'Filter'} active={active > 0} onPress={() => setFilterOpen(true)} />
+            <ToolButton icon="funnel" label={active > 0 ? `Filter, ${active} active` : 'Filter'} active={active > 0} count={active} onPress={() => setFilterOpen(true)} />
+            <ToolButton icon="sort" label={`Sort, ${SORTS.find(([k]) => k === sort)![1]}`} onPress={setMenuAt} />
           </ToolRow>
           {/* "Show 23 tastes you share" (ruled 2026-11-13: warm, something you
               share with the person, no "only", no helper line; SENTENCE case,
@@ -159,6 +179,12 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
           ) : null}
         </View>
         {body}
+        {/* The sort menu under its button, left edges aligned (Cravings' recipe). */}
+        <AnchoredMenu anchor={menuAt ? { top: menuAt.top, bottom: menuAt.bottom } : null} onClose={() => setMenuAt(null)} right={menuAt ? Math.max(GUTTER, windowW - menuAt.x - 210) : GUTTER} minWidth={210}>
+          {SORTS.map(([k, label]) => (
+            <MenuItem key={k} label={label} active={sort === k} onPress={() => { setSort(k); setMenuAt(null); }} />
+          ))}
+        </AnchoredMenu>
         <ImpressionFilterSheet open={filterOpen} onClose={() => setFilterOpen(false)} filters={filters} onChange={applyFilters} onRange={dragRange} />
       </View>
   );
@@ -180,16 +206,22 @@ function ImpressionListRow({ row, showYours, onPress }: { row: ImpressionRow; sh
   );
 }
 
-// "Filter Impressions" (04·6d): Date · Category · Score (the two-dot range) ·
-// Reset / Done, the Filter Moments anatomy. Aromas + Structure are later.
+// "Filter Impressions" (04·6d): the applied chips · Date · Category · Score
+// (the two-dot range) · Reset / Done, the Filter Moments anatomy. Aromas +
+// Structure are later. The chips' bodies are plain labels (every control is
+// in the sheet); a chip's ✕ applies at once, the range included.
 function ImpressionFilterSheet({ open, onClose, filters, onChange, onRange }: {
   open: boolean; onClose: () => void; filters: ImpFilters; onChange: (f: ImpFilters) => void; onRange: (lo: number, hi: number) => void;
 }) {
   const insets = useSafeAreaInsets();
+  const applied: ActiveFilter[] = [];
+  if (filters.from || filters.to) applied.push({ key: 'date', label: dateChipLabel(filters.from, filters.to), onClear: () => onChange({ ...filters, from: null, to: null }) });
+  if (filters.category !== 'any') applied.push({ key: 'category', label: categoryLabel(filters.category), onClear: () => onChange({ ...filters, category: 'any' }) });
+  if (!isAnyRange(filters.lo, filters.hi)) applied.push({ key: 'score', label: rangeLabel(filters.lo, filters.hi), onClear: () => onChange({ ...filters, lo: RANGE_MIN, hi: RANGE_MAX }) });
   return (
     <Sheet open={open} onClose={onClose}>
       <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 12, paddingBottom: insets.bottom + 16, gap: 18 }}>
-        <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Filter Impressions</VText>
+        <FilterTitle applied={applied}>Filter Impressions</FilterTitle>
         <View style={{ gap: 10 }}>
           <FilterLabel>DATE</FilterLabel>
           <FilterDates from={filters.from} to={filters.to} onChange={(from, to) => onChange({ ...filters, from, to })} />

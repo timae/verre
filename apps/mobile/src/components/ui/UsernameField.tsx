@@ -3,7 +3,7 @@ import { View, type TextInputInstance, type TextInputProps } from 'react-native'
 import { USERNAME_MAX, checkUsername } from '@verre/core';
 import { checkUsernameAvailable } from '@/lib/api/username';
 import { sentence } from '@/lib/errorCopy';
-import { typedUsername } from '@/lib/usernameCopy';
+import { RESERVED_TEXT, TAKEN_TEXT, typedUsername } from '@/lib/usernameCopy';
 import { TextField } from './TextField';
 import { VText } from './VText';
 
@@ -17,12 +17,18 @@ import { VText } from './VText';
 //
 // 🔒 Never `textContentType="username"` / `autoComplete="username"`: the EMAIL
 // is the login for password managers (usernames § 13).
-export const TAKEN_TEXT = 'This username is taken.';
-export const RESERVED_TEXT = 'This username is reserved.';
+export { RESERVED_TEXT, TAKEN_TEXT };
 const PAUSE_MS = 500;
 
+// `pending` = a changed name whose answer isn't in yet (the pause after a
+// keystroke; also, without `availability`, a valid name for good): the
+// profile's edit bar says "Checking availability…" through it and `checking`
+// (device pass 2026-11-14: falling back to "Editing Profile" on every
+// keystroke confused). `idle` = nothing to say (empty, your own name, or a
+// check that failed: advisory only).
 export type UsernameCheckState =
   | { kind: 'idle' }
+  | { kind: 'pending' }
   | { kind: 'invalid'; message: string }
   | { kind: 'checking' }
   | { kind: 'available' }
@@ -63,7 +69,8 @@ export function useUsernameCheck(value: string, { availability = false, current 
     };
   }, [value, availability, current]);
   // Only the answer for the text now in the field counts.
-  return settled.value === value && value !== '' && value !== current ? settled.state : { kind: 'idle' };
+  if (value === '' || value === current) return { kind: 'idle' };
+  return settled.value === value ? settled.state : { kind: 'pending' };
 }
 
 type Props = Omit<TextInputProps, 'value' | 'onChangeText' | 'onChange'> & {

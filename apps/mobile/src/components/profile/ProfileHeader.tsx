@@ -1,14 +1,14 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, useWindowDimensions, type StyleProp, type TextInputInstance, type ViewStyle } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import { BIO_MAX } from '@verre/core';
+import { BIO_MAX, USERNAME_MAX } from '@verre/core';
 import { BadgePill } from '@/components/moments/RoleChip';
 import { PhotoTiles } from '@/components/profile/PhotoTiles';
-import { InlineField, LongPressable } from '@/components/profile/ProfileEditParts';
+import { InlineField, LongPressable, markNoShake } from '@/components/profile/ProfileEditParts';
 import {
-  COVER_SPEC, FONT, NAME_GAP, NAME_LIFT, NAME_RIGHT, PHOTO_BASE, PLAIN_SPEC, SHEET_RISE, coverLines, curveLeft, fitProfileName, notchBox, notchPath, plainLines,
+  COVER_SPEC, FONT, NAME_GAP, NAME_LIFT, NAME_RIGHT, PHOTO_BASE, PLAIN_SPEC, SHEET_RISE, anchoredIndent, coverLines, curveLeft, fitProfileName, notchBox, notchPath, plainLines,
   type NameAnchor, type NameRing,
 } from '@/components/profile/coverGeometry';
 import { StarScore } from '@/components/scoring/StarScore';
@@ -21,6 +21,7 @@ import type { TileKey } from '@/lib/api/profile';
 import type { PeopleTab } from '@/lib/api/people';
 import type { FullProfile, ProfileFace } from '@/lib/api/users';
 import { firstName } from '@/lib/initials';
+import { typedUsername } from '@/lib/usernameCopy';
 import { GLASS_FILL, GUTTER, HERO_RATIO, PROFILE_SCRIM, PROFILE_SCRIM_STOPS, phoneTextToken, usePhoneTokens } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 import { mix } from '@/theme/color';
@@ -46,16 +47,18 @@ import { mix } from '@/theme/color';
 // Then the bio (own + empty = the "Touch and hold to add a bio" hint), the three photo
 // tiles and (someone else) the in-common row + follow button.
 //
-// Own profile, EDITING (R5g3): long-press the name or the bio and BOTH become
-// inputs in place; the status line and the tiles dim (0.35) and stop taking
-// touches. Long-press the photo / cover (R5g4 → the iPhone's own picker, D5)
+// Own profile, EDITING (R5g3): long-press the name, the `@username` or the bio
+// and ALL of them become inputs in place (the username since 2026-11-14, its
+// feedback in the edit bar; Edit Profile keeps the full field); the status
+// line and the tiles dim (0.35) and stop taking touches. Long-press the photo / cover (R5g4 → the iPhone's own picker, D5)
 // or a tile (R5g2 → its cover sheet). The screen owns the edit session
 // (ProfileScreen); this only renders it.
 //
-// Step 1 rulings (Simon, 2026-11-09): the status line and the tiles are
-// visible but INACTIVE (their pages come later); the status pill names OUR
-// level (lib/badges.ts), the design's were placeholders. Since the People
-// step the counts and the in-common row open People (D10).
+// Step 1 rulings (Simon, 2026-11-09): the status pill names OUR level
+// (lib/badges.ts), the design's were placeholders. Since the People step the
+// counts and the in-common row open People (D10), since the lists step the
+// tiles their lists, since 2026-11-14 the status line its placeholder pages
+// (StatLine).
 
 // The photo breathes with the device by the title type's own comfort ratio, so
 // photo and name stay in proportion (104pt on the smallest phones).
@@ -77,17 +80,25 @@ export function compactCount(n: number): string {
 }
 
 // The screen's edit session, as the header needs it (own profile only).
+export type EditField = 'name' | 'username' | 'bio';
 export type ProfileEdit = {
-  // Non-null while editing: the two drafts.
-  draft: { name: string; bio: string } | null;
+  // Non-null while editing: the drafts (the username without its `@`).
+  draft: { name: string; username: string; bio: string } | null;
   // The field the long-press started (it takes the focus).
-  focus: 'name' | 'bio' | null;
-  setDraft: (field: 'name' | 'bio', value: string) => void;
-  start: (field: 'name' | 'bio') => void;
+  focus: EditField | null;
+  setDraft: (field: EditField, value: string) => void;
+  start: (field: EditField) => void;
   done: () => void;
-  onFieldFocus: (field: 'name' | 'bio') => void;
+  onFieldFocus: (field: EditField) => void;
   nameRef: RefObject<TextInputInstance | null>;
+  usernameRef: RefObject<TextInputInstance | null>;
   bioRef: RefObject<TextInputInstance | null>;
+  // No username changes left: the handle stays read-only while editing, and
+  // a tap on it puts the date in the edit bar.
+  usernameLocked: boolean;
+  onLockedUsername: () => void;
+  // Done is greyed (a refused username): Return keeps the field focused.
+  doneBlocked: boolean;
   // An upload in flight (spinner over that image, its long-press off).
   busy: 'avatar' | 'cover' | null;
   onPhoto: () => void;
@@ -142,7 +153,6 @@ function CurvedIdentity({ name, username, imageUrl, onNameBottom, photoNode, edi
   const photo = useProfilePhotoSize();
   const { fontScale } = useWindowDimensions();
   const small = usePhoneTokens().text('small');
-  const handleStyle = useHandleStyle();
   const base = useCurvedNameStyle();
   const [width, setWidth] = useState<number | null>(null);
   const [pillH, setPillH] = useState(24);
@@ -151,7 +161,6 @@ function CurvedIdentity({ name, username, imageUrl, onNameBottom, photoNode, edi
   const { nameB, handleB, pillTop, countsTop, gap, height, base: baseLeft, handleLeft, pillLeft, countsLeft } = plainLines({
     photo, textScale: fontScale, nameSize: base.fontSize, handleSize: small.fontSize, pillH, countsH, withStat: !!stat,
   });
-  const handleStrut = Math.ceil(handleStyle.lineHeight * fontScale);
   const nameBottom = nameB + FONT.descent * base.fontSize * fontScale;
   useEffect(() => { onNameBottom?.(nameBottom); }, [onNameBottom, nameBottom]);
   const placed = useMemo<Placed | null>(
@@ -168,14 +177,7 @@ function CurvedIdentity({ name, username, imageUrl, onNameBottom, photoNode, edi
     <View style={{ marginLeft: -8, height }} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
       <View style={{ position: 'absolute', left: 0, top: 0 }}>{photoNode ?? <Avatar imageUrl={imageUrl} name={name} size={photo} tint />}</View>
       {placed ? <ProfileName name={name} variant="plain" edit={edit} placed={placed} /> : null}
-      <BaselineRow
-        top={handleB - handleStrut}
-        left={handleLeft}
-        strut={handleStrut}
-        style={edit?.draft ? { opacity: 0.35 } : null}
-      >
-        <VText variant="small" color="inkSoft" numberOfLines={1} ellipsizeMode="tail" style={handleStyle}>@{username}</VText>
-      </BaselineRow>
+      <ProfileHandle username={username} cover={false} edit={edit} baseline={handleB} left={handleLeft} />
       {stat ? (
         <>
           <View style={{ position: 'absolute', top: pillTop, left: pillLeft }} onLayout={(e) => setPillH(Math.round(e.nativeEvent.layout.height))}>{stat}</View>
@@ -257,6 +259,74 @@ function useHandleStyle() {
   return useMemo(() => ({ flexShrink: 1, lineHeight: Math.floor(small.fontSize * 1.2) }), [small.fontSize]);
 }
 
+// The `@username` line (both layouts): its BASELINE at `baseline` in the
+// parent's box, from `left` (its gap to the photo's round edge) to `right`.
+// Your own (`edit`): a long-press starts the edit with it focused (`swapsOut`:
+// the input replaces it); while editing it is the input in place on the same
+// baseline, the `@` in front as in UsernameField, its feedback in the edit
+// bar (ruled 2026-11-14); with no changes left a dimmed read-only line whose
+// tap puts the date in the bar (and never shakes it).
+function ProfileHandle({ username, cover, edit, baseline, left, right = 0 }: {
+  username: string; cover: boolean; edit?: ProfileEdit; baseline: number; left: number; right?: number;
+}) {
+  const { theme } = useTheme();
+  const { fontScale } = useWindowDimensions();
+  const small = usePhoneTokens().text('small');
+  const handleStyle = useHandleStyle();
+  const strut = Math.ceil(handleStyle.lineHeight * fontScale);
+  if (edit?.draft && !edit.usernameLocked) {
+    const typed = edit.draft.username;
+    // Single-line raw input: no lineHeight, its glyphs on the handle's
+    // baseline (as the name's input). The cover's soft text shadow drops
+    // while typing (an iOS text field draws none).
+    return (
+      <View style={{ position: 'absolute', left, right, top: baseline - FONT.ascent * small.fontSize * fontScale }}>
+        <InlineField
+          ref={edit.usernameRef}
+          username
+          value={typed ? `@${typed}` : ''}
+          onChangeText={(t) => edit.setDraft('username', typedUsername(t).slice(0, USERNAME_MAX))}
+          onFocus={() => edit.onFieldFocus('username')}
+          autoFocus={edit.focus === 'username'}
+          placeholder="@username"
+          placeholderTextColor={cover ? COVER_HANDLE_FAINT : theme.inkFaint}
+          onSubmit={edit.done}
+          keepFocus={edit.doneBlocked}
+          accessibilityLabel="Username"
+          style={{ fontFamily: cover ? COVER_HANDLE_STYLE.fontFamily : 'InstrumentSans_400Regular', fontSize: small.fontSize, color: cover ? COVER_HANDLE : theme.inkSoft }}
+        />
+      </View>
+    );
+  }
+  const box = { position: 'absolute', top: baseline - strut, left, right } as const;
+  const row = (
+    <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+      <View style={{ width: 0, height: strut }} />
+      <VText variant="small" color={cover ? COVER_HANDLE : 'inkSoft'} numberOfLines={1} ellipsizeMode="tail" style={cover ? [handleStyle, COVER_HANDLE_STYLE] : handleStyle}>@{username}</VText>
+    </View>
+  );
+  if (edit?.draft) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`@${username}`}
+        accessibilityHint="Says when you can change it again."
+        onPress={edit.onLockedUsername}
+        onStartShouldSetResponderCapture={markNoShake}
+        style={[box, { opacity: 0.35 }]}
+      >
+        {row}
+      </Pressable>
+    );
+  }
+  if (!edit) return <View style={box}>{row}</View>;
+  return (
+    <LongPressable style={box} disabled={edit.busy != null} swapsOut onLongPress={() => edit.start('username')} accessibilityLabel={`@${username}`} accessibilityHint={EDIT_HINT}>
+      {row}
+    </LongPressable>
+  );
+}
+
 // The coverless name beside a username: the design's 26pt bold as a share of
 // the 30pt title token, so it grows with the photo like the cover's name.
 function useCurvedNameStyle(): NameStyle {
@@ -275,8 +345,12 @@ function useCurvedNameStyle(): NameStyle {
 // device (Simon, 2026-11-11: the full lift read a touch high).
 const X_TO_CAP_LIFT = ((0.72 - 0.51) / 2) * (2 / 3);
 
-// .yo-statline — status pill + ★ average (no average until they rated).
-function StatLine({ level, avgScore }: { level: string; avgScore: number | null }) {
+// .yo-statline — status pill + ★ average (no average until they rated). The
+// mock's taps (placeholder pages, 2026-11-14): yours = the pill → Status, the
+// average → Palate; someone's = either → their Palate. Two buttons on BOTH
+// profiles, each fading on its own (device pass 2026-11-14: one fade over the
+// whole line read as a single button). No handler = a plain view.
+function StatLine({ level, avgScore, own, onPill, onAverage }: { level: string; avgScore: number | null; own: boolean; onPill?: () => void; onAverage?: () => void }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const { fontScale } = useWindowDimensions();
@@ -288,25 +362,37 @@ function StatLine({ level, avgScore }: { level: string; avgScore: number | null 
     // 2/24 of its 15pt box in from the left, so the box gap is 14 − 1.25
     // (Simon, 2026-11-11; the mock's 8 read tighter than the counts).
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12.75 }}>
-      <BadgePill
-        label={level}
-        bg={theme.accentTint}
-        color={mix(theme.accent, theme.ink, 0.6)}
-        uppercase={false}
-        paddingHorizontal={10}
-        style={{ alignSelf: 'center' }}
-      />
+      <Tap onPress={onPill} label={own ? `Status: ${level}` : `Status: ${level}. Palate`}>
+        <BadgePill
+          label={level}
+          bg={theme.accentTint}
+          color={mix(theme.accent, theme.ink, 0.6)}
+          uppercase={false}
+          paddingHorizontal={10}
+          style={{ alignSelf: 'center' }}
+        />
+      </Tap>
       {avgScore != null && avgScore > 0 ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+        <Tap onPress={onAverage} label={`Average ${avgScore}. Palate`} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
           {/* The house score read (accent ★ + value). ⚠️ The mock draws the
               numeral in ink; StarScore's accent numeral is the canonical read. */}
           <StarScore value={avgScore} size={13} />
           <VText variant="small" color="inkSoft" style={{ fontFamily: 'InstrumentSans_500Medium', transform: [{ translateY: -lift }] }}>
             average
           </VText>
-        </View>
+        </Tap>
       ) : null}
     </View>
+  );
+}
+
+// A plain View without `onPress`, else a button with the press fade.
+function Tap({ onPress, label, style, children }: { onPress?: () => void; label: string; style?: ViewStyle; children: ReactNode }) {
+  if (!onPress) return <View style={style}>{children}</View>;
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={label} hitSlop={{ top: 8, bottom: 8 }} onPress={onPress} style={({ pressed }) => [style, { opacity: pressed ? 0.6 : 1 }]}>
+      {children}
+    </Pressable>
   );
 }
 
@@ -316,8 +402,8 @@ function StatLine({ level, avgScore }: { level: string; avgScore: number | null 
 function Counts({ friends, followers, onPeople, editing }: { friends: number; followers: number; onPeople?: (tab: PeopleTab) => void; editing: boolean }) {
   return (
     <View pointerEvents={editing ? 'none' : 'auto'} style={[{ flexDirection: 'row', gap: 14 }, editing ? { opacity: 0.35 } : null]}>
-      <Count n={friends} word="friends" onPress={onPeople && (() => onPeople('friends'))} />
-      <Count n={followers} word="followers" onPress={onPeople && (() => onPeople('followers'))} />
+      <Count n={friends} word="friends" onPress={onPeople && !editing ? () => onPeople('friends') : undefined} />
+      <Count n={followers} word="followers" onPress={onPeople && !editing ? () => onPeople('followers') : undefined} />
     </View>
   );
 }
@@ -395,6 +481,8 @@ export function ProfileHeader({
   pulled,
   onPeople,
   onTile,
+  onStatus,
+  onPalate,
 }: {
   profile: FullProfile;
   own: boolean;
@@ -405,6 +493,9 @@ export function ProfileHeader({
   onPeople?: (tab: PeopleTab, known?: boolean) => void;
   // A tile's tap opens its list (the lists step).
   onTile?: (key: TileKey) => void;
+  // The status line's pages (StatLine): Status yours only.
+  onStatus?: () => void;
+  onPalate?: () => void;
   // The name's bottom edge in header coordinates (the bar title trigger).
   onNameBottom?: (y: number) => void;
   // Own profile only.
@@ -436,6 +527,12 @@ export function ProfileHeader({
       label,
       count: compactCount(t.count),
       imageUrl: t.imageUrl,
+      // 🔒 While editing the tiles are DISABLED (PhotoTiles `dimmed`):
+      // `pointerEvents` only stops touches, and a VoiceOver activation would
+      // still push (the blur drops the draft). Disabled, not handler-less: a
+      // handler that comes and goes switches the tile's element type, which
+      // remounted the tile and reloaded its photo (a flicker, device pass
+      // 2026-11-14).
       onPress: onTile ? () => onTile(key) : undefined,
       // Every tile of your own, an empty one too: its sheet can add your own
       // photo (ruled 2026-11-12; it used to be inert with nothing to pick).
@@ -444,7 +541,13 @@ export function ProfileHeader({
   });
   const stat = (
     <View pointerEvents={editing ? 'none' : 'auto'} style={editing ? { opacity: 0.35 } : null}>
-      <StatLine level={profile.level.name} avgScore={profile.flavor.avgScore} />
+      <StatLine
+        level={profile.level.name}
+        avgScore={profile.flavor.avgScore}
+        own={own}
+        onPill={editing ? undefined : own ? onStatus : onPalate}
+        onAverage={editing ? undefined : onPalate}
+      />
     </View>
   );
   const below = (
@@ -544,12 +647,10 @@ function CoverHero({
   const username = profile.username;
   const { base: nameStyle } = useCoverNameStyle();
   const small = usePhoneTokens().text('small');
-  const handleStyle = useHandleStyle();
   const k = photo / PHOTO_BASE, r = photo / 2;
   const edgeY = heroH - SHEET_RISE;
   const { handleRise, nameRise } = coverLines(photo, fontScale);
   const curvedLeft = photoCx + r + COVER_SPEC.nameGap * k;
-  const handleStrut = Math.ceil(handleStyle.lineHeight * fontScale);
   const placed = useMemo<Placed | undefined>(
     () => (username ? {
       ring: { nameLeft: curvedLeft, photoCx, photo, gap: COVER_SPEC.nameGap * k, maxShift: photo / 4 },
@@ -594,15 +695,14 @@ function CoverHero({
       {placed && username ? (
         <>
           <ProfileName name={profile.name} variant="cover" edit={edit} placed={placed} />
-          <BaselineRow
-            top={edgeY - handleRise - handleStrut}
+          <ProfileHandle
+            username={username}
+            cover
+            edit={edit}
+            baseline={edgeY - handleRise}
             left={curveLeft(photoCx, r, COVER_SPEC.handleGap * k, handleRise + FONT.cap * small.fontSize * fontScale, handleRise)}
             right={NAME_RIGHT}
-            strut={handleStrut}
-            style={edit?.draft ? { opacity: 0.35 } : null}
-          >
-            <VText variant="small" color={COVER_HANDLE} numberOfLines={1} ellipsizeMode="tail" style={[handleStyle, COVER_HANDLE_STYLE]}>@{username}</VText>
-          </BaselineRow>
+          />
         </>
       ) : (
         // No username: the name beside the photo as before, NAME_LIFT above
@@ -639,6 +739,8 @@ function CoverHero({
 // The handle on the cover (COVER_SPEC): white at 78%, medium, a soft shadow
 // (the profile's secondary ink doesn't read on a photo).
 const COVER_HANDLE = 'rgba(255,255,255,0.78)';
+// The empty handle input's "@username" on the cover.
+const COVER_HANDLE_FAINT = 'rgba(255,255,255,0.5)';
 const COVER_HANDLE_STYLE = {
   fontFamily: 'InstrumentSans_500Medium', textShadowColor: 'rgba(0,0,0,0.25)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 8,
 } as const;
@@ -749,7 +851,8 @@ function FittedName({
       <>
         {measuring}
         {press ? (
-          <LongPressable fill style={box} disabled={press.disabled} onLongPress={press.onLongPress} accessibilityLabel={name} accessibilityHint={press.hint}>
+          // swapsOut: the input replaces this view (LongPressable).
+          <LongPressable fill style={box} disabled={press.disabled} swapsOut onLongPress={press.onLongPress} accessibilityLabel={name} accessibilityHint={press.hint}>
             {lines}
           </LongPressable>
         ) : (
@@ -775,7 +878,7 @@ function FittedName({
   );
 }
 
-const EDIT_HINT = 'Double-tap and hold to edit your name and bio.';
+const EDIT_HINT = 'Double-tap and hold to edit your name, username and bio.';
 
 // A profile's name: on the cover the white title, without one the ink
 // heading. On your own profile (`edit`) it is the long-press target, or,
@@ -817,15 +920,18 @@ function ProfileName({
         autoFocus={edit.focus === 'name'}
         maxLength={64}
         onSubmit={edit.done}
+        keepFocus={edit.doneBlocked}
         accessibilityLabel="Name"
         style={style}
       />
     );
     if (!placed) return field;
     // In the name's place: the input's own glyphs on the name's baseline (a
-    // one-line input is as tall as the font's ascent + descent).
+    // one-line input is as tall as the font's ascent + descent), shifted
+    // along the photo's curve like the one-line name (`anchoredIndent`).
+    const indent = anchoredIndent(placed.ring, placed.anchor.dy, FONT.cap * style.fontSize * fontScale);
     return (
-      <View style={{ position: 'absolute', left: placed.place.left, width: placed.avail, top: placed.place.baseline - FONT.ascent * style.fontSize * fontScale }}>
+      <View style={{ position: 'absolute', left: placed.place.left + indent, width: placed.avail - indent, top: placed.place.baseline - FONT.ascent * style.fontSize * fontScale }}>
         {field}
       </View>
     );
@@ -851,7 +957,7 @@ function ProfileName({
     : <PlainName name={name} />;
   if (!edit) return plain;
   return (
-    <LongPressable disabled={edit.busy != null} onLongPress={() => edit.start('name')} accessibilityLabel={name} accessibilityHint={EDIT_HINT}>
+    <LongPressable disabled={edit.busy != null} swapsOut onLongPress={() => edit.start('name')} accessibilityLabel={name} accessibilityHint={EDIT_HINT}>
       {plain}
     </LongPressable>
   );
@@ -884,6 +990,7 @@ function Bio({ profile, own, edit }: { profile: FullProfile; own: boolean; edit?
         placeholder="Add a bio"
         placeholderTextColor={theme.inkSoft}
         onSubmit={edit.done}
+        keepFocus={edit.doneBlocked}
         accessibilityLabel="Bio"
         style={{ fontFamily: 'InstrumentSans_400Regular', fontSize: small.fontSize, lineHeight, color: theme.ink }}
       />
@@ -895,8 +1002,9 @@ function Bio({ profile, own, edit }: { profile: FullProfile; own: boolean; edit?
     return (
       <LongPressable
         disabled={edit.busy != null}
+        swapsOut
         onLongPress={() => edit.start('bio')}
-        accessibilityHint="Double-tap and hold to edit your name and bio."
+        accessibilityHint={EDIT_HINT}
       >
         {text}
       </LongPressable>
@@ -906,9 +1014,10 @@ function Bio({ profile, own, edit }: { profile: FullProfile; own: boolean; edit?
   return (
     <LongPressable
       disabled={edit.busy != null}
+      swapsOut
       onLongPress={() => edit.start('bio')}
       accessibilityLabel="Add a Bio"
-      accessibilityHint="Double-tap and hold to edit your name and bio."
+      accessibilityHint={EDIT_HINT}
     >
       {/* Reads as a prompt, not your text (ruled 2026-11-12): a pencil and
           the app's placeholder grey (the empty search field's). */}

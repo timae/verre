@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { MeCard, SetGroup, SetNav, SetPage } from '@/components/moments/settingsParts';
+import { MeCard, SetGroup, SetNav, SetPage, failedReads } from '@/components/moments/settingsParts';
 import { VText } from '@/components/ui/VText';
 import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
 import { profileQueryOptions } from '@/lib/api/users';
@@ -34,7 +34,7 @@ export default function Settings() {
   const version = [APP_VERSION ? `Verre ${APP_VERSION}` : null, APP_BUILD ? `Build ${APP_BUILD}` : null].filter(Boolean).join(' · ');
 
   return (
-    <SetPage title="Settings">
+    <SetPage title="Settings" offline={failedReads(account, profile)}>
       <MeCard name={name} username={account.data?.username ?? own?.username ?? null} imageUrl={own?.imageUrl ?? null} onPress={() => router.push(profileEditHref(mount), { dangerouslySingular: true })} />
       <SetGroup flush>
         <SetNav icon="user" label="Account" onPress={() => router.push(settingsHref(mount, 'account'), { dangerouslySingular: true })} />

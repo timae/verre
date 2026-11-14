@@ -2,7 +2,7 @@ import { Children, Fragment, isValidElement, useRef, useState, type ReactNode } 
 import { ActivityIndicator, Pressable, ScrollView, Switch, View, type StyleProp, type TextStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
-import { ErrorState } from '@/components/ui/ConnectionState';
+import { ConnectionBanner, ErrorState } from '@/components/ui/ConnectionState';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { BadgePill } from '@/components/moments/RoleChip';
@@ -82,14 +82,21 @@ export function SetGroup({ children, flush }: { children: ReactNode; flush?: boo
 // footer page, which hides the pill, clears it through `bottomPad`); the
 // scroll keeps a focused field above the keyboard.
 // `gap`: between sections (26; a page of SetTitle sections uses 32, the
-// design's space above a section title).
-export function SetPage({ title, children, bottomPad, footer, gap = 26 }: { title: string; children: ReactNode; bottomPad?: number; footer?: ReactNode; gap?: number }) {
+// design's space above a section title). `offline`: one of the page's reads
+// failed (`failedReads`): the app's "Can't reach server" strip under the bar,
+// tap = retry; the rows stay usable (Sign Out must work offline).
+export function SetPage({ title, children, bottomPad, footer, gap = 26, offline }: { title: string; children: ReactNode; bottomPad?: number; footer?: ReactNode; gap?: number; offline?: (() => void) | null }) {
   const insets = useSafeAreaInsets();
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
         <VBar title={title} />
       </View>
+      {offline ? (
+        <View style={{ paddingTop: 6 }}>
+          <ConnectionBanner onRetry={offline} />
+        </View>
+      ) : null}
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: bottomPad ?? TAB_BAR_CLEARANCE, gap }}
         keyboardDismissMode="interactive"
@@ -102,6 +109,13 @@ export function SetPage({ title, children, bottomPad, footer, gap = 26 }: { titl
       {footer}
     </View>
   );
+}
+
+// SetPage's `offline`: a retry of every failed read, or null when none failed
+// (a failed refetch over cached data counts: the page may be stale).
+export function failedReads(...reads: { isError: boolean; refetch: () => unknown }[]): (() => void) | null {
+  const failed = reads.filter((r) => r.isError);
+  return failed.length ? () => failed.forEach((r) => void r.refetch()) : null;
 }
 
 // .yo-sgrp — a section on a settings page: the optional uppercase label

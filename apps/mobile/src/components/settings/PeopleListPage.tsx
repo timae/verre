@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, View } from 'react-native';
-import { PersonRow, SetPage, SettingsScreenFallback } from '@/components/moments/settingsParts';
+import { PersonRow, SetPage, SettingsScreenFallback, failedReads } from '@/components/moments/settingsParts';
 import { firstName } from '@/components/profile/ProfileHeader';
 import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
@@ -72,7 +72,7 @@ export function PeopleListPage({ kind }: { kind: keyof typeof KINDS }) {
     return <SettingsScreenFallback title={k.title} isError errorTitle="Couldn’t load this list" retrying={q.isFetching} onRetry={() => void q.refetch()} />;
   }
   return (
-    <SetPage title={k.title}>
+    <SetPage title={k.title} offline={failedReads(q)}>
       {!q.data ? (
         <View style={{ paddingTop: 24, alignItems: 'center' }}><ActivityIndicator /></View>
       ) : q.data.length === 0 ? (

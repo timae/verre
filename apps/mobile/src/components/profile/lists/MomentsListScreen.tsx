@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, View } from 'react-native';
 import {
-  MomentFilterChips, MomentFilterSheet, NO_FILTERS, momentFilterCount, toMomentParams, useMomentFilterOptions, type Filters,
+  MomentFilterSheet, NO_FILTERS, momentFilterCount, toMomentParams, useMomentFilterOptions, type Filters,
 } from '@/components/moments/MomentFilters';
 import { RoleChip } from '@/components/moments/RoleChip';
 import { CenteredMessage, ErrorState } from '@/components/ui/ConnectionState';
@@ -55,11 +55,6 @@ export function MomentsPane({ userId, active: shown }: { userId: string; active:
   }, [query]);
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [filterOpen, setFilterOpen] = useState(false);
-  const [editPicker, setEditPicker] = useState<'roles' | 'hosts' | 'people' | null>(null);
-  const openFilter = (facet: 'roles' | 'hosts' | 'people' | null = null) => {
-    setEditPicker(facet);
-    setFilterOpen(true);
-  };
   const owner = useMemo(() => (!own && profile ? { key: `u:${userId}`, label: profile.name, imageUrl: profile.imageUrl } : undefined), [own, profile, userId]);
   const { hostOptions, peopleOptions, friendKeys, categoryOptions } = useMomentFilterOptions(owner);
   const params = useMemo(() => ({ q: search || undefined, ...toMomentParams(filters) }), [search, filters]);
@@ -138,11 +133,9 @@ export function MomentsPane({ userId, active: shown }: { userId: string; active:
       <View style={{ flex: 1, display: shown ? 'flex' : 'none' }}>
         <View style={{ paddingHorizontal: GUTTER }}>
           <ToolRow query={query} onQuery={setQuery} placeholder="Search moments">
-            <ToolButton icon="funnel" label={active > 0 ? `Filter, ${active} active` : 'Filter'} active={active > 0} onPress={() => openFilter()} />
+            <ToolButton icon="funnel" label={active > 0 ? `Filter, ${active} active` : 'Filter'} active={active > 0} count={active} onPress={() => setFilterOpen(true)} />
           </ToolRow>
         </View>
-        <MomentFilterChips filters={filters} onChange={setFilters} onEdit={openFilter} hostOptions={hostOptions} peopleOptions={peopleOptions} />
-        <View style={{ height: active > 0 ? 6 : 0 }} />
         {body}
         <MomentFilterSheet
           open={filterOpen}
@@ -153,7 +146,6 @@ export function MomentsPane({ userId, active: shown }: { userId: string; active:
           peopleOptions={peopleOptions}
           categoryOptions={categoryOptions}
           friendKeys={friendKeys}
-          initialPicker={editPicker}
           role={own ? undefined : who ? { title: `${who}’s Role`, a11y: `Filter by ${who}’s role` } : { title: 'Role', a11y: 'Filter by role' }}
         />
       </View>
