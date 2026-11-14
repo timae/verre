@@ -33,7 +33,9 @@ export type Result = { exit: 0 | 1 | 2; out: Record<string, unknown> }
 
 const USAGE = 'usage: set-username.mts <email> <username> [--apply] [--allow-reserved] [--block-old] | --release-hold <username> [--apply]'
 
-export async function run(argv: string[]): Promise<Result> {
+// `hooks.beforeWrite` is a test seam: it runs between this script's read of
+// the account and its write, the gap a concurrent rename can land in.
+export async function run(argv: string[], hooks: { beforeWrite?: () => Promise<void> } = {}): Promise<Result> {
   const flags = new Set(argv.filter(a => a.startsWith('--')))
   const args = argv.filter(a => !a.startsWith('--'))
   const apply = flags.has('--apply')
@@ -70,8 +72,14 @@ export async function run(argv: string[]): Promise<Result> {
     const taken = await usernameTaken(username, user.id)
     return { exit: taken ? 1 : 0, out: { ...base, mode: 'dry-run', result: taken ? 'taken or held: would be refused' : 'would be set' } }
   }
-  const result = await changeUsername(user.id, username, { skipQuota: true, blockOld })
+  await hooks.beforeWrite?.()
+  // 🔒 Bound to the name read above: if the person renamed meanwhile, nothing
+  // is written and nothing is reported as blocked (run it again).
+  const result = await changeUsername(user.id, username, { skipQuota: true, blockOld, expectedCurrent: user.username })
   if (result.status === 'ok') return { exit: 0, out: { ...base, mode: 'apply', result: 'set' } }
+  if (result.status === 'moved') {
+    return { exit: 1, out: { action: 'set', from: user.username, to: username, mode: 'apply', result: 'refused: the username changed while this ran; nothing written, nothing blocked. Run it again.', now: result.current } }
+  }
   return { exit: 1, out: { ...base, mode: 'apply', result: result.status === 'taken' ? 'taken or held: refused by the database' : result.status } }
 }
 

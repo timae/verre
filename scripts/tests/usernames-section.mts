@@ -280,6 +280,18 @@ export async function usernames(h: UsernamesHarness) {
   const blocked = await operator.run([Mod.email, fixtureUsername('op'), '--apply', '--block-old'])
   const [blk] = await holds(modOld)
   check('🔒 operator: --block-old blocks the old name for everyone: no owner, no clear text, no end date', blocked.exit === 0 && blk?.user_id === null && blk.username === null && blk.held_until.getUTCFullYear() === 9999, { blocked, blk })
+  // 🔒 The person renames between the script's read and its write: the block
+  // must not land on another name, nor be reported while the offending one
+  // stays held FOR them (Codex review).
+  const Sly = await mkUser('Sly Racer'), slyOld = (await nameOf(Sly.id))!, slyDest = fixtureUsername('op')
+  const slyMoved = fixtureUsername('sly')
+  const racedBlock = await operator.run([Sly.email, slyDest, '--apply', '--block-old'], { beforeWrite: async () => { await put(Sly, slyMoved) } })
+  const [slyHold] = await holds(slyOld)
+  check('🔒 operator: a rename that lands between its read and its write → refused, nothing written, nothing reported blocked', racedBlock.exit === 1 && racedBlock.out.now === slyMoved && !('oldName' in racedBlock.out) && (await nameOf(Sly.id)) === slyMoved && slyHold?.user_id === Sly.id && slyHold.held_until.getUTCFullYear() < 9999 && (await holds(slyMoved)).length === 0, { racedBlock, slyHold })
+  const racedSame = await operator.run([Sly.email, slyDest, '--apply', '--block-old'], { beforeWrite: async () => { await put(Sly, slyDest) } })
+  check('🔒 …also when they take the destination themselves (no false "set", no false block)', racedSame.exit === 1 && racedSame.out.now === slyDest && (await holds(slyMoved))[0]?.user_id === Sly.id, racedSame)
+  const rerun = await operator.run([Sly.email, fixtureUsername('op'), '--apply', '--block-old'])
+  check('…running it again blocks the name they hold now', rerun.exit === 0 && (await holds(slyDest))[0]?.held_until.getUTCFullYear() === 9999 && (await holds(slyDest))[0]?.user_id === null, rerun)
   const modState = await getState(Mod)
   check('🔒 …the renamed person cannot switch back, and is not offered it', (await put(Mod, modOld)).wire.code === 'taken' && modState.wire.previous === null && (await available(Mod, modOld)).wire.reason === 'taken')
   check('…a later rename by them does not touch the block', (await put(Mod, fixtureUsername('m'))).status === 200 && (await holds(modOld))[0]?.held_until.getUTCFullYear() === 9999)

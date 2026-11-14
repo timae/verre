@@ -85,8 +85,11 @@ try {
     return { ...row, name, username }
   }
   const stamp = Date.now().toString(36)
-  const P = await mk(`Pia Public ${stamp}`, fixtureUsername('web'))
-  const S = await mk(`Sol Shell ${stamp}`, fixtureUsername('web'), { profileVisibility: 'public-mutual' })
+  // Gated content with a marker: the photo. A full profile renders it, the
+  // name-only shell must not.
+  const photo = (who: string) => `https://img.test/${who}-photo-${stamp}.jpg`
+  const P = await mk(`Pia Public ${stamp}`, fixtureUsername('web'), { imageUrl: photo('pia') })
+  const S = await mk(`Sol Shell ${stamp}`, fixtureUsername('web'), { profileVisibility: 'public-mutual', imageUrl: photo('sol') })
   const brand = reservedFixtureUsername()
   await releaseUsernameHold(brand)   // a leftover hold from an earlier run on a persistent database
   const B = await mk(`Verre Brand ${stamp}`, brand)
@@ -104,7 +107,10 @@ try {
   const encoded = await page(`/%40${P.username}`)
   check('🔒 the encoded form /%40name opens it too', encoded.status === 200 && encoded.text.includes(P.name), encoded.status)
   const shell = await page(`/@${S.username}`)
-  check('a non-public profile, logged out: the name-only shell, as on /u/<id>', shell.status === 200 && shell.text.includes(S.name), shell.status)
+  const marker = (who: string) => `${who}-photo-${stamp}`
+  check('control: a full profile renders its photo, by name and by id', at.text.includes(marker('pia')) && byId.text.includes(marker('pia')))
+  const shellById = await page(`/u/${S.publicId.toLowerCase()}`)
+  check('🔒 a non-public profile, logged out: the NAME-ONLY shell by name too (the name, never the photo), as on /u/<id>', shell.status === 200 && shell.text.includes(S.name) && !shell.text.includes(marker('sol')) && shellById.text.includes(S.name) && !shellById.text.includes(marker('sol')), shell.status)
   check('/u/<id> does not redirect to /@name', byId.location === null)
   const direct = await page(`/u/by-username/${P.username}`)
   check('the rewrite\'s target also answers directly (/u/by-username/<name>): the same page, a third spelling, left as is', direct.status === 200 && direct.text.includes(P.name), direct.status)

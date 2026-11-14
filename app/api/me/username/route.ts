@@ -57,7 +57,8 @@ export async function PUT(req: NextRequest) {
   if (!rl.allowed) return limited('username changes', rl.retryAfter)
 
   const result = await changeUsername(userId, checked.username)
-  if (result.status === 'not-found') return NextResponse.json({ error: 'user not found' }, { status: 404, headers: noStore })
+  // 'moved' needs `expectedCurrent`, which only the operator script passes.
+  if (result.status === 'not-found' || result.status === 'moved') return NextResponse.json({ error: 'user not found' }, { status: 404, headers: noStore })
   if (result.status === 'taken') return NextResponse.json({ error: 'That username is taken.', code: 'taken' }, { status: 409, headers: noStore })
   if (result.status === 'quota') {
     return NextResponse.json(

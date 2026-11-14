@@ -290,6 +290,12 @@ These override the sections above where they differ (§ 2 "the most recent old n
 - The trigger also accepts `read uncommitted` (Postgres runs it as READ COMMITTED). `nextChangeAt` is rounded up by a millisecond (the stored time has microseconds).
 - Half of the suite's fixture users now have NO username (a credential and a sign-in instead of a sign-up), so the older sections also run against the shape production is in right after the deploy.
 
+**Codex on the build (2026-11-14, `xhigh`): changes required, one major and two minors, all fixed**
+
+- **`--block-old` could report a block it had not made** (major). The script read the account, then `changeUsername` took the row lock: a rename by the person in between made the block land on the name they held at that moment, or on none when they had taken the destination themselves, while the script still reported the name it had read as blocked and that name stayed held FOR them. `changeUsername` now takes `expectedCurrent` and answers `moved` under the lock; the script refuses (exit 1, nothing written, nothing reported blocked) and is run again. Pinned with a hook between the script's read and its write (both interleavings).
+- The web suite's "name-only shell" check would have passed on a full profile. It now seeds a photo with a marker, asserts it is absent from the shell (by name and by id) and present on a public profile.
+- `docs/dev/deployment.md` described the blocking screen and the new web form as shipped. It now says the server half must not be deployed alone.
+
 **For the UI half (release gate)**
 
 - Search now returns and ranks people by username (an exact username first, then prefixes). Until rows show `@username`, a result can look unexplained: "sim" may list "Anna Meier" (`@simmental`) first. The rows must show the username before this ships.

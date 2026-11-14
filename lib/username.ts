@@ -89,6 +89,8 @@ export type ChangeUsernameResult =
   | { status: 'taken' }
   | { status: 'quota'; nextChangeAt: string }
   | { status: 'not-found' }
+  // `expectedCurrent` no longer matched under the row lock: nothing written.
+  | { status: 'moved'; current: string | null }
 
 // Test seams (scripts/tests/usernames-section.mts § 21 d): the quota race
 // needs a fixed schedule, and its negative control needs the row lock off.
@@ -111,8 +113,14 @@ export const usernameChangeSeams: { afterQuotaRead: () => Promise<void>; lockRow
 // its former owner, who could switch straight back; in the same transaction
 // that hold loses its owner and its clear text and gets NO END DATE
 // (`NO_END`), so it refuses everyone until `releaseUsernameHold`.
+// 🔒 `expectedCurrent` (operator): the name the caller READ before deciding.
+// Checked under the row lock; if the person renamed meanwhile the answer is
+// `moved` and nothing is written. A moderation rename must pass it: otherwise
+// a rename that lands between the operator's read and this transaction makes
+// `blockOld` block a different name (or none, when they took the destination
+// themselves) while the offending one stays held FOR them.
 export const USERNAME_HOLD_NO_END = '9999-12-31T00:00:00Z'
-export async function changeUsername(userId: number, name: string, opts: { skipQuota?: boolean; blockOld?: boolean } = {}): Promise<ChangeUsernameResult> {
+export async function changeUsername(userId: number, name: string, opts: { skipQuota?: boolean; blockOld?: boolean; expectedCurrent?: string | null } = {}): Promise<ChangeUsernameResult> {
   try {
     return await prisma.$transaction(async (tx): Promise<ChangeUsernameResult> => {
       const rows = usernameChangeSeams.lockRow
@@ -120,6 +128,7 @@ export async function changeUsername(userId: number, name: string, opts: { skipQ
         : await tx.$queryRaw<{ username: string | null }[]>`SELECT username FROM users WHERE id = ${userId}`
       if (rows.length === 0) return { status: 'not-found' }
       const current = rows[0].username
+      if (opts.expectedCurrent !== undefined && current !== opts.expectedCurrent) return { status: 'moved', current }
       if (current === name) return { status: 'ok', changed: false }
       const counted = current !== null && !opts.skipQuota
       if (counted) {
