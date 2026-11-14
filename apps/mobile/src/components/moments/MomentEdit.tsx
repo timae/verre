@@ -243,6 +243,7 @@ export function useMomentEdit({ code, meta, stateKey, canEdit, scrollBy }: {
       if (viewerCacheEpoch() !== epoch) return;
       Alert.alert('Couldn’t Save', errorText(e));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };

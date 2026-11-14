@@ -196,6 +196,11 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
   const [focus, setFocus] = useState<EditField | null>(null);
   const [focusedField, setFocusedField] = useState<EditField | null>(null);
   const [saving, setSaving] = useState(false);
+  // While Done's requests are out the fields take no typing: the save sent a
+  // snapshot, and its success ends the edit (a later keystroke would be lost;
+  // the moment's edit does the same, Codex review 2026-11-14).
+  const savingRef = useRef(false);
+  savingRef.current = saving;
   const [imageBusy, setImageBusy] = useState<'avatar' | 'cover' | null>(null);
   const [tileSheet, setTileSheet] = useState<TileKey | null>(null);
   const nameRef = useRef<TextInputInstance | null>(null);
@@ -321,6 +326,7 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
       cancelEdit();
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     const epoch = viewerCacheEpoch();
     let usernameSaved = false;
@@ -363,6 +369,7 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
       // The username went through on its own: say so (it is no longer a change).
       Alert.alert('Couldn’t Save', usernameSaved ? `Your new username is saved. ${errorText(e)}` : errorText(e));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -464,6 +471,7 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
           draft,
           focus,
           setDraft: (field, value) => {
+            if (savingRef.current) return;
             setDraft((d) => (d ? { ...d, [field]: value } : d));
             if (field === 'username') setUsernameError(null);
           },
