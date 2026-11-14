@@ -15,6 +15,7 @@ import { QuickAddChip } from '@/components/ui/QuickAddChip';
 import { Sheet } from '@/components/ui/Sheet';
 import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { ShareFooterButton } from '@/components/ui/ShareFooterButton';
+import { UsernameLine } from '@/components/ui/UsernameLine';
 import { VText } from '@/components/ui/VText';
 import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
 import { SEARCH_KEY, TASTED_WITH_KEY, getTastedWith, searchPeople, type TastedWith } from '@/lib/api/people';
@@ -23,9 +24,9 @@ import { authClient } from '@/lib/authClient';
 import { lastMomentLine } from '@/lib/momentFormat';
 import { relate, usePersonBusy } from '@/lib/relationship';
 import { type VerreCode } from '@/lib/scanCode';
-import { fuzzyIncludes } from '@/lib/search';
+import { matchesPerson } from '@/lib/search';
 import { feedHref, useSessionTab } from '@/lib/sessionStack';
-import { profileLink, shareProfile } from '@/lib/shareProfile';
+import { profileLink, profileShareLabel, shareProfile } from '@/lib/shareProfile';
 import { usePushGuard } from '@/lib/usePushGuard';
 import { useTheme } from '@/theme';
 
@@ -72,7 +73,11 @@ export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClos
   const acctQ = useQuery({ queryKey: MY_ACCOUNT_KEY, queryFn: getMyAccount, enabled: open });
   const meProfile = meQ.data?.state === 'ok' ? meQ.data : null;
   const myName = meProfile?.name ?? acctQ.data?.name ?? sessionName ?? '';
+  const myUsername = meProfile?.username ?? acctQ.data?.username ?? null;
+  // The QR keeps the public id (it survives a rename); the line under it and
+  // the share sheet carry the `/@name` link.
   const link = profileLink(meId);
+  const me = { id: meId, username: myUsername };
 
   const tastedQ = useQuery({ queryKey: TASTED_WITH_KEY, queryFn: getTastedWith, enabled: open, staleTime: 30_000 });
   useEffect(() => {
@@ -126,7 +131,7 @@ export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClos
   const tastedRows = useMemo(() => {
     const all = chips ?? [];
     const q = query.trim();
-    return q ? all.filter((p) => fuzzyIncludes(p.name, q)) : all;
+    return q ? all.filter((p) => matchesPerson(p, q)) : all;
   }, [chips, query]);
 
   // ── Header (shared) ───────────────────────────────────────────────────────
@@ -187,7 +192,17 @@ export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClos
               <Avatar imageUrl={meProfile?.imageUrl ?? null} name={myName || '?'} size={26} initialsSize={10} />
               <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold', flexShrink: 1 }} numberOfLines={1}>{myName}</VText>
             </View>
-            <VText variant="small" color="inkSoft">Scan to follow me on Verre</VText>
+            {/* Your @username under your name, then the link as it is shared
+                (ruled 2026-11-14; "Scan to follow me on Verre" until you have
+                a username). */}
+            {myUsername ? (
+              <View style={{ alignItems: 'center', gap: 2, maxWidth: '100%', marginTop: -6 }}>
+                <UsernameLine username={myUsername} />
+                <VText variant="small" color="inkSoft" numberOfLines={1} ellipsizeMode="middle">{profileShareLabel(me)}</VText>
+              </View>
+            ) : (
+              <VText variant="small" color="inkSoft">Scan to follow me on Verre</VText>
+            )}
           </View>
 
           {/* .ish-friends — the tasted-with chips (hidden when there are none
@@ -214,11 +229,11 @@ export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClos
               style={{ flexDirection: 'row', alignItems: 'center', gap: 7, minHeight: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}
             >
               <Icon name="search" size={16} color={theme.inkSoft} />
-              <VText variant="small" color="inkFaint">Search people by name</VText>
+              <VText variant="small" color="inkFaint">Search by name or username</VText>
             </Pressable>
           </View>
 
-          <ShareFooterButton title="Share Profile Link" onPress={() => void shareProfile(myName, meId)} />
+          <ShareFooterButton title="Share Profile Link" onPress={() => void shareProfile(myName, me)} />
         </BottomSheetView>
       ) : pane === 'search' ? (
         // FIXED-height pane (85%) with a BottomSheetScrollView: a plain View
@@ -226,7 +241,7 @@ export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClos
         <View style={{ flex: 1, width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14 }}>
           {header}
           {/* Reached only by tapping the pseudo-field: type at once (ruled 2026-11-12). */}
-          <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search people by name" autoFocus />
+          <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search by name or username" autoFocus />
           <BottomSheetScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
             {search ? (
               <View style={{ marginBottom: 18 }}>

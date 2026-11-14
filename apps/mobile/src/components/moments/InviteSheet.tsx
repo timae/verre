@@ -14,7 +14,7 @@ import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
-import { fuzzyIncludes } from '@/lib/search';
+import { matchesPerson } from '@/lib/search';
 import { WEB_BASE } from '@/lib/config';
 import { radius, useTheme } from '@/theme';
 
@@ -70,7 +70,7 @@ export function InviteSheet({
   const notIn = allFriends.filter((f) => !participantIds.has(`u:${f.id}`));
   const browseMatches = useMemo(() => {
     const needle = q.trim();
-    return needle ? allFriends.filter((f) => fuzzyIncludes(f.name, needle)) : allFriends;
+    return needle ? allFriends.filter((f) => matchesPerson(f, needle)) : allFriends;
   }, [allFriends, q]);
 
   const copyLink = async () => {

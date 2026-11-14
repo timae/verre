@@ -7,10 +7,12 @@ import { FollowButton } from '@/components/social/FollowButton'
 import { ProfileActionsMenu } from './ProfileActionsMenu'
 import { EditableAvatar } from './EditableAvatar'
 import { ZoomableAvatar } from './ZoomableAvatar'
+import { UsernameLine } from './UsernameLine'
 
 interface Props {
   userId: string
   userName: string
+  username?: string | null
   userXp: number
   userImageUrl?: string | null
   myId: string | null
@@ -40,7 +42,7 @@ interface Props {
   onBlockToggle?: () => void
 }
 
-export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, isFollowing, viewerMutes, onFollowToggle, onMuteToggle, onBlockToggle }: Props) {
+export function ProfileHeader({ userId, userName, username, userXp, userImageUrl, myId, isFollowing, viewerMutes, onFollowToggle, onMuteToggle, onBlockToggle }: Props) {
   const router = useRouter()
   const level = getLevel(userXp)
   const nextXP = level.nextXP
@@ -64,6 +66,7 @@ export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, is
         }
         <div style={{ flex: 1, minWidth: 0 }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, marginBottom: 4 }}>{userName}</h1>
+          <UsernameLine username={username} />
           <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>{level.icon} {level.name} · {formatNumber(userXp)} XP</div>
           <div style={{ height: 3, background: 'var(--bg3)', borderRadius: 2, marginTop: 6, overflow: 'hidden' }}>
             <div style={{ height: '100%', width: `${Math.min(100, progress)}%`, background: 'var(--accent)', borderRadius: 2 }} />

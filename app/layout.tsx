@@ -5,6 +5,7 @@ import type { Session } from 'next-auth'
 import { clientSession } from '@/lib/clientSession'
 import { QueryProvider } from '@/components/QueryProvider'
 import { ImageLightbox } from '@/components/ui/ImageLightbox'
+import { UsernameGate } from '@/components/auth/UsernameGate'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -41,7 +42,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             userSessionId), never the server session (public-user-ids § 5). */}
         <SessionProvider session={clientSession(session) as Session | null}>
           <QueryProvider>
-            {children}
+            <UsernameGate>{children}</UsernameGate>
             <ImageLightbox />
           </QueryProvider>
         </SessionProvider>

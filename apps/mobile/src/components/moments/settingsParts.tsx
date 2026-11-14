@@ -7,6 +7,7 @@ import { Avatar } from '@/components/ui/Avatar';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { BadgePill } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
+import { UsernameLine } from '@/components/ui/UsernameLine';
 import { VText } from '@/components/ui/VText';
 import { GLASS_FILL, GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
 import { alpha, flatten, readableSolid } from '@/theme/color';
@@ -204,12 +205,12 @@ export function SetNav({
 // .yo-mecard — the Settings hub's own-profile card: 60pt photo, name, "Edit
 // Profile", chevron. Elevated by the sm shadow token (the mock's
 // `--shadow-sm`), no border.
-export function MeCard({ name, imageUrl, onPress }: { name: string; imageUrl: string | null; onPress: () => void }) {
+export function MeCard({ name, username, imageUrl, onPress }: { name: string; username?: string | null; imageUrl: string | null; onPress: () => void }) {
   const { theme } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${name}, Edit Profile`}
+      accessibilityLabel={[name, username ? `@${username}` : null, 'Edit Profile'].filter(Boolean).join(', ')}
       onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14,
@@ -225,7 +226,9 @@ export function MeCard({ name, imageUrl, onPress }: { name: string; imageUrl: st
       <Avatar imageUrl={imageUrl} name={name} size={60} tint />
       <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
         <VText variant="subhead" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{name}</VText>
-        <VText variant="small" color="inkSoft">Edit Profile</VText>
+        {/* Your `@username` under the name (ruled 2026-11-14); "Edit Profile"
+            stays the line only until one is chosen (and the VoiceOver label). */}
+        {username ? <UsernameLine username={username} /> : <VText variant="small" color="inkSoft">Edit Profile</VText>}
       </View>
       <Icon name="chevron-right" size={18} color={theme.inkFaint} />
     </Pressable>
@@ -472,11 +475,14 @@ export function ChoiceRow({ icon, label, value, helper, onPress, dropdown, disab
 
 // A person on a cardless settings list (Blocked / Muted): the initials disc,
 // the name `body` regular, a trailing node (the Unblock / Unmute button).
-export function PersonRow({ name, trailing, flush }: { name: string; trailing: ReactNode; flush?: boolean }) {
+export function PersonRow({ name, username, trailing, flush }: { name: string; username?: string | null; trailing: ReactNode; flush?: boolean }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: flush ? 0 : ROW_GAP, paddingBottom: 2 }}>
       <Avatar name={name} size={36} initialsSize={12} />
-      <VText variant="body" numberOfLines={1} style={{ flex: 1 }}>{name}</VText>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <VText variant="body" numberOfLines={1}>{name}</VText>
+        <UsernameLine username={username} />
+      </View>
       {trailing}
     </View>
   );

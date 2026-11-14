@@ -64,7 +64,7 @@ const ROUTE_WORDS = [
   // web
   'api', 'join', 'legal', 'login', 'register', 'me', 'session', 'u',
   // app
-  'about', 'attributions', 'feed', 'moments', 'you', 'soon', 'signin', 'signup', 'updaterequired',
+  'about', 'attributions', 'feed', 'moments', 'you', 'soon', 'signin', 'signup', 'updaterequired', 'chooseusername',
   // future
   'place', 'places', 'producer', 'producers', 'wine', 'wines', 'catalog', 'moment', 'impression', 'impressions',
   'craving', 'cravings', 'settings', 'search', 'explore', 'home', 'profile', 'user', 'users', 'account', 'privacy',

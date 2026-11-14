@@ -1,6 +1,7 @@
 import { apiFetch } from '../apiFetch';
 
-export type MyAccount = { name: string | null; email: string | null; pro: boolean };
+// `username`: null = not chosen yet (the choose-your-username screen).
+export type MyAccount = { name: string | null; username: string | null; email: string | null; pro: boolean };
 export const MY_ACCOUNT_KEY = ['my-account'] as const;
 
 // Minimal self profile — `pro` gates pro-only affordances in the UI (02a
@@ -12,7 +13,7 @@ export async function getMyAccount(): Promise<MyAccount> {
   return res.json();
 }
 
-export type Friend = { id: string; name: string; imageUrl: string | null };
+export type Friend = { id: string; name: string; username: string | null; imageUrl: string | null };
 
 // Mutual follows (you follow each other), block-pair members already dropped
 // server-side. Used by the invite sheet's friend chips / browse list. The

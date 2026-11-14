@@ -536,6 +536,9 @@ export type MomentPreview = {
   name: string | null;
   host: string | null;
   hostUserId: string | null;
+  // The host's `@name`, only beside `hostUserId` (null: a guest host, a block
+  // pair, not chosen yet). The one username a moment route sends.
+  hostUsername: string | null;
   dateFrom: string | null;
   dateTo: string | null;
   address: string | null;

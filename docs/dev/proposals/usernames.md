@@ -106,7 +106,7 @@ Shared by web, app and server. Platform-pure like the rest of `@verre/core`.
 - People: `lib/profileHeader.ts` in-common faces, `lib/profilePeople.ts` rows, `/api/users/search` (admitted rows and gated stubs), `/api/me/friends`, `/api/me/tasted-with`, the blocks and mutes lists.
 - Feed: `author`, `checkin.tags[]` (network feed, `?user=`, `profileLoad`'s recent posts), the check-in POST / PATCH echo.
 - Your own: `session.user.username` on the web (the `session()` callback already reads `users` fresh on every call; `clientSession` passes it on), `user.username` on every native auth response (§ 9).
-- **Not:** anything built by `lib/sessionState.ts`, `metaToWire`, the join / visit / bans / preview routes, the Redis cache, `/api/me/sessions` (its `people[]` are moment rosters).
+- **Not:** anything built by `lib/sessionState.ts`, `metaToWire`, the join / visit / bans routes (the preview: one exception since the UI half, § 19), the Redis cache, `/api/me/sessions` (its `people[]` are moment rosters).
 - The build greps every person mapper again (the public-ids inventory, `.local/public-user-ids/inventory.md`, is the starting list, not the proof).
 
 ## 7. Search
@@ -304,3 +304,61 @@ These override the sections above where they differ (§ 2 "the most recent old n
 **Not done**
 
 - The new CI steps (a `next build` and the web suite in `check-schema.yml`) have never run on a GitHub runner (hold mode). Locally they pass from a build made with no `.env` and only the three variables the workflow sets.
+
+## 19. As built: the UI half (2026-11-14, `feature/usernames-ui`)
+
+One server contract changed: the moment preview gained `hostUsername` (below). The app's rules live in `apps/mobile/CLAUDE.md` § Usernames; this is what was ruled and what differs from § 13.
+
+**Ruled (2026-11-14)**
+
+- **Where `@name` shows** (the handover): the profile header (own and others', the private and blocked views), search and Add Friends results, the scan result, the share card, Settings' You row, Edit Profile, the Blocked and Muted lists, the invite sheet's friend rows, the scanned moment's host. **Name only:** the feed, the People lists (Friends / Followers / Following), the docked title bar, everything inside a moment. Rule of thumb: the username shows where you find or confirm someone you may not know, not where you read people you know.
+- **People lists stay name-only even while searching**, although their `q` matches usernames (§ 7): a row found by username can look unexplained there. The release gate of § 18 is met for SEARCH results (Add Friends, the invite sheet) and knowingly waived for the People lists.
+- **The scanned moment's host**: the preview answers with `hostUsername` (the one server change of this build; ruled twice on 2026-11-14). First ruled "from the host's profile, no server change"; review then showed that read spends the shared per-address profile budget (60 a minute: a venue scanning one QR would exhaust it), so it moved into the preview: one request, from the users row, only beside `hostUserId` (a registered host, no block pair). Nothing new is told: that public id already opens a profile that shows the username to anyone. § 6's rule keeps this single exception; everything from the join on carries none.
+- **Scan result**: name, `@name · Follows you`, then the friends-in-common line (kept as a third line).
+- **Edit Profile**: the limit is quiet until the last two changes ("2 changes left for now.", "This is your last change for now."); with none left the field is read-only with "You can change it again on <date>." No confirm, no switch-back link (typing the old name works while it is held for you). The server names a date only once none are left, so the last two carry no date.
+- **The choose screen** as specified ("Choose Your Username", "This is how people find you on Verre. You can change it later.", Continue, Sign Out), app and web. No suggestions.
+- **Sign-up**: the rule a name breaks shows about half a second after the last keystroke; capitals are lowercased as typed; "taken" shows after the submit, for the username and the email together.
+- **Web: only what is needed** (the web is slated for a redesign): the register form, the choose screen, the Username form in account settings, `@name` under the name on the profile page and modal (full, private, blocked), "display name" → "name". No canonical link from `/u/<id>` to `/@name`: the id link is the one that never changes owner.
+
+**Built differently from § 13, or added**
+
+- **The app blocks only on a SERVER-CONFIRMED missing username** (`needsUsername`, `apps/mobile/src/lib/bootGate.ts`), latched for the launch. A cold launch paints from the cached session, which can predate a name chosen on the web or set by an operator; blocking from it would, offline, strand the person on a screen that cannot work. Cost: an account that must choose sees its tabs for the moment the first heartbeat takes.
+- **The web gate renders in place** (`components/auth/UsernameGate.tsx`, in the root layout): no redirect, so no loop; the server-rendered HTML already holds the choose screen. `/legal/*` stays readable (the attributions are a licence obligation).
+- **No "changes left until <date>"**: see the Edit Profile ruling.
+- **The share card** shows the link without its scheme (`host/@name`); the QR keeps the public id.
+- **Settings' You card** shows `@name` in place of the "Edit Profile" line (which stays the VoiceOver label, and the line for an account without a username).
+- **The profile header with a username follows the design spec of 2026-11-14** (`coverGeometry.ts` `COVER_SPEC` / `PLAIN_SPEC`, pinned in `username-ui-units.ts`): placed by baselines, every line a fixed gap from the photo's round edge. Cover: handle baseline 8.5 above the sheet edge, name 19.3 above it, gaps 11.5 / 12.5, handle 13 medium white 78% with a soft shadow. No cover: name 26 bold on ONE line (cut with "…"; before it could wrap), handle, status pill and friends line all 15 from the edge. Tuned by Simon on device the same day: the cover's name 13 from the edge (11.5 sat a tad close), the coverless status pill 12.5 (15 read a tad far). A first version (boxes, one shared indent) was rejected on device the same day: the coverless lines did not follow the circle and the cover's name sat too far from the handle. A profile without a username keeps the old layout.
+
+- **One reserved word joined the list:** `chooseusername` (the app's new `choose-username` route; the route-word test in `username-units.ts` requires every top-level route to be reserved). The only change outside client code.
+- **The web account modal counts an unsaved username as unsaved changes**: its close guard asks, and the footer Save stores the username first (then the rest).
+
+**Review round 1 (2026-11-14, three Claude reviewers: code, security, regression): one major, the rest minor; all fixed**
+
+- **The app's choose screen could block on a cached null after all** (major, found by all three): "confirmed" was `!isPending && !error`, and Better Auth starts every refetch by clearing `error` while cached data keeps `isPending` false. A failed launch heartbeat followed by any refetch latched the block, offline included. Now `sessionConfirmed` (settled, nothing in flight, no error), pinned.
+- Edit Profile: a field that turned read-only (the limit spent after typing, or a 409 `quota`) kept its changed draft, so every Save re-sent the refused change and stopped; the draft now resets and the username step is skipped while locked.
+- The scanned `/@name` lookup seeded the id's header cache without checking the viewer it started for; a failed host read kept showing a cached `@name`.
+- The choose screen said nothing when the name was stored but the session re-read failed.
+- A superseded "Available" could reappear for the same text within the pause (app and web); the app and the web kept different input rules (leading `@`s, the 30-character cap); `@x` matched on the phone where the server needs two characters.
+- The web register form kept a stale form error beside a new username error; the web account modal ignored an unsaved username (above).
+- Pins added: the old name fit against the new one over a grid of inputs, `sessionConfirmed`, the two-character `@` rule. Not pinned (inline in components): the sign-up code-to-field mapping, the share label.
+
+**Review round 2 (one Claude reviewer, all three lenses): CONVERGED.** Every round-1 finding resolved. Two nits on the web account modal, fixed: the footer Save now stays busy through the username step as well, and it closes when the username was saved and the account part had nothing to send.
+
+**Review rounds 3 and 4 (one Claude reviewer; the preview's `hostUsername` and the header rewritten to the design spec): CONVERGED.** The preview change was found sound (nothing new is told; nulled across a block in either direction and for a deleted host; the read sits behind the route's budgets, the entrance gate and the ban check). One major in the header, fixed: a one-word name that wraps on a cover was placed by the wrong baseline (a text reports its FIRST line's), so its second line landed on the handle. Also fixed: the handle's line box (no taller than the font's, so iOS adds no baseline offset), the cover pill's offset (scales with the photo; unchanged without a username), the block pin in both directions, and the spacing math moved into `coverLines` / `plainLines` with the spec numbers pinned.
+
+**Codex (2026-11-14, `xhigh`, after the device pass): APPROVED in round 3.** Round 1, changes required: a late `/@name` lookup could overwrite a newer header (after a block or unfollow) from inside its query function (major; its answer is now the id query's `initialData`, which only fills an empty entry); a 409 `quota` locked the field only if the re-read succeeded (now at once); a person without a username got a lone "Follows you" line on the scan result (now only beside a username). Round 2: the quota lock had no viewer check, so a refusal landing after a sign-out could lock the next account's field (major; the refusal path now stops when the viewer changed). Round 3: approve, the same class checked across the other save paths.
+
+**Checked**
+
+- `npx tsc --noEmit` (root and `apps/mobile`), `npm run lint`, the mobile design / Dynamic Type / em-dash gates, `scripts/check-username-writes.mjs`.
+- Units: `scripts/tests/username-ui-units.ts` (new; the name fit with a username under it, the on-phone person search, the field's input rule, the limit line), `boot-gate-units.ts` § 9 (the choose-screen rule), `scan-code-units.ts`.
+- The app's sign-up answers, against the dev server with the app's headers: 200 with the session and `user.username`; 422 `EMAIL_AND_USERNAME_TAKEN` / `USERNAME_TAKEN`; 400 `INVALID_USERNAME` with the validator's message. `/api/me/username`, `/available` and `by-username?view=header` in the shapes the app reads.
+- Web, headless Chromium against the dev server (46 checks): register through the real form (signed in, no choose screen), both taken messages together, the choose screen on a username-less account (blocks every page, Available / taken / reserved, a late answer ignored, Continue, Sign Out), five changes through account settings with each limit line and the lock, `@name` on the full, private and blocked profile.
+
+**Only a phone can prove (device pass): PASSED on device (Simon, 2026-11-14)**
+
+- Password AutoFill: iOS offers to save and fill the EMAIL as the login on sign-up and sign-in (app), Safari and Chrome on the web forms.
+- The choose screen on a cold start and straight after a sign-in, and its exit onto the Moments tab (three guarded route groups, each with an explicit `redirectTo`). A cold start OFFLINE on an account without a username shows the tabs, not the choose screen (it blocks only on a server-confirmed missing name).
+- The camera: scanning a `/@name` link's QR opens the person; scanning a moment's QR shows the host's `@name` at once.
+- The profile header against the design spec: baselines and gaps to the photo's edge, cover and none, one and two name lines, a long coverless name, large Dynamic Type, the name's input in place, the blocked and private views. The `@` prefix in the Username field while typing (cursor, deleting back to empty, a 31st character).
+

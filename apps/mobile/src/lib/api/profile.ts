@@ -71,7 +71,7 @@ export async function getTilePhotos(pool: TileKey): Promise<{ photos: string[]; 
 }
 
 // What a write changed, merged into your own `['user-profile', me]` entry.
-export type OwnProfileChange = Partial<Pick<FullProfile, 'name' | 'bio' | 'imageUrl' | 'coverPhotoUrl'>> & {
+export type OwnProfileChange = Partial<Pick<FullProfile, 'name' | 'username' | 'bio' | 'imageUrl' | 'coverPhotoUrl'>> & {
   tiles?: Partial<Record<TileKey, TilePhoto>>;
 };
 
@@ -104,11 +104,11 @@ export async function applyOwnProfileChange(queryClient: QueryClient, userId: st
     }
     return next;
   });
-  if (change.name !== undefined) {
-    queryClient.setQueryData<MyAccount>(MY_ACCOUNT_KEY, (a) => (a ? { ...a, name: change.name ?? a.name } : a));
+  if (change.name !== undefined || change.username !== undefined) {
+    queryClient.setQueryData<MyAccount>(MY_ACCOUNT_KEY, (a) => (a ? { ...a, name: change.name ?? a.name, username: change.username ?? a.username } : a));
   }
   const jobs: Promise<unknown>[] = [queryClient.refetchQueries({ queryKey: key, exact: true })];
-  if (change.name !== undefined) jobs.push(queryClient.refetchQueries({ queryKey: MY_ACCOUNT_KEY, exact: true }));
+  if (change.name !== undefined || change.username !== undefined) jobs.push(queryClient.refetchQueries({ queryKey: MY_ACCOUNT_KEY, exact: true }));
   if (change.name !== undefined || change.imageUrl !== undefined) {
     dropUnmountedFeedCaches(queryClient);
     jobs.push(refetchFeedCaches(queryClient));

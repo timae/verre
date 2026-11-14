@@ -667,7 +667,7 @@ export async function usernames(h: UsernamesHarness) {
   const wine = keep(await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, A, { name: `${TAG} un wine`, type: 'red' }, { code }))
   await resetLimits()
   keep(await call(rateRoute.POST, 'POST', `/api/session/${code}/rate`, B, { wineId: wine.wire.id, score: 4, flavors: {}, notes: 'fine' }, { code }))
-  for (const [handler, path, method] of [[visitRoute.POST, `/api/session/${code}/visit`, 'POST'], [stateRoute.GET, `/api/session/${code}/state`, 'GET'], [codeRoute.GET, `/api/session/${code}`, 'GET'], [previewRoute.GET, `/api/session/${code}/preview`, 'GET'], [bansRoute.GET, `/api/session/${code}/bans`, 'GET']] as const) {
+  for (const [handler, path, method] of [[visitRoute.POST, `/api/session/${code}/visit`, 'POST'], [stateRoute.GET, `/api/session/${code}/state`, 'GET'], [codeRoute.GET, `/api/session/${code}`, 'GET'], [bansRoute.GET, `/api/session/${code}/bans`, 'GET']] as const) {
     await resetLimits()
     keep(await call(handler, method, path, A, method === 'POST' ? {} : undefined, { code }))
     await resetLimits()
@@ -675,7 +675,21 @@ export async function usernames(h: UsernamesHarness) {
   }
   keep(await get(meSessionsRoute.GET, '/api/me/sessions', B))
   const leaked = inMoment.filter(t => t.includes(aName) || t.includes(bName))
-  check(`🔒 no moment response carries a username (${inMoment.length} responses: join, wines, rate, visit, state, meta, preview, bans, my moments)`, inMoment.length >= 14 && leaked.length === 0, leaked.map(t => t.slice(0, 200)))
+  check(`🔒 no moment response carries a username (${inMoment.length} responses: join, wines, rate, visit, state, meta, bans, my moments)`, inMoment.length >= 12 && leaked.length === 0, leaked.map(t => t.slice(0, 200)))
+  // The ONE exception (ruled 2026-11-14): the pre-join preview names its HOST,
+  // from the users row, under the same condition as the host's id.
+  const previewAs = async (u: Actor, c = code) => { await resetLimits(); return call(previewRoute.GET, 'GET', `/api/session/${c}/preview`, u, undefined, { code: c }) }
+  const pvB = await previewAs(B), pvA = await previewAs(A)
+  check('the preview carries the host\'s username beside their id (a guest, and the host)', pvB.wire.hostUserId === A.pid && pvB.wire.hostUsername === aName && pvA.wire.hostUsername === aName, { b: pvB.wire, a: pvA.wire })
+  check('…and nobody else\'s (the viewer\'s own, a participant\'s)', !JSON.stringify(pvB.wire).includes(bName) && !JSON.stringify(pvA.wire).includes(bName))
+  await prisma.userBlock.create({ data: { blockerId: A.id, blockedId: B.id } })
+  const pvBlocked = await previewAs(B)
+  check('🔒 a block pair: no host id and no username (the host stays a plain name)', pvBlocked.status === 200 && pvBlocked.wire.hostUserId === null && pvBlocked.wire.hostUsername === null && typeof pvBlocked.wire.host === 'string' && !JSON.stringify(pvBlocked.wire).includes(aName), pvBlocked.wire)
+  await prisma.userBlock.delete({ where: { blockerId_blockedId: { blockerId: A.id, blockedId: B.id } } })
+  await prisma.userBlock.create({ data: { blockerId: B.id, blockedId: A.id } })
+  const pvBlocks = await previewAs(B)
+  check('🔒 …in the other direction too (the viewer blocked the host)', pvBlocks.status === 200 && pvBlocks.wire.hostUserId === null && pvBlocks.wire.hostUsername === null && !JSON.stringify(pvBlocks.wire).includes(aName), pvBlocks.wire)
+  await prisma.userBlock.delete({ where: { blockerId_blockedId: { blockerId: B.id, blockedId: A.id } } })
   const momentKeys = [...await scanKeys(`s:${code}:*`), ...await scanKeys('lock:session:*')]
   const dump: string[] = []
   for (const key of momentKeys) {

@@ -26,7 +26,8 @@ export type BootInput = {
 export function bootState({ session, isPending, resolvedOnce, waitedTooLong }: BootInput) {
   const stale = session != null && !isPublicUserId(session.user?.id);
   // A session restored from this install's own cache counts as known (the
-  // Expo client keeps it pending until the heartbeat answers), unless stale.
+  // Expo client keeps it pending until the FIRST heartbeat answers; a later
+  // refetch over cached data reads `isPending: false`), unless stale.
   const cachedSession = session != null && !stale;
   const sessionResolved = !stale && (!isPending || resolvedOnce || cachedSession);
   const splashCanHide = !isPending || resolvedOnce || cachedSession || waitedTooLong;
@@ -61,3 +62,21 @@ export function shouldRetryStale(s: { stale: boolean; isPending: boolean; isRefe
 
 // 2 s, 4 s, 8 s, 16 s, then every 30 s, counted from each settle.
 export const staleRetryDelayMs = (attempt: number) => Math.min(30_000, 2_000 * 2 ** attempt);
+
+// The choose-your-username screen (usernames § 10): a signed-in account whose
+// `user.username` is null has not chosen one. 🔒 Only a SERVER-CONFIRMED null
+// blocks: the cached session a cold launch paints from can be older than a
+// name chosen on the web or set by an operator, and offline it could never be
+// corrected, so the person would sit on a screen that cannot work. Once this
+// launch has confirmed it (`latched`), it stays until a name arrives or the
+// session goes: a later failed refetch must not let the tabs back in.
+// `confirmed` = `sessionConfirmed`: the last get-session SETTLED without an
+// error. 🔒 Not while one is in flight: Better Auth starts every refetch with
+// `error: null` and, over cached data, `isPending: false`, which would read
+// as confirmed before any answer arrived (security review 2026-11-14).
+export const sessionConfirmed = (s: { isPending: boolean; isRefetching: boolean; error: unknown }) => !s.isPending && !s.isRefetching && !s.error;
+export type UsernameSession = { user?: { id?: unknown; username?: string | null } | null } | null | undefined;
+export function needsUsername(s: { session: UsernameSession; sessionResolved: boolean; confirmed: boolean; latched: boolean }): boolean {
+  if (!s.sessionResolved || s.session == null || s.session.user?.username != null) return false;
+  return s.confirmed || s.latched;
+}

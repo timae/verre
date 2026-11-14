@@ -398,9 +398,9 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
   const shareOwn = () =>
     afterClose(async () => {
       const name = ok ? profile.name : await freshOwnName(queryClient, authSession?.user.name);
-      await shareProfile(name ?? '', userId);
+      await shareProfile(name ?? '', { id: userId, username: ok ? profile.username : authSession?.user.username });
     });
-  const shareTheirs = (name: string) => afterClose(() => void shareProfile(name, userId));
+  const shareTheirs = (name: string, username: string | null) => afterClose(() => void shareProfile(name, { id: userId, username }));
   // Your own ⋯ never depends on the profile query: Settings holds the only
   // signed-in Sign Out, so it must survive a failed or slow profile load.
   const showMenuButton = own || (profile && profile.state !== 'gone');
@@ -436,7 +436,7 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
     </>
   ) : !profile ? null : profile.state === 'ok' ? (
     <>
-      <MenuItem icon="share" label="Share Profile" onPress={() => shareTheirs(profile.name)} />
+      <MenuItem icon="share" label="Share Profile" onPress={() => shareTheirs(profile.name, profile.username)} />
       <MenuItem icon="glass" label="Invite to a Moment" disabled />
       <MenuSeparator />
       <MenuItem
@@ -469,7 +469,7 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
     </>
   ) : profile.state === 'shell' ? (
     <>
-      <MenuItem icon="share" label="Share Profile" onPress={() => shareTheirs(profile.name)} />
+      <MenuItem icon="share" label="Share Profile" onPress={() => shareTheirs(profile.name, profile.username)} />
       <MenuSeparator />
       {profile.isFollowing ? (
         <MenuItem
@@ -523,7 +523,7 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
     // status, numbers or posts. Unblock right there.
     body = (
       <View style={{ paddingHorizontal: GUTTER, paddingTop: 4 }}>
-        <ProfileIdentity name={profile.name} imageUrl={null} />
+        <ProfileIdentity name={profile.name} username={profile.username} imageUrl={null} />
         <NoticeBox
           text={`You blocked ${firstName(profile.name)}.`}
           action={<Button size="sm" variant="secondary" title="Unblock" loading={busy} onPress={unblock} />}
@@ -535,7 +535,7 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
     // one plain sentence (ruled 2026-11-12; the shell never says the tier).
     body = (
       <View style={{ paddingHorizontal: GUTTER, paddingTop: 4 }}>
-        <ProfileIdentity name={profile.name} imageUrl={null} />
+        <ProfileIdentity name={profile.name} username={profile.username} imageUrl={null} />
         <NoticeBox
           text={`${firstName(profile.name)}’s profile is private.`}
           action={

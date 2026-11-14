@@ -65,5 +65,12 @@ jobs:
       - name: Block look pins (app)
         run: npx tsx scripts/tests/block-look-units.ts
 
+      # The app's username UI rules (usernames, UI half): where the profile
+      # name sits with the @username line under it, the on-phone person search
+      # (the server's search rules), what the Username field keeps, and Edit
+      # Profile's limit line. Pure, no DB.
+      - name: Username UI pins (app)
+        run: npx tsx scripts/tests/username-ui-units.ts
+
       - name: Vintage surface wiring
         run: node scripts/check-vintage-wiring.mjs

@@ -131,7 +131,7 @@ export function LoginForm({ redirectTo, notice }: { redirectTo?: string; notice?
       )}
       <div className="field">
         <div className="fl">email</div>
-        <input className="fi" type="email" name="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@example.com" autoComplete="email" />
+        <input className="fi" type="email" name="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@example.com" autoComplete="username" />
       </div>
       <div className="field">
         <div className="fl">password</div>

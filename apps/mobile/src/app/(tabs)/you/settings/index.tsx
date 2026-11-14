@@ -35,7 +35,7 @@ export default function Settings() {
 
   return (
     <SetPage title="Settings">
-      <MeCard name={name} imageUrl={own?.imageUrl ?? null} onPress={() => router.push(profileEditHref(mount), { dangerouslySingular: true })} />
+      <MeCard name={name} username={account.data?.username ?? own?.username ?? null} imageUrl={own?.imageUrl ?? null} onPress={() => router.push(profileEditHref(mount), { dangerouslySingular: true })} />
       <SetGroup flush>
         <SetNav icon="user" label="Account" onPress={() => router.push(settingsHref(mount, 'account'), { dangerouslySingular: true })} />
         <SetNav icon="eye" label="Privacy" onPress={() => router.push(settingsHref(mount, 'privacy'), { dangerouslySingular: true })} />

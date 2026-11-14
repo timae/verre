@@ -7,6 +7,7 @@ import { participantOrBanned, authUnavailable } from '@/lib/identity'
 import { openSessionFor } from '@/lib/sessionRoute'
 import { normalizeCode } from '@verre/core'
 import { publicIdFor } from '@/lib/publicIds'
+import { prisma } from '@/lib/prisma'
 
 // What a scanned moment code shows in the app before you join (Add Friends →
 // Scan): cover, name, when, the host, the place, and where you stand. A code
@@ -16,6 +17,14 @@ import { publicIdFor } from '@/lib/publicIds'
 // then shows as a plain name, no link (the in-session rule for a block pair,
 // docs/dev/block.md); a ban does stop it, and the caller learns only what the
 // join would tell them (403 'banned').
+//
+// 🔒 `hostUsername` is the ONE username a moment route answers with (ruled
+// 2026-11-14; every other moment answer carries none, app/api/CLAUDE.md
+// § Usernames). The preview is the step BEFORE the moment: it already hands
+// out the host's public id, and with that id the profile shows the username
+// to anyone, a private account included, so this tells its reader nothing
+// new. Read from the users row, never from the moment's cache, and only
+// where `hostUserId` is sent (no block pair, a registered host).
 //
 // Code guessing: the preview keeps its OWN budgets, charged on every lookup and
 // never reset (review 2026-11-12: unlike a join a preview leaves no trace in
@@ -67,11 +76,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const blockPair = hostUserId != null && hostUserId !== viewerId
     && (await Promise.all([viewerBlocksAuthor(viewerId, hostUserId), authorBlocksViewer(viewerId, hostUserId)])).some(Boolean)
 
+  const linked = hostUserId != null && !blockPair
+  const [hostPublicId, hostRow] = linked
+    ? await Promise.all([publicIdFor(hostUserId), prisma.user.findUnique({ where: { id: hostUserId }, select: { username: true } })])
+    : [null, null]
+
   return NextResponse.json({
     code: c,
     name: meta.name || null,
     host,
-    hostUserId: blockPair || hostUserId == null ? null : await publicIdFor(hostUserId),
+    hostUserId: hostPublicId,
+    // Only beside a `hostUserId` (a dropped public id drops it too).
+    hostUsername: hostPublicId ? hostRow?.username ?? null : null,
     dateFrom: meta.dateFrom ?? null,
     dateTo: meta.dateTo ?? null,
     address: meta.address || null,

@@ -1,6 +1,7 @@
 import { Pressable, View } from 'react-native';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
+import { UsernameLine } from '@/components/ui/UsernameLine';
 import { VText } from '@/components/ui/VText';
 import { usePhoneTokens } from '@/lib/layout';
 import { alpha } from '@/theme/color';
@@ -8,13 +9,15 @@ import { radius, useTheme } from '@/theme';
 
 // .fr-row — a person row in a sheet's list (the moment invite sheet's browse
 // pane, Add Friends' search pane): avatar · name + one line · one trailing
-// control, a hairline between rows. Defaults = the invite sheet's row: the
+// control, a hairline between rows. A person with a username gets it as its
+// own line under the name (finding someone: search, invite; ruled
+// 2026-11-14). Defaults = the invite sheet's row: the
 // line "Friend", a Joined chip or an Invite button. `onPress` makes the row
 // itself a button (its trailing control stays its own target).
 export function FriendRow({
   person, first, joined, onInvite, subtitle = 'Friend', trailing, onPress,
 }: {
-  person: { name: string; imageUrl: string | null };
+  person: { name: string; username?: string | null; imageUrl: string | null };
   first: boolean;
   joined?: boolean;
   onInvite?: () => void;
@@ -30,6 +33,7 @@ export function FriendRow({
       <Avatar imageUrl={person.imageUrl} name={person.name} size={phone.grow(42)} />
       <View style={{ flex: 1, minWidth: 0 }}>
         <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} numberOfLines={1}>{person.name}</VText>
+        <UsernameLine username={person.username} surface="compactList" />
         {subtitle ? <VText surface="compactList" variant="small" color="inkSoft">{subtitle}</VText> : null}
       </View>
     </>
@@ -39,7 +43,7 @@ export function FriendRow({
       {onPress ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={subtitle ? `${person.name}, ${subtitle}` : person.name}
+          accessibilityLabel={[person.name, person.username ? `@${person.username}` : null, subtitle].filter(Boolean).join(', ')}
           onPress={onPress}
           style={({ pressed }) => ({ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), opacity: pressed ? 0.6 : 1 })}
         >

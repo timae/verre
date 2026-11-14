@@ -8,9 +8,10 @@ import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
+import { UsernameLine } from '@/components/ui/UsernameLine';
 import { VText } from '@/components/ui/VText';
 import { ApiError, getMomentPreview, momentPreviewKey, type MomentPreview } from '@/lib/api/sessions';
-import { profileQueryOptions } from '@/lib/api/users';
+import { getProfileByUsername, profileQueryOptions } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
 import { WEB_BASE } from '@/lib/config';
 import { firstName } from '@/lib/initials';
@@ -135,8 +136,31 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
   const rootState = useRootNavigationState();
   const queryClient = useQueryClient();
   const sessionName = authClient.useSession().data?.user.name;
-  const personId = result.kind === 'profile' && result.id !== meId ? result.id : null;
-  const profileQ = useQuery({ ...profileQueryOptions(personId ?? ''), enabled: personId != null });
+  // A shared `/@name` link is resolved to its person first (usernames § 5),
+  // then everything runs on the public id like a scanned QR. Never cached by
+  // name (a name can change hands).
+  const byName = result.kind === 'profile-username' ? result.username : null;
+  const namedQ = useQuery({
+    queryKey: ['profile-by-username', byName],
+    queryFn: () => getProfileByUsername(byName!),
+    enabled: byName != null,
+    gcTime: 0,
+  });
+  const named = namedQ.data && namedQ.data.state !== 'gone' ? namedQ.data : null;
+  const scannedId = result.kind === 'profile' ? result.id : named?.id ?? null;
+  const personId = scannedId != null && scannedId !== meId ? scannedId : null;
+  // The lookup's answer is the id's header, so it is asked for once: 🔒 as
+  // `initialData`, which TanStack writes only into an EMPTY entry, at the
+  // moment this query starts, with the lookup's own time. A write meanwhile (a
+  // follow or block through `relate`, another screen's read) is never
+  // overwritten by the older answer (Codex 2026-11-14: a late `setQueryData`
+  // from inside the lookup could).
+  const profileQ = useQuery({
+    ...profileQueryOptions(personId ?? ''),
+    enabled: personId != null,
+    initialData: named && named.id === personId ? named : undefined,
+    initialDataUpdatedAt: namedQ.dataUpdatedAt,
+  });
   const momentCode = result.kind === 'moment' ? result.code : null;
   const previewQ = useQuery({
     queryKey: momentPreviewKey(momentCode ?? ''),
@@ -210,10 +234,20 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
   }
   // An old QR (`/u/<digits>`, from before public ids): recognised, never looked up.
   if (result.kind === 'profile-legacy') return <Message text="This code isn’t available." />;
-  // A shared `/@name` link: recognised (lib/scanCode.ts). Resolving it through
-  // `GET /api/users/by-username/<name>?view=header` is the usernames UI session's.
-  if (result.kind === 'profile-username') return <Message text="This code isn’t available." />;
-  if (result.id === meId) return <Message text="This is your code." />;
+  if (result.kind === 'profile-username') {
+    if (namedQ.isPending) return <Spinner />;
+    if (namedQ.isError || !namedQ.data) {
+      return (
+        <View style={{ gap: 14 }}>
+          <Message text="Couldn’t load this profile." />
+          <Button title="Try Again" variant="secondary" block onPress={() => void namedQ.refetch()} />
+        </View>
+      );
+    }
+    // Renamed away, held or deleted: the link no longer names anyone.
+    if (namedQ.data.state === 'gone') return <Message text="This code isn’t available." />;
+  }
+  if (scannedId === meId) return <Message text="This is your code." />;
   if (profileQ.isPending) return <Spinner />;
   const profile = profileQ.data;
   if (profileQ.isError || !profile) {
@@ -229,7 +263,7 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
   if (profile.state === 'blocked') {
     return (
       <View style={{ gap: 14 }}>
-        <Person name={profile.name} imageUrl={null} line={`You blocked ${firstName(profile.name)}.`} />
+        <Person name={profile.name} username={profile.username} imageUrl={null} line={`You blocked ${firstName(profile.name)}.`} />
         <View style={{ flexDirection: 'row' }}>{viewBtn}</View>
       </View>
     );
@@ -240,7 +274,7 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
     : null;
   return (
     <View style={{ gap: 14 }}>
-      <Person name={profile.name} imageUrl={profile.state === 'ok' ? profile.imageUrl : null} line={line} />
+      <Person name={profile.name} username={profile.username} followsYou={followsYou} imageUrl={profile.state === 'ok' ? profile.imageUrl : null} line={line} />
       {/* .yo-ffoot — View Profile + their follow button. */}
       <View style={{ flexDirection: 'row', gap: 10 }}>
         {viewBtn}
@@ -276,13 +310,16 @@ function openFeedPost(root: NavState | undefined): string | null {
   return typeof id === 'string' && id !== '' ? id : null;
 }
 
-function Person({ name, imageUrl, line }: { name: string; imageUrl: string | null; line: string | null }) {
+function Person({ name, username, followsYou, imageUrl, line }: { name: string; username: string | null; followsYou?: boolean; imageUrl: string | null; line: string | null }) {
   return (
-    // .yo-cam-person — the photo, the name, one line.
+    // .yo-cam-person — the photo, the name, "@username · Follows you", one line.
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
       <Avatar imageUrl={imageUrl} name={name} size={56} initialsSize={20} />
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
         <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} numberOfLines={1}>{name}</VText>
+        {/* "Follows you" rides the username's line only: someone without a
+            username keeps the result from before (name + line). */}
+        {username ? <UsernameLine username={username} suffix={followsYou ? 'Follows you' : null} /> : null}
         {line ? <VText variant="small" color="inkSoft">{line}</VText> : null}
       </View>
     </View>
@@ -318,6 +355,8 @@ function MomentCard({ preview, onHost }: { preview: MomentPreview; onHost?: () =
               <VText variant="small" color="inkSoft" numberOfLines={1}>
                 Hosted by <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{preview.host}</VText>
               </VText>
+              {/* From the preview itself (the one username a moment route sends). */}
+              <UsernameLine username={preview.hostUsername} />
             </Pressable>
           ) : null}
         </View>

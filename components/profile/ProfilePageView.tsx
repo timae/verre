@@ -56,7 +56,7 @@ export async function ProfilePageView({ resolve }: { resolve: () => Promise<Prof
   let profileBody: React.ReactNode
   if (gate.status === 'blocked-by-me') {
     profileBody = (
-      <ProfileBlockedView userId={publicId} userName={gate.name} myId={myId} />
+      <ProfileBlockedView userId={publicId} userName={gate.name} username={gate.username} myId={myId} />
     )
   } else if (gate.status === 'shell') {
     // Hydrate `isFollowing` so the follow button reflects current state
@@ -72,6 +72,7 @@ export async function ProfilePageView({ resolve }: { resolve: () => Promise<Prof
       <ProfileShell
         userId={publicId}
         userName={gate.name}
+        username={gate.username}
         myId={myId}
         isFollowing={isFollowing}
       />
@@ -89,6 +90,7 @@ export async function ProfilePageView({ resolve }: { resolve: () => Promise<Prof
           <ProfileHeader
             userId={profile.id}
             userName={profile.name}
+            username={profile.username}
             userXp={profile.xp}
             userImageUrl={profile.imageUrl}
             myId={myId}

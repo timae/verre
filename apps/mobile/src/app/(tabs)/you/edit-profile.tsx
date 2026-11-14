@@ -2,10 +2,10 @@ import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BIO_MAX, normalizeBio, validateDisplayName } from '@verre/core';
+import { BIO_MAX, checkUsername, normalizeBio, validateDisplayName } from '@verre/core';
 import { NotesField, pickPhotoOrRemove } from '@/components/moments/momentForm';
 import { GlassButton, SetTitle, SettingsFooter, SettingsScreenFallback } from '@/components/moments/settingsParts';
 import { TileCoverSheet } from '@/components/profile/TileCoverSheet';
@@ -15,29 +15,41 @@ import { SHEET_RISE } from '@/components/profile/coverGeometry';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
+import { RESERVED_TEXT, TAKEN_TEXT, UsernameField } from '@/components/ui/UsernameField';
 import { VText } from '@/components/ui/VText';
 import { VBar } from '@/components/VBar';
 import {
   applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover, uploadTilePhoto, type TileKey, type TilePhoto,
 } from '@/lib/api/profile';
+import { USERNAME_KEY, UsernameError, getUsernameState, putUsername, type UsernameState } from '@/lib/api/username';
 import { profileKey, profileQueryOptions, type FullProfile, type Profile } from '@/lib/api/users';
+import { authClient } from '@/lib/authClient';
 import { errorText, sentence } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
 import { FOOT_CLEARANCE, GUTTER, HERO_RATIO } from '@/lib/layout';
+import { DATE_LOCALE } from '@/lib/locale';
+import { changeAgainText, usernameQuotaLine } from '@/lib/usernameCopy';
 import { useTheme } from '@/theme';
 import { useMeId } from '@/lib/meId';
 
 // Edit Profile (04 `setProfile`, ruling D1): your own profile's ⋯ → Edit
-// Profile. The cover and the photo with their edit buttons, Display Name,
+// Profile. The cover and the photo with their edit buttons, Name, Username,
 // Bio, Discard | Save. The way to add a FIRST cover (a coverless
 // profile has no hero to long-press); long-press stays the quick path.
 //
 // Everything is a DRAFT until Save: a picked image is held as a fitted data
 // URL, a removal as a flag; Discard drops them (nothing uploaded, nothing
-// reclaimed). Save runs photo → cover → text and stops at the first failure:
+// reclaimed). Save runs username → photo → cover → text and stops at the first failure:
 // finished steps stay saved and leave the draft, and the footer names what
 // didn't save. Pushed stack-relative (lib/sessionStack.ts profileEditHref);
 // the pill hides here (the sticky footer replaces it).
+//
+// Username (usernames, ruled 2026-11-14): the ONLY place to change it (the
+// profile's long-press edits name and bio). Live "Available" / taken under the
+// field; the limit (5 changes per 90 days) stays quiet until the last two,
+// and with none left the field is read-only and names the date. Its own
+// request (`PUT /api/me/username`), saved FIRST: the one step someone else
+// can refuse (taken), before anything is uploaded.
 //
 // Profile Tiles (the lists step): the tiles as on your profile (`PhotoTiles`),
 // a pen on each, one TAP opening the tile's cover sheet (the long-press on the
@@ -72,6 +84,20 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
   const coverH = Math.round(windowH * HERO_RATIO);
   const [name, setName] = useState(profile.name);
   const [bio, setBio] = useState(profile.bio ?? '');
+  const [username, setUsername] = useState(profile.username ?? '');
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const { refetch: refetchSession } = authClient.useSession();
+  const usernameQ = useQuery({ queryKey: USERNAME_KEY, queryFn: getUsernameState });
+  const quota = usernameQ.data ? usernameQuotaLine(usernameQ.data, DATE_LOCALE) : { locked: false, text: null };
+  // A read-only field can't hold a changed draft (the limit can turn out
+  // spent after you typed: a slow read, a 409): back to the current name, or
+  // every Save would re-send the refused change and stop there.
+  const locked = quota.locked;
+  useEffect(() => {
+    if (!locked) return;
+    setUsername(profile.username ?? '');
+    setUsernameError(null);
+  }, [locked, profile.username]);
   const [avatar, setAvatar] = useState<ImageDraft>({ kind: 'keep' });
   const [cover, setCover] = useState<ImageDraft>({ kind: 'keep' });
   const [saving, setSaving] = useState(false);
@@ -135,6 +161,16 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
       setError(sentence((e as Error).message));
       return;
     }
+    // Like the name: checked (and sent) only when it CHANGED.
+    let nextUsername: string | null = null;
+    if (!locked && username !== (profile.username ?? '')) {
+      const handle = checkUsername(username);
+      if (!handle.ok) {
+        setUsernameError(handle.reason === 'reserved' ? RESERVED_TEXT : sentence(handle.message));
+        return;
+      }
+      nextUsername = handle.username;
+    }
     setSaving(true);
     // 🔒 The viewer the save started for. A sign-out (and another account's
     // sign-in) while the steps run must stop the rest: the next request would
@@ -145,6 +181,43 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
       setSaving(false);
       setError(`Couldn’t save your ${what}. ${errorText(e)}`);
     };
+    const curUsername = (() => {
+      const p = queryClient.getQueryData<Profile>(profileKey(userId));
+      return p?.state === 'ok' ? p.username : profile.username;
+    })();
+    if (nextUsername != null && nextUsername !== curUsername) {
+      try {
+        const state = await putUsername(nextUsername);
+        if (!sameViewer()) return;
+        queryClient.setQueryData<UsernameState>(USERNAME_KEY, state);
+        await applyOwnProfileChange(queryClient, userId, { username: state.username }, epoch);
+        // Better Auth's session carries the name too (fresh on every answer).
+        void refetchSession();
+      } catch (e) {
+        // 🔒 A refusal for the viewer the save started for only: after a
+        // sign-out (and another sign-in) it must not lock the next account.
+        if (!sameViewer()) return;
+        setSaving(false);
+        if (e instanceof UsernameError && e.code === 'taken') setUsernameError(TAKEN_TEXT);
+        else if (e instanceof UsernameError && e.code === 'reserved') setUsernameError(RESERVED_TEXT);
+        else if (e instanceof UsernameError && e.code === 'invalid') setUsernameError(sentence(e.message));
+        else if (e instanceof UsernameError && e.code === 'quota') {
+          // None left after all: the refusal is the authority, so the field
+          // locks NOW (the effect then drops the draft; the rest of the page
+          // can still be saved) whether or not the re-read below succeeds.
+          const nextChangeAt = e.nextChangeAt;
+          queryClient.setQueryData<UsernameState>(USERNAME_KEY, (s) => ({
+            ...(s ?? { username: profile.username, previous: null }),
+            changesLeft: 0,
+            nextChangeAt,
+          }));
+          setUsername(profile.username ?? '');
+          void usernameQ.refetch();
+        } else setError(`Couldn’t save your username. ${errorText(e)}`);
+        return;
+      }
+    }
+    if (!sameViewer()) return;
     if (avatar.kind !== 'keep') {
       try {
         const imageUrl = avatar.kind === 'new' ? await uploadAvatar(avatar.dataUrl) : (await removeAvatar(), null);
@@ -242,7 +315,7 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
 
         <View style={{ marginBottom: 14 }}>
           <TextField
-            label="Display Name"
+            label="Name"
             value={name}
             onChangeText={(t) => {
               setName(t);
@@ -254,6 +327,20 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
             invalid={badName}
             autoCorrect={false}
             maxLength={64}
+          />
+        </View>
+        <View style={{ marginBottom: 14 }}>
+          <UsernameField
+            value={username}
+            onChange={(v) => {
+              setUsername(v);
+              setUsernameError(null);
+            }}
+            availability
+            current={profile.username}
+            error={usernameError}
+            hint={quota.text}
+            editable={!locked}
           />
         </View>
         <View style={{ marginBottom: 14 }}>

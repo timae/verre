@@ -14,8 +14,8 @@ interface Props {
 }
 
 // /api/users/[id] returns three shapes:
-//   - blocked-by-me: `{id, name, blocked: true}` — viewer blocked target
-//   - tier-gated:    `{id, name, gated: true, isFollowing}` — viewer can't see content per tier
+//   - blocked-by-me: `{id, name, username, blocked: true}` — viewer blocked target
+//   - tier-gated:    `{id, name, username, gated: true, isFollowing}` — viewer can't see content per tier
 //   - full payload:  LoadedProfile + `viewerMutes`
 // Discriminate before reading content fields, otherwise `data.level.icon`
 // etc. throw. (Blocked-side viewers — author blocked viewer — see 404
@@ -23,14 +23,14 @@ interface Props {
 // needed for that direction.)
 type ProfileResponse =
   | (LoadedProfile & { viewerMutes?: boolean })
-  | { id: string; name: string; gated: true; isFollowing: boolean }
-  | { id: string; name: string; blocked: true }
+  | { id: string; name: string; username?: string | null; gated: true; isFollowing: boolean }
+  | { id: string; name: string; username?: string | null; blocked: true }
 
-function isBlocked(p: ProfileResponse): p is { id: string; name: string; blocked: true } {
+function isBlocked(p: ProfileResponse): p is { id: string; name: string; username?: string | null; blocked: true } {
   return (p as { blocked?: boolean }).blocked === true
 }
 
-function isGated(p: ProfileResponse): p is { id: string; name: string; gated: true; isFollowing: boolean } {
+function isGated(p: ProfileResponse): p is { id: string; name: string; username?: string | null; gated: true; isFollowing: boolean } {
   return (p as { gated?: boolean }).gated === true
 }
 
@@ -105,6 +105,7 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
         <ProfileBlockedView
           userId={data.id}
           userName={data.name}
+          username={data.username}
           myId={myId}
         />
       )}
@@ -113,6 +114,7 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
         <ProfileShell
           userId={data.id}
           userName={data.name}
+          username={data.username}
           myId={myId}
           isFollowing={data.isFollowing}
           onFollowToggle={onFollowToggle}
@@ -124,6 +126,7 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
           <ProfileHeader
             userId={data.id}
             userName={data.name}
+            username={data.username}
             userXp={data.xp}
             userImageUrl={data.imageUrl}
             myId={myId}

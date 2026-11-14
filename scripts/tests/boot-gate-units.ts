@@ -176,6 +176,25 @@ console.log('\n§8 the retry backoff')
   check('2, 4, 8, 16, 30, 30 seconds', JSON.stringify(d) === JSON.stringify([2000, 4000, 8000, 16000, 30000, 30000]), JSON.stringify(d))
 }
 
+console.log('\n§9 the choose-your-username gate (usernames § 10)')
+{
+  const none = { user: { id: 'A1B2C3D4E5F6', username: null } }
+  const has = { user: { id: 'A1B2C3D4E5F6', username: 'lena' } }
+  const old = { user: { id: 'A1B2C3D4E5F6' } } // cached before the server sent the field
+  const n = boot.needsUsername
+  check('a server-confirmed null blocks', n({ session: none, sessionResolved: true, confirmed: true, latched: false }))
+  check('a missing field counts as null once confirmed', n({ session: old, sessionResolved: true, confirmed: true, latched: false }))
+  check('a CACHED null (heartbeat pending or failed) does not block', !n({ session: none, sessionResolved: true, confirmed: false, latched: false }))
+  check('once confirmed it stays through a failed refetch', n({ session: none, sessionResolved: true, confirmed: false, latched: true }))
+  check('a username lifts it, latched or not', !n({ session: has, sessionResolved: true, confirmed: true, latched: true }))
+  check('signed out: never', !n({ session: null, sessionResolved: true, confirmed: true, latched: true }))
+  check('session unknown: never', !n({ session: none, sessionResolved: false, confirmed: true, latched: true }))
+  const c = boot.sessionConfirmed
+  check('confirmed = settled, no error', c({ isPending: false, isRefetching: false, error: null }))
+  check('a refetch in flight over cached data is NOT confirmed (Better Auth clears the error when it starts)', !c({ isPending: false, isRefetching: true, error: null }))
+  check('pending or failed is not confirmed', !c({ isPending: true, isRefetching: false, error: null }) && !c({ isPending: false, isRefetching: false, error: new Error('x') }))
+}
+
 M._resolveFilename = originalResolve
 try { unlinkSync(SHIM) } catch { /* already gone */ }
 console.log(failures === 0 ? '\nOK — boot-gate pins pass.' : `\nFAILED — ${failures} boot-gate pin(s).`)

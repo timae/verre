@@ -1,14 +1,15 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useMemo, useRef, useState, type RefObject } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View, useWindowDimensions, type TextInputInstance } from 'react-native';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View, useWindowDimensions, type StyleProp, type TextInputInstance, type ViewStyle } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import { BIO_MAX } from '@verre/core';
 import { BadgePill } from '@/components/moments/RoleChip';
 import { PhotoTiles } from '@/components/profile/PhotoTiles';
 import { InlineField, LongPressable } from '@/components/profile/ProfileEditParts';
 import {
-  NAME_GAP, NAME_LIFT, NAME_RIGHT, PHOTO_BASE, SHEET_RISE, fitProfileName, notchBox, notchPath,
+  COVER_SPEC, FONT, NAME_GAP, NAME_LIFT, NAME_RIGHT, PHOTO_BASE, PLAIN_SPEC, SHEET_RISE, coverLines, curveLeft, fitProfileName, notchBox, notchPath, plainLines,
+  type NameAnchor, type NameRing,
 } from '@/components/profile/coverGeometry';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Avatar } from '@/components/ui/Avatar';
@@ -31,6 +32,17 @@ import { mix } from '@/theme/color';
 //     the photo, status ★ + friends · followers on the sheet beside it.
 //   - NO COVER (04·R5c / R5d / R5n / R5x): photo · name / status ★ average /
 //     friends · followers in one row under a plain bar.
+// `@username` (usernames; design spec 2026-11-14, coverGeometry `COVER_SPEC` /
+// `PLAIN_SPEC`): its own line under the name, one line, cut at the end. With
+// one, the identity block is placed by BASELINES and every line's left edge
+// keeps a fixed gap to the photo's ROUND edge at its own height:
+//   - cover: the handle's baseline just above the sheet edge (as far as the
+//     status pill sits below it), the name's above that; white, the handle
+//     medium at 78% with a soft shadow.
+//   - no cover: the name's capitals near the photo's top, then handle, status
+//     pill and friends line, all four following the circle (name 26pt, one
+//     line; handle regular, soft ink).
+// Someone WITHOUT a username keeps the layout from before (the legacy paths).
 // Then the bio (own + empty = the "Touch and hold to add a bio" hint), the three photo
 // tiles and (someone else) the in-common row + follow button.
 //
@@ -83,27 +95,100 @@ export type ProfileEdit = {
   onTile: (key: TileKey) => void;
 };
 
-// .yo-cnrow (no cover) — photo left, name + lines right. `children` = the
-// lines under the name (absent on the blocked / private views: name and
-// initials only). `nameNode` / `photoNode` replace the plain name / photo
-// (the own profile's long-press targets and inputs).
-export function ProfileIdentity({
-  name,
-  imageUrl,
-  children,
-  onNameBottom,
-  nameNode,
-  photoNode,
+// One line of text whose BASELINE sits exactly `strut` below this row's top:
+// a zero-width strut beside the text in a baseline-aligned row (a plain
+// View's baseline is its bottom edge). The line box above and below the
+// glyphs never enters the position, which is the point: it differs between
+// iOS and Android, the baseline does not. `strut` must be at least the text's
+// rise above its baseline (its line height is always enough).
+function BaselineRow({
+  top, left, right = 0, strut, style, children,
 }: {
+  top: number; left: number; right?: number; strut: number; style?: StyleProp<ViewStyle>; children: React.ReactNode;
+}) {
+  return (
+    <View style={[{ position: 'absolute', top, left, right, flexDirection: 'row', alignItems: 'baseline' }, style]}>
+      <View style={{ width: 0, height: strut }} />
+      {children}
+    </View>
+  );
+}
+
+// The identity row WITHOUT a cover: photo left; name, `@username`, then
+// `stat` (the status line) and `counts` (friends · followers) beside it. The
+// blocked and private views pass neither: name and username only. `edit` =
+// your own profile (the name is the long-press target / the input in place).
+type IdentityProps = {
   name: string;
+  username?: string | null;
   imageUrl: string | null;
-  children?: React.ReactNode;
   // The name's bottom edge within this row (the bar title shows once it has
   // scrolled under the bar).
   onNameBottom?: (y: number) => void;
-  nameNode?: React.ReactNode;
   photoNode?: React.ReactNode;
-}) {
+  edit?: ProfileEdit;
+  stat?: React.ReactNode;
+  counts?: React.ReactNode;
+};
+export function ProfileIdentity(props: IdentityProps) {
+  return props.username ? <CurvedIdentity {...props} username={props.username} /> : <StraightIdentity {...props} />;
+}
+
+// With a username (PLAIN_SPEC): four lines placed by baseline from the photo's
+// top, each left edge `gap` from the photo's round edge at its own height, so
+// the block follows the circle. Without `stat` (blocked / private) the two
+// lines are centred on the photo instead. Coordinates: the photo's top-left.
+function CurvedIdentity({ name, username, imageUrl, onNameBottom, photoNode, edit, stat, counts }: IdentityProps & { username: string }) {
+  const photo = useProfilePhotoSize();
+  const { fontScale } = useWindowDimensions();
+  const small = usePhoneTokens().text('small');
+  const handleStyle = useHandleStyle();
+  const base = useCurvedNameStyle();
+  const [width, setWidth] = useState<number | null>(null);
+  const [pillH, setPillH] = useState(24);
+  const [countsH, setCountsH] = useState(() => Math.round(small.lineHeight * fontScale));
+  const r = photo / 2;
+  const { nameB, handleB, pillTop, countsTop, gap, height, base: baseLeft, handleLeft, pillLeft, countsLeft } = plainLines({
+    photo, textScale: fontScale, nameSize: base.fontSize, handleSize: small.fontSize, pillH, countsH, withStat: !!stat,
+  });
+  const handleStrut = Math.ceil(handleStyle.lineHeight * fontScale);
+  const nameBottom = nameB + FONT.descent * base.fontSize * fontScale;
+  useEffect(() => { onNameBottom?.(nameBottom); }, [onNameBottom, nameBottom]);
+  const placed = useMemo<Placed | null>(
+    () => (width == null ? null : {
+      ring: { nameLeft: baseLeft, photoCx: r, photo, gap, maxShift: photo / 4 },
+      anchor: { dy: r - nameB },
+      avail: width - baseLeft,
+      place: { baseline: nameB, left: baseLeft },
+      maxLines: 1,
+    }),
+    [width, baseLeft, r, photo, gap, nameB],
+  );
+  return (
+    <View style={{ marginLeft: -8, height }} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
+      <View style={{ position: 'absolute', left: 0, top: 0 }}>{photoNode ?? <Avatar imageUrl={imageUrl} name={name} size={photo} tint />}</View>
+      {placed ? <ProfileName name={name} variant="plain" edit={edit} placed={placed} /> : null}
+      <BaselineRow
+        top={handleB - handleStrut}
+        left={handleLeft}
+        strut={handleStrut}
+        style={edit?.draft ? { opacity: 0.35 } : null}
+      >
+        <VText variant="small" color="inkSoft" numberOfLines={1} ellipsizeMode="tail" style={handleStyle}>@{username}</VText>
+      </BaselineRow>
+      {stat ? (
+        <>
+          <View style={{ position: 'absolute', top: pillTop, left: pillLeft }} onLayout={(e) => setPillH(Math.round(e.nativeEvent.layout.height))}>{stat}</View>
+          <View style={{ position: 'absolute', top: countsTop, left: countsLeft }} onLayout={(e) => setCountsH(Math.round(e.nativeEvent.layout.height))}>{counts}</View>
+        </>
+      ) : null}
+    </View>
+  );
+}
+
+// .yo-cnrow as before usernames (someone who has not chosen one): photo left,
+// the name and the lines in a straight column beside it, centred on the photo.
+function StraightIdentity({ name, imageUrl, onNameBottom, photoNode, edit, stat, counts }: IdentityProps) {
   const photo = useProfilePhotoSize();
   // Either layout callback can land first: report once both are known.
   const sideY = useRef<number | null>(null);
@@ -128,9 +213,10 @@ export function ProfileIdentity({
             report();
           }}
         >
-          {nameNode ?? <PlainName name={name} />}
+          <ProfileName name={name} variant="plain" edit={edit} />
         </View>
-        {children}
+        {stat}
+        {counts}
       </View>
     </View>
   );
@@ -139,7 +225,8 @@ export function ProfileIdentity({
 // .yo-ncname — 700 26px in the mock; the nearest type token is heading (23),
 // bold. Flagged deviation: no inline font sizes. Fitted to the column like
 // the cover's name, without the ring (ruled 2026-11-12; the mock cut it on
-// one line), down to the cover's floor in proportion (22 of 30pt).
+// one line), down to the cover's floor in proportion (22 of 30pt). The
+// straight column only: with a username the name is `useCurvedNameStyle`'s.
 const PLAIN_NAME_STYLE = { fontFamily: 'InstrumentSans_700Bold' } as const;
 function PlainName({ name }: { name: string }) {
   const { theme } = useTheme();
@@ -158,6 +245,27 @@ function PlainName({ name }: { name: string }) {
       )}
     </View>
   );
+}
+
+// The handle's text box: a line height no larger than the font's own (1.22
+// em). 🔒 On iOS a TALLER line height makes React Native lift the glyphs
+// (half the extra, as a baseline offset) while the baseline it reports for
+// layout may not move, which would draw the handle above where `BaselineRow`
+// puts it; a one-line text needs no leading anyway.
+function useHandleStyle() {
+  const small = usePhoneTokens().text('small');
+  return useMemo(() => ({ flexShrink: 1, lineHeight: Math.floor(small.fontSize * 1.2) }), [small.fontSize]);
+}
+
+// The coverless name beside a username: the design's 26pt bold as a share of
+// the 30pt title token, so it grows with the photo like the cover's name.
+function useCurvedNameStyle(): NameStyle {
+  const { theme } = useTheme();
+  const tok = usePhoneTokens().text('title');
+  return useMemo(() => {
+    const size = Math.round(tok.fontSize * PLAIN_SPEC.nameSize);
+    return { ...PLAIN_NAME_STYLE, color: theme.ink, fontSize: size, lineHeight: Math.round(size * 1.15), letterSpacing: tok.letterSpacing * PLAIN_SPEC.nameSize };
+  }, [theme.ink, tok.fontSize, tok.letterSpacing]);
 }
 
 // Instrument Sans (OS/2): cap height 0.72em, x-height 0.51em. The score's
@@ -363,14 +471,14 @@ export function ProfileHeader({
       <View style={{ gap: 16, paddingHorizontal: GUTTER, paddingBottom: 20 }}>
         <ProfileIdentity
           name={profile.name}
+          username={profile.username}
           imageUrl={profile.imageUrl}
           onNameBottom={onNameBottom}
           photoNode={<PhotoSlot profile={profile} size={photo} edit={edit} onView={() => setViewing('photo')} />}
-          nameNode={edit ? <EditableName name={profile.name} edit={edit} variant="plain" /> : undefined}
-        >
-          {stat}
-          <Counts friends={profile.friendsCount} followers={profile.stats.followers} onPeople={onPeople} editing={editing} />
-        </ProfileIdentity>
+          edit={edit}
+          stat={stat}
+          counts={<Counts friends={profile.friendsCount} followers={profile.stats.followers} onPeople={onPeople} editing={editing} />}
+        />
         {below}
         {viewers}
       </View>
@@ -387,8 +495,11 @@ export function ProfileHeader({
           <PhotoSlot profile={profile} size={photo} edit={edit} onView={() => setViewing('photo')} />
           <View style={{ flex: 1, minWidth: 0, paddingTop: photo / 2 + 6, gap: 8, alignItems: 'flex-start' }}>
             {/* Mock nudges (.yo-cover-cn .yo-cnside): the pill 2 down / 5 left,
-                the counts tucked 20 left under the photo's curve. */}
-            <View style={{ top: 2, left: -5 }}>{stat}</View>
+                the counts tucked 20 left under the photo's curve. With a
+                username the pill's top sits as far under the sheet edge as
+                the handle's baseline sits above it (COVER_SPEC, 8.5 at the
+                104pt photo; the column starts 6 under the edge). */}
+            <View style={{ top: profile.username ? coverLines(photo, 1).pillDrop - 6 : 2, left: -5 }}>{stat}</View>
             <View style={{ marginLeft: -20 }}>
               <Counts friends={profile.friendsCount} followers={profile.stats.followers} onPeople={onPeople} editing={editing} />
             </View>
@@ -421,12 +532,36 @@ function CoverHero({
   onNameBottom?: (y: number) => void;
 }) {
   const { theme } = useTheme();
-  const { width, height: windowH } = useWindowDimensions();
+  const { width, height: windowH, fontScale } = useWindowDimensions();
   const heroH = Math.round(windowH * HERO_RATIO) + SHEET_RISE;
   const box = notchBox(photo);
   const photoLeft = GUTTER - 8;
   const photoCx = photoLeft + photo / 2;
   const nameLeft = photoLeft + photo + NAME_GAP;
+  // With a username (COVER_SPEC), in the hero's own coordinates: the handle's
+  // baseline just above the sheet edge (the photo's centre line), the name's
+  // above it, each left edge its gap from the photo's round edge.
+  const username = profile.username;
+  const { base: nameStyle } = useCoverNameStyle();
+  const small = usePhoneTokens().text('small');
+  const handleStyle = useHandleStyle();
+  const k = photo / PHOTO_BASE, r = photo / 2;
+  const edgeY = heroH - SHEET_RISE;
+  const { handleRise, nameRise } = coverLines(photo, fontScale);
+  const curvedLeft = photoCx + r + COVER_SPEC.nameGap * k;
+  const handleStrut = Math.ceil(handleStyle.lineHeight * fontScale);
+  const placed = useMemo<Placed | undefined>(
+    () => (username ? {
+      ring: { nameLeft: curvedLeft, photoCx, photo, gap: COVER_SPEC.nameGap * k, maxShift: photo / 4 },
+      anchor: { dy: nameRise },
+      avail: width - curvedLeft - NAME_RIGHT,
+      place: { baseline: edgeY - nameRise, left: curvedLeft },
+    } : undefined),
+    [username, curvedLeft, photoCx, photo, k, nameRise, width, edgeY],
+  );
+  // The bar title's trigger is the NAME's bottom (not the handle's).
+  const curvedNameBottom = username ? edgeY - nameRise + FONT.descent * nameStyle.fontSize * fontScale : null;
+  useEffect(() => { if (curvedNameBottom != null) onNameBottom?.(curvedNameBottom); }, [onNameBottom, curvedNameBottom]);
   const [failed, setFailed] = useState<string | null>(null);
   const uri = profile.coverPhotoUrl!;
   const hero = (
@@ -456,16 +591,29 @@ function CoverHero({
       >
         <Path d={notchPath(width, photoCx, photo)} fill={theme.bg} />
       </Svg>
-      <View
-        style={{ position: 'absolute', left: nameLeft, right: NAME_RIGHT, bottom: SHEET_RISE + NAME_LIFT }}
-        onLayout={(e) => onNameBottom?.(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}
-      >
-        {edit ? (
-          <EditableName name={profile.name} edit={edit} variant="cover" fit={{ avail: width - nameLeft - NAME_RIGHT, nameLeft, photoCx, photo }} />
-        ) : (
-          <CoverName name={profile.name} avail={width - nameLeft - NAME_RIGHT} nameLeft={nameLeft} photoCx={photoCx} photo={photo} />
-        )}
-      </View>
+      {placed && username ? (
+        <>
+          <ProfileName name={profile.name} variant="cover" edit={edit} placed={placed} />
+          <BaselineRow
+            top={edgeY - handleRise - handleStrut}
+            left={curveLeft(photoCx, r, COVER_SPEC.handleGap * k, handleRise + FONT.cap * small.fontSize * fontScale, handleRise)}
+            right={NAME_RIGHT}
+            strut={handleStrut}
+            style={edit?.draft ? { opacity: 0.35 } : null}
+          >
+            <VText variant="small" color={COVER_HANDLE} numberOfLines={1} ellipsizeMode="tail" style={[handleStyle, COVER_HANDLE_STYLE]}>@{username}</VText>
+          </BaselineRow>
+        </>
+      ) : (
+        // No username: the name beside the photo as before, NAME_LIFT above
+        // the sheet edge.
+        <View
+          style={{ position: 'absolute', left: nameLeft, right: NAME_RIGHT, bottom: SHEET_RISE + NAME_LIFT }}
+          onLayout={(e) => onNameBottom?.(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}
+        >
+          <ProfileName name={profile.name} variant="cover" edit={edit} fit={{ avail: width - nameLeft - NAME_RIGHT, nameLeft, photoCx, photo }} />
+        </View>
+      )}
     </View>
   );
   if (!edit) {
@@ -488,8 +636,14 @@ function CoverHero({
   );
 }
 
-// The white name on the cover, fitted: its size, or ≤ 4pt smaller, or two
-// lines with line 1 hugging the photo's ring.
+// The handle on the cover (COVER_SPEC): white at 78%, medium, a soft shadow
+// (the profile's secondary ink doesn't read on a photo).
+const COVER_HANDLE = 'rgba(255,255,255,0.78)';
+const COVER_HANDLE_STYLE = {
+  fontFamily: 'InstrumentSans_500Medium', textShadowColor: 'rgba(0,0,0,0.25)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 8,
+} as const;
+
+// The white name on the cover: the title size, semibold.
 function useCoverNameStyle() {
   const phone = usePhoneTokens();
   const tok = phone.text('title');
@@ -499,23 +653,33 @@ function useCoverNameStyle() {
   }, [tok.fontSize, tok.letterSpacing]);
 }
 
-function CoverName({ name, avail, nameLeft, photoCx, photo }: { name: string; avail: number; nameLeft: number; photoCx: number; photo: number }) {
-  const { base } = useCoverNameStyle();
-  return <FittedName name={name} base={base} lineRatio={1.05} avail={avail} min={22} ring={{ nameLeft, photoCx, photo }} />;
-}
-
-// A profile name fitted to `avail` (coverGeometry `fitProfileName`).
-// Measured at the base size first (hidden), so Dynamic Type is included.
+// Where a name sits when a `@username` is under it: its LAST baseline at
+// `place.baseline` and `place.left` = the x `ring.nameLeft` stands for, both
+// in the parent's box (the cover hero, the coverless identity row).
+type Placed = { ring: NameRing; anchor: NameAnchor; avail: number; place: { baseline: number; left: number }; maxLines?: 1 | 2 };
+// Before usernames (no `placed`): the cover's name in its bottom-anchored box.
+type CoverFit = { avail: number; nameLeft: number; photoCx: number; photo: number };
 type NameStyle = { fontFamily: string; color: string; fontSize: number; lineHeight: number; letterSpacing: number };
+type NamePress = { disabled: boolean; onLongPress: () => void; hint: string };
+
+// A profile name fitted to `avail` (coverGeometry `fitProfileName`): its size,
+// or ≤ 4pt smaller, or two lines following the photo's ring. Measured at the
+// base size first (hidden), so Dynamic Type is included. With `place` each
+// line is put by its BASELINE in the parent's box (and `press` makes the block
+// the own profile's long-press target); without it the lines flow in place.
 function FittedName({
-  name, base, lineRatio, avail, min, ring,
+  name, base, lineRatio, avail, min, ring, anchor, maxLines, place, press,
 }: {
   name: string;
   base: NameStyle;
   lineRatio: number;
   avail: number;
   min: number;
-  ring?: { nameLeft: number; photoCx: number; photo: number };
+  ring?: NameRing;
+  anchor?: NameAnchor;
+  maxLines?: 1 | 2;
+  place?: { baseline: number; left: number };
+  press?: NamePress;
 }) {
   const fs = base.fontSize;
   // Every candidate break: line 1 = the first i + 1 words, line 2 = the rest.
@@ -535,25 +699,68 @@ function FittedName({
       return { key, h: t === name ? height : q.h, widths: { ...q.widths, [t]: width } };
     });
   const ready = cur.h != null && texts.every((t) => cur.widths[t] != null);
+  const scale = ready ? cur.h! / base.lineHeight : 1;
   const fit = ready
     ? fitProfileName({
-        fs, w: cur.widths[name], lineH: cur.h!, scale: cur.h! / base.lineHeight, avail, min, ring,
+        fs, w: cur.widths[name], lineH: cur.h!, scale, avail, min, ring, anchor, maxLines,
         splits: breaks.map(([l1, l2]) => ({ w1: cur.widths[l1], w2: cur.widths[l2] })),
       })
     : null;
   const sized = (f: number) => (f === fs ? base : { ...base, fontSize: f, lineHeight: Math.round(f * lineRatio), letterSpacing: (base.letterSpacing * f) / fs });
+  // Measuring pass: one line each, unconstrained, invisible.
+  const measuring = (
+    <View pointerEvents="none" importantForAccessibility="no-hide-descendants" accessibilityElementsHidden style={{ position: 'absolute', opacity: 0, left: 0, bottom: 0, width: 4000, alignItems: 'flex-start' }}>
+      {/* Keyed on the WHOLE measurement key, not just the string: after a
+          rename a string both names share ("Simon") would otherwise keep
+          its laid-out view, never fire onLayout again, and the fit would
+          wait forever with the name invisible. */}
+      {texts.map((t) => (
+        <Text key={`${key}|${t}`} style={base} onLayout={(e) => measured(t, e.nativeEvent.layout.width, e.nativeEvent.layout.height)}>{t}</Text>
+      ))}
+    </View>
+  );
+  if (place) {
+    if (!fit) return measuring;
+    // One absolute box around the lines; in it each line is a baseline row,
+    // `pitch` apart. A one-word name that wraps is ONE two-line text: a text
+    // reports its FIRST line's baseline (React Native's paragraph node), so
+    // its row sits a pitch higher and the second line lands on the name's
+    // last baseline.
+    const style = sized(fit.fontSize);
+    const pitch = style.lineHeight * scale;
+    const rows = fit.lines === 1 ? [{ text: name, indent: fit.indent }] : [{ text: breaks[fit.split][0], indent: fit.indent }, { text: breaks[fit.split][1], indent: fit.indent2 }];
+    const wraps = fit.lines === 1 && fit.wrap;
+    const visual = wraps ? 2 : rows.length;
+    const strut = Math.ceil(pitch);
+    const boxLeft = place.left + Math.min(...rows.map((l) => l.indent));
+    const box = {
+      position: 'absolute' as const,
+      left: boxLeft,
+      width: place.left + avail - boxLeft,
+      top: place.baseline - (visual - 1) * pitch - strut,
+      height: strut + (visual - 1) * pitch + Math.ceil(FONT.descent * fit.fontSize * scale) + 2,
+    };
+    const lines = rows.map((l, i) => (
+      <BaselineRow key={i} top={i * pitch} left={place.left + l.indent - boxLeft} strut={strut}>
+        <Text style={[style, { flexShrink: 1 }]} numberOfLines={wraps ? 2 : 1}>{l.text}</Text>
+      </BaselineRow>
+    ));
+    return (
+      <>
+        {measuring}
+        {press ? (
+          <LongPressable fill style={box} disabled={press.disabled} onLongPress={press.onLongPress} accessibilityLabel={name} accessibilityHint={press.hint}>
+            {lines}
+          </LongPressable>
+        ) : (
+          <View accessible accessibilityRole="header" accessibilityLabel={name} style={box}>{lines}</View>
+        )}
+      </>
+    );
+  }
   return (
     <View accessible accessibilityRole="header" accessibilityLabel={name}>
-      {/* Measuring pass: one line each, unconstrained, invisible. */}
-      <View pointerEvents="none" importantForAccessibility="no-hide-descendants" accessibilityElementsHidden style={{ position: 'absolute', opacity: 0, left: 0, bottom: 0, width: 4000, alignItems: 'flex-start' }}>
-        {/* Keyed on the WHOLE measurement key, not just the string: after a
-            rename a string both names share ("Simon") would otherwise keep
-            its laid-out view, never fire onLayout again, and the fit would
-            wait forever with the name invisible. */}
-        {texts.map((t) => (
-          <Text key={`${key}|${t}`} style={base} onLayout={(e) => measured(t, e.nativeEvent.layout.width, e.nativeEvent.layout.height)}>{t}</Text>
-        ))}
-      </View>
+      {measuring}
       {!fit ? (
         <Text style={[base, { opacity: 0 }]} numberOfLines={1}>{name}</Text>
       ) : fit.lines === 1 ? (
@@ -568,28 +775,40 @@ function FittedName({
   );
 }
 
-// The name as a long-press target, or (editing) its input in place. On the
-// cover it is the white title (one line while editing: the mock unfolds the
-// fitted two-line name); without a cover, the ink heading.
-function EditableName({
-  name, edit, variant, fit,
+const EDIT_HINT = 'Double-tap and hold to edit your name and bio.';
+
+// A profile's name: on the cover the white title, without one the ink
+// heading. On your own profile (`edit`) it is the long-press target, or,
+// while editing, its input in place (one line: the mock unfolds a fitted
+// two-line name). `placed` = a username sits under it (baseline placement in
+// the parent's box); otherwise the layout from before usernames (`fit` = the
+// cover's ring).
+function ProfileName({
+  name, variant, edit, placed, fit,
 }: {
   name: string;
-  edit: ProfileEdit;
   variant: 'cover' | 'plain';
-  fit?: { avail: number; nameLeft: number; photoCx: number; photo: number };
+  edit?: ProfileEdit;
+  placed?: Placed;
+  fit?: CoverFit;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
-  const { base } = useCoverNameStyle();
-  if (edit.draft) {
+  const { fontScale } = useWindowDimensions();
+  const { base: cover } = useCoverNameStyle();
+  const curved = useCurvedNameStyle();
+  const base = variant === 'cover' ? cover : curved;
+  if (edit?.draft) {
     // Single-line raw input: no lineHeight (the Dynamic Type gate's single-line
     // policy; iOS centres the glyphs itself).
+    const heading = phone.text('heading');
     const style =
       variant === 'cover'
-        ? { fontFamily: base.fontFamily, color: '#fff', fontSize: base.fontSize, letterSpacing: base.letterSpacing }
-        : { fontFamily: PLAIN_NAME_STYLE.fontFamily, color: theme.ink, fontSize: phone.text('heading').fontSize, letterSpacing: phone.text('heading').letterSpacing };
-    return (
+        ? { fontFamily: cover.fontFamily, color: '#fff', fontSize: cover.fontSize, letterSpacing: cover.letterSpacing }
+        : placed
+          ? { fontFamily: curved.fontFamily, color: theme.ink, fontSize: curved.fontSize, letterSpacing: curved.letterSpacing }
+          : { fontFamily: PLAIN_NAME_STYLE.fontFamily, color: theme.ink, fontSize: heading.fontSize, letterSpacing: heading.letterSpacing };
+    const field = (
       <InlineField
         ref={edit.nameRef}
         value={edit.draft.name}
@@ -598,19 +817,42 @@ function EditableName({
         autoFocus={edit.focus === 'name'}
         maxLength={64}
         onSubmit={edit.done}
-        accessibilityLabel="Display Name"
+        accessibilityLabel="Name"
         style={style}
       />
     );
+    if (!placed) return field;
+    // In the name's place: the input's own glyphs on the name's baseline (a
+    // one-line input is as tall as the font's ascent + descent).
+    return (
+      <View style={{ position: 'absolute', left: placed.place.left, width: placed.avail, top: placed.place.baseline - FONT.ascent * style.fontSize * fontScale }}>
+        {field}
+      </View>
+    );
   }
+  if (placed) {
+    return (
+      <FittedName
+        name={name}
+        base={base}
+        lineRatio={base.lineHeight / base.fontSize}
+        avail={placed.avail}
+        min={Math.round((base.fontSize * 22) / 30)}
+        ring={placed.ring}
+        anchor={placed.anchor}
+        maxLines={placed.maxLines}
+        place={placed.place}
+        press={edit ? { disabled: edit.busy != null, onLongPress: () => edit.start('name'), hint: EDIT_HINT } : undefined}
+      />
+    );
+  }
+  const plain = variant === 'cover' && fit
+    ? <FittedName name={name} base={cover} lineRatio={1.05} avail={fit.avail} min={22} ring={{ nameLeft: fit.nameLeft, photoCx: fit.photoCx, photo: fit.photo }} />
+    : <PlainName name={name} />;
+  if (!edit) return plain;
   return (
-    <LongPressable
-      disabled={edit.busy != null}
-      onLongPress={() => edit.start('name')}
-      accessibilityLabel={name}
-      accessibilityHint="Double-tap and hold to edit your name and bio."
-    >
-      {variant === 'cover' && fit ? <CoverName name={name} {...fit} /> : <PlainName name={name} />}
+    <LongPressable disabled={edit.busy != null} onLongPress={() => edit.start('name')} accessibilityLabel={name} accessibilityHint={EDIT_HINT}>
+      {plain}
     </LongPressable>
   );
 }

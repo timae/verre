@@ -22,7 +22,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Hosts can kick or ban participants from a tasting (with optional wine removal); banned users can't rejoin
 - Social feed: log standalone check-ins (with photo, location, tagged friends), follow other users, like and discover what your tasting network is drinking
 - Public profiles at `/u/<publicId>` showing recent check-ins and stats
-- Usernames (server side built, screens pending): a unique `@name` to find and recognise people, `/@name` profile links, search by name or username; a renamed or deleted name is held for 14 days
+- Usernames: a unique `@name` to find and recognise people (chosen at sign-up; existing accounts choose at their next login, change it in Edit Profile / account settings), `/@name` profile links, search by name or username; a renamed or deleted name is held for 14 days
 - Optional profile pictures (round-mask cropper, EXIF/GPS stripped before upload)
 - Profile visibility tiers (public / Verre users / followers / mutual follows) with optional friends-of-friends extension, plus (in the app) who sees your check-ins (down to Only Me) and whether others see your Cravings, Moments and check-in places
 - Mute (quietly hide someone's content from your feed) and Block (full break — bidirectional invisibility outside shared sessions, render-only inside)
@@ -248,7 +248,7 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 |--------|------|-------------|
 | POST | /api/session | Create session (body: `{hostDisplayName, sessionName, dateFrom, blind?, lifespan?, category?, coverPhoto?, dateTo?, timezone?, address?, description?, link?, hideLineup?, hideLineupMinutesBefore?}`; `sessionName` + `dateFrom` **required** for every caller; `coverPhoto` is a base64 data URL, logged-in only; lifespan: logged-in callers always get `unlimited` (a body `lifespan` is ignored), anonymous callers get `48h` and any other value is a 403) → `{code, id, displayName, lifespan, category, coverPhotoUrl?, anonToken?}` |
 | POST | /api/session/join | Join session (body: `{code, displayName}`) → `{id, displayName, anonToken?}`; a wrong code pays the wrong-code budget (429 "Too many codes tried" once spent), failed attempts 30/min/IP, guest joins 60 per moment per address per 10 min |
-| GET | /api/session/:code/preview | A moment before you join (the app's scan result; auth required, its own budget on every lookup, then the wrong-code budget) → `{code, name, host, hostUserId, dateFrom, dateTo, address, coverPhotoUrl, joined}` (`hostUserId` is the host's public id, null across a block pair); 404 no such moment, 403 `banned` |
+| GET | /api/session/:code/preview | A moment before you join (the app's scan result; auth required, its own budget on every lookup, then the wrong-code budget) → `{code, name, host, hostUserId, hostUsername, dateFrom, dateTo, address, coverPhotoUrl, joined}` (`hostUserId` is the host's public id, null across a block pair; `hostUsername` their `@name`, only beside it: the one username a moment route sends); 404 no such moment, 403 `banned` |
 | GET | /api/session/:code | Session meta + participants (participant-gated) |
 | GET | /api/session/:code/state | Aggregate poll: `{meta, wines, ratings}` in one response (participant-gated; a section is `null` when it failed server-side) |
 | PATCH | /api/session/:code | Role assignment via `action: 'set-role'` (host or cohost, with strict-host required for transitions touching `co_host`) |

@@ -14,6 +14,8 @@ export type PersonRow = {
   // The PUBLIC id (opaque string).
   id: string;
   name: string;
+  // `@name`; null = not chosen yet. Shown on search rows, never on a People list (ruled 2026-11-14).
+  username: string | null;
   imageUrl: string | null;
   isFollowing: boolean;
   followsViewer: boolean;
@@ -74,6 +76,7 @@ export async function searchPeople(q: string): Promise<SearchPerson[]> {
 export type TastedWith = {
   id: string;
   name: string;
+  username: string | null;
   imageUrl: string | null;
   followsViewer: boolean;
   lastMoment: { name: string | null; at: string };

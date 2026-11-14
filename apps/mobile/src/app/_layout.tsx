@@ -22,7 +22,7 @@ import { useForwardedStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { useFullscreenViewerOpen } from '@/lib/fullscreenViewer';
 import { dismissKeyboardOnOutsideTouch } from '@/lib/keyboardDismiss';
 import { QueryProvider, clearViewerCache } from '@/lib/query';
-import { bootScreen, bootState, marksResolved, shouldRetryStale, staleRetryDelayMs } from '@/lib/bootGate';
+import { bootScreen, bootState, marksResolved, needsUsername, sessionConfirmed, shouldRetryStale, staleRetryDelayMs } from '@/lib/bootGate';
 import { getPendingUpdate, markUpdateNavigationReady, subscribePendingUpdate } from '@/lib/updateGate';
 import { UpdateRequiredView } from './update-required';
 import { ThemeProvider, useTheme } from '@/theme';
@@ -62,7 +62,7 @@ function RootNavigator() {
   // A photo-hero screen on an opened post's stack (a modal: its own trait is
   // never asked) forwards its style here (lib/forwardedStatusBar).
   const forwardedBarStyle = useForwardedStatusBarStyle();
-  const { data: session, isPending, isRefetching, refetch } = authClient.useSession();
+  const { data: session, isPending, isRefetching, error: sessionError, refetch } = authClient.useSession();
   const [waitedTooLong, setWaitedTooLong] = useState(false);
   const [resolvedOnce, setResolvedOnce] = useState(false);
   // 🔒 The boot rules live in lib/bootGate.ts (pure, unit-tested). A cached
@@ -70,6 +70,11 @@ function RootNavigator() {
   // server's switch to public ids) and counts as not yet known: no route
   // group mounts on it, and its viewer id is null (see bootGate's header).
   const { stale, sessionResolved, splashCanHide, viewerId } = bootState({ session, isPending, resolvedOnce, waitedTooLong });
+  // The choose-your-username screen's rule (bootGate `needsUsername`): a
+  // server-confirmed null, latched for the launch.
+  const [usernameLatched, setUsernameLatched] = useState(false);
+  const chooseUsername = needsUsername({ session, sessionResolved, confirmed: sessionConfirmed({ isPending, isRefetching, error: sessionError }), latched: usernameLatched });
+  useEffect(() => { setUsernameLatched(chooseUsername); }, [chooseUsername]);
   // A 426 buffered before any navigator exists (lib/updateGate.ts).
   const pendingUpdate = useSyncExternalStore(subscribePendingUpdate, getPendingUpdate);
   // 🔒 The query cache is a process singleton and nearly everything in it is
@@ -216,7 +221,7 @@ function RootNavigator() {
             pending URL survives until the session lands. Do not "simplify"
             these to `guard={!!session}` / `guard={!session}` — that resolves
             unknown as signed out and throws the deep link away. */}
-        <Stack.Protected guard={sessionResolved && !!session}>
+        <Stack.Protected guard={sessionResolved && !!session && !chooseUsername} redirectTo={chooseUsername ? '/choose-username' : undefined}>
           <Stack.Screen name="(tabs)" />
         </Stack.Protected>
         {/* 🔒 redirectTo is load-bearing (router 58): a screen whose guard
@@ -225,9 +230,19 @@ function RootNavigator() {
             "/(tabs)", which has no index route and resolves to +not-found
             (device pass 2026-11-05: "Nothing here" after sign-in and on every
             signed-in cold start). "/moments" lands on the Moments tab directly.
-            The (tabs) guard needs none: its default "/(auth)" has an index. */}
-        <Stack.Protected guard={sessionResolved && !session} redirectTo="/moments">
+            The (tabs) guard needs none when signed out: its default "/(auth)"
+            has an index. */}
+        <Stack.Protected guard={sessionResolved && !session} redirectTo={chooseUsername ? '/choose-username' : '/moments'}>
           <Stack.Screen name="(auth)" />
+        </Stack.Protected>
+        {/* Signed in, no username yet (usernames § 10): the ONLY open group, so
+            nothing else is reachable until a name is chosen (the client blocks;
+            the server has no lock). Every closed guard names its target: with
+            three groups the router's default (the first unguarded sibling)
+            would no longer be the right one in every state. Choosing a name
+            closes this guard onto the Moments tab, like a sign-in. */}
+        <Stack.Protected guard={chooseUsername} redirectTo={session ? '/moments' : undefined}>
+          <Stack.Screen name="choose-username" options={{ gestureEnabled: false }} />
         </Stack.Protected>
         {/* Outside both guards: must be reachable in any auth state (proposal 04). */}
         <Stack.Screen name="update-required" options={{ gestureEnabled: false }} />

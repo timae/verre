@@ -84,6 +84,7 @@ export function PeopleListPage({ kind }: { kind: keyof typeof KINDS }) {
               key={p.id}
               flush={i === 0}
               name={p.name}
+              username={p.username}
               trailing={
                 <Button
                   title={k.action}

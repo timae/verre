@@ -19,6 +19,8 @@ export type FullProfile = {
   state: 'ok';
   id: string;
   name: string;
+  // `@name`; null = not chosen yet (no `@` line, the link stays `/u/<id>`).
+  username: string | null;
   imageUrl: string | null;
   // Step 2: one-paragraph profile text (≤ 200, normalised server-side) and
   // the profile cover (the user's own upload). Full payload only.
@@ -50,22 +52,35 @@ export type Profile =
   | FullProfile
   // Tier-gated ("private"): exists, but the viewer can't see content.
   // `followsYou` drives Follow Back (the viewer can read that edge anyway).
-  | { state: 'shell'; id: string; name: string; isFollowing: boolean; followsYou: boolean }
+  | { state: 'shell'; id: string; name: string; username: string | null; isFollowing: boolean; followsYou: boolean }
   // The viewer blocked them: name only, so they recognise who it is.
-  | { state: 'blocked'; id: string; name: string }
+  | { state: 'blocked'; id: string; name: string; username: string | null }
   // No such user — OR they blocked the viewer (deliberately indistinguishable).
   | { state: 'gone'; id: string };
 
 // GET /api/users/:id?view=header — the header only (the posts come from
 // /api/feed?user=). A 404 is a state, not an error: it renders the gone view.
 export async function getProfile(id: string): Promise<Profile> {
-  const res = await apiFetch(`/api/users/${id}?view=header`);
-  if (res.status === 404) return { state: 'gone', id };
+  return profileFrom(await apiFetch(`/api/users/${id}?view=header`), id);
+}
+
+// GET /api/users/by-username/:username?view=header — the same answer by name
+// (a scanned `/@name` link). 🔒 The app opens the profile by the `id` in the
+// answer: no route or cache is keyed on a username. A name nobody holds any
+// more (renamed, deleted, held) is `gone`, with no id.
+export async function getProfileByUsername(username: string): Promise<Profile> {
+  return profileFrom(await apiFetch(`/api/users/by-username/${encodeURIComponent(username)}?view=header`), '');
+}
+
+async function profileFrom(res: Response, askedId: string): Promise<Profile> {
+  if (res.status === 404) return { state: 'gone', id: askedId };
   if (!res.ok) await throwApiError(res);
   const body = await res.json();
-  if (body.blocked) return { state: 'blocked', id, name: body.name };
-  if (body.gated) return { state: 'shell', id, name: body.name, isFollowing: !!body.isFollowing, followsYou: !!body.followsYou };
-  return { ...(body as Omit<FullProfile, 'state'>), state: 'ok' };
+  const id: string = askedId || body.id;
+  const username: string | null = body.username ?? null;
+  if (body.blocked) return { state: 'blocked', id, name: body.name, username };
+  if (body.gated) return { state: 'shell', id, name: body.name, username, isFollowing: !!body.isFollowing, followsYou: !!body.followsYou };
+  return { ...(body as Omit<FullProfile, 'state'>), id, username, state: 'ok' };
 }
 
 export function profileKey(id: string) {
