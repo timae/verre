@@ -9,7 +9,8 @@ import { isRegisteredInput, useRegisterInput } from '@/lib/keyboardDismiss';
 import { motion, useTheme } from '@/theme';
 import { alpha } from '@/theme/color';
 
-// Own-profile editing pieces (04·R5g2–R5g4, step 2).
+// In-place editing pieces: your own profile (04·R5g2–R5g4, step 2) and a
+// moment's top for its hosts (2026-11-14). One look and one gesture for both.
 
 const LONG_PRESS_MS = 480;
 
@@ -132,6 +133,11 @@ export function LongPressable({
 // autofill; 🔒 never `textContentType="username"` (the EMAIL is the login for
 // password managers). `keepFocus`: Return submits WITHOUT leaving the field
 // (while Done is greyed: it would only close the keyboard and do nothing).
+// `url`: the link keyboard, no capitals or autocorrect. `textProps`: the
+// Dynamic Type cap of the text it replaces (`phone.surface(…).textProps`,
+// the moment's bar title). `newlines` (multiline only): Return writes a new
+// line instead of submitting (the moment's description; saving is the edit
+// bar's Done), so `onSubmit` isn't needed there.
 export const InlineField = forwardRef<TextInputInstance, {
   value: string;
   onChangeText: (s: string) => void;
@@ -142,11 +148,14 @@ export const InlineField = forwardRef<TextInputInstance, {
   autoFocus?: boolean;
   placeholder?: string;
   placeholderTextColor?: string;
-  onSubmit: () => void;
+  onSubmit?: () => void;
   accessibilityLabel: string;
   username?: boolean;
+  url?: boolean;
   keepFocus?: boolean;
-}>(function InlineField({ value, onChangeText, onFocus, style, multiline, maxLength, autoFocus, placeholder, placeholderTextColor, onSubmit, accessibilityLabel, username, keepFocus }, ref) {
+  newlines?: boolean;
+  textProps?: { maxFontSizeMultiplier?: number };
+}>(function InlineField({ value, onChangeText, onFocus, style, multiline, maxLength, autoFocus, placeholder, placeholderTextColor, onSubmit, accessibilityLabel, username, url, keepFocus, newlines, textProps }, ref) {
   const { theme } = useTheme();
   const own = useRef<TextInputInstance | null>(null);
   useRegisterInput(own);
@@ -170,10 +179,12 @@ export const InlineField = forwardRef<TextInputInstance, {
         keyboardAppearance={theme.scheme}
         accessibilityLabel={accessibilityLabel}
         {...(username ? { autoCapitalize: 'none', autoCorrect: false, spellCheck: false, autoComplete: 'off', textContentType: 'none', importantForAutofill: 'no' } as const : null)}
-        returnKeyType="done"
-        // Return = Done (one paragraph, no newlines).
-        submitBehavior={keepFocus ? 'submit' : 'blurAndSubmit'}
-        onSubmitEditing={onSubmit}
+        {...(url ? { autoCapitalize: 'none', autoCorrect: false, keyboardType: 'url', textContentType: 'URL' } as const : null)}
+        {...textProps}
+        // Return = Done (one paragraph, no newlines), unless `newlines`.
+        returnKeyType={newlines ? 'default' : 'done'}
+        submitBehavior={newlines ? 'newline' : keepFocus ? 'submit' : 'blurAndSubmit'}
+        onSubmitEditing={newlines ? undefined : onSubmit}
         onFocus={() => {
           setFocused(true);
           onFocus?.();
@@ -263,8 +274,13 @@ export function editTouchHandlers(onOutsideTap: () => void) {
 // why).
 export type EditBarLine = { text: string; tone: 'critical' | 'positive' | 'inkSoft'; more?: string; transient?: boolean };
 
-export function EditBar({ busy, onCancel, onDone, onHeight, shake = 0, line, doneDisabled }: {
+// `title`: the centre's words ("Editing Profile", "Editing Moment"). `center`
+// REPLACES the centre (the moment's Add Fields button, then its wheel; it wins
+// over `line`). `doneLabel`: the right button's word (the moment's "Add" while
+// its wheel is open).
+export function EditBar({ busy, onCancel, onDone, onHeight, shake = 0, line, doneDisabled, title = 'Editing Profile', center, doneLabel = 'Done' }: {
   busy: boolean; onCancel: () => void; onDone: () => void; onHeight: (h: number) => void; shake?: number; line?: EditBarLine | null; doneDisabled?: boolean;
+  title?: string; center?: React.ReactNode; doneLabel?: string;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -308,13 +324,13 @@ export function EditBar({ busy, onCancel, onDone, onHeight, shake = 0, line, don
           <VText variant="body" color="inkSoft" style={{ fontFamily: 'InstrumentSans_500Medium' }}>Cancel</VText>
         </Pressable>
         <View style={{ flex: 1, marginHorizontal: 10, alignItems: 'center' }}>
-          {line ? (
+          {center ? center : line ? (
             <VText variant="caption" color={line.tone} numberOfLines={2} style={{ textAlign: 'center' }}>
               {line.text}
               {line.more ? <VText variant="caption" color="inkSoft">{` ${line.more}`}</VText> : null}
             </VText>
           ) : (
-            <VText variant="small" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Editing Profile</VText>
+            <VText variant="small" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{title}</VText>
           )}
         </View>
         <Pressable
@@ -328,7 +344,7 @@ export function EditBar({ busy, onCancel, onDone, onHeight, shake = 0, line, don
           {busy ? (
             <ActivityIndicator color={theme.accent} />
           ) : (
-            <VText variant="body" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Done</VText>
+            <VText variant="body" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{doneLabel}</VText>
           )}
         </Pressable>
       </View>

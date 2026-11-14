@@ -42,6 +42,8 @@ import { DraggableRows, type RowMoveActions } from '@/components/moments/Draggab
 import { AnchoredMenu, MenuItem, MenuSeparator } from '@/components/ui/AnchoredMenu';
 import { SessionMenu, SessionMenuButton, useBlindForEveryoneToggle } from '@/components/moments/SessionMenu';
 import { SessionTabs, type SessionTab } from '@/components/moments/SessionTabs';
+import { MOMENT_EDIT_HINT, MOMENT_FIELD_MAX, MomentBarName, MomentCoverName, MomentEditBar, useMomentEdit, type MomentEditApi } from '@/components/moments/MomentEdit';
+import { InlineField, LongPressable, markNoShake } from '@/components/ui/InPlaceEdit';
 import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen, wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
@@ -270,6 +272,20 @@ export default function SessionLineup() {
   // Visit → /state poll → per-section merge, shared with Compare (02d).
   const { meta, wines, ratings, state, fatal, removedKind, visited, retryVisit, myIdentityId, stateKey } =
     useSessionPoll(code);
+  const isHostViewer =
+    !!meta &&
+    (meta.hostIdentityId === myIdentityId ||
+      (meta.hostUserId !== null && `u:${meta.hostUserId}` === myIdentityId) ||
+      (meta.coHostIds ?? []).includes(myIdentityId));
+
+  // The moment's top edited in place by its hosts (components/moments/MomentEdit.tsx).
+  // Each layout installs its own scroll for keeping the focused field above
+  // the keyboard. A cover picked from Add Fields shows (the hero) before Done.
+  const scrollByRef = useRef<((dy: number) => void) | null>(null);
+  const momentEdit = useMomentEdit({ code, meta, stateKey, canEdit: isHostViewer && !fatal, scrollBy: scrollByRef });
+  const edit: MomentEditApi | undefined = isHostViewer && !fatal ? momentEdit : undefined;
+  const editing = !!edit?.draft;
+  const draftCover = edit?.draft?.cover?.previewUri ?? null;
 
   // 02b·10: a moment WITH a cover photo gets the full-bleed collapsing hero
   // (the photo runs under the status bar, no VBar). Computed HERE (before the
@@ -279,7 +295,7 @@ export default function SessionLineup() {
   // would mis-treat a first-frame cover tap as plain). Mirrors the spinner gate
   // below (data-availability, not `visited`) so a warm-cache re-entry shows the
   // hero immediately rather than flashing the plain layout.
-  const hasCover = !!meta?.coverPhotoUrl;
+  const hasCover = !!meta?.coverPhotoUrl || !!draftCover;
   const heroShown = hasCover && !fatal && !(wines === null && (!visited || state.isPending));
 
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -294,7 +310,11 @@ export default function SessionLineup() {
   // (no-cover) layout keeps its own native-sticky swap and only reads `tab`.
   const transition = useTabTransition(windowW, heroShown);
   const tab = transition.tab;
-  const selectTab = transition.select;
+  // No tab switch while the moment is edited in place (the details are
+  // Line-up furniture: Compare would unmount their fields mid-edit).
+  const selectTab = (t: SessionTab) => {
+    if (!editing) transition.select(t);
+  };
   // During a transition BOTH tabs are on screen, so the Compare furniture (its
   // toolbar) must exist even while `tab` is momentarily line-up on a reversal.
   const compareMounted = tab === 'compare' || transition.active !== null;
@@ -348,11 +368,6 @@ export default function SessionLineup() {
     />
   ) : null;
 
-  const isHostViewer =
-    !!meta &&
-    (meta.hostIdentityId === myIdentityId ||
-      (meta.hostUserId !== null && `u:${meta.hostUserId}` === myIdentityId) ||
-      (meta.coHostIds ?? []).includes(myIdentityId));
   const canAdd = isHostViewer || !!meta?.providerIds?.includes(myIdentityId);
 
   // Blind-for-all inline toggle (⋯ menu) — shared mutation, see SessionMenu.tsx.
@@ -479,7 +494,7 @@ export default function SessionLineup() {
 
   // Shared OvcAbout — same props in both layouts.
   const ovc = meta ? (
-    <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} />
+    <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} edit={edit} />
   ) : null;
   const openImpression = (wineId: string) =>
     router.push(sessionHref(sessionTab, 'impression/[wineId]', { code, wineId }), { dangerouslySingular: true });
@@ -593,6 +608,21 @@ export default function SessionLineup() {
   const plainMaxScroll = useSharedValue(0);
   const plainContentH = useRef(0);
   const plainViewportH = useRef(0);
+  // The plain layout's scroll for the in-place edit (the hero installs its own).
+  useEffect(() => {
+    if (heroShown) return;
+    scrollByRef.current = (dy) => plainRef.current?.scrollTo({ y: plainScrollY.value + dy, animated: true });
+  }, [heroShown, plainRef, plainScrollY]);
+  // While editing: the pill is hidden and the list clears the keyboard + bar.
+  const listBottom = Math.max(TAB_BAR_CLEARANCE, edit?.bottomInset ?? 0);
+  // Everything but the fields dims and goes inert IN PLACE while editing (a
+  // tap there shakes the edit bar); never a remount (no wrapper that comes and goes).
+  const inertProps = {
+    pointerEvents: editing ? ('none' as const) : ('auto' as const),
+    accessibilityElementsHidden: editing,
+    importantForAccessibility: editing ? ('no-hide-descendants' as const) : ('auto' as const),
+  };
+  const dim = { opacity: editing ? 0.35 : 1 };
   const wineById = useMemo(() => new Map((wines ?? []).map((w) => [w.id, w] as const)), [wines]);
   // Light glyphs only while the photo is actually under the status bar. The
   // reconnecting strip covers the notch with surfaceSunk, so glyphs revert to
@@ -615,7 +645,9 @@ export default function SessionLineup() {
     <BottomSheetModalProvider>
     {/* The hero variant runs the photo under the status bar, so its container
         drops the safe-area top padding (the floating bar re-applies it). */}
-    <View style={{ flex: 1, paddingTop: heroShown ? 0 : insets.top + 8 }}>
+    {/* While a host edits in place, a tap outside the fields, the edit bar
+        and Back shakes the bar (spread ALWAYS: editTouchHandlers). */}
+    <View style={{ flex: 1, paddingTop: heroShown ? 0 : insets.top + 8 }} {...momentEdit.touchHandlers}>
       {/* iOS reads the screen option (root _layout: screen traits are the only
           status-bar channel there; the deepest screen with one set wins over
           the root's themed default). Android goes through expo-status-bar,
@@ -628,10 +660,12 @@ export default function SessionLineup() {
         <View style={{ paddingHorizontal: GUTTER }}>
           <VBar
             title={meta?.name ?? ''}
+            titleSlot={edit && meta ? <MomentBarName name={meta.name} edit={edit} /> : undefined}
             onBack={goBack}
+            backCapture={markNoShake}
             right={
               meta && !fatal ? (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={[{ flexDirection: 'row', alignItems: 'center', gap: 6 }, dim]} {...inertProps}>
                   {/* Plain bar: the full accent "+ Add" pill (no scroll-collapse
                       here), left of the ⋯. Host/cohost/provider only — and
                       line-up furniture (morphs into the ⋯ on the Compare tab). */}
@@ -729,7 +763,10 @@ export default function SessionLineup() {
         // collapsing bar floats above it.
         <CoverHeroLineup
           meta={meta}
-          coverUrl={meta.coverPhotoUrl!}
+          coverUrl={draftCover ?? meta.coverPhotoUrl!}
+          edit={edit}
+          scrollByRef={scrollByRef}
+          bottomPad={listBottom}
           lock={lock}
           // Search/sort applied (counts in `reveal` stay full-list); indexById
           // keeps true line-up numbers under any order.
@@ -760,14 +797,14 @@ export default function SessionLineup() {
         </ScrollView>
       ) : (
         <>
-          <View style={{ paddingHorizontal: GUTTER }}>
+          <View style={[{ paddingHorizontal: GUTTER }, dim]} {...inertProps}>
             <SessionTabs active={tab} onSelect={selectTab} />
           </View>
           {tab === 'compare' ? (
             // The toolbar is child 0 + stickyHeaderIndices so it pins under
             // the fixed tabs on scroll (the plain layout's native-sticky path
             // — same behaviour the reveal strip has on the line-up).
-            <Reanimated.View key="pane-compare" style={{ flex: 1 }} entering={transition.everSwapped ? swapIn('compare') : undefined} exiting={swapOut('compare')}>
+            <Reanimated.View key="pane-compare" style={[{ flex: 1 }, dim]} {...inertProps} entering={transition.everSwapped ? swapIn('compare') : undefined} exiting={swapOut('compare')}>
               <ScrollView
                 style={{ flex: 1 }}
                 stickyHeaderIndices={cmpRail ? [0] : undefined}
@@ -803,14 +840,18 @@ export default function SessionLineup() {
               plainContentH.current = h;
               plainMaxScroll.value = Math.max(0, h - plainViewportH.current);
             }}
-            contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: TAB_BAR_CLEARANCE }}
+            contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: listBottom }}
           >
             {ovc}
             {/* Solid bg so rows scrolling under the pinned toolbar don't
                 bleed through (content-width fill matches the rows' inset). */}
-            <View style={{ backgroundColor: theme.bg }}>
-              <LineupToolbar toolbar={luToolbar} />
+            <View style={{ backgroundColor: theme.bg }} {...inertProps}>
+              <View style={dim}>
+                <LineupToolbar toolbar={luToolbar} />
+              </View>
             </View>
+            {/* The rows: dimmed + inert in place while the moment is edited. */}
+            <View style={dim} {...inertProps}>
             {shownWines.length === 0 ? (
               luNarrowed ? (
                 <VText variant="small" color="inkSoft" style={{ paddingTop: 16 }}>No impressions match.</VText>
@@ -851,6 +892,7 @@ export default function SessionLineup() {
               />
             )}
             {shownWines.length > 0 && canAdd && !luNarrowed ? <AddImpressionRow onPress={openAdd} /> : null}
+            </View>
           </Reanimated.ScrollView>
           </Reanimated.View>
           )}
@@ -871,8 +913,11 @@ export default function SessionLineup() {
           onAdd={openAdd}
           onBack={goBack}
           onMenu={(top) => setSessMenuTop(top)}
+          inert={editing}
         />
       ) : null}
+      {/* The in-place edit's bar (rides the keyboard) + its date sheet. */}
+      {edit && meta ? <MomentEditBar edit={edit} hasCover={hasCover} lineup={tab === 'lineup'} /> : null}
     </View>
     </BottomSheetModalProvider>
   );
@@ -915,10 +960,16 @@ export default function SessionLineup() {
 // contentInsetAdjustmentBehavior never→automatic. Reanimated.ScrollView wraps a
 // real ScrollView (still a UIScrollView), so the dead-end still applies.
 function CoverHeroLineup({
-  meta, coverUrl, lock, wines, indexById, luNarrowed, toolbar, reorder, ratings, myIdentityId, canAdd, windowH, windowW, ovc, reveal, transition, onSelectTab, compare, compareRail, onCollapsedChange, onPressWine, onAdd,
+  meta, coverUrl, edit, scrollByRef, bottomPad, lock, wines, indexById, luNarrowed, toolbar, reorder, ratings, myIdentityId, canAdd, windowH, windowW, ovc, reveal, transition, onSelectTab, compare, compareRail, onCollapsedChange, onPressWine, onAdd,
 }: {
   meta: NonNullable<MetaView>;
   coverUrl: string;
+  /** A host's in-place edit (MomentEdit.tsx): the cover + name hold, the inert rest. */
+  edit?: MomentEditApi;
+  /** Installed here: the edit keeps the focused field above the keyboard. */
+  scrollByRef: React.RefObject<((dy: number) => void) | null>;
+  /** The list's bottom padding (the pill clearance, more while editing). */
+  bottomPad: number;
   lock: number | null;
   wines: WireWine[] | null;
   /** True line-up position per wine id (rows arrive search/sort-transformed). */
@@ -1121,6 +1172,22 @@ function CoverHeroLineup({
   // top, zIndex 8 > 7, so the overlap is invisible.)
   const PIN_Y = BAR_H - 1;
 
+  // The in-place edit: this layout's scroll, and everything but the fields
+  // dimmed + inert IN PLACE (props only, nothing remounts).
+  useEffect(() => {
+    const scrollBy = (dy: number) => aref.current?.scrollTo({ y: lastYRef.current + dy, animated: true });
+    scrollByRef.current = scrollBy;
+    return () => {
+      if (scrollByRef.current === scrollBy) scrollByRef.current = null;
+    };
+  }, [aref, scrollByRef]);
+  const editing = !!edit?.draft;
+  const inertA11y = {
+    accessibilityElementsHidden: editing,
+    importantForAccessibility: editing ? ('no-hide-descendants' as const) : ('auto' as const),
+  };
+  const dim = { opacity: editing ? 0.35 : 1 };
+
   useEffect(() => {
     const y = lastYRef.current;
     setTabsStuck(tabsTopJS > PIN_Y && y >= tabsTopJS - PIN_Y);
@@ -1186,9 +1253,13 @@ function CoverHeroLineup({
   // overlay keeps the identical shape so the inline↔overlay swap is seamless
   // (at the pin the photo still fills the notches, then slides away; past it
   // the notches sit over theme.bg content and read as nothing).
+  // While editing only the tabs dim (the panel's bg stays opaque over the photo).
   const Tabs = (
-    <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl }}>
-      <SessionTabs active={tab} onSelect={onSelectTab} />
+    <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl }} pointerEvents={editing ? 'none' : 'auto'}>
+      {/* Out of VoiceOver too while editing: activating Compare would unmount the fields. */}
+      <View style={dim} {...inertA11y}>
+        <SessionTabs active={tab} onSelect={onSelectTab} />
+      </View>
     </View>
   );
   // The toolbars render ONCE each, in their overlay slot (no inline interactive
@@ -1199,11 +1270,15 @@ function CoverHeroLineup({
   // reserves the same space (menus/keyboard already dismissed before a move).
   const LineupToolbarSlot = showLineupToolbar ? (
     <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
-      <LineupToolbar toolbar={toolbar} />
+      <View style={dim}>
+        <LineupToolbar toolbar={toolbar} />
+      </View>
     </View>
   ) : null;
   const CompareToolbarSlot = showCompareToolbar ? (
-    <View style={{ backgroundColor: theme.bg }}>{compareRail}</View>
+    <View style={{ backgroundColor: theme.bg }}>
+      <View style={dim}>{compareRail}</View>
+    </View>
   ) : null;
 
   return (
@@ -1231,7 +1306,7 @@ function CoverHeroLineup({
           heroMaxScroll.value = Math.max(0, h - heroViewportH.current);
         }}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: TAB_BAR_CLEARANCE }}
+        contentContainerStyle={{ paddingBottom: bottomPad }}
       >
         {/* .hero-bleed-top: full-bleed photo at content-y 0 (bleeds under the
             status bar via the dead-end + never). Soft top corners while pulled. */}
@@ -1248,9 +1323,25 @@ function CoverHeroLineup({
             borderTopRightRadius: pulled ? radius.xl : 0,
           }}
         >
-          <Pressable accessibilityRole="button" accessibilityLabel="Open cover photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
-            <Image source={{ uri: coverUrl }} alt="" style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-          </Pressable>
+          {edit ? (
+            // A host: a tap opens the cover, a hold changes it (not while
+            // editing: then a tap shakes the edit bar). The profile's cover.
+            <LongPressable
+              fill
+              style={{ width: '100%', height: '100%' }}
+              disabled={editing || edit.busy}
+              onPress={() => setFullscreen(true)}
+              onLongPress={edit.changeCover}
+              accessibilityLabel="Cover Photo"
+              accessibilityHint="Double-tap to view. Double-tap and hold to change the cover."
+            >
+              <Image source={{ uri: coverUrl }} alt="" style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+            </LongPressable>
+          ) : (
+            <Pressable accessibilityRole="button" accessibilityLabel="Open cover photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
+              <Image source={{ uri: coverUrl }} alt="" style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+            </Pressable>
+          )}
           {/* Shared HERO_SCRIM (converged to the impression hero's gradient — was
               0.28/0.05/0.72, slightly lighter at the bottom). */}
           <LinearGradient
@@ -1262,17 +1353,19 @@ function CoverHeroLineup({
           {/* Title: measure its bottom in content space (its parent is the photo
               View whose top is content-y 0, so y + height is content-Y). */}
           <View
-            pointerEvents="none"
+            // A host holds the name to edit (MomentCoverName); for everyone
+            // else it lets touches through to the cover.
+            pointerEvents={edit ? 'box-none' : 'none'}
             style={{ position: 'absolute', left: 18, right: 18, bottom: 14 + radius.xl }}
             onLayout={(e) => setTitleBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}
           >
-            <VText
-              numberOfLines={2}
-              style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('title'), color: '#fff' }}
-            >
-              {meta.name}
-            </VText>
+            <MomentCoverName name={meta.name} edit={edit} onView={() => setFullscreen(true)} />
           </View>
+          {edit?.coverBusy ? (
+            <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: radius.xl, alignItems: 'center', justifyContent: 'center' }}>
+              <ActivityIndicator color="#fff" />
+            </View>
+          ) : null}
           <FullscreenImage uri={coverUrl} visible={fullscreen} label={meta.name} onClose={() => setFullscreen(false)} />
         </View>
         {/* INLINE tabs — right under the photo, ABOVE the about block (design
@@ -1346,7 +1439,7 @@ function CoverHeroLineup({
                   style={{ height: lineupToolbarH }}
                 />
                 {rows.length === 0 ? (
-                  <View style={{ paddingHorizontal: GUTTER }}>
+                  <View style={[{ paddingHorizontal: GUTTER }, dim]} pointerEvents={editing ? 'none' : 'auto'} {...inertA11y}>
                     {luNarrowed ? (
                       <VText variant="small" color="inkSoft" style={{ paddingTop: 16 }}>No impressions match.</VText>
                     ) : (
@@ -1354,7 +1447,7 @@ function CoverHeroLineup({
                     )}
                   </View>
                 ) : (
-                  <View style={{ paddingHorizontal: GUTTER }}>
+                  <View style={[{ paddingHorizontal: GUTTER }, dim]} pointerEvents={editing ? 'none' : 'auto'} {...inertA11y}>
                     <DraggableRows
                       ids={rows.map((w) => w.id)}
                       enabled={reorder.enabled && settledLineup}
@@ -1387,7 +1480,7 @@ function CoverHeroLineup({
                   </View>
                 )}
                 {rows.length > 0 && canAdd && !luNarrowed ? (
-                  <View style={{ paddingHorizontal: GUTTER }}>
+                  <View style={[{ paddingHorizontal: GUTTER }, dim]} pointerEvents={editing ? 'none' : 'auto'} {...inertA11y}>
                     <AddImpressionRow onPress={onAdd} />
                   </View>
                 ) : null}
@@ -1395,10 +1488,10 @@ function CoverHeroLineup({
             ) : null}
             {showCompare ? (
               <Reanimated.View
-                style={[tab === 'compare' ? { position: 'relative' } : { position: 'absolute', left: 0, right: 0, top: 0 }, comparePaneStyle]}
-                pointerEvents={settledCompare ? 'auto' : 'none'}
-                accessibilityElementsHidden={!settledCompare}
-                importantForAccessibility={settledCompare ? 'auto' : 'no-hide-descendants'}
+                style={[tab === 'compare' ? { position: 'relative' } : { position: 'absolute', left: 0, right: 0, top: 0 }, comparePaneStyle, dim]}
+                pointerEvents={settledCompare && !editing ? 'auto' : 'none'}
+                accessibilityElementsHidden={!settledCompare || editing}
+                importantForAccessibility={settledCompare && !editing ? 'auto' : 'no-hide-descendants'}
                 onLayout={(e) => setComparePaneH(e.nativeEvent.layout.height)}
               >
                 {/* inert toolbar spacer — reserves the CompareToolbar's height at
@@ -1422,7 +1515,7 @@ function CoverHeroLineup({
           the toolbar slot pins under the tabs (floor = PIN_Y + tabsH). */}
       {!lock ? (
         <Reanimated.View
-          pointerEvents={tabsStuck ? 'auto' : 'none'}
+          pointerEvents={tabsStuck && !editing ? 'auto' : 'none'}
           // Exactly ONE copy in the accessibility tree at a time (codex): the
           // opacity/pointerEvents gate hides the duplicate visually and from
           // touch, but VoiceOver/TalkBack still walked both.
@@ -1437,9 +1530,10 @@ function CoverHeroLineup({
         <Reanimated.View
           // Only the SETTLED toolbar takes touches/a11y; a moving or offscreen
           // copy is inert (keyboard/menus already dismissed at transition start).
-          pointerEvents={settledLineup ? 'auto' : 'none'}
-          accessibilityElementsHidden={!settledLineup}
-          importantForAccessibility={settledLineup ? 'auto' : 'no-hide-descendants'}
+          // So is it while the moment is edited.
+          pointerEvents={settledLineup && !editing ? 'auto' : 'none'}
+          accessibilityElementsHidden={!settledLineup || editing}
+          importantForAccessibility={settledLineup && !editing ? 'auto' : 'no-hide-descendants'}
           onLayout={(e) => setLineupToolbarH(e.nativeEvent.layout.height)}
           style={[lineupStripStyle, { position: 'absolute', left: 0, right: 0, zIndex: 7 }]}
         >
@@ -1448,9 +1542,9 @@ function CoverHeroLineup({
       ) : null}
       {CompareToolbarSlot ? (
         <Reanimated.View
-          pointerEvents={settledCompare ? 'auto' : 'none'}
-          accessibilityElementsHidden={!settledCompare}
-          importantForAccessibility={settledCompare ? 'auto' : 'no-hide-descendants'}
+          pointerEvents={settledCompare && !editing ? 'auto' : 'none'}
+          accessibilityElementsHidden={!settledCompare || editing}
+          importantForAccessibility={settledCompare && !editing ? 'auto' : 'no-hide-descendants'}
           onLayout={(e) => setCompareToolbarH(e.nativeEvent.layout.height)}
           style={[compareStripStyle, { position: 'absolute', left: 0, right: 0, zIndex: 7 }]}
         >
@@ -1468,11 +1562,13 @@ function CoverHeroLineup({
 // anchors the shared SessionMenu via measureInWindow (same protocol as
 // SessionMenuButton).
 function HeroTopBar({
-  title, collapsed, canAdd, showAdd, onAdd, onBack, onMenu,
+  title, collapsed, canAdd, showAdd, onAdd, onBack, onMenu, inert,
 }: {
   title: string;
   collapsed: boolean;
   canAdd: boolean;
+  /** The moment is edited in place: Add + ⋯ dim and take no touches (Back stays). */
+  inert?: boolean;
   /** Tab-driven: Add is line-up furniture — false on Compare, where it morphs into the ⋯. */
   showAdd: boolean;
   onAdd: () => void;
@@ -1523,6 +1619,7 @@ function HeroTopBar({
       <View style={{ paddingTop: insets.top, paddingHorizontal: 14, paddingBottom: 6 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', height: controlSize }}>
           <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onBack} hitSlop={8}
+            onStartShouldSetResponderCapture={markNoShake}
             style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}>
             <Icon name="back" size={iconSize} color={iconColor} />
           </Pressable>
@@ -1531,7 +1628,13 @@ function HeroTopBar({
           {/* Add (left of ⋯) — glass pill over the photo, collapsing to a bare
               + glyph once the bar goes solid (label drop mirrors the Crave
               button). Host/cohost/provider only; morphs into the ⋯ on Compare. */}
-          <View collapsable={false} style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View
+            collapsable={false}
+            style={{ flexDirection: 'row', alignItems: 'center', opacity: inert ? 0.35 : 1 }}
+            pointerEvents={inert ? 'none' : 'auto'}
+            accessibilityElementsHidden={!!inert}
+            importantForAccessibility={inert ? 'no-hide-descendants' : 'auto'}
+          >
             {/* THE UNION FILL — one path for pill capsule + ⋯ circle (see
                 `morph` above). Glass state only: the collapsed bar's controls
                 are fill-less (ADR-0003), and without Add the ⋯ keeps its own
@@ -1726,133 +1829,277 @@ function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
 
 // .ovc — the session about block: location + Map pill, when, event link,
 // clamped description, avatar-stack foot.
-function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople }: { meta: MetaView; isHostViewer: boolean; myIdentityId: string; onPeople: () => void }) {
+// A host's lines are touch-and-hold targets (`edit`, components/moments/
+// MomentEdit.tsx): while editing, the address, link and description are
+// fields in place (the ones set, plus any added from the edit bar) and the
+// date line opens the date picker; the people foot dims.
+function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople, edit }: { meta: MetaView; isHostViewer: boolean; myIdentityId: string; onPeople: () => void; edit?: MomentEditApi }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const [descOpen, setDescOpen] = useState(false);
   // Character count of the first three laid-out lines (from the invisible
   // measurer), or null when the description fits unclamped.
   const [clampLen, setClampLen] = useState<number | null>(null);
   if (!meta) return null;
+  // While a host edits: the DRAFT's lines (a set detail, or one added from
+  // the edit bar, shows even while empty: its field is the line).
+  const d = edit?.draft ?? null;
+  const address = d ? (d.shown.address ? d.address : null) : meta.address || null;
+  const link = d ? (d.shown.link ? d.link : null) : meta.link || null;
+  const description = d ? (d.shown.description ? d.description : null) : meta.description || null;
+  const when = d ? sessionWhen(d.dateFrom?.toISOString(), d.dateTo?.toISOString()) : sessionWhen(meta.dateFrom, meta.dateTo);
 
   // Word-boundary truncation: slice the original string at the 3-line break,
   // walk back to a word end (freeing room for "… more" on the same line),
   // append the ellipsis. " more" then flows inline — never mid-word, never
   // its own line.
   let truncated: string | null = null;
-  if (clampLen !== null && meta.description) {
-    let txt = meta.description.slice(0, clampLen).replace(/\s+$/, '');
+  if (clampLen !== null && description) {
+    let txt = description.slice(0, clampLen).replace(/\s+$/, '');
     let cut = txt.lastIndexOf(' ');
     while (cut > 0 && txt.length - cut < 9) cut = txt.lastIndexOf(' ', cut - 1);
     if (cut > 0) txt = txt.slice(0, cut);
     truncated = txt.replace(/[\s,.;:]+$/, '') + ' …';
   }
-  const when = sessionWhen(meta.dateFrom, meta.dateTo);
-  const hasAny = meta.address || when || meta.link || meta.description || meta.participants.length > 0;
+  // A host's empty description: the profile bio's quiet prompt (hosts only).
+  const descHint = !!edit && !d && description == null;
+  const hasAny = address != null || when || link != null || description != null || descHint || meta.participants.length > 0;
   if (!hasAny) return null;
   // Foot-only block (no about lines): the foot's 14px separation margin would
   // stack on the container's paddingTop and read top-heavy against the 14px
   // below (Simon's centering call) — drop it; the paddings carry the spacing.
-  const footOnly = !meta.address && !when && !meta.link && !meta.description;
+  const footOnly = address == null && !when && link == null && description == null && !descHint;
 
-  const line = (children: React.ReactNode, key: string, onPress?: () => void) => (
-    <Pressable
-      key={key}
-      disabled={!onPress}
-      onPress={onPress}
-      style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }}
+  const row = { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 } as const;
+  // A guest's line is a plain Pressable; a host's holds to edit (`swaps`: the
+  // line becomes a field, see LongPressable swapsOut).
+  const line = (children: React.ReactNode, key: string, onPress: (() => void) | undefined, hold: 'address' | 'link' | 'when') => {
+    if (!edit) {
+      return (
+        <Pressable key={key} disabled={!onPress} onPress={onPress} style={row}>
+          {children}
+        </Pressable>
+      );
+    }
+    return (
+      <LongPressable key={key} swapsOut={hold !== 'when'} disabled={edit.busy} onPress={onPress} onLongPress={() => edit.start(hold)} accessibilityHint={MOMENT_EDIT_HINT}>
+        <View style={row}>{children}</View>
+      </LongPressable>
+    );
+  };
+  // The in-place fields: the line's own type (single lines without a line
+  // height, the Dynamic Type gate's policy), the placeholder grey.
+  const small = phone.text('small');
+  const fieldText = { fontFamily: 'InstrumentSans_400Regular', fontSize: small.fontSize, letterSpacing: small.letterSpacing };
+  const mapChip = (
+    <View
+      style={{
+        flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 6,
+        // Tuned against the mock with Simon (2026-06-12): tight
+        // 14px label line box + spec 3px v-padding (~20px pill),
+        // seated 2px low. The rendered mock, not the CSS literal,
+        // was the tiebreaker here.
+        marginTop: 2,
+        paddingVertical: 3, paddingHorizontal: 9, borderRadius: radius.pill, backgroundColor: theme.accentTint,
+      }}
     >
-      {children}
-    </Pressable>
+      <Icon name="pin" size={11} color={theme.accent} />
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, lineHeight: 14 }} color="accent">Map</VText>
+    </View>
   );
 
   return (
     <View style={{ paddingTop: 12, paddingBottom: 14, marginBottom: 4, borderBottomWidth: 1, borderBottomColor: theme.rule, gap: 0 }}>
-      {meta.address
-        ? line(
-            <>
-              <Icon name="pin" size={16} color={theme.inkSoft} />
-              <VText variant="small" numberOfLines={1} style={{ flexShrink: 1 }}>{meta.address}</VText>
-              <View
-                style={{
-                  flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 6,
-                  // Tuned against the mock with Simon (2026-06-12): tight
-                  // 14px label line box + spec 3px v-padding (~20px pill),
-                  // seated 2px low. The rendered mock, not the CSS literal,
-                  // was the tiebreaker here.
-                  marginTop: 2,
-                  paddingVertical: 3, paddingHorizontal: 9, borderRadius: radius.pill, backgroundColor: theme.accentTint,
-                }}
-              >
-                <Icon name="pin" size={11} color={theme.accent} />
-                <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, lineHeight: 14 }} color="accent">Map</VText>
-              </View>
-            </>,
-            'loc',
-            () => Linking.openURL(`https://maps.apple.com/?q=${encodeURIComponent(meta.address!)}`).catch(() => {}),
-          )
-        : null}
-      {when
-        ? line(
+      {address == null ? null : d && edit ? (
+        <View key="loc-edit" style={row}>
+          <Icon name="pin" size={16} color={theme.inkSoft} />
+          <View style={{ flexShrink: 1 }}>
+            <InlineField
+              ref={edit.refs.address}
+              value={d.address}
+              onChangeText={(s) => edit.set('address', s)}
+              onFocus={() => edit.onFieldFocus('address')}
+              autoFocus={edit.focus === 'address'}
+              maxLength={MOMENT_FIELD_MAX.address}
+              placeholder="Where’s it happening?"
+              placeholderTextColor={theme.inkFaint}
+              onSubmit={edit.done}
+              accessibilityLabel="Address"
+              style={{ ...fieldText, color: theme.ink }}
+            />
+          </View>
+          {/* Dimmed while editing, like everything that isn't a field. */}
+          {d.address.trim() ? <View pointerEvents="none" style={{ opacity: 0.35 }}>{mapChip}</View> : null}
+        </View>
+      ) : (
+        line(
+          <>
+            <Icon name="pin" size={16} color={theme.inkSoft} />
+            <VText variant="small" numberOfLines={1} style={{ flexShrink: 1 }}>{address}</VText>
+            {mapChip}
+          </>,
+          'loc',
+          () => Linking.openURL(`https://maps.apple.com/?q=${encodeURIComponent(address)}`).catch(() => {}),
+          'address',
+        )
+      )}
+      {when ? (
+        // The same line in and out of the edit (nothing swaps): while editing
+        // a tap opens the date picker, and it never shakes the edit bar.
+        <View key="when" onStartShouldSetResponderCapture={edit ? markNoShake : undefined}>
+          {line(
             <>
               <Icon name="clock" size={16} color={theme.inkSoft} />
               <VText variant="small">{when}</VText>
             </>,
             'when',
-          )
-        : null}
-      {meta.link
-        ? line(
-            <>
-              {/* .ovc-line svg is ink-soft even on the accent line — only
-                  the label text carries accent. */}
-              <Icon name="link" size={16} color={theme.inkSoft} />
-              <VText variant="small" color="accent">Event Link</VText>
-            </>,
-            'link',
-            // In-app browser — keep the user inside the moment (the Map
-            // line above stays Linking: it should open the Maps app).
-            () => WebBrowser.openBrowserAsync(meta.link!).catch(() => {}),
-          )
-        : null}
-      {meta.description ? (
-        <Pressable onPress={() => setDescOpen((o) => !o)} disabled={truncated === null && !descOpen}>
-          {/* Invisible un-clamped twin: reports the laid-out lines so the
-              visible text can be cut at the real 3-line break. */}
-          <VText
-            variant="small"
-            pointerEvents="none"
-            onTextLayout={(e) => {
-              const lines = e.nativeEvent.lines;
-              setClampLen(
-                lines.length > 3 ? lines.slice(0, 3).reduce((n, l) => n + l.text.length, 0) : null,
-              );
-            }}
-            style={{ position: 'absolute', left: 0, right: 0, opacity: 0 }}
-          >
-            {meta.description}
-          </VText>
-          {descOpen ? (
-            // Expanded: "less" flows inline at the end of the last line.
-            <VText variant="small" color="inkSoft" style={{ marginTop: 10 }}>
-              {meta.description}
-              <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color="accent">
-                {'  less'}
-              </VText>
-            </VText>
-          ) : (
-            <VText variant="small" color="inkSoft" numberOfLines={3} style={{ marginTop: 10 }}>
-              {truncated ?? meta.description}
-              {truncated !== null ? (
-                <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color="accent">
-                  {' more'}
-                </VText>
-              ) : null}
-            </VText>
+            d ? edit?.chooseDate : undefined,
+            'when',
           )}
-        </Pressable>
+        </View>
       ) : null}
-      <AvatarFoot meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPress={onPeople} first={footOnly} />
+      {link == null ? null : d && edit ? (
+        <View key="link-edit" style={row}>
+          <Icon name="link" size={16} color={theme.inkSoft} />
+          <View style={{ flexShrink: 1 }}>
+            <InlineField
+              ref={edit.refs.link}
+              value={d.link}
+              onChangeText={(s) => edit.set('link', s)}
+              onFocus={() => edit.onFieldFocus('link')}
+              autoFocus={edit.focus === 'link'}
+              maxLength={MOMENT_FIELD_MAX.link}
+              url
+              placeholder="Menu, event page…"
+              placeholderTextColor={theme.inkFaint}
+              onSubmit={edit.done}
+              accessibilityLabel="Event Link"
+              style={{ ...fieldText, color: theme.accent }}
+            />
+          </View>
+        </View>
+      ) : (
+        line(
+          <>
+            {/* .ovc-line svg is ink-soft even on the accent line — only
+                the label text carries accent. */}
+            <Icon name="link" size={16} color={theme.inkSoft} />
+            <VText variant="small" color="accent">Event Link</VText>
+          </>,
+          'link',
+          // In-app browser — keep the user inside the moment (the Map
+          // line above stays Linking: it should open the Maps app).
+          () => WebBrowser.openBrowserAsync(link).catch(() => {}),
+          'link',
+        )
+      )}
+      {description == null ? (
+        descHint && edit ? (
+          // Reads as a prompt, not the moment's text (the profile bio's ruling,
+          // 2026-11-12): a pencil and the placeholder grey. Touch and hold
+          // only, as it says; it becomes the description field (swapsOut).
+          <LongPressable
+            key="desc-hint"
+            swapsOut
+            disabled={edit.busy}
+            onLongPress={() => edit.start('description')}
+            accessibilityLabel="Add a Description"
+            accessibilityHint={MOMENT_EDIT_HINT}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 }}>
+              <Icon name="edit" size={Math.round(small.fontSize)} color={theme.inkFaint} />
+              <VText variant="small" color="inkFaint" style={{ flexShrink: 1 }}>Touch and hold to add a description</VText>
+            </View>
+          </LongPressable>
+        ) : null
+      ) : d && edit ? (
+        <View key="desc-edit" style={{ marginTop: 10 }}>
+          <InlineField
+            ref={edit.refs.description}
+            value={d.description}
+            onChangeText={(s) => edit.set('description', s)}
+            onFocus={() => edit.onFieldFocus('description')}
+            autoFocus={edit.focus === 'description'}
+            multiline
+            // Return writes a new line here; the edit bar's Done saves.
+            newlines
+            maxLength={MOMENT_FIELD_MAX.description}
+            placeholder="Notes for your guests…"
+            placeholderTextColor={theme.inkFaint}
+            accessibilityLabel="Description"
+            style={{ ...fieldText, lineHeight: small.lineHeight, color: theme.inkSoft }}
+          />
+        </View>
+      ) : (
+        <DescriptionBlock
+          key="desc"
+          text={description}
+          descOpen={descOpen}
+          truncated={truncated}
+          onToggle={truncated === null && !descOpen ? undefined : () => setDescOpen((o) => !o)}
+          onLines={setClampLen}
+          edit={edit}
+        />
+      )}
+      {/* Always wrapped (dimmed + inert in place while editing): the
+          participants' photos must never remount on an edit. */}
+      <View style={{ opacity: d ? 0.35 : 1 }} pointerEvents={d ? 'none' : 'auto'} accessibilityElementsHidden={!!d} importantForAccessibility={d ? 'no-hide-descendants' : 'auto'}>
+        <AvatarFoot meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPress={onPeople} first={footOnly} />
+      </View>
     </View>
+  );
+}
+
+// The description, clamped to three lines with "more" / "less" inline. A
+// host holds it to edit (it becomes the field: swapsOut); a tap still toggles.
+function DescriptionBlock({ text, descOpen, truncated, onToggle, onLines, edit }: {
+  text: string;
+  descOpen: boolean;
+  truncated: string | null;
+  onToggle: (() => void) | undefined;
+  onLines: (len: number | null) => void;
+  edit?: MomentEditApi;
+}) {
+  const body = (
+    <>
+      {/* Invisible un-clamped twin: reports the laid-out lines so the
+          visible text can be cut at the real 3-line break. */}
+      <VText
+        variant="small"
+        pointerEvents="none"
+        onTextLayout={(e) => {
+          const lines = e.nativeEvent.lines;
+          onLines(lines.length > 3 ? lines.slice(0, 3).reduce((n, l) => n + l.text.length, 0) : null);
+        }}
+        style={{ position: 'absolute', left: 0, right: 0, opacity: 0 }}
+      >
+        {text}
+      </VText>
+      {descOpen ? (
+        // Expanded: "less" flows inline at the end of the last line.
+        <VText variant="small" color="inkSoft" style={{ marginTop: 10 }}>
+          {text}
+          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color="accent">
+            {'  less'}
+          </VText>
+        </VText>
+      ) : (
+        <VText variant="small" color="inkSoft" numberOfLines={3} style={{ marginTop: 10 }}>
+          {truncated ?? text}
+          {truncated !== null ? (
+            <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color="accent">
+              {' more'}
+            </VText>
+          ) : null}
+        </VText>
+      )}
+    </>
+  );
+  if (!edit) return <Pressable onPress={onToggle} disabled={!onToggle}>{body}</Pressable>;
+  return (
+    <LongPressable swapsOut disabled={edit.busy} onPress={onToggle} onLongPress={() => edit.start('description')} accessibilityHint={MOMENT_EDIT_HINT}>
+      {body}
+    </LongPressable>
   );
 }
 

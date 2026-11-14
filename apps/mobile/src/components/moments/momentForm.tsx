@@ -471,7 +471,6 @@ export function DateField({
   mode?: 'datetime' | 'date';
 }) {
   const { theme } = useTheme();
-  const insets = useSafeAreaInsets();
   const phone = usePhoneTokens();
   const surface = phone.surface('formControl');
   const [draft, setDraft] = useState<Date | null>(null); // non-null while the sheet is open
@@ -521,16 +520,54 @@ export function DateField({
           </Pressable>
         ) : null}
       </Pressable>
-      {/* Content-sized bottom sheet (NOT pageSheet, which fills the screen): a
-          dim scrim with a card pinned to the bottom that's only as tall as the
-          picker + header. Tap-scrim or Done dismisses. */}
-      <Modal
-        visible={draft !== null}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setDraft(null)}
-      >
-        <Pressable style={{ flex: 1, backgroundColor: theme.scrim, justifyContent: 'flex-end' }} onPress={() => setDraft(null)}>
+      <DatePickerSheet
+        value={draft}
+        label={label}
+        mode={mode}
+        minimumDate={minimumDate}
+        maximumDate={maximumDate}
+        onChange={setDraft}
+        onDone={() => {
+          if (draft) onChange(draft);
+          setDraft(null);
+        }}
+        onCancel={() => setDraft(null)}
+      />
+    </View>
+  );
+}
+
+// The OS inline date picker in a content-sized bottom sheet (NOT pageSheet,
+// which fills the screen): a dim scrim with a card pinned to the bottom that's
+// only as tall as the picker + header. Tap-scrim cancels, Done commits.
+// Controlled: `value` non-null = shown (the caller's draft, seeded and clamped
+// by the caller). DateField's sheet, and the moment's date in place.
+// `touchCapture`: a never-claiming capture on the sheet (the moment's edit
+// bar shake skips touches here).
+export function DatePickerSheet({
+  value, label, mode = 'datetime', minimumDate, maximumDate, onChange, onDone, onCancel, touchCapture,
+}: {
+  value: Date | null;
+  label: string;
+  mode?: 'datetime' | 'date';
+  minimumDate?: Date;
+  maximumDate?: Date;
+  onChange: (d: Date) => void;
+  onDone: () => void;
+  onCancel: () => void;
+  touchCapture?: () => boolean;
+}) {
+  const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  return (
+    <Modal
+      visible={value !== null}
+      transparent
+      animationType="slide"
+      onRequestClose={onCancel}
+    >
+      <View style={{ flex: 1 }} onStartShouldSetResponderCapture={touchCapture}>
+        <Pressable style={{ flex: 1, backgroundColor: theme.scrim, justifyContent: 'flex-end' }} onPress={onCancel}>
           {/* Inner Pressable swallows taps so they don't bubble to the scrim
               and close the sheet. */}
           <Pressable
@@ -554,18 +591,11 @@ export function DateField({
               <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
                 {label}
               </VText>
-              <Button
-                title="Done"
-                size="sm"
-                onPress={() => {
-                  if (draft) onChange(draft);
-                  setDraft(null);
-                }}
-              />
+              <Button title="Done" size="sm" onPress={onDone} />
             </View>
-            {draft ? (
+            {value ? (
               <DateTimePicker
-                value={draft}
+                value={value}
                 mode={mode}
                 display="inline"
                 accentColor={theme.accent}
@@ -580,14 +610,14 @@ export function DateField({
                 textColor={theme.ink}
                 minimumDate={minimumDate}
                 maximumDate={maximumDate}
-                onValueChange={(_e, d) => { if (d) setDraft(d); }}
+                onValueChange={(_e, d) => { if (d) onChange(d); }}
                 style={{ alignSelf: 'center' }}
               />
             ) : null}
           </Pressable>
         </Pressable>
-      </Modal>
-    </View>
+      </View>
+    </Modal>
   );
 }
 

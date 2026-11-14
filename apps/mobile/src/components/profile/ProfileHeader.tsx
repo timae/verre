@@ -6,7 +6,7 @@ import Svg, { Path } from 'react-native-svg';
 import { BIO_MAX, USERNAME_MAX } from '@verre/core';
 import { BadgePill } from '@/components/moments/RoleChip';
 import { PhotoTiles } from '@/components/profile/PhotoTiles';
-import { InlineField, LongPressable, markNoShake } from '@/components/profile/ProfileEditParts';
+import { InlineField, LongPressable, markNoShake } from '@/components/ui/InPlaceEdit';
 import {
   COVER_SPEC, FONT, NAME_GAP, NAME_LIFT, NAME_RIGHT, PHOTO_BASE, PLAIN_SPEC, SHEET_RISE, anchoredIndent, coverLines, curveLeft, fitProfileName, notchBox, notchPath, plainLines,
   type NameAnchor, type NameRing,

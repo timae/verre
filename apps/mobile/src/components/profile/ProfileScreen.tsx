@@ -9,7 +9,7 @@ import { checkUsername, normalizeBio, validateDisplayName } from '@verre/core';
 import { FeedList, type FeedScrollHandle } from '@/components/feed/FeedList';
 import { pickPhotoOrRemove } from '@/components/moments/momentForm';
 import { AddFriendsSheet } from '@/components/people/AddFriendsSheet';
-import { EditBar, editTouchHandlers, markNoShake, type EditBarLine } from '@/components/profile/ProfileEditParts';
+import { EditBar, editTouchHandlers, markNoShake, type EditBarLine } from '@/components/ui/InPlaceEdit';
 import { EmptyPosts, FollowButton, NoticeBox, ProfileHeader, ProfileIdentity, firstName, type EditField, type ProfileEdit } from '@/components/profile/ProfileHeader';
 import { TileCoverSheet } from '@/components/profile/TileCoverSheet';
 import { AnchorButton, AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';

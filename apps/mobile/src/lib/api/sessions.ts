@@ -503,13 +503,19 @@ export type MomentSettingsBody = {
   coverPhoto?: string | null; // data URL = replace; null = remove
 };
 
-export async function updateMomentSettings(code: string, body: MomentSettingsBody): Promise<void> {
+// Resolves with the saved meta as the server echoes it (`metaToWire`: no
+// per-viewer fields, no participants), or null when the body didn't parse.
+// The in-place moment edit merges its detail fields into the poll's cache.
+export type MomentSettingsEcho = Omit<SessionMetaView, 'participants' | 'ttlSeconds' | 'viewerBlocksOut' | 'viewerBlocksIn' | 'banCount'>;
+export async function updateMomentSettings(code: string, body: MomentSettingsBody): Promise<MomentSettingsEcho | null> {
   const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/settings`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) await throwApiError(res);
+  const json = (await res.json().catch(() => null)) as { meta?: MomentSettingsEcho } | null;
+  return json?.meta ?? null;
 }
 
 // Soft-deletes the moment (host/cohost-gated server-side). Bounces every

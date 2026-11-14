@@ -2,7 +2,7 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
-import { LongPressable } from '@/components/profile/ProfileEditParts';
+import { LongPressable } from '@/components/ui/InPlaceEdit';
 import { VText } from '@/components/ui/VText';
 import { Icon } from '@/components/ui/Icon';
 import { GLASS_FILL, TILE_SCRIM, TILE_SCRIM_STOPS } from '@/lib/layout';
