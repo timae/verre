@@ -1,20 +1,18 @@
-import { BottomSheetView } from '@gorhom/bottom-sheet';
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, View, useWindowDimensions } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { FilterChip, FilterDates, FilterFooter, FilterLabel, FilterTitle, categoryLabel, dateChipLabel, dayEndISO, dayStartISO, type ActiveFilter } from '@/components/moments/MomentFilters';
+import { dayEndISO, dayStartISO } from '@/components/moments/MomentFilters';
 import { ToggleCard } from '@/components/moments/settingsParts';
-import { ScoreRange, ScoreRangeValue, RANGE_MAX, RANGE_MIN, isAnyRange, rangeLabel } from '@/components/scoring/ScoreRange';
+import { isAnyRange } from '@/components/scoring/ScoreRange';
 import { AnchoredMenu, MenuItem } from '@/components/ui/AnchoredMenu';
 import { CenteredMessage, ErrorState } from '@/components/ui/ConnectionState';
-import { Sheet } from '@/components/ui/Sheet';
 import { ListGoneError, getImpressionsPage, profileListKey, type ImpressionParams, type ImpressionRow, type ImpressionSort } from '@/lib/api/lists';
 import { profileQueryOptions } from '@/lib/api/users';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { useMeId } from '@/lib/meId';
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { useTheme } from '@/theme';
+import { ImpressionFilterSheet, NO_IMP_FILTERS, impFilterCount, type ImpFilterUpdate, type ImpFilters } from './ImpressionFilters';
 import { ListNote, ListRow, MonthHeader, ScoreColumn, ToolRow, groupByMonth, type RowHandle } from './ListParts';
 import { ToolButton, type ToolAnchor } from '@/components/ui/ToolButton';
 import { useListRefresh } from './useListRefresh';
@@ -29,13 +27,11 @@ import { useOpenListPost } from './useOpenListPost';
 // for the date sorts only (a score order jumps between months). Someone
 // else's: "Only Ones We Both Had" (their rows you rated too, your score under
 // theirs; a blind row never counts). A row opens its post like a post on the
-// feed (useOpenListPost). The passport card and the structure / aroma
-// filters are later (Palate / Passport don't exist).
+// feed (useOpenListPost). The filter sheet (date, category, score, aromas,
+// structure) is ImpressionFilters.tsx. The passport card is later (Passport
+// doesn't exist).
 
-type ImpFilters = { from: Date | null; to: Date | null; category: string; lo: number; hi: number };
-const NO_IMP_FILTERS: ImpFilters = { from: null, to: null, category: 'any', lo: RANGE_MIN, hi: RANGE_MAX };
 const SORTS: [ImpressionSort, string][] = [['newest', 'Newest First'], ['oldest', 'Oldest First'], ['highest', 'Highest Rated'], ['lowest', 'Lowest Rated']];
-const filterCount = (f: ImpFilters) => (f.from || f.to ? 1 : 0) + (f.category !== 'any' ? 1 : 0) + (isAnyRange(f.lo, f.hi) ? 0 : 1);
 
 export function ImpressionsPane({ userId, active: shown }: { userId: string; active: boolean }) {
   const { theme } = useTheme();
@@ -52,23 +48,25 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
     const t = setTimeout(() => setSearch(query.trim()), 250);
     return () => clearTimeout(t);
   }, [query]);
-  const [filters, setFilters] = useState<ImpFilters>(NO_IMP_FILTERS);
-  // A DRAG of the score range reaches the query debounced like the search (it
-  // moves a quarter step at a time, and every step would be a request on the
+  // `filters` = what the sheet shows, `applied` = what the list asks for. A
+  // DRAG or a PICK (the score range, a structure track, an aroma) reaches the
+  // query debounced like the search (each step would be a request on the
   // lists' shared rate budget); every other change, Reset included, applies
-  // at once, range and all, so no request pairs a stale range with fresh dates.
-  const [range, setRange] = useState({ lo: filters.lo, hi: filters.hi });
-  const rangeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(rangeTimer.current), []);
-  const applyFilters = useCallback((f: ImpFilters) => {
-    clearTimeout(rangeTimer.current);
-    setFilters(f);
-    setRange({ lo: f.lo, hi: f.hi });
-  }, []);
-  const dragRange = useCallback((lo: number, hi: number) => {
-    setFilters((f) => ({ ...f, lo, hi }));
-    clearTimeout(rangeTimer.current);
-    rangeTimer.current = setTimeout(() => setRange({ lo, hi }), 250);
+  // at once, everything with it, so no request pairs a stale drag with fresh
+  // dates. Updates are functions of the latest filters (a gesture's closure
+  // can be a render old).
+  const [filters, setFilters] = useState<ImpFilters>(NO_IMP_FILTERS);
+  const [applied, setApplied] = useState<ImpFilters>(NO_IMP_FILTERS);
+  const latest = useRef(NO_IMP_FILTERS);
+  const applyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(applyTimer.current), []);
+  const changeFilters: ImpFilterUpdate = useCallback((update, opts) => {
+    const next = update(latest.current);
+    latest.current = next;
+    setFilters(next);
+    clearTimeout(applyTimer.current);
+    if (opts?.debounce) applyTimer.current = setTimeout(() => setApplied(next), 300);
+    else setApplied(next);
   }, []);
   const [filterOpen, setFilterOpen] = useState(false);
   const [common, setCommon] = useState(false);
@@ -76,14 +74,17 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
 
   const params: ImpressionParams = useMemo(() => ({
     q: search || undefined,
-    from: dayStartISO(filters.from),
-    to: dayEndISO(filters.to),
-    category: filters.category,
-    min: isAnyRange(range.lo, range.hi) ? null : range.lo,
-    max: isAnyRange(range.lo, range.hi) ? null : range.hi,
+    from: dayStartISO(applied.from),
+    to: dayEndISO(applied.to),
+    category: applied.category,
+    min: isAnyRange(applied.lo, applied.hi) ? null : applied.lo,
+    max: isAnyRange(applied.lo, applied.hi) ? null : applied.hi,
+    structure: applied.structure,
+    aromas: applied.aromas,
+    aromaMode: applied.aromaMode,
     common: both,
     sort,
-  }), [search, filters.from, filters.to, filters.category, range, both, sort]);
+  }), [search, applied, both, sort]);
   const listQ = useInfiniteQuery({
     queryKey: profileListKey('impressions', userId, params),
     queryFn: ({ pageParam }) => getImpressionsPage(userId, params, pageParam),
@@ -121,7 +122,7 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
 
   const { pulling, onPullRefresh, refetchInPlace } = useListRefresh(listQ.refetch, headerQ.refetch);
   const openPost = useOpenListPost(userId, refetchInPlace, shown);
-  const active = filterCount(filters);
+  const active = impFilterCount(filters);
   const narrowed = search !== '' || active > 0 || both;
 
   let body: React.ReactNode;
@@ -185,7 +186,7 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
             <MenuItem key={k} label={label} active={sort === k} onPress={() => { setSort(k); setMenuAt(null); }} />
           ))}
         </AnchoredMenu>
-        <ImpressionFilterSheet open={filterOpen} onClose={() => setFilterOpen(false)} filters={filters} onChange={applyFilters} onRange={dragRange} />
+        <ImpressionFilterSheet open={filterOpen} onClose={() => setFilterOpen(false)} filters={filters} onChange={changeFilters} />
       </View>
   );
 }
@@ -203,46 +204,5 @@ function ImpressionListRow({ row, showYours, onPress }: { row: ImpressionRow; sh
       right={<ScoreColumn score={row.score} yours={showYours ? row.yourScore : null} />}
       onPress={onPress}
     />
-  );
-}
-
-// "Filter Impressions" (04·6d): the applied chips · Date · Category · Score
-// (the two-dot range) · Reset / Done, the Filter Moments anatomy. Aromas +
-// Structure are later. The chips' bodies are plain labels (every control is
-// in the sheet); a chip's ✕ applies at once, the range included.
-function ImpressionFilterSheet({ open, onClose, filters, onChange, onRange }: {
-  open: boolean; onClose: () => void; filters: ImpFilters; onChange: (f: ImpFilters) => void; onRange: (lo: number, hi: number) => void;
-}) {
-  const insets = useSafeAreaInsets();
-  const applied: ActiveFilter[] = [];
-  if (filters.from || filters.to) applied.push({ key: 'date', label: dateChipLabel(filters.from, filters.to), onClear: () => onChange({ ...filters, from: null, to: null }) });
-  if (filters.category !== 'any') applied.push({ key: 'category', label: categoryLabel(filters.category), onClear: () => onChange({ ...filters, category: 'any' }) });
-  if (!isAnyRange(filters.lo, filters.hi)) applied.push({ key: 'score', label: rangeLabel(filters.lo, filters.hi), onClear: () => onChange({ ...filters, lo: RANGE_MIN, hi: RANGE_MAX }) });
-  return (
-    <Sheet open={open} onClose={onClose}>
-      <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 12, paddingBottom: insets.bottom + 16, gap: 18 }}>
-        <FilterTitle applied={applied}>Filter Impressions</FilterTitle>
-        <View style={{ gap: 10 }}>
-          <FilterLabel>DATE</FilterLabel>
-          <FilterDates from={filters.from} to={filters.to} onChange={(from, to) => onChange({ ...filters, from, to })} />
-        </View>
-        <View style={{ gap: 10 }}>
-          <FilterLabel>CATEGORY</FilterLabel>
-          {/* v1: wine only, like Filter Moments. */}
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            <FilterChip label="Any" on={filters.category === 'any'} onPress={() => onChange({ ...filters, category: 'any' })} />
-            <FilterChip label={categoryLabel('wine')} on={filters.category === 'wine'} onPress={() => onChange({ ...filters, category: 'wine' })} />
-          </View>
-        </View>
-        <View style={{ gap: 4 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <FilterLabel>SCORE</FilterLabel>
-            <ScoreRangeValue lo={filters.lo} hi={filters.hi} />
-          </View>
-          <ScoreRange lo={filters.lo} hi={filters.hi} onChange={onRange} />
-        </View>
-        <FilterFooter onReset={() => onChange(NO_IMP_FILTERS)} onDone={onClose} />
-      </BottomSheetView>
-    </Sheet>
   );
 }

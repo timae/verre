@@ -1,3 +1,4 @@
+import type { AromaSelection } from '@verre/core';
 import { apiFetch } from '../apiFetch';
 import { throwApiError } from './sessions';
 
@@ -64,7 +65,14 @@ export class ListGoneError extends Error {}
 
 // Mirrors lib/impressionsCursor.ts ImpressionSort (newest = the server's default).
 export type ImpressionSort = 'newest' | 'oldest' | 'highest' | 'lowest';
-export type ImpressionParams = { q?: string; from?: string | null; to?: string | null; category?: string; min?: number | null; max?: number | null; common?: boolean; sort?: ImpressionSort };
+export type AromaMode = 'all' | 'any';
+export type ImpressionParams = {
+  q?: string; from?: string | null; to?: string | null; category?: string; min?: number | null; max?: number | null;
+  /** Structure ranges by axis key: whole 0..5 (0 = None), lo ≤ hi. */
+  structure?: Record<string, readonly [number, number]>;
+  aromas?: AromaSelection[]; aromaMode?: AromaMode;
+  common?: boolean; sort?: ImpressionSort;
+};
 export type SharedMomentParams = { q?: string; roles?: string[]; hosts?: string[]; people?: string[]; category?: string; from?: string | null; to?: string | null };
 
 async function get<T>(path: string): Promise<T> {
@@ -83,6 +91,15 @@ export function getImpressionsPage(id: string, p: ImpressionParams, cursor: stri
   if (p.min != null) qs.set('min', String(p.min));
   if (p.max != null) qs.set('max', String(p.max));
   if (p.common) qs.set('common', '1');
+  // Structure ranges (`sweet:1-3,tannin:0-0`, sorted by key so the same
+  // ranges always make the same URL), aroma picks as the stored selection
+  // shape (each read broad, server-side).
+  const st = Object.entries(p.structure ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, [lo, hi]]) => `${k}:${lo}-${hi}`);
+  if (st.length) qs.set('st', st.join(','));
+  if (p.aromas?.length) {
+    qs.set('ar', JSON.stringify(p.aromas));
+    if (p.aromaMode === 'any' && p.aromas.length > 1) qs.set('armode', 'any');
+  }
   if (p.sort && p.sort !== 'newest') qs.set('sort', p.sort);
   if (cursor) qs.set('cursor', cursor);
   return get(`/api/users/${encodeURIComponent(id)}/impressions?${qs}`);

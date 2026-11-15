@@ -9,11 +9,14 @@
 // so a tile never shows more than its list.
 //
 // 🔒 Search, filters and sorts read only fields the row shows: a blind row
-// matches its moment name only, and "both had" never counts a blind row.
+// matches its moment name only, and "both had" never counts a blind row. The
+// structure + aroma filters read the rating's own perception, which their POST
+// shows (never redacted, blind included), so on someone else's list they only
+// match rows with a post.
 
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { decimalToNumber } from '@verre/core'
+import { decimalToNumber, stylesWithAxis, type AromaFilterMatch } from '@verre/core'
 import { cravingSessionIdSql, hiddenSql, redactedSql } from '@/lib/outsideView'
 import type { ProfileGateOk } from '@/lib/profileVisibility'
 import { encodeKeyCursor, parseKeyCursor, usKeySql } from '@/lib/keyCursor'
@@ -65,9 +68,37 @@ export type ImpressionFilters = {
   category: string | null
   min: number | null
   max: number | null
+  /** Their structure ranges: whole 0..5 per axis key, lo ≤ hi. */
+  structure: { k: string; lo: number; hi: number }[]
+  /** Their aroma picks (core aromaFilterMatch), all or any of them. */
+  aromas: AromaFilterMatch[]
+  aromaMode: 'all' | 'any'
   common: boolean
   sort: ImpressionSort
   cursor: string | null
+}
+
+// A structure range on one axis (Filter Impressions, ruled 2026-11-14): the
+// rating must carry the axis (0 = perceived None counts, an absent key does
+// not: nobody rated it) with a value inside the range. An axis only some
+// styles have (Bubbles) also needs the wine to be one of them NOW: the post's
+// wheel draws the current style's axes, and a session wine re-typed from
+// sparkling keeps its ratings' bubbles value (Codex review, 2026-11-14).
+function structureSql(s: { k: string; lo: number; hi: number }): Prisma.Sql {
+  const styles = stylesWithAxis(s.k)
+  return Prisma.sql`(jsonb_typeof(r.flavors -> ${s.k}::text) = 'number'
+    AND (r.flavors ->> ${s.k}::text)::numeric BETWEEN ${s.lo} AND ${s.hi}
+    ${styles ? Prisma.sql`AND w.style = ANY(${styles}::text[])` : Prisma.empty})`
+}
+
+// One aroma pick: some stored selection satisfies it (core/aroma/filter.ts is
+// the rule; aromaPickMatches is this predicate's twin, pinned by units).
+function aromaSql(a: AromaFilterMatch): Prisma.Sql {
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(r.aromas) = 'array' THEN r.aromas ELSE '[]'::jsonb END) e
+     WHERE (((e ->> 'a') = ANY(${a.ids}::text[]) AND (${a.m}::text IS NULL OR (e ->> 'm') = ${a.m}::text))
+            OR (e ->> 'a') = ANY(${a.promotedIds}::text[]))
+       AND (NOT ${a.pronounced}::boolean OR (e -> 'p') = 'true'::jsonb))`
 }
 
 // The sorts (Simon, 2026-11-14): by when they had it either way, or by their
@@ -124,6 +155,12 @@ export async function loadImpressions(
   if (f.category) where.push(Prisma.sql`w.category = ${f.category}`)
   if (f.min !== null) where.push(Prisma.sql`r.score >= ${f.min}`)
   if (f.max !== null) where.push(Prisma.sql`r.score <= ${f.max}`)
+  for (const s of f.structure) where.push(structureSql(s))
+  if (f.aromas.length > 0) where.push(Prisma.sql`(${Prisma.join(f.aromas.map(aromaSql), f.aromaMode === 'any' ? ' OR ' : ' AND ')})`)
+  // Their structure and aromas show on their POST (blind ones too: the
+  // taster's own perception), not on the row: on someone else's list these
+  // two filters only match a row that has one.
+  if (other !== null && (f.structure.length > 0 || f.aromas.length > 0)) where.push(Prisma.sql`${POST_ID} IS NOT NULL`)
   if (f.q) {
     where.push(Prisma.sql`((NOT ${redacted} AND (${textMatch(Prisma.sql`w.name`, f.q)} OR ${textMatch(Prisma.sql`w.producer`, f.q)}))
       OR (s.deleted_at IS NULL AND ${textMatch(Prisma.sql`s.name`, f.q)}))`)

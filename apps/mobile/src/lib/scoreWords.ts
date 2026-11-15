@@ -23,3 +23,8 @@ export const INTENSITY = ['None', 'Faint', 'Light', 'Medium', 'Strong', 'Intense
 export function intensityWord(v: number): string {
   return INTENSITY[Math.max(0, Math.min(5, Math.round(v)))];
 }
+
+/** A structure range in words: "Medium", "Faint – Medium" (a filter's range). */
+export function intensityRangeWord(lo: number, hi: number): string {
+  return lo === hi ? intensityWord(lo) : `${intensityWord(lo)} – ${intensityWord(hi)}`;
+}

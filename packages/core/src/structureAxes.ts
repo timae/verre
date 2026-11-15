@@ -76,6 +76,18 @@ const WINE_AXES: Readonly<Record<WineStyle, readonly StructureAxis[]>> = Object.
   nonalc: Object.freeze(WINE_BASE), // §1a defensive tolerance — disappears when nonalc-as-style is retired
 })
 
+// Every wine style the registry knows (the keys above).
+export const WINE_STYLES: readonly WineStyle[] = Object.freeze(Object.keys(WINE_AXES) as WineStyle[])
+
+// The styles whose axis set holds `key`, or null when every style (and the
+// unknown-style fallback) carries it. Bubbles → ['spark']. A read that must
+// only match axes a post DRAWS uses it: the wheel draws the wine's CURRENT
+// style's axes, and a host can re-type a session wine after it was rated.
+export function stylesWithAxis(key: string): WineStyle[] | null {
+  if (WINE_BASE.some((a) => a.k === key)) return null
+  return WINE_STYLES.filter((s) => WINE_AXES[s].some((a) => a.k === key))
+}
+
 // Resolve the full ordered axis set for a (category, style) pair. This is the
 // INPUT set (all axes a taster can rate) — a READ surface filters it down to the
 // keys actually present in a given rating via `perRatingAxes` (proposal §6d).

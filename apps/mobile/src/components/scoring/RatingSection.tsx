@@ -1,14 +1,12 @@
-import { useState } from 'react';
 import { View } from 'react-native';
 import type { AromaSelection } from '@verre/core';
 import { AromaInput } from '@/components/scoring/aroma/AromaInput';
+import { IntensityScaleInfo } from '@/components/scoring/IntensityScaleInfo';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { StructureInput } from '@/components/scoring/StructureInput';
 import { NotesField } from '@/components/moments/momentForm';
-import { AnchoredMenu, AnchorButton, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { VText } from '@/components/ui/VText';
 import { usePhoneTokens } from '@/lib/layout';
-import { INTENSITY } from '@/lib/scoreWords';
 import { useTheme } from '@/theme';
 
 // THE rating block — score · note · structure · aromas — shared verbatim by
@@ -21,7 +19,8 @@ import { useTheme } from '@/theme';
 // Controlled throughout: the screen owns every value (local-until-commit on
 // the impression, draft-backed on the check-in). Structure is ALWAYS OPEN
 // (Simon 2026-07-17 — supersedes the adaptive fold + its engagement-seeded
-// open state). Only the ⓘ intensity-reference anchor is internal state.
+// open state). The ⓘ intensity scale is `IntensityScaleInfo` (shared with
+// Filter for Structure).
 export function RatingSection({
   style,
   score,
@@ -51,7 +50,6 @@ export function RatingSection({
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
-  const [infoAnchor, setInfoAnchor] = useState<MenuAnchor | null>(null);
   return (
     <View>
       <ScoreInput value={score} onChange={onScore} />
@@ -85,12 +83,7 @@ export function RatingSection({
           <VText variant="small" color="inkSoft">
             Set each track to the intensity you perceive.
           </VText>
-          <AnchorButton
-            icon="info"
-            iconColor={theme.inkSoft}
-            accessibilityLabel="Intensity scale"
-            onOpen={setInfoAnchor}
-          />
+          <IntensityScaleInfo />
         </View>
         {/* .filltrack per-attribute intensity grid — structure axes for this
             drink's style, colour from the active theme. */}
@@ -100,27 +93,6 @@ export function RatingSection({
           visible, blind included: like structure, aromas are the taster's own
           perception and never identify the wine. */}
       <AromaInput value={aromas} onChange={onAromas} onRequestScroll={onRequestAromaScroll} />
-      {/* Intensity-scale reference — the numbered 0–5 levels, one per row.
-          Purely the scale legend the ⓘ opens (a Modal — render position is
-          irrelevant, so it lives here with its trigger). */}
-      <AnchoredMenu anchor={infoAnchor} onClose={() => setInfoAnchor(null)} right={16} minWidth={180}>
-        <View style={{ paddingHorizontal: 10, paddingVertical: 6, gap: 5 }}>
-          <VText variant="small" style={{ color: theme.ink, fontFamily: 'InstrumentSans_600SemiBold', marginBottom: 3 }}>
-            Perceived Intensity
-          </VText>
-          {INTENSITY.map((word, i) => (
-            <View key={word} style={{ flexDirection: 'row', alignItems: 'baseline' }}>
-              <VText
-                variant="small"
-                style={{ color: theme.accent, fontFamily: 'InstrumentSans_600SemiBold', width: 18, fontVariant: ['tabular-nums'] }}
-              >
-                {i}
-              </VText>
-              <VText variant="small" style={{ color: theme.ink }}>{word}</VText>
-            </View>
-          ))}
-        </View>
-      </AnchoredMenu>
     </View>
   );
 }

@@ -19,8 +19,10 @@ import { LEVEL_R, type MapLevel } from './mapLayout';
 
 const STAGE_H = 390; // cap — +15% over the sheet-era 340 for the inline placement (Simon 2026-07-17)
 
-export function CanvasPicker({ ops, onEnsureVisible }: {
+export function CanvasPicker({ ops, onEnsureVisible, capText }: {
   ops: AromaOps;
+  /** The cap-rejection line (a filter isn't "an impression"; default = rating's). */
+  capText?: string;
   /** Called after any tap that changes the refine target (arm OR drill) with
       the refine row's MEASURED window rect (top, height + breathing) — the
       inline host scrolls the minimal shift that makes the Add row fully
@@ -140,7 +142,7 @@ export function CanvasPicker({ ops, onEnsureVisible }: {
           if (pendState.commit()) setPend(null);
         }}
       />
-      <CapHint show={pendState.capHit} />
+      <CapHint show={pendState.capHit} text={capText} />
       </View>
     </View>
   );

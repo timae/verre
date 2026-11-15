@@ -101,6 +101,8 @@ export {
   resolveAxes,
   perRatingAxes,
   fillFlavourZeros,
+  stylesWithAxis,
+  WINE_STYLES,
   type StructureAxis,
   type WineStyle,
 } from './structureAxes'
@@ -134,6 +136,7 @@ export {
   type AromaTierPath,
 } from './aroma/taxonomy'
 export { searchAromas, type AromaSearchResult } from './aroma/search'
+export { aromaFilterMatch, aromaPickMatches, aromaSubtree, type AromaFilterMatch } from './aroma/filter'
 export {
   aggregateAromaRollup,
   type AromaRollup,

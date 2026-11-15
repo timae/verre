@@ -2262,6 +2262,112 @@ try {
   // ── The canary over the whole run (every call() above and below) ─────────
   await usernames({ call, check, section, mkUser: (name: string) => mkUser(name, { username: true }), createSession, resetLimits, canary, prisma, redis, scanKeys, betterAuthServer, TAG, DB })
 
+  // ── § 22 Filter Impressions: structure ranges + aroma picks (2026-11-14) ──
+  {
+  section('§ 22 impression filters: structure ranges, aroma picks, all / any, post-less rows')
+  const Pp = await mkUser('Pia Palate')
+  const Vw = await mkUser('Viktor Viewer')
+  const checkin = async (name: string, body: Record<string, unknown>) => {
+    await resetLimits()
+    const c = await call(checkinsRoute.POST, 'POST', '/api/checkins', Pp, { wineName: `${TAG} ${name}`, type: 'red', score: 3, ...body })
+    if (c.status !== 201) throw new Error(`check-in ${name} ${c.status} ${JSON.stringify(c.json)}`)
+    const w = (await prisma.$queryRaw<{ wine_id: string }[]>`SELECT r.wine_id FROM ratings r JOIN feed_items fi ON fi.rating_id = r.id WHERE fi.id = ${c.json.id as number}`)[0].wine_id
+    return { post: c.json.id as number, wine: w }
+  }
+  // c1: sweet 1, acid 4 (the rest filled as None); dried apricot (pronounced) + lemon.
+  const c1 = await checkin('F1', { flavors: { sweet: 1, acid: 4 }, aromas: [{ a: 'apricot', m: 'dried', p: true }, { a: 'lemon', m: null }] })
+  // c2: sweet 3, tannin 2; a coarse "berry" + grape + dried (stored as raisin).
+  const c2 = await checkin('F2', { flavors: { sweet: 3, tannin: 2 }, aromas: [{ a: 'fruity.berry', m: null }, { a: 'grape', m: 'dried' }] })
+  // c3: no structure, no aromas.
+  const c3 = await checkin('F3', { flavors: {} })
+  // c4: sparkling (Bubbles), only the family "fruity".
+  const c4 = await checkin('F4', { type: 'spark', flavors: { bubbles: 5, sweet: 2 }, aromas: [{ a: 'fruity', m: null }] })
+  // c5: apricot, its post removed: on Viktor's list it stays (unfiltered) but no aroma / structure filter may match it.
+  const c5 = await checkin('F5', { flavors: { sweet: 1 }, aromas: [{ a: 'apricot', m: null }] })
+  await prisma.$executeRaw`DELETE FROM feed_items WHERE id = ${c5.post}`
+  const raw = await prisma.$queryRaw<{ aromas: unknown }[]>`SELECT r.aromas FROM ratings r JOIN wines w ON w.id = r.wine_id WHERE w.id = ${c2.wine}`
+  check('fixture: grape + dried was stored as raisin', JSON.stringify(raw[0]?.aromas).includes('"raisin"'), raw[0]?.aromas)
+  const lst = async (viewer: User, q: string) => {
+    await resetLimits()
+    return call(impressionsRoute.GET, 'GET', `/api/users/${Pp.pid}/impressions${q ? `?${q}` : ''}`, viewer, undefined, { id: Pp.pid })
+  }
+  const set = (x: { json: J }) => ((x.json.items ?? []) as J[]).map(i => i.wineId as string).sort().join()
+  const of = (...cs: { wine: string }[]) => cs.map(c => c.wine).sort().join()
+  const ar = (picks: unknown[], mode?: 'any') => `ar=${encodeURIComponent(JSON.stringify(picks))}${mode ? '&armode=any' : ''}`
+  const expectSet = async (name: string, q: string, want: string, viewer: User = Vw) => {
+    const x = await lst(viewer, q)
+    check(name, x.status === 200 && set(x) === want, { status: x.status, got: set(x), want })
+  }
+  await expectSet('unfiltered: all five (the post-less one too)', '', of(c1, c2, c3, c4, c5))
+  // Structure.
+  await expectSet('st sweet 1–1 → c1 only (c5 is post-less)', 'st=sweet:1-1', of(c1))
+  await expectSet('st sweet 1–3 → c1, c2, c4', 'st=sweet:1-3', of(c1, c2, c4))
+  await expectSet('st tannin None → the ones rated None (filled 0), never the unrated one', 'st=tannin:0-0', of(c1, c4))
+  await expectSet('st bubbles 0–5 → only the sparkling rating carries the axis', 'st=bubbles:0-5', of(c4))
+  await expectSet('two axes → both must fit', 'st=sweet:1-3,acid:4-5', of(c1))
+  await expectSet('your own list: the post-less row matches', 'st=sweet:1-1', of(c1, c5), Pp)
+  // Aromas.
+  await expectSet('family → every subfamily and leaf under it (and itself)', ar([{ a: 'fruity' }]), of(c1, c2, c4))
+  await expectSet('subfamily citrus → lemon', ar([{ a: 'fruity.citrus' }]), of(c1))
+  await expectSet('never upward: strawberry misses a stored berry or fruity', ar([{ a: 'strawberry' }]), '')
+  await expectSet('plain apricot finds dried apricot (c5 post-less: left out)', ar([{ a: 'apricot' }]), of(c1))
+  await expectSet('your own list: plain apricot finds both', ar([{ a: 'apricot' }]), of(c1, c5), Pp)
+  await expectSet('dried apricot → only dried', ar([{ a: 'apricot', m: 'dried' }]), of(c1))
+  await expectSet('ripe apricot → none', ar([{ a: 'apricot', m: 'ripe' }]), '')
+  await expectSet('Pronounced apricot → the marked one', ar([{ a: 'apricot', p: true }]), of(c1))
+  await expectSet('Pronounced lemon → none (lemon is not marked)', ar([{ a: 'lemon', p: true }]), '')
+  await expectSet('grape finds raisin (the promoted leaf)', ar([{ a: 'grape' }]), of(c2))
+  await expectSet('fruity + dried finds dried apricot AND raisin', ar([{ a: 'fruity', m: 'dried' }]), of(c1, c2))
+  await expectSet('all: lemon AND raisin → none', ar([{ a: 'lemon' }, { a: 'raisin' }]), '')
+  await expectSet('any: lemon OR raisin → c1, c2', ar([{ a: 'lemon' }, { a: 'raisin' }], 'any'), of(c1, c2))
+  await expectSet('aromas AND structure together', `${ar([{ a: 'fruity' }])}&st=sweet:2-3`, of(c2, c4))
+  // Validation.
+  const bad = async (q: string) => (await lst(Vw, q)).status === 400
+  check('st validation: lo > hi, unknown axis, an axis twice, out of 0–5, junk → 400',
+    (await bad('st=sweet:3-1')) && (await bad('st=nope:1-2')) && (await bad('st=sweet:1-2,sweet:2-3')) && (await bad('st=sweet:1-6')) && (await bad('st=sweet')))
+  check('ar validation: not JSON, not an array, unknown id, a disallowed modifier, `p: null` → 400',
+    (await bad('ar=nope')) && (await bad(`ar=${encodeURIComponent('{"a":"fruity"}')}`)) && (await bad(ar([{ a: 'nope' }]))) && (await bad(ar([{ a: 'apricot', m: 'smoked' }]))) && (await bad(ar([{ a: 'apricot', p: null }]))))
+  void c3
+  // The moment rules hold under the new filters: a blind moment's bottle (its
+  // post shows her perception) matches and stays BLIND; a hidden line-up stays
+  // left out for Viktor (on her own list too, unless she hosts it: she does).
+  const Hb = await mkUser('Hedi Blindhost')
+  const MB = await createSession(Hb)
+  const wB = (await addWine(MB, Hb, `${TAG} Blind Bottle`)).id
+  await join(MB, Pp)
+  await resetLimits()
+  const rb = await call(rateRoute.POST, 'POST', `/api/session/${MB}/rate`, Pp, { wineId: wB, score: 4, flavors: { sweet: 2 }, aromas: [{ a: 'grapefruit', m: null }], notes: 'n' }, { code: MB })
+  await prisma.$executeRaw`UPDATE sessions SET blind = true WHERE code = ${MB}`
+  await resetLimits()
+  const MH = await call(sessionRoute.POST, 'POST', '/api/session', Pp, { hostDisplayName: 'Pia', sessionName: `${TAG} hidden`, dateFrom: new Date(Date.now() + 2 * 86_400_000).toISOString(), hideLineup: true, hideLineupMinutesBefore: 30 })
+  const hCode = MH.json.code as string
+  const wH = (await addWine(hCode, Pp, `${TAG} Hidden Bottle`)).id
+  await resetLimits()
+  const rh = await call(rateRoute.POST, 'POST', `/api/session/${hCode}/rate`, Pp, { wineId: wH, score: 4, flavors: { sweet: 2 }, aromas: [{ a: 'grapefruit', m: null }], notes: 'n' }, { code: hCode })
+  check('fixture: the blind and the hidden ratings landed', rb.status === 200 && rh.status === 200, { rb: rb.status, rh: rh.status })
+  const gx = await lst(Vw, ar([{ a: 'grapefruit' }]))
+  const gRow = ((gx.json.items ?? []) as J[])[0]
+  check('🔒 a blind bottle matches by her aromas and stays blind (no name, no photo); the hidden line-up is left out',
+    gx.status === 200 && (gx.json.items as J[]).length === 1 && gRow?.wineId === wB && gRow.blind === true && gRow.name === '' && gRow.imageUrl === null, gx.json)
+  await expectSet('🔒 the same with a structure range', 'st=sweet:2-2', of({ wine: wB }, c4))
+  await expectSet('her own list: she hosts the hidden line-up, so it matches there', ar([{ a: 'grapefruit' }]), of({ wine: wB }, { wine: wH }), Pp)
+  // A session sparkling wine re-typed to red after she rated it: her rating
+  // keeps its bubbles value, but the post's wheel no longer draws Bubbles, so
+  // the Bubbles filter must stop matching it (Codex review, 2026-11-14).
+  const MS = await createSession(Hb)
+  await resetLimits()
+  const ws = await call(winesRoute.POST, 'POST', `/api/session/${MS}/wines`, Hb, { name: `${TAG} Fizz`, type: 'spark' }, { code: MS })
+  await join(MS, Pp)
+  await resetLimits()
+  const rs = await call(rateRoute.POST, 'POST', `/api/session/${MS}/rate`, Pp, { wineId: ws.json.id, score: 4, flavors: { bubbles: 4 }, notes: 'n' }, { code: MS })
+  check('fixture: the sparkling session rating landed', ws.status === 200 && rs.status === 200, { ws: ws.status, rs: rs.status })
+  await expectSet('Bubbles 4–4 → the sparkling session wine', 'st=bubbles:4-4', of({ wine: ws.json.id as string }))
+  await prisma.$executeRaw`UPDATE wines SET style = 'red' WHERE id = ${ws.json.id as string}`
+  const kept = await prisma.$queryRaw<{ b: unknown }[]>`SELECT flavors -> 'bubbles' AS b FROM ratings WHERE wine_id = ${ws.json.id as string}`
+  check('fixture: re-typed to red, her rating still holds bubbles 4', Number(kept[0]?.b) === 4, kept)
+  await expectSet('🔒 …then no longer (the wheel stopped drawing Bubbles)', 'st=bubbles:0-5', of(c4))
+  }
+
   section('canary: no response carried a user integer')
   check('🔒 no response body or header carried a fixture user integer, a u:<digit>, or a public id inside a URL', canaryViolations.length === 0, [...new Set(canaryViolations)].slice(0, 20))
 } catch (err) {

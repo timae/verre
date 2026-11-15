@@ -545,12 +545,13 @@ export function usePendingAdd(target: string | null, ops: AromaOps) {
 }
 
 // The cap-rejection hint line (shared copy with the inline input).
-export function CapHint({ show }: { show: boolean }) {
+export const RATING_CAP_TEXT = `Limit reached: an impression holds up to ${AROMA_SELECTION_CAP} aromas.`;
+export function CapHint({ show, text = RATING_CAP_TEXT }: { show: boolean; text?: string }) {
   const { theme } = useTheme();
   if (!show) return null;
   return (
     <VText variant="small" style={{ color: theme.accent }}>
-      Limit reached: an impression holds up to {AROMA_SELECTION_CAP} aromas.
+      {text}
     </VText>
   );
 }
