@@ -209,7 +209,7 @@ const layout = rootLayoutSrc
 // then flips to the tabs a second later, after a flash of the welcome screen.
 check(
   'the protected (tabs) guard requires a RESOLVED session',
-  /guard=\{sessionResolved && !!session\}/.test(layout),
+  /guard=\{sessionResolved && !!session && !chooseUsername\}/.test(layout),
   'A bare `guard={!!session}` cannot distinguish "pending" from "signed out".',
 )
 check(
