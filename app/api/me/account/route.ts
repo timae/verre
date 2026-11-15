@@ -19,9 +19,10 @@ import { propagateRename } from '@/lib/displayName.server'
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
-  const u = session.user as { name?: string | null; email?: string | null; pro?: boolean }
+  const u = session.user as { name?: string | null; username?: string | null; email?: string | null; pro?: boolean }
   return NextResponse.json(
-    { name: u.name ?? null, email: u.email ?? null, pro: !!u.pro },
+    // `username`: null = not chosen yet (usernames § 10).
+    { name: u.name ?? null, username: u.username ?? null, email: u.email ?? null, pro: !!u.pro },
     // Viewer-dependent body — never shared-cacheable.
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
@@ -49,7 +50,9 @@ export async function PATCH(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { name, email, currentPassword, newPassword } = body
-  const updates: Record<string, unknown> = {}
+  // Typed to its two fields: a username can never ride this update (it has its
+  // own route, quota and writer: lib/username.ts; scripts/check-username-writes.mjs).
+  const updates: { name?: string; email?: string } = {}
 
   if (name !== undefined) {
     try { updates.name = validateDisplayName(name) }
@@ -116,7 +119,7 @@ export async function PATCH(req: NextRequest) {
 
   // After commit: the shared rename tail (host_name mirror + live session
   // snapshots, best-effort).
-  if (updates.name !== undefined) await propagateRename(userId, updates.name as string)
+  if (updates.name !== undefined) await propagateRename(userId, updates.name)
 
   // After a password change, revoke every OTHER device's session so a stolen
   // session can't outlive the rotation — the load-bearing invariant. This

@@ -2,11 +2,12 @@
 import { useState, useRef, useEffect } from 'react'
 import { signOut } from 'next-auth/react'
 import Link from 'next/link'
+import { profilePath } from '@verre/core'
 import { clearSessionNames } from '@/lib/clientStorage'
 import { RoleBadge } from '@/components/session/RoleBadge'
 
 interface Props {
-  myId: number
+  myId: string
   name: string
   email: string
   pro: boolean
@@ -55,7 +56,7 @@ export function UserMenu({ myId, name, email, pro, sessionRole = null }: Props) 
 
           {/* Links */}
           {[
-            { href: `/u/${myId}`,  label: '◉  Profile' },
+            { href: profilePath(myId), label: '◉  Profile' },
             { href: '/me/badges',  label: '🏅  Badges & XP' },
             { href: '/me/history', label: '◷  Tasting history' },
           ].map(({ href, label }) => (

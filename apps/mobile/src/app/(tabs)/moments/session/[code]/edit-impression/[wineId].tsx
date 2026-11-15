@@ -28,7 +28,7 @@ export default function EditImpression() {
 
   const fatal =
     state.error instanceof ApiError &&
-    (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found');
+    (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found' || state.error.kind === 'rate-limited');
   useEffect(() => {
     if (fatal) router.replace(sessionHref(sessionTab, '', { code }));
   }, [fatal, code, router, sessionTab]);
@@ -84,6 +84,9 @@ export default function EditImpression() {
       hostId={meta?.hostIdentityId ?? (meta?.hostUserId != null ? `u:${meta.hostUserId}` : null)}
       coHostIds={meta?.coHostIds}
       providerIds={meta?.providerIds}
+      myIdentityId={myIdentityId}
+      blocksOut={meta?.viewerBlocksOut}
+      blocksIn={meta?.viewerBlocksIn}
     />
   );
 }

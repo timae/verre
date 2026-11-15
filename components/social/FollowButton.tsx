@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
 
-interface Props { userId: number; initialFollowing: boolean; onToggle?: (following: boolean) => void }
+interface Props { userId: string; initialFollowing: boolean; onToggle?: (following: boolean) => void }
 
 export function FollowButton({ userId, initialFollowing, onToggle }: Props) {
   const [following, setFollowing] = useState(initialFollowing)

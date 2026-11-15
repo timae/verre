@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { SetPage, SettingsFooter } from '@/components/moments/settingsParts';
+import { SetPage, SettingsFooter, failedReads } from '@/components/moments/settingsParts';
 import { TextField } from '@/components/ui/TextField';
 import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
 import { ApiError } from '@/lib/api/sessions';
@@ -68,6 +68,7 @@ export default function ChangeEmail() {
   return (
     <SetPage
       title="Change Email"
+      offline={failedReads(account)}
       bottomPad={insets.bottom + FOOT_CLEARANCE}
       footer={<SettingsFooter saving={saving} error={error} onDiscard={() => router.back()} onSave={() => void onSave()} bottomInset={insets.bottom} />}
     >

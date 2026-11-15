@@ -57,3 +57,11 @@ Not a REST `/v1/` URL restructure of 51 routes. Not a parallel v2 surface. The p
 Concrete cases of §1's "adding a required field" that already shipped to the server and would 400 a stale native binary once one exists. Harmless today (app dormant in prod, no external install), but each is a reason the min-version floor + update screen must land **before the first TestFlight upload** — add a gate on these routes at that point.
 
 - **`POST /api/session` now requires `sessionName` + `dateFrom`** (2026-07-06). An old binary that omits either gets a bare 400, not a graceful 426/update prompt. Release-fence item: bump `app.json` `version` and gate create on the min-version floor before external installs.
+
+## 7. As built: the floor in code, on every API call (public user ids, the 0.1.5 release)
+
+The first breaking reshape for a non-lockstep client is public user ids (`docs/dev/proposals/public-user-ids.md`, D1: one cutover, no dual-accept window). Two decisions here changed with it:
+
+- **The floor ships in code** (`lib/clientVersion.ts` `CODE_FLOOR_IOS`, effective floor = max(env, code)). An env var loads at boot, so setting it after a deploy would be a second rolling release; a breaking wire change raises the code floor in the same commit.
+- **The gate runs on every `/api/*` call** (`proxy.ts`), not only at the native-auth chokepoint (which keeps it as the belt). An old app left in the foreground polls the moment screen every 5 s without re-running get-session, so an auth-only gate never reached it; `apiFetch` already sends any 426 to the update screen, so an open old app lands there within one poll.
+- The web twin: the web sends its wire generation as `X-Verre-Web` on every `/api/session*` call, and the proxy bounces a SIGNED-IN moment call without it (401 + `X-Vr-Auth: invalid`, which the old `sessionFetch` turns into a reload). A future breaking change bumps `WEB_WIRE_GENERATION`.

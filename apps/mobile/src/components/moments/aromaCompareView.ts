@@ -12,6 +12,7 @@ import type { AromaConsensusResult, ConsensusDisplayNode } from '@verre/core'
 import { buildAromaContributors, type AromaBaseGroup, type AromaContributor, type AromaContributorIndex, type AromaContributorInput } from './aromaContributors'
 // Relative (not '@/') so the node test harness can import this module directly.
 import { contrastRatio } from '../../lib/contrast'
+import { flatten } from '../../theme/color'
 
 const TIER_RANK = { family: 1, subfamily: 2, leaf: 3 } as const
 
@@ -1181,16 +1182,7 @@ export function detailPillColors(t: {
   if (contrastRatio(t.ink, flat) >= 4.5) return { bg: t.accentTint, border: t.accentLine, ink: t.ink }
   return { bg: t.accent, border: t.accent, ink: t.accentInk }
 }
-// Flatten an `rgba(r,g,b,a)` token over an opaque hex base → `rgb()` (what the
-// tint actually composites to on the card), so contrast math sees real pixels.
-export function flattenRgbaOver(rgba: string, baseHex: string): string {
-  const m = /^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)$/i.exec(rgba.trim())
-  if (!m) return rgba
-  const a = Number(m[4])
-  const h = baseHex.replace('#', '')
-  const ch = (i: number) => parseInt(h.slice(i, i + 2), 16)
-  const r = Math.round(Number(m[1]) * a + ch(0) * (1 - a))
-  const g = Math.round(Number(m[2]) * a + ch(2) * (1 - a))
-  const b = Math.round(Number(m[3]) * a + ch(4) * (1 - a))
-  return `rgb(${r},${g},${b})`
-}
+// Flatten an `rgba(r,g,b,a)` token over an opaque hex base → `rgb()`: the
+// shared helper (theme/color.ts `flatten`), under the name this module's
+// callers and its units use.
+export const flattenRgbaOver = flatten

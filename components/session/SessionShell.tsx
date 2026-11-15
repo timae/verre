@@ -1,5 +1,5 @@
 'use client'
-import { use, createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
+import { use, createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
@@ -10,7 +10,7 @@ import { UserMenu } from '@/components/me/UserMenu'
 import { SessionAnonMenu } from './SessionAnonMenu'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { sessionFetch } from '@/lib/sessionFetch'
-import { normalizeCode, formatCode } from '@verre/core'
+import { normalizeCode, formatCode, isPublicUserId } from '@verre/core'
 import { sessionPath, joinPath } from '@/lib/sessionCode'
 import { DirtyGuardProvider, useDirtyGuard } from '@/lib/dirtyGuard'
 import { UndoChipProvider } from '@/lib/undoChip'
@@ -33,7 +33,7 @@ type SessionCtx = {
   isProvider: boolean
   sessionMeta: {
     host: string; name: string
-    hostUserId: number | null
+    hostUserId: string | null
     hostIdentityId?: string
     blind?: boolean
     // "Blind for all" — when true the host/cohost/provider/wine-adder
@@ -79,6 +79,17 @@ type SessionStateData = {
   ratings: RatingsByIdentity | null
 }
 
+// 🔒 An answer from an instance still on the integer ids (the rolling-deploy
+// window, public-user-ids § 11): keyed by `u:<int>`, it would hide the
+// viewer's own ratings, and a rating write carries no user id, so a re-rate
+// would replace the stored notes. The queryFn keeps the last good data.
+const INTEGER_IDENTITY = /^u:\d/
+function isIntegerIdState(s: SessionStateData): boolean {
+  return typeof (s.meta as { hostUserId?: unknown } | null)?.hostUserId === 'number'
+    || !!s.meta?.participants?.some(p => INTEGER_IDENTITY.test(p.id))
+    || Object.keys(s.ratings ?? {}).some(id => INTEGER_IDENTITY.test(id))
+}
+
 const Ctx = createContext<SessionCtx | null>(null)
 export const useSession = () => {
   const ctx = useContext(Ctx)
@@ -97,7 +108,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const router = useRouter()
   const pathname = usePathname()
 
-  const { data: authSession } = useAuthSession()
+  const { data: authSession, update: updateAuthSession } = useAuthSession()
   const nameFromUrl = searchParams.get('name') || ''
   const idFromUrl   = searchParams.get('id')   || ''
   // Initialize state from URL params only — NOT from localStorage. SSR
@@ -132,7 +143,8 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
       if (fromLs) setStoredName(fromLs)
     }
     if (idFromUrl) {
-      localStorage.setItem(`vr_id_${C}`, idFromUrl)
+      // `vr_id_` keeps anonymous (`a:`) identities only (see myId below).
+      if (idFromUrl.startsWith('a:')) localStorage.setItem(`vr_id_${C}`, idFromUrl)
       setStoredId(idFromUrl)
       urlChanged = true
     } else {
@@ -152,11 +164,44 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     setHydrated(true)
   }, [C])
   const displayName = storedName || authSession?.user?.name || ''
-  // Identity id falls back to a derived id for logged-in users so they can
-  // act before the visit response lands (the server resolver returns the
-  // same `u:<userId>` regardless). Anon users have no fallback — they need
-  // their token's identity id to participate, which is set at join time.
-  const myId = storedId || (authSession?.user?.id ? `u:${authSession.user.id}` : '')
+  // 🔒 A signed-in user's identity comes from the AUTH SESSION, never from a
+  // stored `vr_id_` (public-user-ids § 7): a stale stored `u:<int>` from before
+  // the switch would otherwise win, and a failed visit never overwrites it.
+  // `authSession.user.id` is the public id (lib/clientSession.ts), so this is
+  // the same `u:<publicId>` the server's payloads use. `vr_id_` holds `a:`
+  // identities only; anon users need their token's identity id, set at join.
+  // 🔒 A session id that isn't a public id came from an instance still on the
+  // integer ids (rolling deploy, § 11): the viewer is NOT yet known (no
+  // fetch, nothing to rate) until a fresh session read brings the public id.
+  const sessionUserId = authSession?.user?.id
+  const staleSessionId = !!sessionUserId && !isPublicUserId(sessionUserId)
+  const myId = sessionUserId
+    ? (staleSessionId ? '' : `u:${sessionUserId}`)
+    : storedId.startsWith('a:') ? storedId : ''
+  // `update` is rebuilt on every session / loading change (next-auth's useMemo),
+  // so it lives in a ref: depending on it would re-run this effect after each
+  // call and retry back-to-back instead of every 5 s.
+  const updateAuthRef = useRef(updateAuthSession)
+  useEffect(() => { updateAuthRef.current = updateAuthSession })
+  useEffect(() => {
+    if (!staleSessionId) return
+    // update() answers null when the read failed or the session is gone (signed
+    // out or revoked meanwhile): the stale id would then stay for good, so after
+    // three in a row (online) reload and let the server render what is true now.
+    // `undefined` = a read was already in flight (a no-op). `live`: a read still
+    // in flight when the guard ends (staleness cleared, page left) never reloads.
+    let live = true
+    let nulls = 0
+    const tick = async () => {
+      const s = await updateAuthRef.current()
+      if (!live || s === undefined) return
+      if (s !== null) { nulls = 0; return }
+      if (++nulls >= 3 && navigator.onLine) window.location.reload()
+    }
+    void tick()
+    const t = setInterval(() => { void tick() }, 5000)
+    return () => { live = false; clearInterval(t) }
+  }, [staleSessionId])
   const needsName = !displayName && !authSession?.user
   const [isHostState] = useState(() => searchParams.get('host') === '1')
   const [showSessionPanel, setShowSessionPanel] = useState(false)
@@ -181,7 +226,15 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   // timeout, whichever comes first.
   const isLoggedIn = !!authSession?.user
   const [visitResolved, setVisitResolved] = useState(false)
-  const readyToFetch = !isLoggedIn || visitResolved
+  // The server's "too many codes" copy (leak-fixes F2): a non-member whose
+  // wrong-code budget is spent gets a 429 from /visit and /state. Shown in
+  // place of the shell, never an empty one.
+  const [limitedMsg, setLimitedMsg] = useState<string | null>(null)
+  const noteLimited = useCallback(async (r: Response) => {
+    const body = await r.clone().json().catch(() => ({})) as { error?: string }
+    setLimitedMsg(body.error || 'Too many codes tried. Try again later.')
+  }, [])
+  const readyToFetch = (!isLoggedIn || visitResolved) && !staleSessionId
 
   // Single aggregate poll every 5s: GET /api/session/:code/state returns
   // { meta, wines, ratings } in one request (was three independent 5s
@@ -216,8 +269,11 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
         router.replace(joinPath(C))
         return prev ?? empty
       }
+      if (r.status === 429) { await noteLimited(r); return prev ?? empty }
       if (!r.ok) return prev ?? empty
+      setLimitedMsg(null)
       const next: SessionStateData = await r.json()
+      if (isIntegerIdState(next)) return prev ?? empty
       // Accepted trade-off: keeping prev on a failed section can hold data
       // that a just-flipped setting would now redact (e.g. blind toggled on
       // while the wines section errors). Blind is spoiler protection, not
@@ -251,7 +307,10 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     // React Query handle the 401 retry. Better than blocking the UI.
     const timeout = setTimeout(() => setVisitResolved(true), 1500)
     sessionFetch(C, `/api/session/${C}/visit`, { method: 'POST' })
-      .then(r => r.ok ? r.json() : null)
+      .then(async r => {
+        if (r.status === 429) { await noteLimited(r); return null }
+        return r.ok ? r.json() : null
+      })
       .then(data => {
         // Logged-in users may have been disambiguated server-side; pick up
         // the resolved per-session displayName so the UI and rating-key
@@ -268,7 +327,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
           localStorage.setItem(`vr_name_${C}`, data.displayName)
           setStoredName(data.displayName)
         }
-        if (data?.id) {
+        if (typeof data?.id === 'string' && data.id.startsWith('a:')) {
           localStorage.setItem(`vr_id_${C}`, data.id)
           setStoredId(data.id)
         }
@@ -278,7 +337,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
         clearTimeout(timeout)
         setVisitResolved(true)
       })
-  }, [C])
+  }, [C, noteLimited])
 
   // Host check — mirrors server's isHostByIdentity. Pure id-based.
   const hostIdentityId = metaData?.hostIdentityId ?? null
@@ -331,6 +390,16 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const sessionLabel = metaData?.name || formatCode(C)
 
   if (needsName) return null
+  if (limitedMsg) {
+    return (
+      <div className="app-bg" style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+        <div className="lobby-card lobby-form" style={{width:'100%',maxWidth:400,textAlign:'center'}}>
+          <p style={{fontSize:13,color:'var(--fg-dim)',marginBottom:16}}>{limitedMsg}</p>
+          <Link href={authSession?.user ? '/me' : '/'} className="btn-p" style={{textDecoration:'none',display:'block',textAlign:'center'}}>← back to {authSession?.user ? 'dashboard' : 'home'}</Link>
+        </div>
+      </div>
+    )
+  }
 
   // The DirtyGuardProvider wraps the entire shell so any descendant
   // (WineModal today, future forms tomorrow) can register a guard that
@@ -431,7 +500,7 @@ function SessionShellChrome({
               their per-session display name. */}
           {authUser && authUser.id && authUser.name ? (
             <UserMenu
-              myId={Number(authUser.id)}
+              myId={authUser.id}
               name={authUser.name}
               email={authUser.email || ''}
               pro={!!authUser.pro}

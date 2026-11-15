@@ -16,6 +16,7 @@ import type { AromaContributor } from './aromaContributors';
 import { inkOn, mix } from '@/theme/color';
 import { AromaBadgePopover, AromaPopoverPeople } from './AromaBadgePopover';
 import { Avatar } from '@/components/ui/Avatar';
+import { PersonPreviewBridge, usePersonPreview } from './PersonPreviewSheet';
 import { Segmented } from '@/components/ui/Segmented';
 import { Sheet } from '@/components/ui/Sheet';
 import { SheetSearchField } from '@/components/ui/SheetSearchField';
@@ -402,7 +403,8 @@ function InspectableAromaChip({
 // One People-tab row: the taster + their exact picks (modifier + Pronounced
 // preserved — AromaReadChips is THE per-person read primitive). Picks collapse
 // to two lines; "+N more" opens the full read sheet, while tapping the name
-// remains the participant cross-highlight selection.
+// remains the participant cross-highlight selection. Tapping the PHOTO opens
+// the person's preview (ruled 2026-11-15; not for a guest look).
 function ParticipantRow({ contributor, selected, onToggle, onPressAroma, emphasizeKeys, first = false }: {
   contributor: AromaContributor;
   selected: boolean;
@@ -414,9 +416,23 @@ function ParticipantRow({ contributor, selected, onToggle, onPressAroma, emphasi
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const surface = phone.surface('compactList');
+  const preview = usePersonPreview();
+  const canPreview = !!preview?.canOpen(contributor.id);
   return (
     <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: phone.lerp(12, 16), paddingVertical: surface.paddingY(phone.lerp(11, 15)), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
-      <Avatar name={contributor.displayName} size={phone.grow(40)} />
+      <Pressable
+        disabled={!canPreview}
+        onPress={() => preview?.open(contributor.id)}
+        accessibilityRole={canPreview ? 'button' : undefined}
+        accessibilityLabel={canPreview ? `${contributor.displayName}, profile preview` : undefined}
+        // Not previewable: not an element of its own (reads as before).
+        accessible={canPreview}
+        hitSlop={4}
+        // Centred on the row (ruled 2026-11-15); the name + picks stay top-aligned.
+        style={({ pressed }) => ({ alignSelf: 'center', opacity: pressed ? 0.6 : 1 })}
+      >
+        <Avatar name={contributor.displayName} size={phone.grow(40)} />
+      </Pressable>
       <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
         <Pressable
           onPress={onToggle}
@@ -763,6 +779,7 @@ export function AromaDetailSheet({
   const { theme } = useTheme();
   const aromaColor = useAromaColors();
   const insets = useSafeAreaInsets();
+  const preview = usePersonPreview();
   const scrollRef = useRef<BottomSheetScrollViewMethods>(null);
   const { result, contrib, hasAgreement, allAromas, pronouncedIds } = model;
   const overview = useMemo(() => buildAgreementOverview(model), [model]);
@@ -1270,6 +1287,10 @@ export function AromaDetailSheet({
         snapPoints={['85%']}
         enableDynamicSizing={false}
       >
+        {/* The People rows' photo opens the person preview: its context is
+            read out here, since the sheet's content renders at the portal
+            host, outside the provider (PersonPreviewBridge). */}
+        <PersonPreviewBridge value={preview}>
         {/* Plain View, NEVER BottomSheetView, around a sheet scrollable —
             BottomSheetView's mount effect re-registers the sheet's scrollable
             as type VIEW (it runs after the child scrollable's registration),
@@ -1285,6 +1306,7 @@ export function AromaDetailSheet({
             {body}
           </BottomSheetScrollView>
         </View>
+        </PersonPreviewBridge>
       </Sheet>
       {popover}
       {barPopover}

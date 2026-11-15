@@ -2,14 +2,15 @@ import { Children, Fragment, isValidElement, useRef, useState, type ReactNode } 
 import { ActivityIndicator, Pressable, ScrollView, Switch, View, type StyleProp, type TextStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
-import { ErrorState } from '@/components/ui/ConnectionState';
+import { ConnectionBanner, ErrorState } from '@/components/ui/ConnectionState';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { BadgePill } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
+import { UsernameLine } from '@/components/ui/UsernameLine';
 import { VText } from '@/components/ui/VText';
 import { GLASS_FILL, GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
-import { alpha } from '@/theme/color';
+import { alpha, flatten, readableSolid } from '@/theme/color';
 import { elevation, radius, useTheme } from '@/theme';
 
 // Shared presentational pieces for the 02f settings screens (hub + Moment
@@ -81,14 +82,21 @@ export function SetGroup({ children, flush }: { children: ReactNode; flush?: boo
 // footer page, which hides the pill, clears it through `bottomPad`); the
 // scroll keeps a focused field above the keyboard.
 // `gap`: between sections (26; a page of SetTitle sections uses 32, the
-// design's space above a section title).
-export function SetPage({ title, children, bottomPad, footer, gap = 26 }: { title: string; children: ReactNode; bottomPad?: number; footer?: ReactNode; gap?: number }) {
+// design's space above a section title). `offline`: one of the page's reads
+// failed (`failedReads`): the app's "Can't reach server" strip under the bar,
+// tap = retry; the rows stay usable (Sign Out must work offline).
+export function SetPage({ title, children, bottomPad, footer, gap = 26, offline }: { title: string; children: ReactNode; bottomPad?: number; footer?: ReactNode; gap?: number; offline?: (() => void) | null }) {
   const insets = useSafeAreaInsets();
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
         <VBar title={title} />
       </View>
+      {offline ? (
+        <View style={{ paddingTop: 6 }}>
+          <ConnectionBanner onRetry={offline} />
+        </View>
+      ) : null}
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: bottomPad ?? TAB_BAR_CLEARANCE, gap }}
         keyboardDismissMode="interactive"
@@ -101,6 +109,13 @@ export function SetPage({ title, children, bottomPad, footer, gap = 26 }: { titl
       {footer}
     </View>
   );
+}
+
+// SetPage's `offline`: a retry of every failed read, or null when none failed
+// (a failed refetch over cached data counts: the page may be stale).
+export function failedReads(...reads: { isError: boolean; refetch: () => unknown }[]): (() => void) | null {
+  const failed = reads.filter((r) => r.isError);
+  return failed.length ? () => failed.forEach((r) => void r.refetch()) : null;
 }
 
 // .yo-sgrp — a section on a settings page: the optional uppercase label
@@ -204,12 +219,12 @@ export function SetNav({
 // .yo-mecard — the Settings hub's own-profile card: 60pt photo, name, "Edit
 // Profile", chevron. Elevated by the sm shadow token (the mock's
 // `--shadow-sm`), no border.
-export function MeCard({ name, imageUrl, onPress }: { name: string; imageUrl: string | null; onPress: () => void }) {
+export function MeCard({ name, username, imageUrl, onPress }: { name: string; username?: string | null; imageUrl: string | null; onPress: () => void }) {
   const { theme } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${name}, Edit Profile`}
+      accessibilityLabel={[name, username ? `@${username}` : null, 'Edit Profile'].filter(Boolean).join(', ')}
       onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14,
@@ -225,7 +240,9 @@ export function MeCard({ name, imageUrl, onPress }: { name: string; imageUrl: st
       <Avatar imageUrl={imageUrl} name={name} size={60} tint />
       <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
         <VText variant="subhead" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{name}</VText>
-        <VText variant="small" color="inkSoft">Edit Profile</VText>
+        {/* Your `@username` under the name (ruled 2026-11-14); "Edit Profile"
+            stays the line only until one is chosen (and the VoiceOver label). */}
+        {username ? <UsernameLine username={username} /> : <VText variant="small" color="inkSoft">Edit Profile</VText>}
       </View>
       <Icon name="chevron-right" size={18} color={theme.inkFaint} />
     </Pressable>
@@ -290,7 +307,7 @@ export function SettingsFooter({ saving, error, onDiscard, onSave, bottomInset }
 // top padding (the first row under a SetTitle or a label). `busy`: only the switch is inert (a save in flight); `disabled`
 // also fades the text (the option is unavailable).
 export function ToggleRow({
-  title, subtitle, value, onChange, disabled, busy, flush, proBadge, reason, note,
+  title, subtitle, value, onChange, disabled, busy, flush, proBadge, reason, note, strong, titleColor, subtitleColor,
 }: {
   title: string;
   subtitle?: string;
@@ -303,14 +320,19 @@ export function ToggleRow({
   reason?: string;
   // A second, quieter line under the subtitle (e.g. the blind feed-reveal rule).
   note?: string;
+  // The title in semibold, and in a colour of its own (ToggleCard's warm list
+  // filter; ruled 2026-11-13). A disabled row keeps the faint ink.
+  strong?: boolean;
+  titleColor?: string;
+  subtitleColor?: string;
 }) {
   const { theme } = useTheme();
   const offTrack = alpha(theme.ink, 0.18);
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 14, paddingTop: flush ? 0 : ROW_GAP, paddingBottom: 2 }}>
       <View style={{ flexShrink: 1 }}>
-        <ToggleTitle title={title} disabled={disabled} proBadge={proBadge} />
-        {subtitle ? <VText variant="small" color={disabled ? 'inkFaint' : 'inkSoft'} style={{ marginTop: HELPER_PULL }}>{subtitle}</VText> : null}
+        <ToggleTitle title={title} disabled={disabled} proBadge={proBadge} strong={strong} color={titleColor} />
+        {subtitle ? <VText variant="small" color={disabled ? 'inkFaint' : 'inkSoft'} style={[{ marginTop: HELPER_PULL }, subtitleColor && !disabled ? { color: subtitleColor } : null]}>{subtitle}</VText> : null}
         {note ? <VText variant="small" color="inkFaint" style={{ marginTop: 4 }}>{note}</VText> : null}
         {reason ? <SetNote style={{ marginTop: 3 }}>{reason}</SetNote> : null}
       </View>
@@ -327,13 +349,43 @@ export function ToggleRow({
   );
 }
 
+// .yo-commonrow — a list FILTER switch about what you share with someone
+// (their People "Only People You Know", their Impressions "Show 23 tastes you
+// share"): the house ToggleRow in a card at the mock's `.setnav` padding
+// (13 × 14). Settings' own switch rows stay cardless (ruled 2026-11-11); this
+// one keeps a card (ruled 2026-11-13: cardless didn't look good there), WARM
+// (the accent tint, the active filter button's fill; elevated by tone, no
+// edge), its title the INACTIVE TAB's (TabStrip: semibold, `inkSoft`; the
+// accent read wrong) (all ruled the same day). On the tint the inks lose
+// contrast, so each is pulled toward ink only where it falls under its bar
+// (`readableSolid`; the tint is translucent, flattened over the page bg
+// first): the title at 3:1 (the ruled bar of the app's semibold labels, the
+// aroma badges' too; Clay, Mauve), the helper line at 4.5:1 (small regular
+// text). No `disabled`: the faint ink would vanish on the tint.
+export function ToggleCard(props: Omit<Parameters<typeof ToggleRow>[0], 'flush' | 'strong' | 'titleColor' | 'subtitleColor' | 'disabled'>) {
+  const { theme } = useTheme();
+  const fill = flatten(theme.accentTint, theme.bg);
+  return (
+    // 13 above, 11 below: ToggleRow adds 2 under itself (its gap to a next row), so the row sits centred.
+    <View style={{ backgroundColor: theme.accentTint, borderRadius: radius.md, paddingHorizontal: 14, paddingTop: 13, paddingBottom: 11 }}>
+      <ToggleRow
+        {...props}
+        flush
+        strong
+        titleColor={readableSolid(theme.inkSoft, theme.ink, fill)}
+        subtitleColor={readableSolid(theme.inkSoft, theme.ink, fill, 4.5)}
+      />
+    </View>
+  );
+}
+
 // A switch row's title, with the PRO badge INLINE after its last word (a long
 // title wraps and the badge follows it; as a flex sibling it hung at the end
 // of the first line). An inline view's vertical spot depends on the font's
 // baseline, so it is MEASURED: the title's last line (onTextLayout) and the
 // badge's frame (onLayout, which a transform doesn't change, so no loop) give
 // the shift that centres the badge on its line, at any Dynamic Type size.
-function ToggleTitle({ title, disabled, proBadge }: { title: string; disabled?: boolean; proBadge?: boolean }) {
+function ToggleTitle({ title, disabled, proBadge, strong, color }: { title: string; disabled?: boolean; proBadge?: boolean; strong?: boolean; color?: string }) {
   const { theme } = useTheme();
   const [shift, setShift] = useState(0);
   const line = useRef<{ y: number; height: number } | null>(null);
@@ -346,6 +398,7 @@ function ToggleTitle({ title, disabled, proBadge }: { title: string; disabled?: 
     <VText
       variant="body"
       color={disabled ? 'inkFaint' : 'ink'}
+      style={[strong ? { fontFamily: 'InstrumentSans_600SemiBold' } : null, color && !disabled ? { color } : null]}
       onTextLayout={proBadge ? (e) => { line.current = e.nativeEvent.lines.at(-1) ?? null; align(); } : undefined}
     >
       {title}
@@ -436,11 +489,14 @@ export function ChoiceRow({ icon, label, value, helper, onPress, dropdown, disab
 
 // A person on a cardless settings list (Blocked / Muted): the initials disc,
 // the name `body` regular, a trailing node (the Unblock / Unmute button).
-export function PersonRow({ name, trailing, flush }: { name: string; trailing: ReactNode; flush?: boolean }) {
+export function PersonRow({ name, username, trailing, flush }: { name: string; username?: string | null; trailing: ReactNode; flush?: boolean }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: flush ? 0 : ROW_GAP, paddingBottom: 2 }}>
       <Avatar name={name} size={36} initialsSize={12} />
-      <VText variant="body" numberOfLines={1} style={{ flex: 1 }}>{name}</VText>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <VText variant="body" numberOfLines={1}>{name}</VText>
+        <UsernameLine username={username} />
+      </View>
       {trailing}
     </View>
   );

@@ -13,15 +13,15 @@ type CheckinPayload = {
   flavors?: Record<string,number>; likeCount: number; liked?: boolean; createdAt?: string
   aromas?: { a: string; m: string | null; p?: boolean }[]
   viewerFollowsAuthor?: boolean
-  tags?: { id: number; name: string }[]
+  tags?: { id: string; name: string }[]
 }
 type FeedItem =
-  | { type: 'checkin'; createdAt: string; author: { id: number; name: string; xp: number; imageUrl?: string|null }; checkin: CheckinPayload }
-  | { type: 'session'; createdAt: string; author: { id: number; name: string; xp: number; imageUrl?: string|null }; session: SessionFeedPayload }
+  | { type: 'checkin'; createdAt: string; author: { id: string; name: string; xp: number; imageUrl?: string|null }; checkin: CheckinPayload }
+  | { type: 'session'; createdAt: string; author: { id: string; name: string; xp: number; imageUrl?: string|null }; session: SessionFeedPayload }
 
 type FeedResponse = { items: FeedItem[]; nextCursor: string | null }
 
-export function FeedClient({ myId }: { myId: number }) {
+export function FeedClient({ myId }: { myId: string }) {
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [extra, setExtra] = useState<FeedItem[]>([])
   const [showCheckin, setShowCheckin] = useState(false)

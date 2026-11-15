@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
-import { resolveAuthorized, authUnavailable, isValidIdentityId, isTombstoneIdentityId } from '@/lib/identity'
+import { resolveAuthorized, authUnavailable, isTombstoneIdentityId } from '@/lib/identity'
+import { parseWireIdentity, internalIdentity, userIdOfIdentity } from '@/lib/publicIds'
 import { isHostByIdentity, isStrictHost } from '@/lib/session'
 import { listBans } from '@/lib/sessionBan'
 import { sessionWipe } from '@/lib/sessionWipe'
 import { refuse } from '@/lib/sessionMutation'
-import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 
 type Ctx = { params: Promise<{ code: string }> }
@@ -23,16 +25,16 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
   const identity = await resolveAuthorized(c, req, session, opened.meta)
   if (identity === 'unavailable') return authUnavailable()
   if (!identity) return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
   if (!isHostByIdentity(opened.meta, identity)) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
   }
-  const bans = await listBans(c)
+  const bans = await listBans(c, userIdOfIdentity(identity.id))
   return NextResponse.json({ bans }, { headers: noStore })
 }
 
@@ -48,9 +50,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
   const identity = await resolveAuthorized(c, req, session, opened.meta)
   if (identity === 'unavailable') return authUnavailable()
   if (!identity) return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
@@ -66,20 +68,25 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return NextResponse.json({ error: 'invalid body' }, { status: 400, headers: noStore })
   }
-  const { identityId, mode, deleteAddedWines } = body as Record<string, unknown>
-  // isValidIdentityId rejects malformed shapes — without it, a bad
-  // client could accumulate junk in the bans Set or burn a Postgres txn
-  // on a no-op wipe.
+  const { identityId: wireIdentityId, mode, deleteAddedWines } = body as Record<string, unknown>
+  // The body carries the WIRE identity (`u:<publicId>`, `a:` / `d:` uuids):
+  // parseWireIdentity rejects malformed shapes (an old client's `u:<int>`
+  // included) — without it, a bad client could accumulate junk in the bans
+  // Set or burn a Postgres txn on a no-op wipe.
   // A `d:` tombstone (a deleted account's ratings, redis-rehydration § 4.3)
   // cannot rejoin, so ban and kick-keep are meaningless for it: `mode: 'kick'`
   // on a d: runs kick-DELETE (G4 — its ratings by tombstone_key go, wine
   // provenance stays), `mode: 'ban'` is the same 400 as a malformed id.
-  if (!isValidIdentityId(identityId) || (isTombstoneIdentityId(identityId) && mode === 'ban')) {
+  const wireTarget = parseWireIdentity(wireIdentityId)
+  if (!wireTarget || (wireTarget.kind === 'other' && isTombstoneIdentityId(wireTarget.id) && mode === 'ban')) {
     return NextResponse.json({ error: 'invalid identityId' }, { status: 400, headers: noStore })
   }
   if (mode !== 'kick' && mode !== 'ban') {
     return NextResponse.json({ error: 'mode must be kick or ban' }, { status: 400, headers: noStore })
   }
+  // 🔒 An unknown public id follows the nonexistent-target path (§ 4): the
+  // limiter is charged and the answer is the same 200, nothing written.
+  const identityId = await internalIdentity(wireTarget)
   if (identityId === identity.id) {
     return NextResponse.json({ error: 'cannot remove yourself' }, { status: 400, headers: noStore })
   }
@@ -93,6 +100,8 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       { status: 429, headers: { ...noStore, 'Retry-After': String(rl.retryAfter) } },
     )
   }
+
+  if (!identityId) return NextResponse.json({ ok: true }, { headers: noStore })
 
   // The whole wipe runs inside the session mutation contract; the caller's
   // power and the target's role/host status are decided there, fresh (§ 4.7):

@@ -23,7 +23,6 @@ export type MySessionRow = {
   date_from: string | null;
   date_to: string | null;
   address: string | null;
-  host_user_id: number | null;
   wine_count: number;
   ttl_seconds: number;
   lifespan: string | null;
@@ -68,7 +67,8 @@ export type WireWine = {
   revealedAt?: string | null;
   isMine: boolean;
   addedByDisplayName: string | null;
-  addedByUserId: number | null;
+  // The adder's PUBLIC id (opaque string), null for an anonymous adder.
+  addedByUserId: string | null;
   _blind?: boolean;
 };
 
@@ -79,7 +79,9 @@ export type SessionMetaView = {
   host: string;
   name: string;
   createdAt: number;
-  hostUserId: number | null;
+  // Every user id in meta is PUBLIC: hostUserId a public id, the identity
+  // lists (hostIdentityId, coHostIds, providerIds) `u:<publicId>` / `a:<uuid>`.
+  hostUserId: string | null;
   hostIdentityId?: string;
   blind?: boolean;
   blindForEveryone?: boolean;
@@ -97,8 +99,8 @@ export type SessionMetaView = {
   link?: string;
   hideLineup?: boolean;
   hideLineupMinutesBefore?: number;
-  // Spread from the server SessionMeta (lib/session.ts) via buildMetaView's
-  // `{ ...meta }` — present whenever the host set a cover. Used by the 02f
+  // From the server SessionMeta (lib/session.ts) through metaToWire's
+  // allow-list (lib/sessionState.ts): present whenever the host set a cover. Used by the 02f
   // Moment-details settings sheet to preview/replace/remove the cover.
   coverPhotoUrl?: string;
   participants: SessionParticipant[];
@@ -206,9 +208,11 @@ export function mySessionsQueryOptions() {
 // search/facets/order (moments-server-filtering.md Part B); the client passes
 // the query + filter params and pages on the opaque cursor. `tense` picks the
 // list: 'upcoming' (future-start, soonest-first) vs 'past' (everything else,
-// newest-first). Roles/hosts/people are comma-joined multi-selects.
+// newest-first); OMITTED = both, newest first (your Moments list, lists plan
+// D10: pass `limit` then, since a request with no param at all is the legacy
+// 50-row carousel read). Roles/hosts/people are comma-joined multi-selects.
 export type MomentQuery = {
-  tense: 'upcoming' | 'past';
+  tense?: 'upcoming' | 'past';
   q?: string;
   roles?: string[];
   hosts?: string[];
@@ -224,7 +228,7 @@ export type MomentPage = { rows: MySessionRow[]; nextCursor: string | null };
 
 export async function getMomentsPage(query: MomentQuery): Promise<MomentPage> {
   const p = new URLSearchParams();
-  p.set('tense', query.tense);
+  if (query.tense) p.set('tense', query.tense);
   if (query.q?.trim()) p.set('q', query.q.trim());
   if (query.roles?.length) p.set('roles', query.roles.join(','));
   if (query.hosts?.length) p.set('hosts', query.hosts.join(','));
@@ -499,13 +503,19 @@ export type MomentSettingsBody = {
   coverPhoto?: string | null; // data URL = replace; null = remove
 };
 
-export async function updateMomentSettings(code: string, body: MomentSettingsBody): Promise<void> {
+// Resolves with the saved meta as the server echoes it (`metaToWire`: no
+// per-viewer fields, no participants), or null when the body didn't parse.
+// The in-place moment edit merges its detail fields into the poll's cache.
+export type MomentSettingsEcho = Omit<SessionMetaView, 'participants' | 'ttlSeconds' | 'viewerBlocksOut' | 'viewerBlocksIn' | 'banCount'>;
+export async function updateMomentSettings(code: string, body: MomentSettingsBody): Promise<MomentSettingsEcho | null> {
   const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/settings`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) await throwApiError(res);
+  const json = (await res.json().catch(() => null)) as { meta?: MomentSettingsEcho } | null;
+  return json?.meta ?? null;
 }
 
 // Soft-deletes the moment (host/cohost-gated server-side). Bounces every
@@ -531,7 +541,10 @@ export type MomentPreview = {
   code: string;
   name: string | null;
   host: string | null;
-  hostUserId: number | null;
+  hostUserId: string | null;
+  // The host's `@name`, only beside `hostUserId` (null: a guest host, a block
+  // pair, not chosen yet). The one username a moment route sends.
+  hostUsername: string | null;
   dateFrom: string | null;
   dateTo: string | null;
   address: string | null;

@@ -52,22 +52,22 @@ import { viewerCacheEpoch } from '@/lib/query';
 export type RelOp = 'follow' | 'unfollow' | 'mute' | 'unmute' | 'block' | 'unblock';
 
 // ── 1. The per-person in-flight store ────────────────────────────────────────
-const inFlight = new Set<number>();
+const inFlight = new Set<string>();
 const listeners = new Set<() => void>();
 const subscribe = (l: () => void) => {
   listeners.add(l);
   return () => listeners.delete(l);
 };
-function setBusy(id: number, on: boolean) {
+function setBusy(id: string, on: boolean) {
   if (on) inFlight.add(id);
   else inFlight.delete(id);
   listeners.forEach((l) => l());
 }
 // A synchronous read (the sandbox sim; components use usePersonBusy).
-export function isPersonBusy(id: number): boolean {
+export function isPersonBusy(id: string): boolean {
   return inFlight.has(id);
 }
-export function usePersonBusy(id: number | null | undefined): boolean {
+export function usePersonBusy(id: string | null | undefined): boolean {
   const get = useCallback(() => (id == null ? false : inFlight.has(id)), [id]);
   return useSyncExternalStore(subscribe, get, get);
 }
@@ -75,9 +75,9 @@ export function usePersonBusy(id: number | null | undefined): boolean {
 // ── 2. Cache patches for one person ──────────────────────────────────────────
 export type RowPatch = Partial<Pick<PersonRow, 'isFollowing' | 'followsViewer' | 'viewerMutes' | 'imageUrl' | 'friendsInCommon'>>;
 
-function patchLists(qc: QueryClient, id: number, patch: RowPatch | 'remove', tasted: 'patch' | 'remove' = patch === 'remove' ? 'remove' : 'patch') {
-  const row = <T extends { id: number }>(r: T): T => (r.id === id && patch !== 'remove' ? { ...r, ...patch } : r);
-  const keep = (r: { id: number }) => patch !== 'remove' || r.id !== id;
+function patchLists(qc: QueryClient, id: string, patch: RowPatch | 'remove', tasted: 'patch' | 'remove' = patch === 'remove' ? 'remove' : 'patch') {
+  const row = <T extends { id: string }>(r: T): T => (r.id === id && patch !== 'remove' ? { ...r, ...patch } : r);
+  const keep = (r: { id: string }) => patch !== 'remove' || r.id !== id;
   qc.setQueriesData<InfiniteData<PeoplePage>>({ queryKey: PEOPLE_KEY }, (d) =>
     d ? { ...d, pages: d.pages.map((p) => ({ ...p, users: p.users.filter(keep).map(row) })) } : d,
   );
@@ -93,7 +93,7 @@ function patchLists(qc: QueryClient, id: number, patch: RowPatch | 'remove', tas
 // After an unfollow: out of your own Friends and Following and out of anyone's
 // "Only People You Know" (known = people you follow), searches included.
 // Followers keep them (they still follow you: Follow Back).
-function dropUnfollowed(qc: QueryClient, id: number, viewerId: number | null) {
+function dropUnfollowed(qc: QueryClient, id: string, viewerId: string | null) {
   qc.setQueriesData<InfiniteData<PeoplePage>>(
     {
       queryKey: PEOPLE_KEY,
@@ -106,7 +106,7 @@ function dropUnfollowed(qc: QueryClient, id: number, viewerId: number | null) {
   );
 }
 
-function patchHeader(qc: QueryClient, id: number, map: (p: Profile) => Profile) {
+function patchHeader(qc: QueryClient, id: string, map: (p: Profile) => Profile) {
   const key = profileKey(id);
   const cur = qc.getQueryData<Profile>(key);
   if (cur) qc.setQueryData<Profile>(key, map(cur));
@@ -145,7 +145,7 @@ export function rowFromProfile(p: Profile): RowPatch | 'remove' {
 // succeeded: on a failure TanStack keeps the pre-write data, which may show
 // what the write just took away.
 export type Reconciled = { remove: true } | { remove: false; patch: RowPatch } | null;
-function reconcile(qc: QueryClient, id: number, p: Profile): Reconciled {
+function reconcile(qc: QueryClient, id: string, p: Profile): Reconciled {
   const patch = rowFromProfile(p);
   if (patch === 'remove') {
     patchLists(qc, id, 'remove');
@@ -163,9 +163,9 @@ function reconcile(qc: QueryClient, id: number, p: Profile): Reconciled {
 // not); `fetchedAt` = the count when a target's header fetch started.
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let opsDone = 0;
-const fetchedAt = new Map<number, number>();
+const fetchedAt = new Map<string, number>();
 const REFRESH_AFTER_MS = 1000;
-function scheduleRefresh(qc: QueryClient, fetched: { id: number; gen: number } | null) {
+function scheduleRefresh(qc: QueryClient, fetched: { id: string; gen: number } | null) {
   if (fetched) fetchedAt.set(fetched.id, fetched.gen);
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {
@@ -177,7 +177,7 @@ function scheduleRefresh(qc: QueryClient, fetched: { id: number; gen: number } |
     void runRefresh(qc, skip);
   }, REFRESH_AFTER_MS);
 }
-async function runRefresh(qc: QueryClient, skip: Set<number>) {
+async function runRefresh(qc: QueryClient, skip: Set<string>) {
   const epoch = viewerCacheEpoch();
   const lists = [PEOPLE_KEY, SEARCH_KEY, TASTED_WITH_KEY];
   await Promise.all(lists.map((queryKey) => qc.cancelQueries({ queryKey })));
@@ -187,12 +187,12 @@ async function runRefresh(qc: QueryClient, skip: Set<number>) {
   // are plain queries; a header fetched after the last write is skipped.
   await Promise.allSettled([
     ...lists.map((queryKey) => qc.invalidateQueries({ queryKey })),
-    qc.invalidateQueries({ queryKey: ['user-profile'], predicate: (q) => !skip.has(q.queryKey[1] as number) }),
+    qc.invalidateQueries({ queryKey: ['user-profile'], predicate: (q) => !skip.has(q.queryKey[1] as string) }),
   ]);
 }
 
 // ── The write ────────────────────────────────────────────────────────────────
-const OPS: Record<RelOp, (id: number) => Promise<void>> = {
+const OPS: Record<RelOp, (id: string) => Promise<void>> = {
   follow: (id) => setFollowing(id, true),
   unfollow: (id) => setFollowing(id, false),
   mute: (id) => setMuted(id, true),
@@ -205,7 +205,7 @@ const OPS: Record<RelOp, (id: number) => Promise<void>> = {
 // (already in flight), failed (alerted, fields put back) or signed out
 // meanwhile. `viewerId` (you) lets an unfollow leave your own lists; without
 // it the trailing refresh takes them off.
-export async function relate(qc: QueryClient, id: number, op: RelOp, viewerId?: number | null): Promise<{ ok: boolean; reconciled: Reconciled }> {
+export async function relate(qc: QueryClient, id: string, op: RelOp, viewerId?: string | null): Promise<{ ok: boolean; reconciled: Reconciled }> {
   if (inFlight.has(id)) return { ok: false, reconciled: null };
   setBusy(id, true);
   const epoch = viewerCacheEpoch();

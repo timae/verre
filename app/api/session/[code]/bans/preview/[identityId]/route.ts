@@ -2,11 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, scanKeys } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
-import { resolveAuthorized, authUnavailable, isValidIdentityId } from '@/lib/identity'
+import { resolveAuthorized, authUnavailable } from '@/lib/identity'
+import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { isHostByIdentity } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { readGrant } from '@/lib/sessionGrant'
-import { openSession, unavailable } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 
 type Ctx = { params: Promise<{ code: string; identityId: string }> }
 
@@ -35,19 +36,24 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code, identityId } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
   const identity = await resolveAuthorized(c, req, session, opened.meta)
   if (identity === 'unavailable') return authUnavailable()
   if (!identity) return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
   if (!isHostByIdentity(opened.meta, identity)) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
   }
-  const targetId = decodeURIComponent(identityId)
-  if (!isValidIdentityId(targetId)) {
+  // The WIRE identity; an old client's `u:<int>` is malformed (400), an
+  // unknown public id is "not part of this session" (404, below).
+  const wireId = decodeURIComponent(identityId)
+  const wireTarget = parseWireIdentity(wireId)
+  if (!wireTarget) {
     return NextResponse.json({ error: 'invalid identityId' }, { status: 400, headers: noStore })
   }
+  const targetId = await internalIdentity(wireTarget)
+  if (!targetId) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
   // Scope the lookup to session-scoped state. A target who isn't in any
   // session Set (identities / bans / kicked) is treated as "not part of
   // this session" — 404. Otherwise a cohost could probe `u:<n>` ids and
@@ -106,7 +112,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     .map(w => ({ id: w.id, name: w.name, vintage: w.vintage, producer: w.producer }))
 
   return NextResponse.json(
-    { identityId: targetId, displayName, ratingCount, addedWines },
+    { identityId: wireTarget.kind === 'user' ? `u:${wireTarget.publicId}` : wireTarget.id, displayName, ratingCount, addedWines },
     { headers: noStore },
   )
 }

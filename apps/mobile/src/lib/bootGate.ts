@@ -1,0 +1,82 @@
+import { isPublicUserId } from '@verre/core';
+
+// The root layout's boot decisions as PURE functions (unit-tested under tsx:
+// scripts/tests/boot-gate-units.ts), so the stale-session rule can't drift
+// from what `_layout.tsx` renders.
+//
+// 🔒 A cached Better Auth session whose `user.id` isn't a PUBLIC id is STALE:
+// written before the server switched to public ids (public-user-ids § 6). It
+// counts as not yet known. Rendering from it would mount the tabs on the
+// integer (`/api/users/<int>` 400s, own-id matches fail), then switch id with
+// the tabs mounted (`_layout.tsx` assumes a user never changes X → Y without
+// passing through signed-out). And when that first get-session fails with
+// anything but a 401, Better Auth KEEPS the cached data and sets `isPending:
+// false`, which the old bare `!isPending` term read as "resolved": the stack
+// opened with no route group. A signed-out launch (`session == null`) is never
+// stale, so it still resolves and the update gate still opens.
+export type BootSession = { user?: { id?: unknown } | null } | null | undefined;
+
+export type BootInput = {
+  session: BootSession;
+  isPending: boolean;
+  resolvedOnce: boolean;
+  waitedTooLong: boolean;
+};
+
+export function bootState({ session, isPending, resolvedOnce, waitedTooLong }: BootInput) {
+  const stale = session != null && !isPublicUserId(session.user?.id);
+  // A session restored from this install's own cache counts as known (the
+  // Expo client keeps it pending until the FIRST heartbeat answers; a later
+  // refetch over cached data reads `isPending: false`), unless stale.
+  const cachedSession = session != null && !stale;
+  const sessionResolved = !stale && (!isPending || resolvedOnce || cachedSession);
+  const splashCanHide = !isPending || resolvedOnce || cachedSession || waitedTooLong;
+  // The cache-clear effect's viewer: null while stale (nothing is mounted on it).
+  const viewerId = stale ? null : ((session?.user?.id as string | undefined) ?? null);
+  return { stale, cachedSession, sessionResolved, splashCanHide, viewerId, signedIn: sessionResolved && session != null };
+}
+
+// `resolvedOnce` flips on the first settled, non-stale answer.
+export const marksResolved = (isPending: boolean, stale: boolean) => !isPending && !stale;
+
+// What the root renders: the splash (nothing), the update screen IN PLACE of
+// the neutral screen (🔒 a 426 that arrives while the session is unknown or
+// stale must still show: no navigator is mounted to route into), the neutral
+// screen, or the Stack.
+export function bootScreen(s: { splashCanHide: boolean; sessionResolved: boolean; updatePending: boolean }): 'splash' | 'update' | 'neutral' | 'stack' {
+  if (!s.splashCanHide) return 'splash';
+  if (!s.sessionResolved) return s.updatePending ? 'update' : 'neutral';
+  return 'stack';
+}
+
+// While stale the app retries get-session itself (Better Auth refetches only
+// on foreground or a network change). 🔒 Only when NOTHING is in flight
+// (`!isPending && !isRefetching`): Better Auth's refetch cancels the request
+// in flight, so a timer running during one would keep killing the very
+// request that would recover; the layout clears the timer the moment a
+// request starts. Fires after a settled failure AND after a settled 200 that
+// still carries an integer. Not while an update is pending (no point).
+export function shouldRetryStale(s: { stale: boolean; isPending: boolean; isRefetching: boolean; updatePending: boolean }): boolean {
+  return s.stale && !s.isPending && !s.isRefetching && !s.updatePending;
+}
+
+// 2 s, 4 s, 8 s, 16 s, then every 30 s, counted from each settle.
+export const staleRetryDelayMs = (attempt: number) => Math.min(30_000, 2_000 * 2 ** attempt);
+
+// The choose-your-username screen (usernames § 10): a signed-in account whose
+// `user.username` is null has not chosen one. 🔒 Only a SERVER-CONFIRMED null
+// blocks: the cached session a cold launch paints from can be older than a
+// name chosen on the web or set by an operator, and offline it could never be
+// corrected, so the person would sit on a screen that cannot work. Once this
+// launch has confirmed it (`latched`), it stays until a name arrives or the
+// session goes: a later failed refetch must not let the tabs back in.
+// `confirmed` = `sessionConfirmed`: the last get-session SETTLED without an
+// error. 🔒 Not while one is in flight: Better Auth starts every refetch with
+// `error: null` and, over cached data, `isPending: false`, which would read
+// as confirmed before any answer arrived (security review 2026-11-14).
+export const sessionConfirmed = (s: { isPending: boolean; isRefetching: boolean; error: unknown }) => !s.isPending && !s.isRefetching && !s.error;
+export type UsernameSession = { user?: { id?: unknown; username?: string | null } | null } | null | undefined;
+export function needsUsername(s: { session: UsernameSession; sessionResolved: boolean; confirmed: boolean; latched: boolean }): boolean {
+  if (!s.sessionResolved || s.session == null || s.session.user?.username != null) return false;
+  return s.confirmed || s.latched;
+}

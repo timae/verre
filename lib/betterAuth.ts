@@ -2,30 +2,16 @@ import { betterAuth, type BetterAuthPlugin } from 'better-auth'
 import { createAuthMiddleware } from 'better-auth/api'
 import { prismaAdapter } from 'better-auth/adapters/prisma'
 import { APIError, getSessionFromCtx } from 'better-auth/api'
-import { createHmac } from 'node:crypto'
 import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { redis } from '@/lib/redis'
-import { validateDisplayName } from '@verre/core'
+import { validateDisplayName, validateUsername } from '@verre/core'
 import { resolveGeoLabel } from '@/lib/geo'
 import { parseNativeUserAgent, parseUserAgent } from '@/lib/userAgent'
 import { backfillNativeCredential, revokeAllWebSessions, revokeNativeSessionsExcept, syncCredential } from '@/lib/identityStore'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { bucketStart } from '@/lib/lastSeen'
-
-// Deterministic synthetic user-id for the sign-up enumeration mitigation (see
-// customSyntheticUser below). HMAC(lowercased email) → a positive integer string
-// in a plausible serial-PK range, so the same email always yields the same id
-// (no repeat-probe tell) and it's indistinguishable from a real id by FORMAT.
-// Keyed on AUTH_SECRET so an attacker can't precompute the mapping. Range
-// 1..1e6 — wide enough not to be an obvious constant low band; the absolute-
-// range residual (vs the real serial sequence) is documented + accepted.
-function syntheticUserId(email: string): string {
-  const secret = process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || process.env.JWT_SECRET || ''
-  const digest = createHmac('sha256', secret).update(email.trim().toLowerCase()).digest()
-  const n = digest.readUInt32BE(0) % 1_000_000
-  return String(n + 1)
-}
+import { usernameTaken } from '@/lib/username'
 
 // ── Better Auth — native-app credential layer ─────────────────────────────────
 //
@@ -162,6 +148,28 @@ export const betterAuthServer = betterAuth({
   user: {
     modelName: 'user',
     fields: { image: 'imageUrl' },
+    // The public id (public-user-ids § 3 + § 5). 🔒 `input: false`: a sign-up
+    // body carrying it answers 400 ("…is not allowed to be set") for a free and
+    // a taken email alike, BEFORE the duplicate check; the DB trigger mints it
+    // on every insert anyway. `required: false` (true would 400 every
+    // sign-up: the adapter omits it on create). `returned: true`: it comes back
+    // on sign-up / sign-in / get-session and in new Redis session copies, so
+    // the route wrapper (app/api/auth/native/[...all]) rarely needs a lookup.
+    //
+    // The username (usernames § 9). `input: true`: Better Auth copies a
+    // declared input field into its OWN user insert, so the name is written in
+    // the same statement as the row (no user row without its username).
+    // `required: false`: true would refuse every other create path (a future
+    // social sign-up); the /sign-up/email before-hook enforces presence.
+    // 🔒 `input: true` is also why /update-user must stay disabled (it would
+    // accept a username and skip the quota; scripts/check-better-auth-config.mjs)
+    // and why user.update.before refuses the field. 🔒 Never READ for the wire
+    // from BA's session copy: Redis snapshots the user at sign-in, so the
+    // route wrapper writes `user.username` fresh on every response.
+    additionalFields: {
+      publicId: { type: 'string', required: false, input: false, returned: true },
+      username: { type: 'string', required: false, input: true, returned: true },
+    },
   },
   account: {
     modelName: 'authAccount',
@@ -295,6 +303,12 @@ export const betterAuthServer = betterAuth({
         // silently split the budget. The guard skips a non-positive/NaN id — see
         // the two skip cases (both safe) in the block comment above.
         const uid = Number(sess?.user?.id)
+        // 🔒 A present session with a non-integer id THROWS, never skips the
+        // charge: the public-id rewrite lives only in the route wrapper, so a
+        // non-integer here means someone moved it into BA (public-user-ids § 5).
+        if (sess?.user && !(Number.isInteger(uid) && uid > 0)) {
+          throw APIError.from('INTERNAL_SERVER_ERROR', { message: 'Internal Server Error', code: 'INTERNAL_SERVER_ERROR' })
+        }
         if (Number.isInteger(uid) && uid > 0) {
           const rl = await checkRate(`rl:account:user:${uid}:1h`, 20, 3600)
           if (!rl.allowed) {
@@ -331,6 +345,10 @@ export const betterAuthServer = betterAuth({
         const sess = await getSessionFromCtx(ctx).catch(() => null)
         const uid = Number(sess?.user?.id)
         const current = sess?.session?.token
+        // Same as above: a session whose id isn't the integer throws.
+        if (sess?.user && !(Number.isInteger(uid) && uid > 0)) {
+          throw APIError.from('INTERNAL_SERVER_ERROR', { message: 'Internal Server Error', code: 'INTERNAL_SERVER_ERROR' })
+        }
         if (!Number.isInteger(uid) || uid <= 0 || !current) return
         try {
           await revokeNativeSessionsExcept(uid, ctx.path === '/revoke-other-sessions' ? current : null)
@@ -339,6 +357,38 @@ export const betterAuthServer = betterAuth({
           throw APIError.from('INTERNAL_SERVER_ERROR', { message: 'Internal Server Error', code: 'INTERNAL_SERVER_ERROR' })
         }
         return ctx.json({ status: true })
+      }
+
+      // Sign-up (usernames § 9). Answers HONESTLY, like the web register: the
+      // limiter above (rl:ba-signup, 10/min/IP) is the bound on email and
+      // username probing, not a fake success. Here, before BA's own duplicate
+      // check: the name (the create hook's validator; that hook stays as the
+      // belt), the username (required; the body is rewritten to the canonical
+      // form, so BA's insert stores it), then both conflicts at once, so the
+      // form can show them together. `usernameTaken` includes HELD names
+      // (a held one would otherwise reach the trigger and come back as BA's
+      // generic FAILED_TO_CREATE_USER on every try). A lost race after this
+      // check (someone took the name in the same instant) still does, once:
+      // BA swallows the unique violation; the retry gets the exact answer here.
+      if (ctx.path === '/sign-up/email') {
+        try { validateDisplayName(ctx.body?.name) }
+        catch (e) {
+          throw APIError.from('BAD_REQUEST', { message: e instanceof Error ? e.message : 'Invalid name', code: 'INVALID_NAME' })
+        }
+        let username: string
+        try { username = validateUsername(ctx.body?.username) }
+        catch (e) {
+          throw APIError.from('BAD_REQUEST', { message: e instanceof Error ? e.message : 'Invalid username', code: 'INVALID_USERNAME' })
+        }
+        const email = typeof ctx.body?.email === 'string' ? ctx.body.email.toLowerCase() : null
+        const [emailRow, nameTaken] = await Promise.all([
+          email ? prisma.user.findUnique({ where: { email }, select: { id: true } }) : null,
+          usernameTaken(username),
+        ])
+        if (emailRow && nameTaken) throw APIError.from('UNPROCESSABLE_ENTITY', { message: 'email and username already taken', code: 'EMAIL_AND_USERNAME_TAKEN' })
+        if (emailRow) throw APIError.from('UNPROCESSABLE_ENTITY', { message: 'email already registered', code: 'EMAIL_TAKEN' })
+        if (nameTaken) throw APIError.from('UNPROCESSABLE_ENTITY', { message: 'username already taken', code: 'USERNAME_TAKEN' })
+        return { context: { body: { ...ctx.body, username } } }
       }
 
       // Lazy credential backfill (§5): an existing WEB user's first native
@@ -397,6 +447,10 @@ export const betterAuthServer = betterAuth({
       },
       update: {
         before: async (data) => {
+          // 🔒 A username never changes through Better Auth: lib/username.ts
+          // owns the quota and the conflict answers (usernames § 9). The belt
+          // behind /update-user staying a disabledPaths 404.
+          if ('username' in data) return false
           if (!('name' in data)) return
           try { return { data: { name: validateDisplayName(data.name) } } }
           catch { return false } // invalid name on update → reject the update
@@ -411,7 +465,8 @@ export const betterAuthServer = betterAuth({
     // union GET reads these fields as ready-made labels), except that the app's
     // own User-Agent gets its model label first ("iPhone 15 Pro · Verre App",
     // parseNativeUserAgent: only this hook calls it, so a web login can't claim
-    // it; only /sign-in/email creates native sessions). Hook-transformed data
+    // it; /sign-in/email and, since sign-up is one step, /sign-up/email create
+    // native sessions, both through this hook). Hook-transformed data
     // feeds BOTH stores (with-hooks.mjs: the secondaryStorage fn receives the
     // created row).
     //
@@ -472,8 +527,8 @@ export const betterAuthServer = betterAuth({
     // distinction with no capability behind it — a BA session already reaches
     // every API route via resolveUser — and it broke the one-identity product
     // promise for every app-registered user). Fill-NULL-ONLY: an existing web
-    // user can never reach this hook with a different hash (a taken email gets
-    // the synthetic-success path and creates NO row — see autoSignIn below),
+    // user can never reach this hook with a different hash (a taken email is
+    // answered 422 before any row is created: the sign-up before-hook above),
     // and backfillNativeCredential's row-create is raw Prisma (skips BA hooks),
     // so the only callers are genuine BA-created rows. Social rows (step 6)
     // are guarded out by providerId/password. No revoke leg: a NULL-hash user
@@ -595,47 +650,25 @@ export const betterAuthServer = betterAuth({
 
   emailAndPassword: {
     enabled: true,
-    // 🔒 Sign-up EMAIL-ENUMERATION mitigation (step-7 gate). BA's /sign-up/email
-    // otherwise throws a distinct USER_ALREADY_EXISTS (422) for a taken email —
-    // an attacker probes which emails have accounts. autoSignIn:false flips BA to
-    // a GENERIC synthetic-success response for an existing email (token:null + a
-    // synthetic user built from the REQUEST body, not the real row — no name leak;
-    // BA hashes the password to blunt timing) — verified sign-up.mjs:161-205.
+    // autoSignIn stays at its default (true): sign-up creates the session and
+    // sets the cookie in the same call, through the same session.create.before
+    // hook as a sign-in (device label, country). The earlier fake success for a
+    // taken email (`autoSignIn: false` + a synthetic user) is GONE (usernames
+    // § 2 / § 9): the app's own follow-up sign-in told a taken email anyway,
+    // and the web register always answered 409. Sign-up answers "email already
+    // registered" honestly (the before-hook above); the rate limits are the
+    // bound. Revisit only with the email pipeline (a generic "check your
+    // inbox" is real then).
     //
-    // ⚠️ NOT fully closed — DON'T claim it is. BA's enumeration protection was
-    // designed for RANDOM-STRING ids: under our generateId:'serial' (integer PKs),
-    // BA's id generator returns false → the synthetic path falls back to a 32-char
-    // RANDOM string (sign-up.mjs:176), while a REAL new user gets an integer id
-    // ("311"). Same 200/shape, but `^[0-9]+$` on user.id distinguishes them — the
-    // oracle just moves from status code to id FORMAT. customSyntheticUser (below)
-    // overrides the synthetic id to a small integer string, killing that format
-    // tell. A RESIDUAL remains: ids are sequential, so an attacker interleaving
-    // real signups can statistically spot a synthetic id that's out-of-sequence
-    // (we can't read MAX(id)+1 — customSyntheticUser is called SYNCHRONOUSLY, no
-    // await). Closing that fully needs the deferred email-verification gate (flips
-    // requireEmailVerification, which also gates the real-row creation). The format
-    // tell is the genuinely-exploitable, embarrassing-in-a-pentest part; the
-    // sequence residual needs a deliberate interleaved-probe attack AND a free-
-    // email probe self-poisons (it creates a real account, rate-limited 10/min).
-    //
-    // Trade-off: a signup no longer auto-creates a session, so the native client
-    // calls /sign-in/email as a second step (standard two-step flow; the app
-    // doesn't exist yet, so the contract is free to set). Social sign-up is
-    // unaffected. (Web register has its own 409 oracle — out of scope here.)
-    autoSignIn: false,
-    // See the block above: return an integer-STRING id (matching a real serial PK)
-    // so the synthetic-user response can't be told from a real new signup by id
-    // FORMAT. The id is DETERMINISTIC per email — an HMAC of the lowercased email
-    // (keyed on AUTH_SECRET) mapped into an integer range — so probing the SAME
-    // email twice returns the SAME id (a real account's id is stable; a per-
-    // request RANDOM id would itself be a tell). We can't read MAX(id)+1 here
-    // (customSyntheticUser is sync), so the absolute-range residual survives until
-    // the email-verification gate — but the cheap, exploitable tells (format +
-    // repeat-probe) are both closed. coreFields is the request-supplied name/email.
-    customSyntheticUser: ({ coreFields }: { coreFields: Record<string, unknown> }) => ({
-      ...coreFields,
-      id: syntheticUserId(String(coreFields.email ?? '')),
-    }),
+    // ⚠️ BA's sign-up is NOT one transaction here (the adapter has no
+    // `transaction` configured): the user insert, the credential row and the
+    // session are three commits, and after-hooks run when the handler ends.
+    // Named residuals: a failed credential insert leaves a user row that can't
+    // sign in and owns its email and its username (the operator deletes it;
+    // the name is then held 14 days unless released); and the session row
+    // exists before the password mirror (account.create.after) runs, so a
+    // mirror that throws answers an error with no cookie while the session
+    // row stays (pinned: scripts/tests/you-profile-integration.mts § 19).
     // Override BOTH hash and verify with bcrypt (Better Auth defaults to scrypt).
     // Overriding only verify would ship a mixed scrypt/bcrypt table. verify uses
     // plain bcrypt.compare with NO hardcoded cost so it accepts every cost factor
@@ -858,6 +891,9 @@ export const betterAuthServer = betterAuth({
     '/update-session',
     '/list-sessions',
     '/revoke-session',
+    // Returns the user's integer twice (`userId`, and `accountId` = the user
+    // id for the credential row): public-user-ids § 5. The app never calls it.
+    '/list-accounts',
   ],
 
   // TODO(step-6): socialProviders { google, apple } with the native id_token

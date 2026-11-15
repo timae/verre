@@ -43,6 +43,36 @@ const NO_EM_DASH_COPY = [
   message: "No em dash in user-facing copy: use a full stop, comma, colon or parentheses (root CLAUDE.md § Coding style).",
 }))
 
+// Web calls to /api/session* carry the web wire generation (public-user-ids
+// § 6): through sessionFetch or webApiFetch (lib/sessionFetch.ts), never a bare
+// fetch, or the proxy reads the call as an old tab and bounces it. A bare
+// `fetch` / `window.fetch` whose URL literal or template starts with
+// /api/session is an error in components/** and app/** (not app/api/**).
+const SESSION_URL = "/^.api.session/"
+const NO_BARE_SESSION_FETCH = [
+  `CallExpression[callee.name='fetch'][arguments.0.value=${SESSION_URL}]`,
+  `CallExpression[callee.name='fetch'][arguments.0.quasis.0.value.cooked=${SESSION_URL}]`,
+  `CallExpression[callee.property.name='fetch'][arguments.0.value=${SESSION_URL}]`,
+  `CallExpression[callee.property.name='fetch'][arguments.0.quasis.0.value.cooked=${SESSION_URL}]`,
+].map((selector) => ({
+  selector,
+  message: "Call /api/session* through sessionFetch or webApiFetch (lib/sessionFetch.ts): they send X-Verre-Web, without which the proxy bounces the call (public-user-ids § 6).",
+}))
+
+// The entrance gate (leak-fixes F2, lib/sessionRoute.ts): a moment route opens
+// a moment ONLY through openSessionFor / openAsParticipant (the join page
+// through openSessionCharged), which charge a wrong code and refuse a spent
+// stranger before anything else runs. Every export of lib/sessionRehydrate
+// that opens or rebuilds a moment is refused in app/**, by name (an alias
+// can't dodge it) for the `@/` path AND any relative path; the helpers routes
+// still need (contractFailure, unavailable, …) stay importable.
+const OPENERS = ["openSession", "ensureSessionLive", "loadLiveWines", "rehydrateSession"]
+const OPEN_MESSAGE = "Open a moment through the entrance gate: openSessionFor / openAsParticipant (lib/sessionRoute.ts), never lib/sessionRehydrate's openers (leak-fixes F2, app/api/CLAUDE.md)."
+const NO_UNGATED_OPEN = ["error", {
+  paths: [{ name: "@/lib/sessionRehydrate", importNames: OPENERS, message: OPEN_MESSAGE }],
+  patterns: [{ group: ["**/lib/sessionRehydrate", "**/lib/sessionRehydrate.ts"], importNames: OPENERS, message: OPEN_MESSAGE }],
+}]
+
 export default defineConfig([
   ...nextCoreWebVitals,
   ...nextTypescript,
@@ -68,7 +98,7 @@ export default defineConfig([
     files: ["proxy.ts"],
     rules: {
       "no-restricted-syntax": ["error",
-        { selector: "ImportDeclaration[importKind!='type'][source.value!=/^(next-auth|@.auth[.]config)$/]", message: "proxy.ts may import only next-auth and @/auth.config: JWT presence only, never auth.ts, Prisma or bcrypt (lib/CLAUDE.md)." },
+        { selector: "ImportDeclaration[importKind!='type'][source.value!=/^(next-auth|next-auth.jwt|@.auth[.]config|@.lib.clientVersion)$/]", message: "proxy.ts may import only next-auth, next-auth/jwt, @/auth.config and @/lib/clientVersion: JWT decode only, never auth.ts, Prisma or bcrypt (lib/CLAUDE.md)." },
         ...noIndirectLoads],
       "no-restricted-globals": noLoaderGlobals,
     },
@@ -100,11 +130,33 @@ export default defineConfig([
     rules: { "no-restricted-syntax": ["error", NX_XX] },
   },
   {
-    files: ["app/**/*.{ts,tsx}"],
-    rules: { "no-restricted-syntax": ["error", NX_XX, ...NO_EM_DASH_COPY] },
+    // AFTER lib/** (a later block's no-restricted-syntax replaces it). In the
+    // proxy's graph since public user ids (the version floor runs on
+    // every /api call): no runtime imports at all.
+    files: ["lib/clientVersion.ts"],
+    rules: {
+      "no-restricted-syntax": ["error",
+        { selector: "ImportDeclaration[importKind!='type']", message: "lib/clientVersion.ts is in the proxy's dependency graph: `import type` only (lib/CLAUDE.md)." },
+        NX_XX,
+        ...noIndirectLoads],
+      "no-restricted-globals": noLoaderGlobals,
+    },
   },
   {
-    files: ["components/**/*.{ts,tsx}", "packages/core/src/**/*.{ts,tsx}"],
+    files: ["app/**/*.{ts,tsx}"],
+    rules: { "no-restricted-syntax": ["error", NX_XX, ...NO_EM_DASH_COPY], "no-restricted-imports": NO_UNGATED_OPEN },
+  },
+  {
+    files: ["app/**/*.{ts,tsx}"],
+    ignores: ["app/api/**"],
+    rules: { "no-restricted-syntax": ["error", NX_XX, ...NO_EM_DASH_COPY, ...NO_BARE_SESSION_FETCH], "no-restricted-imports": NO_UNGATED_OPEN },
+  },
+  {
+    files: ["components/**/*.{ts,tsx}"],
+    rules: { "no-restricted-syntax": ["error", ...NO_EM_DASH_COPY, ...NO_BARE_SESSION_FETCH] },
+  },
+  {
+    files: ["packages/core/src/**/*.{ts,tsx}"],
     rules: { "no-restricted-syntax": ["error", ...NO_EM_DASH_COPY] },
   },
   // apps/mobile is its own workspace (expo lint); the rest are gitignored build/scratch output.

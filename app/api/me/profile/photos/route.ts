@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { checkRate, formatWait } from '@/lib/rateLimit'
-import { isOwnTileUpload, isTileKey, isPickable, listPickable, readPins } from '@/lib/profileTiles'
+import { isTileKey, isPickable, listPickable, readPins } from '@/lib/profileTiles'
 
 const noStore = { 'Cache-Control': 'private, no-store' }
 const LIMIT = 60
@@ -27,8 +27,8 @@ export async function GET(req: NextRequest) {
   }
 
   const [photos, pins] = await Promise.all([listPickable(pool, userId, LIMIT), readPins(userId)])
-  const pinned = pins[pool]
-  const pin = pinned && (isOwnTileUpload(pinned, pool, userId) || photos.includes(pinned) || (await isPickable(pool, userId, pinned))) ? pinned : null
+  const { url: pinned, own } = pins[pool]
+  const pin = pinned && (own || photos.includes(pinned) || (await isPickable(pool, userId, pinned))) ? pinned : null
   const ordered = pin ? [pin, ...photos.filter(u => u !== pin)].slice(0, LIMIT) : photos
   return NextResponse.json({ photos: ordered, pin }, { headers: noStore })
 }

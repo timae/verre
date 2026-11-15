@@ -90,6 +90,10 @@ for (const f of tracked) {
 //    (check #3 above): a BA upgrade is deliberate and MUST re-audit the mounted
 //    surface (re-run the endpoint enumeration) before bumping the pin.
 const REQUIRED_DISABLED = [
+  // Matters TWICE since usernames (docs/dev/proposals/usernames.md § 9):
+  // `user.additionalFields.username` is `input: true` (so the sign-up insert
+  // carries it), and /update-user accepts every input field: enabled, it would
+  // change a username past the quota, the hold answers and lib/username.ts.
   '/update-user',
   '/verify-password',
   '/reset-password',
@@ -101,6 +105,7 @@ const REQUIRED_DISABLED = [
   '/update-session',
   '/list-sessions',
   '/revoke-session',
+  '/list-accounts',
 ]
 // NOTE: /get-session was deliberately REMOVED from this list with the first
 // native client (iOS milestone 1): @better-auth/expo's useSession + sliding-

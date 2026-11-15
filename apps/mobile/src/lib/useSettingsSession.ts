@@ -54,7 +54,7 @@ export function useSettingsSession(code: string): {
 
   const fatal =
     state.error instanceof ApiError &&
-    (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found');
+    (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found' || state.error.kind === 'rate-limited');
   useEffect(() => {
     if (fatal) router.replace(sessionHref(sessionTab, '', { code }));
   }, [fatal, code, router, sessionTab]);

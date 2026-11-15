@@ -209,7 +209,7 @@ const layout = rootLayoutSrc
 // then flips to the tabs a second later, after a flash of the welcome screen.
 check(
   'the protected (tabs) guard requires a RESOLVED session',
-  /guard=\{sessionResolved && !!session\}/.test(layout),
+  /guard=\{sessionResolved && !!session && !chooseUsername\}/.test(layout),
   'A bare `guard={!!session}` cannot distinguish "pending" from "signed out".',
 )
 check(
@@ -221,16 +221,38 @@ check(
 // shape: the deadline (`waitedTooLong`) may feed the splash decision and must
 // never feed route selection. (PR #97 added a `resolvedOnce` latch to both so a
 // post-sign-out refetch keeps the Stack mounted; that latch is a session
-// landing, not a deadline, so it is allowed on both sides.)
+// landing, not a deadline, so it is allowed on both sides, as long as only a
+// session landing sets it.) Since public user ids both conditions live in
+// lib/bootGate.ts (`bootState`, `bootScreen`), consumed by the layout. So:
+// the pure functions are run over every input combination (the deadline never
+// changes `sessionResolved`), and the layout's CALLS are pinned exactly (a
+// deadline term passed in as an argument would bypass the functions).
+const boot = nodeRequire(join(root, 'apps/mobile/src/lib/bootGate.ts')) as typeof import('../../apps/mobile/src/lib/bootGate.ts')
+const sessions = [undefined, null, { user: { id: 'HW5R2XKJ94AX' } }, { user: { id: '138' } }] as Parameters<typeof boot.bootState>[0]['session'][]
+let deadlineNeverResolves = true
+for (const session of sessions) for (const isPending of [true, false]) for (const resolvedOnce of [true, false]) {
+  const before = boot.bootState({ session, isPending, resolvedOnce, waitedTooLong: false })
+  const after = boot.bootState({ session, isPending, resolvedOnce, waitedTooLong: true })
+  if (before.sessionResolved !== after.sessionResolved || before.signedIn !== after.signedIn) deadlineNeverResolves = false
+}
+const pastDeadline = boot.bootState({ session: undefined, isPending: true, resolvedOnce: false, waitedTooLong: true })
+const destructured = (/const \{([^}]*)\} = bootState\(/.exec(layout)?.[1] ?? '').split(',').map(x => x.trim())
 check(
   'splash hiding and route selection are SEPARATE conditions',
-  /const splashCanHide = [^;\n]*\bwaitedTooLong\b/.test(layout) &&
-    /const sessionResolved = (?![^;\n]*\bwaitedTooLong\b)[^;\n]*!isPending/.test(layout),
-  'The deadline may hide the splash; only the session landing may pick a route group.',
+  deadlineNeverResolves && pastDeadline.splashCanHide && !pastDeadline.sessionResolved &&
+    /bootState\(\{ session, isPending, resolvedOnce, waitedTooLong \}\)/.test(layout) &&
+    destructured.includes('sessionResolved') && destructured.includes('splashCanHide') &&
+    !/\b(?:const|let|var)\s+(sessionResolved|splashCanHide)\b/.test(layout) &&
+    (layout.match(/setResolvedOnce\(/g) ?? []).length === 1 && /if \(marksResolved\(isPending, stale\)\) setResolvedOnce\(true\)/.test(layout),
+  'The deadline may hide the splash; only the session landing may pick a route group (lib/bootGate.ts bootState, its inputs passed through unchanged, the latch set only by marksResolved).',
 )
+const neutralAt = layout.indexOf("if (screen === 'neutral')")
+const stackAt = layout.search(/<Stack\s+screenOptions=/)
 check(
   'a neutral state renders while pending past the deadline',
-  /if \(!sessionResolved\) \{/.test(layout),
+  boot.bootScreen({ splashCanHide: pastDeadline.splashCanHide, sessionResolved: pastDeadline.sessionResolved, updatePending: false }) === 'neutral' &&
+    /const screen = bootScreen\(\{ splashCanHide, sessionResolved, updatePending \}\)/.test(layout) &&
+    neutralAt > 0 && stackAt > neutralAt && layout.slice(neutralAt, layout.indexOf('\n  }\n', neutralAt)).includes('<ActivityIndicator'),
   'With neither group mounted the Stack has nothing to render — without this the user sees an empty navigator.',
 )
 // update-required must stay reachable regardless of session state, including a

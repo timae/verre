@@ -7,6 +7,7 @@ import type { Href } from 'expo-router';
 // /(tabs)/feed/session/[code] and /(tabs)/you/session/[code] (thin re-export
 // route files), so entering a moment from a post stays ON that stack and back
 // returns to the post. (You mounts it because a profile lists posts too.)
+// Likewise Feed owns the post + profile sub-tree and You AND Moments mirror it.
 // An OPENED POST has its own nested stack on top of that (/(tabs)/<tab>/[id]/…,
 // the transparent modal's inner Stack): the moment, profile or post opened
 // from inside it pushes there as a real card. Every forward push INSIDE these
@@ -77,7 +78,7 @@ export function sessionHref(
 ): Href {
   const tail = `session/[code]${sub ? `/${sub}` : ''}`;
   if (mount.post != null) {
-    return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/${tail}`, params: { id: mount.post, ...params } } as Href;
+    return { pathname: `/(tabs)/${mount.tab}/[id]/${tail}`, params: { id: mount.post, ...params } } as Href;
   }
   return { pathname: `/(tabs)/${mount.tab}/${tail}`, params } as Href;
 }
@@ -91,8 +92,9 @@ export function tabHomeHref(tab: SessionTab): Href {
 
 // ── Posts + profiles (the feed sub-tree) ─────────────────────────────────────
 // The post detail, its edit screens and the profile screen are mounted under
-// Feed AND You (You's are one-line re-export mirrors), so their pushes are
-// mount-relative too. `user` on a post route names the list it came from: the
+// Feed, You AND Moments (You's and Moments' are one-line re-export mirrors;
+// Moments since 2026-11-15, for a person opened inside a moment), so their
+// pushes are mount-relative too. `user` on a post route names the list it came from: the
 // detail/edit read and write THAT list's cache (lib/api/feed.ts feedKey) —
 // absent = the network feed.
 //
@@ -107,15 +109,22 @@ export function tabHomeHref(tab: SessionTab): Href {
 //     may be presented on the outer stack while a post is open: a native
 //     modal over the contained post hung the app (device pass 2026-11-10).
 //     So the "post is gone" exits there are plain pops on the post's stack.
-type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile' | 'people';
-type FeedTab = Exclude<SessionTab, 'moments'>;
+//   • 'impressions' / 'moments' / 'cravings' — someone's (or your) tile lists
+//     (lists plan): like 'people', their own route on a post's stack.
+//   • 'palate' (someone's or yours) / 'status' (yours, no id) — the status
+//     line's placeholder pages (2026-11-14): likewise.
+//   `source: 'item'` (post / edit) = opened from a tile list: those screens
+//   read ONLY that post's item query (lib/useFeedPost.ts), and the edit's
+//   "post is gone" exit is a plain pop back to the list (closePost).
+type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile' | 'people' | 'palate' | 'status' | ListSub;
+type ListSub = 'impressions' | 'moments' | 'cravings';
 
 export function feedHref(
   mount: SessionMount,
   sub: FeedSub,
-  params: { id?: string; index?: string; wine?: string; user?: string; tab?: string; known?: string } = {},
+  params: { id?: string; index?: string; wine?: string; user?: string; tab?: string; known?: string; source?: 'item' } = {},
 ): Href {
-  const t = feedTab(mount.tab);
+  const t = mount.tab;
   const clean = (p: Record<string, string | undefined>) => Object.fromEntries(Object.entries(p).filter(([, v]) => v != null));
   const inPost = mount.post != null;
   let pathname: string;
@@ -124,10 +133,10 @@ export function feedHref(
     case 'post':
       if (inPost) {
         pathname = `/(tabs)/${t}/[id]/post/[postId]`;
-        out = { id: mount.post, postId: params.id, index: params.index, user: params.user };
+        out = { id: mount.post, postId: params.id, index: params.index, user: params.user, source: params.source };
       } else {
         pathname = `/(tabs)/${t}/[id]`;
-        out = { id: params.id, index: params.index, user: params.user };
+        out = { id: params.id, index: params.index, user: params.user, source: params.source };
       }
       break;
     case 'profile':
@@ -154,18 +163,47 @@ export function feedHref(
     case 'edit':
       if (inPost) {
         pathname = `/(tabs)/${t}/[id]/edit/[postId]`;
-        out = { id: mount.post, postId: params.id, wine: params.wine, user: params.user };
+        out = { id: mount.post, postId: params.id, wine: params.wine, user: params.user, source: params.source };
       } else {
         pathname = `/(tabs)/${t}/edit/[id]`;
-        out = { id: params.id, wine: params.wine, user: params.user };
+        out = { id: params.id, wine: params.wine, user: params.user, source: params.source };
       }
       break;
     case 'edit/details':
       pathname = inPost ? `/(tabs)/${t}/[id]/edit/details` : `/(tabs)/${t}/edit/details`;
       out = { id: mount.post, user: params.user };
       break;
+    case 'status':
+      pathname = inPost ? `/(tabs)/${t}/[id]/status` : `/(tabs)/${t}/status`;
+      out = { id: mount.post };
+      break;
+    case 'palate':
+    case 'impressions':
+    case 'moments':
+    case 'cravings':
+      if (inPost) {
+        pathname = `/(tabs)/${t}/[id]/${sub}/[personId]`;
+        out = { id: mount.post, personId: params.id };
+      } else {
+        pathname = `/(tabs)/${t}/${sub}/[id]`;
+        out = { id: params.id };
+      }
+      break;
   }
   return { pathname, params: clean(out) } as Href;
+}
+
+// The create flows (lists plan D8), mount-relative: the Feed's "Check In"
+// pill and your Impressions' "+ Check In" run the SAME two stages on their own
+// stack (`<tab>/check-in`, `<tab>/check-in/rate`), and moment create runs from
+// Moments home or your Moments' "+ New" (`<tab>/moments/create`), landing in
+// the new moment on that stack. Never inside an opened post (the pills don't
+// show there: a reading context).
+export function checkinHref(mount: SessionMount, stage?: 'rate'): Href {
+  return `/(tabs)/${mount.tab}/check-in${stage ? '/rate' : ''}` as Href;
+}
+export function momentCreateHref(mount: SessionMount): Href {
+  return (mount.tab === 'moments' ? '/(tabs)/moments/create' : `/(tabs)/${mount.tab}/moments/create`) as Href;
 }
 
 // Settings: the hub (no page) and its pages. Inside an opened post every one
@@ -176,14 +214,14 @@ export function feedHref(
 export type SettingsPage = 'privacy' | 'blocked' | 'muted' | 'account' | 'change-email' | 'change-password' | 'appearance';
 export function settingsHref(mount: SessionMount, page?: SettingsPage): Href {
   const tail = page ? `settings/${page}` : 'settings';
-  if (mount.post != null) return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/${tail}`, params: { id: mount.post } } as Href;
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/${tail}`, params: { id: mount.post } } as Href;
   return `/you/${tail}` as Href;
 }
 
 // Edit Profile (your own profile's ⋯ → Edit Profile, ruling D1): like
 // Settings, mirrored onto an opened post's stack when called from inside it.
 export function profileEditHref(mount: SessionMount): Href {
-  if (mount.post != null) return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/edit-profile`, params: { id: mount.post } } as Href;
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/edit-profile`, params: { id: mount.post } } as Href;
   return '/you/edit-profile' as Href;
 }
 
@@ -193,7 +231,7 @@ export function profileEditHref(mount: SessionMount): Href {
 // push there lands behind the presented post (device pass 2026-11-10: back
 // came out on You). The root routes stay the canonical ones.
 export function legalHref(mount: SessionMount, screen: 'about' | 'attributions'): Href {
-  if (mount.post != null) return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/${screen}`, params: { id: mount.post } } as Href;
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/${screen}`, params: { id: mount.post } } as Href;
   return `/${screen}` as Href;
 }
 
@@ -202,14 +240,14 @@ export function legalHref(mount: SessionMount, screen: 'about' | 'attributions')
 // someone's profile pushed on this stack. Inside an opened post the list is
 // always a profile pushed on THAT post's stack (`dismissTo` it pops whatever
 // sits above it there).
-export function feedListHref(mount: SessionMount, userId: number | null, meId: number | null): Href {
-  const t = feedTab(mount.tab);
+export function feedListHref(mount: SessionMount, userId: string | null, meId: string | null): Href {
+  const t = mount.tab;
   if (mount.post != null && userId != null) {
-    return { pathname: `/(tabs)/${t}/[id]/u/[personId]`, params: { id: mount.post, personId: String(userId) } } as Href;
+    return { pathname: `/(tabs)/${t}/[id]/u/[personId]`, params: { id: mount.post, personId: userId } } as Href;
   }
   if (userId == null) return tabHomeHref(t);
   if (t === 'you' && userId === meId) return tabHomeHref('you');
-  return { pathname: `/(tabs)/${t}/u/[id]`, params: { id: String(userId) } } as Href;
+  return { pathname: `/(tabs)/${t}/u/[id]`, params: { id: userId } } as Href;
 }
 
 // The post is GONE and it is the one an opened post's stack hangs off (your
@@ -224,6 +262,26 @@ type NavLike = {
   getParent(): NavLike | undefined;
   dispatch(action: { type: 'POP'; payload: { count: number }; target: string; source: undefined }): void;
 };
+// The "post is gone" exit of a post opened from a tile list (`source: 'item'`):
+// a plain pop back to the LIST (feedListHref would land one screen too far,
+// on the profile). Pops the post's route (the modal `[id]` or a card
+// `post/[postId]`) and everything above it, nearest first. False when none.
+export function closePost(navigation: NavLike, postId: string): boolean {
+  for (let nav: NavLike | undefined = navigation; nav; nav = nav.getParent()) {
+    const st = nav.getState();
+    if (!st) continue;
+    for (let i = st.routes.length - 1; i >= 0; i--) {
+      const r = st.routes[i];
+      const p = r.params as { id?: string; postId?: string } | undefined;
+      if ((r.name === 'post/[postId]' && p?.postId === postId) || (r.name === '[id]' && p?.id === postId)) {
+        nav.dispatch({ type: 'POP', payload: { count: st.routes.length - i }, target: st.key, source: undefined });
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function closeOpenedPost(navigation: NavLike, postId: string): boolean {
   for (let nav: NavLike | undefined = navigation; nav; nav = nav.getParent()) {
     const st = nav.getState();
@@ -244,7 +302,3 @@ export function closeOpenedPost(navigation: NavLike, postId: string): boolean {
   return false;
 }
 
-// The feed sub-tree has no Moments mount; a stray caller there lands on Feed.
-function feedTab(tab: SessionTab): FeedTab {
-  return tab === 'you' ? 'you' : 'feed';
-}

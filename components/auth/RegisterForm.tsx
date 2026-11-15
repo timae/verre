@@ -3,7 +3,9 @@ import { useState } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { checkUsername } from '@verre/core'
 import { safeRedirect } from '@/lib/safeRedirect'
+import { UsernameField, usernameProblem, USERNAME_TAKEN } from './UsernameField'
 
 function EyeIcon({ open }: { open: boolean }) {
   return open ? (
@@ -43,26 +45,36 @@ function PasswordField({ label, value, onChange, placeholder, autoComplete, hint
 export function RegisterForm({ redirectTo, formToken }: { redirectTo?: string; formToken: string }) {
   const router = useRouter()
   const [name, setName] = useState('')
+  const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPw, setConfirmPw] = useState('')
   const [website, setWebsite] = useState('')
   const [error, setError] = useState('')
+  const [usernameError, setUsernameError] = useState('')
+  const [emailError, setEmailError] = useState('')
   const [loading, setLoading] = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    setError('')
+    const checked = checkUsername(username)
+    if (!checked.ok) { setUsernameError(usernameProblem(checked)); return }
     if (password.length < 8) { setError('Password must be at least 8 characters.'); return }
     if (password !== confirmPw) { setError('Passwords do not match.'); return }
-    setLoading(true); setError('')
+    setLoading(true); setError(''); setUsernameError(''); setEmailError('')
     const res = await fetch('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password, formToken, website }),
+      body: JSON.stringify({ name, username: checked.username, email, password, formToken, website }),
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
-      setError(body.error || 'Registration failed')
+      // 409 names each taken field, both at once (usernames § 9).
+      const taken = res.status === 409 && body.fields ? body.fields as { email?: string; username?: string } : null
+      if (taken?.username) setUsernameError(USERNAME_TAKEN)
+      if (taken?.email) setEmailError('This email is already registered.')
+      if (!taken?.username && !taken?.email) setError(body.error || 'Registration failed')
       setLoading(false); return
     }
     await signIn('credentials', { email, password, redirect: false })
@@ -93,9 +105,14 @@ export function RegisterForm({ redirectTo, formToken }: { redirectTo?: string; f
         <div className="fl">name</div>
         <input className="fi" type="text" value={name} onChange={e => setName(e.target.value)} required placeholder="firstname or alias" />
       </div>
+      <UsernameField value={username} onChange={v => { setUsername(v); setUsernameError('') }} error={usernameError} />
+      {/* 🔒 The EMAIL is the login a password manager saves: autoComplete
+          "username" here, never on the Username field (usernames § 13). */}
       <div className="field">
         <div className="fl">email</div>
-        <input className="fi" type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@example.com" autoComplete="email" />
+        <input className="fi" type="email" value={email} onChange={e => { setEmail(e.target.value); setEmailError('') }} required placeholder="you@example.com" autoComplete="username"
+          style={emailError ? {borderColor:'var(--danger)'} : undefined} />
+        {emailError && <div role="alert" style={{fontSize:11,color:'var(--danger)',marginTop:6}}>{emailError}</div>}
       </div>
       <PasswordField label="password" value={password} onChange={setPassword} placeholder="min 8 characters" autoComplete="new-password" hint="Use at least 8 characters." />
       <PasswordField label="confirm password" value={confirmPw} onChange={setConfirmPw} placeholder="retype password" autoComplete="new-password" />

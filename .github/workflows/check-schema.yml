@@ -226,13 +226,64 @@ jobs:
       # Delete Account failure premise (a refused deletion has already signed
       # the phones out). S3 is an in-process fake endpoint that records the
       # SDK's PUT / DELETE requests.
-      - name: You profile (tiles, retention, profile images, settings)
+      #
+      # § 18 public user ids (docs/dev/proposals/public-user-ids.md § 9): the
+      # wire walk, every input route refusing the integer, the null paths,
+      # auth through the native route module, the schema triggers + CHECKs, the
+      # sealed people cursor, tile ownership by row, the re-key script, and the
+      # CANARY: every fixture user is minted at ≥ 900000000 and every response
+      # of the run is scanned raw for a user integer / u:<digit>.
+      #
+      # § 21 usernames (docs/dev/proposals/usernames.md § 12,
+      # scripts/tests/usernames-section.mts): the format CHECK against the core
+      # validator, the hold triggers (rename, deletion, expiry), the rename
+      # quota, the races on two connections with their negative controls (a
+      # BEFORE trigger, a missing row lock), honest one-step sign-up (app and
+      # web), by-username = the id route, `username` on every person outside a
+      # moment and never inside one, search, the limits, the writes census.
+      - name: You profile (tiles, retention, profile images, settings, public ids)
         run: npx tsx scripts/tests/you-profile-integration.mts
-        timeout-minutes: 5
+        timeout-minutes: 8
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-you-profile-suite-secret-0123456789
+
+      # Public user ids, the web half: the proxy (version floor on every /api
+      # call, the old-tab bounce by DECODED token under both cookie names and
+      # chunked forms, the NEXTAUTH_SECRET-only deploy) and the NextAuth
+      # /api/auth/session wrapper (the public id, no userSessionId).
+      - name: Public ids (proxy + NextAuth session)
+        run: npx tsx scripts/tests/public-ids-web.mts
+        timeout-minutes: 3
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-public-ids-web-secret-0123456789
+
+      # Usernames, the web half: `/@<name>` and the encoded `/%40<name>` are
+      # next.config.ts REWRITES (an `@folder` is a parallel-routes slot), which
+      # run in the router in front of every page, so no route-module test sees
+      # them. This builds the app and drives the server the image runs
+      # (`node .next/standalone/server.js`): both forms open the profile, an
+      # operator-assigned reserved name too, everything malformed / unknown /
+      # renamed away is a 404, and with the limiter spent neither page entry
+      # touches `users`. The build needs no database or secret (the image's
+      # builder stage has none either).
+      # AUTH_SECRET only quiets Better Auth's "default secret" log line while
+      # Next collects page data; the build passes without it.
+      - name: Build the web app
+        run: npm run build
+        env:
+          AUTH_SECRET: ci-only-usernames-web-secret-0123456789
+
+      - name: Usernames (the /@name rewrite against the built server)
+        run: npx tsx scripts/tests/usernames-web.mts
+        timeout-minutes: 5
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-usernames-web-secret-0123456789
 
     services:
       # The add-flow suite drives lib/session.ts's real Redis→Postgres wine

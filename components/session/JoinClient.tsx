@@ -3,37 +3,47 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { setAnonToken } from '@/lib/sessionFetch'
+import { setAnonToken, webApiFetch } from '@/lib/sessionFetch'
 import { formatCode } from '@verre/core'
 import { sessionPath, joinPath } from '@/lib/sessionCode'
 
 interface Props {
   code: string
   sessionMeta: { host: string; name: string } | null
+  // The wrong-code budget is spent and this caller isn't known to be a member
+  // (leak-fixes F2). NOT an ended session: nothing local is wiped.
+  rateLimited?: { wait: string } | null
   defaultName: string
   isLoggedIn: boolean
 }
 
-export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props) {
+export function JoinClient({ code, sessionMeta, rateLimited = null, defaultName, isLoggedIn }: Props) {
   const router = useRouter()
   const [name, setName] = useState(defaultName)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
   const sessionLabel = sessionMeta?.name || `Session ${formatCode(code)}`
-  const isExpired = !sessionMeta
+  const limited = !sessionMeta && !!rateLimited
+  const isExpired = !sessionMeta && !rateLimited
 
-  // Anonymous user who already joined from this browser → skip invite page
+  // Anonymous user who already joined from this browser → skip invite page.
+  // On a spent budget only with BOTH their token and name for this code: the
+  // moment's API then decides with the token (the gate admits a member), and
+  // a token alone would loop (SessionShell bounces a nameless guest back here).
   useEffect(() => {
     if (isLoggedIn || isExpired) return
     if (typeof window === 'undefined') return
     const stored = localStorage.getItem(`vr_name_${code}`)
+    if (limited && !localStorage.getItem(`vr_anon_${code}`)) return
     if (stored) router.replace(sessionPath(code))
-  }, [code, isLoggedIn, isExpired])
+  }, [code, isLoggedIn, isExpired, limited])
 
   // Session is gone (deleted, expired, or never existed). Drop any stale
   // local cache for this code so it doesn't linger inertly forever and
-  // mislead later code that looks at these keys.
+  // mislead later code that looks at these keys. 🔒 Never on a spent
+  // budget: the moment may well exist, and a guest would lose their identity
+  // in it for good.
   useEffect(() => {
     if (!isExpired || typeof window === 'undefined') return
     try {
@@ -47,7 +57,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
     const n = (joinName ?? name).trim()
     if (!n) { setError('Enter your name'); return }
     setLoading(true); setError('')
-    const res = await fetch('/api/session/join', {
+    const res = await webApiFetch('/api/session/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, displayName: n }),
@@ -89,7 +99,13 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
         <div style={{width:'100%',maxWidth:400}}>
 
           {/* Header — different framing for valid invite vs not-found */}
-          {isExpired ? (
+          {limited ? (
+            <div style={{textAlign:'center',marginBottom:24}}>
+              <div style={{fontSize:48,marginBottom:12,opacity:0.4}}>⏳</div>
+              <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:8}}>too many codes</p>
+              <h1 style={{fontSize:24,fontWeight:800,color:'#F0E3C6',lineHeight:1.2,marginBottom:8}}>Too many codes tried</h1>
+            </div>
+          ) : isExpired ? (
             <div style={{textAlign:'center',marginBottom:24}}>
               <div style={{fontSize:48,marginBottom:12,opacity:0.4}}>🚫</div>
               <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:8}}>session not found</p>
@@ -107,7 +123,12 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
           )}
 
           <div className="lobby-card lobby-form">
-            {isExpired ? (
+            {limited ? (
+              <div style={{textAlign:'center',padding:'16px 0'}}>
+                <p style={{fontSize:13,color:'var(--fg-dim)',marginBottom:16}}>Try again in {rateLimited!.wait}.</p>
+                <Link href="/" className="btn-p" style={{textDecoration:'none',display:'block',textAlign:'center'}}>← back to lobby</Link>
+              </div>
+            ) : isExpired ? (
               <div style={{textAlign:'center',padding:'16px 0'}}>
                 <p style={{fontSize:13,color:'var(--fg-dim)',marginBottom:16}}>The code may be wrong, or the session has been deleted or expired.</p>
                 <Link href="/" className="btn-p" style={{textDecoration:'none',display:'block',textAlign:'center'}}>← back to lobby</Link>

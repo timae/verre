@@ -16,6 +16,8 @@
 // Worker-kill schedules run the deletion in a child process (this file with
 // --worker) and SIGKILL it at a hook; assertions run here, in a separate
 // process, so no cleanup of the dead worker can help it.
+import { toWire, fromWire, wireParams } from './lib/wireIds.mts'
+import { fixtureUsername } from './lib/fixtureUsername.mjs'
 import { spawn } from 'node:child_process'
 import { registerHooks } from 'node:module'
 import { readFileSync } from 'node:fs'
@@ -118,10 +120,11 @@ function request(method: string, path: string, actor: Actor = {}, body?: unknown
   return new NextRequest(`${BASE}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
 }
 type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>
+// Wire ids in, internal ids out (scripts/tests/lib/wireIds.mts).
 async function call(handler: unknown, method: string, path: string, actor: Actor, body?: unknown, params: Record<string, string> = {}) {
-  const res = await (handler as Handler)(request(method, path, actor, body), { params: Promise.resolve(params) })
+  const res = await (handler as Handler)(request(method, path, actor, await toWire(body)), { params: Promise.resolve(await wireParams(params)) })
   let json: unknown = null
-  try { json = await res.json() } catch {}
+  try { json = await fromWire(await res.json()) } catch {}
   return { status: res.status, json: json as Record<string, unknown> }
 }
 
@@ -130,8 +133,11 @@ async function mkUser(name: string, opts: { webPassword?: boolean } = {}): Promi
   await resetLimits()
   const email = `${TAG}-${++userSeq}@example.test`
   const password = `pw-${TAG}-${userSeq}`
-  await betterAuthServer.api.signUpEmail({ body: { name, email, password } })
-  const { headers } = await betterAuthServer.api.signInEmail({ body: { email, password }, returnHeaders: true })
+  // One step since usernames (§ 9): sign-up needs a username and creates the
+  // session itself, so the cookie comes FROM the sign-up (`returnHeaders`: the
+  // signed set-cookie; the body's `token` is the raw token) and a fixture user
+  // still has exactly one native session.
+  const { headers } = await betterAuthServer.api.signUpEmail({ body: { name, email, password, username: fixtureUsername() } as never, returnHeaders: true })
   const cookie = (headers.get('set-cookie') ?? '').split(';')[0]
   const row = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } })
   if (opts.webPassword) await syncCredential(row.id, await bcrypt.hash(password, 4))
@@ -262,7 +268,10 @@ async function mirrors() {
   section('§ 1 mirror completeness — wines, positions, members, bans, columns')
   const H = await mkUser('Host H')
   await prisma.user.update({ where: { id: H.id }, data: { pro: true } })
-  const s = await createSession({ cookie: H.cookie }, { hideLineup: true, hideLineupMinutesBefore: 30 })
+  // Hide Line-up ON (the columns are pinned below) with its reveal time already
+  // past (starts in 10 min, shown 30 min before): the tasters below rate, and a
+  // taster may not rate a line-up hidden from them (lists plan D4).
+  const s = await createSession({ cookie: H.cookie }, { hideLineup: true, hideLineupMinutesBefore: 30, dateFrom: new Date(Date.now() + 10 * 60_000).toISOString() })
   let row = await liveRow(s.code)
   check('logged-in create writes lifespan + hide-lineup columns', row?.lifespan === 'unlimited' && row.hide_lineup === true && row.hide_lineup_minutes_before === 30, row)
 

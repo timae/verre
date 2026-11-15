@@ -8,17 +8,13 @@ import {
   type WireWine,
   isHostByIdentity,
   wineToWire,
-  buildKickedUserNameLookup,
+  buildAdderLookup,
 } from '@/lib/session'
 import { ensureSessionLive, ratingsLost } from '@/lib/sessionRehydrate'
 import { redactWine } from '@/lib/wineRedaction'
 import { blockPairIds } from '@/lib/userBlock'
-import {
-  batchLoadVisibilities,
-  resolveProfileViewerBulk,
-  viewerFofAuthorSet,
-  canViewProfile,
-} from '@/lib/profileVisibility'
+import { wireIdentityMap, mapIdentityList } from '@/lib/publicIds'
+import { viewableAvatars } from '@/lib/avatarGate'
 
 // The per-viewer session view builders. Extracted from the three session GET
 // route bodies (meta / wines / ratings) so the aggregate /state endpoint can
@@ -38,7 +34,62 @@ import {
 
 export type SessionParticipant = { id: string; displayName: string; imageUrl: string | null }
 
-export type SessionMetaView = SessionMeta & {
+// 🔒 The wire shape of SessionMeta: every user id in it is PUBLIC
+// (public-user-ids § 4). Built only by metaToWire.
+export type WireSessionMeta = Omit<SessionMeta, 'hostUserId'> & { hostUserId: string | null }
+
+// 🔒 metaToWire is an ALLOW-LIST, not a spread: `Record<keyof SessionMeta, …>`
+// fails tsc for a new meta field until it is classified here, so a future id
+// field can't leak by default (the redactWine `...rest` lesson).
+//   'pass'         — no user id in it; emitted as stored
+//   'userId'       — the internal integer → the public id (dropped to null on a miss)
+//   'identity'     — an identity string → its wire form (a miss → absent)
+//   'identityList' — a list of identity strings → wire forms (misses dropped)
+const META_WIRE: Record<keyof SessionMeta, 'pass' | 'userId' | 'identity' | 'identityList'> = {
+  host: 'pass', name: 'pass', createdAt: 'pass', hostUserId: 'userId',
+  hostIdentityId: 'identity', blind: 'pass', blindForEveryone: 'pass',
+  lifespan: 'pass', coHostIds: 'identityList', providerIds: 'identityList',
+  address: 'pass', dateFrom: 'pass', dateTo: 'pass', timezone: 'pass',
+  description: 'pass', link: 'pass', hideLineup: 'pass',
+  hideLineupMinutesBefore: 'pass', showProvenance: 'pass',
+  coverPhotoUrl: 'pass', category: 'pass', promotedAt: 'pass',
+}
+export const META_WIRE_KEYS = Object.keys(META_WIRE) as (keyof SessionMeta)[]
+
+export function metaIdentities(meta: SessionMeta): string[] {
+  const out: string[] = []
+  if (meta.hostUserId != null) out.push(`u:${meta.hostUserId}`)
+  if (meta.hostIdentityId) out.push(meta.hostIdentityId)
+  for (const id of meta.coHostIds ?? []) out.push(id)
+  for (const id of meta.providerIds ?? []) out.push(id)
+  return out
+}
+
+// `wire` must cover metaIdentities(meta) (wireIdentityMap).
+export function metaToWireWith(meta: SessionMeta, wire: Map<string, string>): WireSessionMeta {
+  const out: Record<string, unknown> = {}
+  for (const key of META_WIRE_KEYS) {
+    const v = meta[key]
+    if (v === undefined) continue
+    switch (META_WIRE[key]) {
+      case 'pass': out[key] = v; break
+      case 'userId': {
+        const w = v == null ? undefined : wire.get(`u:${v}`)
+        out[key] = w ? w.slice(2) : null
+        break
+      }
+      case 'identity': { const w = wire.get(v as string); if (w) out[key] = w; break }
+      case 'identityList': out[key] = mapIdentityList(v as string[], wire); break
+    }
+  }
+  return out as WireSessionMeta
+}
+
+export async function metaToWire(meta: SessionMeta): Promise<WireSessionMeta> {
+  return metaToWireWith(meta, await wireIdentityMap(metaIdentities(meta)))
+}
+
+export type SessionMetaView = WireSessionMeta & {
   code: string
   participants: SessionParticipant[]
   ttlSeconds: number
@@ -80,9 +131,11 @@ export async function buildMetaView(
   // Ban count: only sent to host/cohost callers (others have no UI for it).
   // Drives the conditional render of the BannedUsersSection on the client —
   // polled via the 5s session refetch, so cross-host ban events propagate
-  // without a dedicated socket.
+  // without a dedicated socket. Counted after translation (below): a ban whose
+  // `u:<int>` has no users row any more is dropped from the list (listBans), so
+  // the count must drop it too, or the panel shows "(1)" over an empty list.
   const isHost = isHostByIdentity(meta, caller)
-  const banCount = isHost ? await redis.sCard(k.bans(c)) : 0
+  const banMembers = isHost ? await redis.sMembers(k.bans(c)) : []
 
   // Viewer's block-pair set, scoped to identity-ids of participants in this
   // session. Sent to the client so the participants list and Compare screen
@@ -109,58 +162,18 @@ export async function buildMetaView(
     }
   }
 
-  // Brought-by avatar imageUrl resolution. We deliberately DO NOT extend the
-  // "session participation > profile tier" exception that already applies to
-  // display names + ratings: avatars are stronger identity than a
-  // session-chosen display name, and a user's tier choice should hold here.
-  // Block beats tier (handled first via blockPairs); tier gates via the same
-  // batch composition used by /api/feed. Anon viewer (viewerUserId === null)
-  // only sees `public-internet` avatars. Self always sees their own. When
-  // the gate denies, imageUrl stays null and the client falls back to the
-  // initial letter.
-  const imageUrlByUserId = new Map<number, string>()
-  if (participantUserIds.length > 0) {
-    const [visMap, viewerMap, users] = await Promise.all([
-      batchLoadVisibilities(participantUserIds),
-      resolveProfileViewerBulk(participantUserIds, viewerUserId),
-      prisma.user.findMany({
-        where: { id: { in: participantUserIds } },
-        select: { id: true, imageUrl: true },
-      }),
-    ])
-    const fofSet = viewerUserId !== null
-      ? await viewerFofAuthorSet(viewerUserId, participantUserIds, visMap, viewerMap)
-      : new Set<number>()
-    const urlById = new Map<number, string>()
-    for (const u of users) {
-      if (u.imageUrl) urlById.set(u.id, u.imageUrl)
-    }
-    for (const profileId of participantUserIds) {
-      const url = urlById.get(profileId)
-      if (!url) continue
-      // Self: always visible.
-      if (viewerUserId !== null && profileId === viewerUserId) {
-        imageUrlByUserId.set(profileId, url)
-        continue
-      }
-      // Block beats tier — block-pair (either direction) drops the avatar.
-      if (blockPairs && (blockPairs.blockedByMe.has(profileId) || blockPairs.blockingMe.has(profileId))) continue
-      const settings = visMap.get(profileId)
-      if (!settings) continue
-      const base = viewerMap.get(profileId) ?? { id: viewerUserId, followsProfile: false, profileFollowsViewer: false }
-      const viewer = {
-        id: base.id ?? viewerUserId,
-        followsProfile: base.followsProfile,
-        profileFollowsViewer: base.profileFollowsViewer,
-        isFofOfProfile: settings.fofEnabled ? fofSet.has(profileId) : undefined,
-      }
-      if (canViewProfile(settings.visibility, viewer, settings.fofEnabled)) {
-        imageUrlByUserId.set(profileId, url)
-      }
-    }
-  }
+  // Brought-by avatar imageUrl resolution: the shared in-moment avatar rule
+  // (lib/avatarGate.ts), judged for this viewer.
+  const imageUrlByUserId = await viewableAvatars(participantUserIds, viewerUserId, blockPairs)
 
-  const participants = Object.entries(identities).map(([id, displayName]) => {
+  // 🔒 Every identity leaves in its wire form; one whose `u:<int>` has no
+  // users row (a deleted account before the d: migration) is dropped.
+  const wire = await wireIdentityMap([...Object.keys(identities), ...metaIdentities(meta), ...banMembers])
+  const banCount = banMembers.filter(m => wire.has(m)).length
+  const participants: SessionParticipant[] = []
+  for (const [id, displayName] of Object.entries(identities)) {
+    const wid = wire.get(id)
+    if (!wid) continue
     let imageUrl: string | null = null
     if (id.startsWith('u:')) {
       const n = Number(id.slice(2))
@@ -169,18 +182,30 @@ export async function buildMetaView(
         if (url) imageUrl = url
       }
     }
-    return { id, displayName, imageUrl }
-  })
+    participants.push({ id: wid, displayName, imageUrl })
+  }
 
   return {
-    ...meta,
+    ...metaToWireWith(meta, wire),
     code: c,
     participants,
     ttlSeconds,
-    viewerBlocksOut,
-    viewerBlocksIn,
+    viewerBlocksOut: mapIdentityList(viewerBlocksOut, wire),
+    viewerBlocksIn: mapIdentityList(viewerBlocksIn, wire),
     banCount,
   }
+}
+
+// The LIVE Hide Line-up rule: hidden until X minutes before the start, for
+// everyone but the moment's hosts (isHostByIdentity: so an anonymous host of a
+// Redis-only moment keeps pre-rating). Shared by the wines read below and the
+// rate + bookmark POSTs, which decide it inside their contract from `ctx`
+// (lists plan D4: a write must not reach a bottle the read hides). Outside a
+// moment the SQL rule applies instead (lib/outsideView.ts).
+export function lineupHiddenFor(meta: SessionMeta, identity: AuthorizedIdentity, now = Date.now()): boolean {
+  if (!meta.hideLineup || !meta.dateFrom || isHostByIdentity(meta, identity)) return false
+  const revealAt = new Date(meta.dateFrom).getTime() - (meta.hideLineupMinutesBefore || 0) * 60 * 1000
+  return now < revealAt
 }
 
 // `wines` is the lineup the route loaded absent-aware (openSession /
@@ -191,19 +216,18 @@ export async function buildWinesView(
   identity: AuthorizedIdentity,
   identities: Record<string, string>,
   wines: WineMeta[],
+  { echo = false }: { echo?: boolean } = {},
 ): Promise<WireWine[]> {
   const isUserHost = isHostByIdentity(meta, identity)
 
-  // Lineup hidden until X minutes before start
-  if (meta.hideLineup && meta.dateFrom && !isUserHost) {
-    const revealAt = new Date(meta.dateFrom).getTime() - (meta.hideLineupMinutesBefore || 0) * 60 * 1000
-    if (Date.now() < revealAt) return []
-  }
+  // Lineup hidden until X minutes before start (not for a write's own echo:
+  // the writer just wrote that bottle; blind redaction still applies below)
+  if (!echo && lineupHiddenFor(meta, identity)) return []
 
   // Hybrid resolution for `addedByDisplayName`: live identities map →
   // users.name fallback for kicked logged-in adders → snapshot on the wine
   // itself → null.
-  const userNameLookup = await buildKickedUserNameLookup(wines, identities)
+  const adderLookup = await buildAdderLookup(wines, identities)
 
   // Provenance strip (Moment Setup → "Show Who Brought Each Impression").
   // When the host turned attribution OFF, wineToWire nulls the adder name +
@@ -242,15 +266,33 @@ export async function buildWinesView(
         index: i,
         blindForEveryone: !!meta.blindForEveryone,
       })
-      return redacted ?? wineToWire(w, identity.id, identities, userNameLookup, showProvenance)
+      return redacted ?? wineToWire(w, identity.id, identities, adderLookup, showProvenance)
     })
   }
 
-  return wines.map(w => wineToWire(w, identity.id, identities, userNameLookup, showProvenance))
+  return wines.map(w => wineToWire(w, identity.id, identities, adderLookup, showProvenance))
 }
 
-// Ratings for this session, id-keyed:
-//   { "u:42": { displayName: "Sam 🍅", ratings: { "<wineId>": {...} } }, ... }
+// The reply of a line-up write (reorder, reveal / hide, a wine edit, the
+// brought-by reassign; leak-fixes F6): the SAME per-viewer view the line-up
+// read builds, so Blind for All masks the host's own echo too (a no-op edit
+// must not unmask a bottle on demand). Same shape as before: a masked bottle is
+// the "Wine N" stub. (The wine POST's echo stays a plain wineToWire: the adder
+// just typed the bottle.)
+export async function buildWinesEcho(c: string, meta: SessionMeta, identity: AuthorizedIdentity, wines: WineMeta[]): Promise<WireWine[]> {
+  return buildWinesView(c, meta, identity, await redis.hGetAll(k.identities(c)), wines)
+}
+
+// A single bottle's echo, picked out of the view. The hide-line-up gate is
+// skipped for it alone (`echo`): its writer (a host, or a provider editing
+// their own bottle) just wrote it; blind redaction still applies.
+export async function buildWineEcho(c: string, meta: SessionMeta, identity: AuthorizedIdentity, wines: WineMeta[], wineId: string): Promise<WireWine | null> {
+  const view = await buildWinesView(c, meta, identity, await redis.hGetAll(k.identities(c)), wines, { echo: true })
+  return view.find(w => w.id === wineId) ?? null
+}
+
+// Ratings for this session, keyed by WIRE identity:
+//   { "u:<publicId>": { displayName: "Sam 🍅", ratings: { "<wineId>": {...} } }, ... }
 //
 // Block filter is COSMETIC (client-side only) for ratings. The locked design
 // treats in-session participation like participant-list rendering: the data
@@ -304,12 +346,19 @@ export async function buildRatingsView(
     if (!identities[identityId]) return
     if (!result[identityId]) {
       result[identityId] = {
-        displayName: identities[identityId] || identityId,
+        displayName: identities[identityId] || '',
         ratings: {},
       }
     }
     result[identityId].ratings[wineId] = JSON.parse(val)
   })
 
-  return result
+  // 🔒 Keyed by WIRE identity; a rater whose `u:<int>` has no users row is dropped.
+  const wire = await wireIdentityMap(Object.keys(result))
+  const out: RatingsView = {}
+  for (const [id, v] of Object.entries(result)) {
+    const wid = wire.get(id)
+    if (wid) out[wid] = v
+  }
+  return out
 }

@@ -23,6 +23,7 @@ import { liveMeta } from '@/lib/momentFormat';
 import { type VerreCode } from '@/lib/scanCode';
 import { usePushGuard } from '@/lib/usePushGuard';
 import { elevation, radius, useTheme } from '@/theme';
+import { meIdOf } from '@/lib/meId';
 
 // 02s Moments home, to the vero-screens pixel spec (.vbar-root, .sh-live2,
 // .sh-joinblock, .setnav). Page gutter is 22 (the prototype's .vscreen);
@@ -548,7 +549,7 @@ function JoinBlock() {
   const code = normalizeCode(input);
   const insets = useSafeAreaInsets();
   const guard = usePushGuard();
-  const meId = auth?.user.id != null ? Number(auth.user.id) : null;
+  const meId = meIdOf(auth);
 
   // Scan (ruled 2026-11-12): the button while the field is empty; the
   // result is the same as Add Friends' (components/people/scan.tsx) in a
@@ -628,7 +629,9 @@ function JoinBlock() {
             <Button title="Scan" icon="qr" iconSize={20} accessibilityLabel="Scan a QR Code" disabled={launching} onPress={() => void scan()} style={{ paddingHorizontal: 20 }} />
           </View>
         ) : (
-          <Button title="Join" loadingTitle="Joining…" variant="secondary" loading={busy} disabled={!code} onPress={join} style={{ paddingHorizontal: 20, minWidth: scanW || undefined }} />
+          // Filled like Scan as soon as the code is complete (ruled 2026-11-15);
+          // outlined and disabled while it isn't.
+          <Button title="Join" loadingTitle="Joining…" variant={code ? 'primary' : 'secondary'} loading={busy} disabled={!code} onPress={join} style={{ paddingHorizontal: 20, minWidth: scanW || undefined }} />
         )}
       </View>
       {error ? <VText variant="caption" color="critical">{error}</VText> : null}

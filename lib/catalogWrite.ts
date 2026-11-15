@@ -89,11 +89,11 @@ export function denyCatalogRef(reason: string): CatalogValidationError {
 //
 // ⚠️ ANONYMOUS CALLERS ARE KEYED ON IP, NOT ON THEIR IDENTITY ID, and this is
 // the whole reason the helper exists rather than each route spelling the key
-// itself. An `a:<uuid>` anon identity is MINTED FRESH ON EVERY JOIN, and the
-// join endpoint calls `resetRate` on every SUCCESSFUL join — so a caller who
-// holds one valid session code (trivially, one they created themselves) can
-// rejoin in a loop, collect unlimited identities, and get a fresh budget with
-// each one. Keying those on identity bounded nothing: measured, 20 rotated
+// itself. An `a:<uuid>` anon identity is MINTED FRESH ON EVERY JOIN (a
+// successful join charges nothing; guest joins are capped at 60 per address
+// per moment per 10 min) — so a caller who holds one valid session code
+// (trivially, one they created themselves) can rejoin in a loop, collect many
+// identities, and get a fresh budget with each one. Keying those on identity bounded nothing: measured, 20 rotated
 // identities bought 20x the budget. Logged-in callers keep the user-scoped key,
 // which is not rotatable.
 export function catalogLinkRateKey(identityId: string, clientIp: string): string {

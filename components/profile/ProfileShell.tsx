@@ -2,11 +2,13 @@
 import { useRouter } from 'next/navigation'
 import { Avatar } from './Avatar'
 import { FollowButton } from '@/components/social/FollowButton'
+import { UsernameLine } from './UsernameLine'
 
 interface Props {
-  userId: number
+  userId: string
   userName: string
-  myId: number | null
+  username?: string | null
+  myId: string | null
   isFollowing: boolean
   // Optional — passed by the in-modal renderer (UserProfileModal) so a
   // follow toggle invalidates the cached profile payload and the gate
@@ -30,7 +32,7 @@ interface Props {
 // Logged-in viewers see a follow button so they can request access.
 // Logged-out viewers see only name + dummy avatar; they can sign in
 // and try the follow path from there.
-export function ProfileShell({ userId, userName, myId, isFollowing, onFollowToggle }: Props) {
+export function ProfileShell({ userId, userName, username, myId, isFollowing, onFollowToggle }: Props) {
   const router = useRouter()
   const handleToggle = onFollowToggle ?? (() => router.refresh())
   return (
@@ -39,6 +41,7 @@ export function ProfileShell({ userId, userName, myId, isFollowing, onFollowTogg
         <Avatar name={userName} imageUrl={null} size={56} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, marginBottom: 4 }}>{userName}</h1>
+          <UsernameLine username={username} />
           <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>private profile</div>
         </div>
         {myId ? <FollowButton userId={userId} initialFollowing={isFollowing} onToggle={handleToggle} /> : null}

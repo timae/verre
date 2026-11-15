@@ -10,19 +10,20 @@
 // concurrent replaces serialize on the lock and each reclaims exactly what it
 // overwrote. Account deletion captures both columns under the same lock
 // (lib/accountDelete.ts), so a replace blocked on it finds no row and reclaims
-// its own upload. Keys carry a random suffix: `Date.now()` alone collides.
+// its own upload. Keys are lib/imageKeys.ts: a kind marker and a random part,
+// nothing that points to the person (D2).
 //
 // A TILE column holds either the tile's own upload or a REFERENCE to a photo
 // your content shows (lib/profileTiles.ts): only an own upload is ever
 // reclaimed, whether a replace, a profile PATCH (another pin or null) or the
 // account deletion takes it off the row.
 
-import { randomBytes } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from '@/lib/prisma'
 import { uploadImage } from '@/lib/s3'
-import { isOwnTileUpload, tileUploadKeyPrefix, type TileKey } from '@/lib/profileTiles'
+import { isOwnTile, type TileKey } from '@/lib/profileTiles'
+import { imageKey } from '@/lib/imageKeys'
 
 // Inlined S3 reclaim, the house workaround (see lib/accountDelete.ts).
 const _S3_ENDPOINT = process.env.S3_ENDPOINT
@@ -54,22 +55,19 @@ async function reclaimImage(url: string | null | undefined) {
 export type ProfileImageKind = 'avatar' | 'cover'
 
 type Field = 'imageUrl' | 'coverPhotoUrl' | 'tileImpressionsUrl' | 'tileMomentsUrl' | 'tileCravingsUrl'
-type Column = { sql: Prisma.Sql; field: Field }
+type OwnField = 'tileImpressionsOwnUrl' | 'tileMomentsOwnUrl' | 'tileCravingsOwnUrl'
+// `own` (tiles only): the tile_*_own_url column, written in the SAME update as
+// the URL and read under the SAME lock (lib/profileTiles.ts isOwnTile).
+type Column = { sql: Prisma.Sql; field: Field; own?: { sql: Prisma.Sql; field: OwnField } }
 
 const COLUMN: Record<ProfileImageKind, Column> = {
   avatar: { sql: Prisma.raw('image_url'), field: 'imageUrl' },
   cover: { sql: Prisma.raw('cover_photo_url'), field: 'coverPhotoUrl' },
 }
 export const TILE_COLUMN: Record<TileKey, Column> = {
-  impressions: { sql: Prisma.raw('tile_impressions_url'), field: 'tileImpressionsUrl' },
-  moments: { sql: Prisma.raw('tile_moments_url'), field: 'tileMomentsUrl' },
-  cravings: { sql: Prisma.raw('tile_cravings_url'), field: 'tileCravingsUrl' },
-}
-
-const unique = () => `${Date.now()}_${randomBytes(4).toString('hex')}`
-// All under the proven public-read `avatars/` prefix.
-function keyBase(kind: ProfileImageKind, userId: number): string {
-  return kind === 'avatar' ? `avatars/u_${userId}_${unique()}` : `avatars/cover_u_${userId}_${unique()}`
+  impressions: { sql: Prisma.raw('tile_impressions_url'), field: 'tileImpressionsUrl', own: { sql: Prisma.raw('tile_impressions_own_url'), field: 'tileImpressionsOwnUrl' } },
+  moments: { sql: Prisma.raw('tile_moments_url'), field: 'tileMomentsUrl', own: { sql: Prisma.raw('tile_moments_own_url'), field: 'tileMomentsOwnUrl' } },
+  cravings: { sql: Prisma.raw('tile_cravings_url'), field: 'tileCravingsUrl', own: { sql: Prisma.raw('tile_cravings_own_url'), field: 'tileCravingsOwnUrl' } },
 }
 
 export type ReplaceResult =
@@ -83,20 +81,20 @@ export async function replaceProfileImage(
   kind: ProfileImageKind,
   dataUrl: string | null,
 ): Promise<ReplaceResult> {
-  return replaceColumn(userId, COLUMN[kind], dataUrl === null ? null : { key: keyBase(kind, userId), dataUrl }, () => true)
+  return replaceColumn(userId, COLUMN[kind], dataUrl === null ? null : { key: imageKey(kind), dataUrl }, () => true)
 }
 
 // A tile's own photo (POST /api/me/profile/tiles/<tile>): pinned as it
 // uploads. The prior is reclaimed only when it was the tile's own upload too.
 export async function replaceTilePhoto(userId: number, tile: TileKey, dataUrl: string): Promise<ReplaceResult> {
-  return replaceColumn(userId, TILE_COLUMN[tile], { key: `${tileUploadKeyPrefix(tile, userId)}${unique()}`, dataUrl }, prior => isOwnTileUpload(prior, tile, userId))
+  return replaceColumn(userId, TILE_COLUMN[tile], { key: imageKey(`tile_${tile}`), dataUrl }, (prior, priorOwn) => isOwnTile(prior, priorOwn, tile, userId))
 }
 
 async function replaceColumn(
   userId: number,
   col: Column,
   upload: { key: string; dataUrl: string } | null,
-  owns: (prior: string) => boolean,
+  owns: (prior: string, priorOwn: string | null) => boolean,
 ): Promise<ReplaceResult> {
   let fresh: string | null = null
   if (upload !== null) {
@@ -104,15 +102,18 @@ async function replaceColumn(
     if (!fresh) return { ok: false, reason: 'upload' }
   }
   let prior: string | null = null
+  let priorOwn: string | null = null
   let updated: boolean
   try {
     updated = await prisma.$transaction(async tx => {
-      const rows = await tx.$queryRaw<{ url: string | null }[]>`
-        SELECT ${col.sql} AS url FROM users WHERE id = ${userId} FOR UPDATE`
+      const rows = await tx.$queryRaw<{ url: string | null; own: string | null }[]>`
+        SELECT ${col.sql} AS url, ${col.own ? col.own.sql : Prisma.sql`NULL::text`} AS own FROM users WHERE id = ${userId} FOR UPDATE`
       if (rows.length === 0) return false
       prior = rows[0].url
+      priorOwn = rows[0].own
       if (prior === fresh) return true
-      await tx.user.update({ where: { id: userId }, data: { [col.field]: fresh } })
+      // A tile's own upload: url and own_url move together (own ⇔ equal).
+      await tx.user.update({ where: { id: userId }, data: { [col.field]: fresh, ...(col.own ? { [col.own.field]: fresh } : {}) } })
       return true
     })
   } catch (err) {
@@ -123,7 +124,7 @@ async function replaceColumn(
     await reclaimImage(fresh)
     return { ok: false, reason: 'gone' }
   }
-  if (prior && prior !== fresh && owns(prior)) await reclaimImage(prior)
+  if (prior && prior !== fresh && owns(prior, priorOwn)) await reclaimImage(prior)
   return { ok: true, url: fresh }
 }
 
@@ -137,15 +138,20 @@ export type ProfileFields = { name?: string; bio?: string | null } & Partial<Rec
 export async function writeProfileFields(userId: number, data: ProfileFields, tiles: readonly TileKey[]): Promise<boolean> {
   const owned: string[] = []
   const found = await prisma.$transaction(async tx => {
-    const rows = await tx.$queryRaw<Record<TileKey, string | null>[]>`
-      SELECT tile_impressions_url AS impressions, tile_moments_url AS moments, tile_cravings_url AS cravings
+    const rows = await tx.$queryRaw<(Record<TileKey, string | null> & Record<`${TileKey}_own`, string | null>)[]>`
+      SELECT tile_impressions_url AS impressions, tile_moments_url AS moments, tile_cravings_url AS cravings,
+             tile_impressions_own_url AS impressions_own, tile_moments_own_url AS moments_own, tile_cravings_own_url AS cravings_own
       FROM users WHERE id = ${userId} FOR UPDATE`
     if (rows.length === 0) return false
+    // A pin written here is a REFERENCE (it passed the pool check), never an
+    // own upload: own_url goes with it, so the old own photo stops being own.
+    const ownCleared: Partial<Record<OwnField, null>> = {}
     for (const t of tiles) {
       const prior = rows[0][t]
-      if (isOwnTileUpload(prior, t, userId) && prior !== data[TILE_COLUMN[t].field as keyof ProfileFields]) owned.push(prior)
+      if (isOwnTile(prior, rows[0][`${t}_own`], t, userId) && prior !== data[TILE_COLUMN[t].field as keyof ProfileFields]) owned.push(prior)
+      ownCleared[TILE_COLUMN[t].own!.field] = null
     }
-    await tx.user.update({ where: { id: userId }, data })
+    await tx.user.update({ where: { id: userId }, data: { ...data, ...ownCleared } })
     return true
   })
   for (const u of owned) await reclaimImage(u)

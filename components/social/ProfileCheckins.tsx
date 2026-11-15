@@ -11,7 +11,7 @@ type Checkin = {
   venueName?: string|null; city?: string|null; country?: string|null
   flavors?: Record<string, number>|null; likeCount?: number; liked?: boolean
   aromas?: { a: string; m: string | null; p?: boolean }[]|null
-  createdAt?: string|Date|null; tags?: { id: number; name: string }[]
+  createdAt?: string|Date|null; tags?: { id: string; name: string }[]
 }
 
 // Re-exports the canonical session-feed payload, plus the optional
@@ -23,11 +23,11 @@ export type SessionPost = SessionFeedPayload & { createdAt?: string | Date | nul
 interface Props {
   initialCheckins: Checkin[]
   initialSessionPosts?: SessionPost[]
-  profileUserId: number
+  profileUserId: string
   profileUserName: string
   profileUserXp?: number
   profileUserImageUrl?: string | null
-  myId: number | null
+  myId: string | null
   viewerFollowsProfile?: boolean
 }
 

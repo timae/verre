@@ -4,11 +4,15 @@ import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { UserMenu } from '@/components/me/UserMenu'
 import { MeNav, MeSidebar } from '@/components/me/MeNav'
+import { clientSession } from '@/lib/clientSession'
 
 export default async function MeLayout({ children }: { children: React.ReactNode }) {
   const session = await auth()
   if (!session?.user) redirect('/login')
-  const myId = Number(session.user.id)
+  // 🔒 The PUBLIC id: client components build /u/ links and API URLs from it.
+  const me = clientSession(session)?.user
+  if (!me) redirect('/login')
+  const myId = me.id
 
   return (
     <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'var(--bg)'}}>

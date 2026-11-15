@@ -14,6 +14,22 @@ export {
   type CodeValidationResult,
 } from './sessionCode'
 
+export { PUBLIC_USER_ID_LENGTH, isPublicUserId, normalizePublicUserId, profilePath } from './publicUserId'
+export {
+  USERNAME_MIN,
+  USERNAME_MAX,
+  USERNAME_STAFF_WORDS,
+  RESERVED_USERNAMES,
+  isUsernameFormat,
+  isReservedUsername,
+  normalizeUsername,
+  usernameFromPath,
+  usernameQuery,
+  checkUsername,
+  validateUsername,
+  profileSharePath,
+  type UsernameCheck,
+} from './username'
 export { validateScore } from './checkinValidation'
 export { BLIND_FEED_REVEAL_NOTE, MOMENT_DEFAULT_SPAN_MS, momentIsOver } from './blindReveal'
 export {
@@ -85,6 +101,8 @@ export {
   resolveAxes,
   perRatingAxes,
   fillFlavourZeros,
+  stylesWithAxis,
+  WINE_STYLES,
   type StructureAxis,
   type WineStyle,
 } from './structureAxes'
@@ -118,6 +136,7 @@ export {
   type AromaTierPath,
 } from './aroma/taxonomy'
 export { searchAromas, type AromaSearchResult } from './aroma/search'
+export { aromaFilterMatch, aromaPickMatches, aromaSubtree, type AromaFilterMatch } from './aroma/filter'
 export {
   aggregateAromaRollup,
   type AromaRollup,

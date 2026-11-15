@@ -5,25 +5,27 @@ import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Keyboard, Platform, Pressable, View, useWindowDimensions, type TextInputInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { normalizeBio, validateDisplayName } from '@verre/core';
+import { checkUsername, normalizeBio, validateDisplayName } from '@verre/core';
 import { FeedList, type FeedScrollHandle } from '@/components/feed/FeedList';
 import { pickPhotoOrRemove } from '@/components/moments/momentForm';
 import { AddFriendsSheet } from '@/components/people/AddFriendsSheet';
-import { EditBar } from '@/components/profile/ProfileEditParts';
-import { EmptyPosts, FollowButton, NoticeBox, ProfileHeader, ProfileIdentity, firstName, type ProfileEdit } from '@/components/profile/ProfileHeader';
+import { EditBar, editTouchHandlers, markNoShake, type EditBarLine } from '@/components/ui/InPlaceEdit';
+import { EmptyPosts, FollowButton, NoticeBox, ProfileHeader, ProfileIdentity, firstName, type EditField, type ProfileEdit } from '@/components/profile/ProfileHeader';
 import { TileCoverSheet } from '@/components/profile/TileCoverSheet';
 import { AnchorButton, AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { CenteredMessage, ErrorState } from '@/components/ui/ConnectionState';
 import { Icon } from '@/components/ui/Icon';
+import { RESERVED_TEXT, useUsernameCheck } from '@/components/ui/UsernameField';
 import { BarTitle, VBar, useBarTitleProgress } from '@/components/VBar';
 import {
   applyOwnProfileChange, freshOwnName, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover, uploadTilePhoto, type TileKey,
 } from '@/lib/api/profile';
 import type { PeopleTab } from '@/lib/api/people';
 import { type CheckinVisibility } from '@/lib/api/settings';
-import { profileQueryOptions } from '@/lib/api/users';
+import { profileKey, profileQueryOptions } from '@/lib/api/users';
+import { USERNAME_KEY, getUsernameState } from '@/lib/api/username';
 import { authClient } from '@/lib/authClient';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { errorText, sentence } from '@/lib/errorCopy';
@@ -35,6 +37,10 @@ import { GLASS_FILL, GUTTER, heroBarHeight, usePhoneTokens } from '@/lib/layout'
 import { feedHref, settingsHref, useSessionTab } from '@/lib/sessionStack';
 import { popSheet, pushSheet } from '@/lib/sheetVisibility';
 import { useTheme } from '@/theme';
+import { useMeId } from '@/lib/meId';
+import { DATE_LOCALE } from '@/lib/locale';
+import { usernameBarLine, usernameQuotaLine } from '@/lib/usernameCopy';
+import { saveUsername } from '@/lib/usernameSave';
 
 // A person's profile (handoff 04 "You"): the You tab's root for yourself
 // (`root`), and a screen pushed on the Feed / You stacks for anyone (including
@@ -52,7 +58,7 @@ import { useTheme } from '@/theme';
 // moment cover bar's look). Your own profile is editable in place (R5g2–R5g4):
 // this screen owns the edit session; ProfileHeader renders it.
 
-export function ProfileScreen({ userId, root }: { userId: number; root?: boolean }) {
+export function ProfileScreen({ userId, root }: { userId: string; root?: boolean }) {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
   const router = useRouter();
@@ -62,11 +68,20 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   // the Settings / Edit Profile pushes follow it (lib/sessionStack.ts).
   const mount = useSessionTab();
   const queryClient = useQueryClient();
-  const authSession = authClient.useSession().data;
-  const meId = authSession?.user.id;
-  const own = meId != null && Number(meId) === userId;
+  const session = authClient.useSession();
+  const authSession = session.data;
+  const meId = useMeId();
+  const own = meId != null && meId === userId;
 
   const profileQ = useQuery(profileQueryOptions(userId));
+  // A write inside a moment only MARKS your header stale
+  // (`markProfileHeaderStale`): it refetches here, once the profile is in front.
+  useFocusEffect(
+    useCallback(() => {
+      const state = queryClient.getQueryState(profileKey(userId));
+      if (state?.isInvalidated && state.fetchStatus === 'idle') void queryClient.refetchQueries({ queryKey: profileKey(userId), exact: true });
+    }, [queryClient, userId]),
+  );
   const profile = profileQ.data;
   const ok = profile?.state === 'ok';
   const hero = ok && !!profile.coverPhotoUrl;
@@ -135,7 +150,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   // a time across the app (`usePersonBusy`), so a mute can't race a follow.
   // The Settings lists (Blocked / Muted) are invalidated there too.
   const busy = usePersonBusy(userId);
-  const act = (op: RelOp) => void relate(queryClient, userId, op, meId != null ? Number(meId) : null);
+  const act = (op: RelOp) => void relate(queryClient, userId, op, meId);
   // D7: unfollow asks first ("Remove Mara as Friend?" when you are friends);
   // following acts immediately.
   const askUnfollow = (p: { name: string; followsYou: boolean }) => confirmUnfollow(p, () => act('unfollow'));
@@ -161,32 +176,72 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   // must keep its history), double taps swallowed.
   const guard = usePushGuard();
   const openPeople = (tab: PeopleTab, known?: boolean) =>
-    guard(() => router.push(feedHref(mount, 'people', { id: String(userId), tab, known: known ? '1' : undefined })));
+    guard(() => router.push(feedHref(mount, 'people', { id: userId, tab, known: known ? '1' : undefined })));
+  // A tile → its list (the lists step), the same plain push.
+  const openList = (key: TileKey) => guard(() => router.push(feedHref(mount, key, { id: userId })));
+  // The status line's placeholder pages (2026-11-14): Status yours only.
+  const openStatus = () => guard(() => router.push(feedHref(mount, 'status')));
+  const openPalate = () => guard(() => router.push(feedHref(mount, 'palate', { id: userId })));
   const [addOpen, setAddOpen] = useState(false);
 
   // ── Own profile: the in-place edit session (R5g3) ──────────────────────────
-  // Long-press the name or the bio: BOTH become inputs, the pressed one
-  // focused; the rest of the header dims and the posts go inert. Done = ONE
-  // PATCH of the changed fields (pre-checked with the server's own rules);
-  // errors alert and keep you editing. Losing focus (a push, a tab switch —
-  // tab screens stay mounted) cancels.
-  const [draft, setDraft] = useState<{ name: string; bio: string } | null>(null);
-  const [focus, setFocus] = useState<'name' | 'bio' | null>(null);
-  const [focusedField, setFocusedField] = useState<'name' | 'bio' | null>(null);
+  // Long-press the name, the username or the bio: ALL become inputs, the
+  // pressed one focused; the rest of the header dims and the posts go inert.
+  // Done = the username first (its own request, the one someone else can
+  // refuse: taken), then ONE PATCH of the changed name / bio (each pre-checked
+  // with the server's own rules); errors keep you editing (the username's in
+  // the edit bar, the rest alert). Losing focus (a push, a tab switch — tab
+  // screens stay mounted) cancels.
+  const [draft, setDraft] = useState<{ name: string; username: string; bio: string } | null>(null);
+  const [focus, setFocus] = useState<EditField | null>(null);
+  const [focusedField, setFocusedField] = useState<EditField | null>(null);
   const [saving, setSaving] = useState(false);
+  // While Done's requests are out the fields take no typing: the save sent a
+  // snapshot, and its success ends the edit (a later keystroke would be lost;
+  // the moment's edit does the same, Codex review 2026-11-14).
+  const savingRef = useRef(false);
+  savingRef.current = saving;
   const [imageBusy, setImageBusy] = useState<'avatar' | 'cover' | null>(null);
   const [tileSheet, setTileSheet] = useState<TileKey | null>(null);
   const nameRef = useRef<TextInputInstance | null>(null);
+  const usernameRef = useRef<TextInputInstance | null>(null);
   const bioRef = useRef<TextInputInstance | null>(null);
+  const fieldRef = (f: EditField) => (f === 'name' ? nameRef : f === 'username' ? usernameRef : bioRef);
   const scrollHandle = useRef<FeedScrollHandle | null>(null);
   const editing = draft != null;
+  const [shake, setShake] = useState(0);
+
+  // The username in place (ruled 2026-11-14): Edit Profile's rules, its
+  // feedback in the edit bar. The limit (5 changes per 90 days) is read up
+  // front, so a spent one is known before the edit starts: the handle then
+  // stays read-only and a tap on it shows the date (`lockedShown`).
+  // `usernameError` = a refusal of the text now typed (the pre-check or the
+  // server's answer); it blocks Done until the text changes.
+  const currentUsername = profile?.state === 'ok' ? profile.username : null;
+  const usernameQ = useQuery({ queryKey: USERNAME_KEY, queryFn: getUsernameState, enabled: own && ok && currentUsername != null, staleTime: 60_000 });
+  const quota = usernameQ.data ? usernameQuotaLine(usernameQ.data, DATE_LOCALE) : { locked: false, text: null };
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [lockedShown, setLockedShown] = useState(false);
+  const usernameDraft = draft?.username ?? '';
+  const usernameChanged = editing && usernameDraft !== (currentUsername ?? '');
+  const usernameCheck = useUsernameCheck(editing && !quota.locked ? usernameDraft : '', { availability: true, current: currentUsername });
 
   const cancelEdit = useCallback(() => {
     Keyboard.dismiss();
     setDraft(null);
     setFocus(null);
     setFocusedField(null);
+    setUsernameError(null);
+    setLockedShown(false);
   }, []);
+  // The limit can turn out spent mid-edit (a slow read, the save's 409): a
+  // read-only handle can't hold a changed draft, or every Done would re-send
+  // the refused change.
+  useEffect(() => {
+    if (!quota.locked) return;
+    setDraft((d) => (d && d.username !== (currentUsername ?? '') ? { ...d, username: currentUsername ?? '' } : d));
+    setUsernameError(null);
+  }, [quota.locked, currentUsername]);
   // The pill stays hidden for the WHOLE session, not just while the keyboard
   // is up (the tabs layout shows it again on keyboard hide): one ref-counted
   // hold, released in this one cleanup (Cancel, Done, blur, unmount).
@@ -206,18 +261,35 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     ),
   );
 
-  const startEdit = (field: 'name' | 'bio') => {
+  const startEdit = (field: EditField) => {
     if (profile?.state !== 'ok' || imageBusy) return;
+    // No changes left: the handle can't take the focus, the bar says when.
+    const locked = field === 'username' && quota.locked;
+    if (locked) setLockedShown(true);
     if (draft) {
-      (field === 'name' ? nameRef : bioRef).current?.focus();
+      if (!locked) fieldRef(field).current?.focus();
       return;
     }
-    setDraft({ name: profile.name, bio: profile.bio ?? '' });
-    setFocus(field);
+    setDraft({ name: profile.name, username: profile.username ?? '', bio: profile.bio ?? '' });
+    setFocus(locked ? null : field);
   };
 
+  // A username the bar already refuses (a broken rule, taken): Done is greyed.
+  const usernameBlocked = usernameChanged && (usernameError != null || usernameCheck.kind === 'invalid' || usernameCheck.kind === 'taken');
+  // What the bar says about the username (EditBar `line`; the order lives in
+  // lib/usernameCopy `usernameBarLine`, pinned in username-ui-units.ts).
+  const editLine: EditBarLine | null = usernameBarLine({
+    active: editing && (focusedField === 'username' || usernameChanged || lockedShown),
+    refusal: usernameError ?? (usernameCheck.kind === 'invalid' || usernameCheck.kind === 'taken' ? usernameCheck.message : null),
+    checking: usernameCheck.kind === 'pending' || usernameCheck.kind === 'checking',
+    available: usernameCheck.kind === 'available',
+    changed: usernameChanged,
+    locked: quota.locked,
+    quotaText: quota.text,
+  });
+
   const doneEdit = async () => {
-    if (!draft || saving || profile?.state !== 'ok') return;
+    if (!draft || saving || profile?.state !== 'ok' || usernameBlocked) return;
     // The name is validated (and sent) only when it CHANGED: an untouched
     // grandfathered name (from before today's rules) must not block a bio save.
     let name = profile.name;
@@ -236,25 +308,68 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
       Alert.alert('Check Your Bio', sentence((e as Error).message));
       return;
     }
+    // Like the name: checked (and sent) only when it CHANGED; the refusal
+    // goes to the bar (and greys Done until the text changes).
+    let nextUsername: string | null = null;
+    if (!quota.locked && draft.username !== (profile.username ?? '')) {
+      const handle = checkUsername(draft.username);
+      if (!handle.ok) {
+        setUsernameError(handle.reason === 'reserved' ? RESERVED_TEXT : sentence(handle.message));
+        return;
+      }
+      if (handle.username !== profile.username) nextUsername = handle.username;
+    }
     const body: { name?: string; bio?: string | null } = {};
     if (name !== profile.name) body.name = name;
     if (bio !== (profile.bio ?? null)) body.bio = bio;
-    if (Object.keys(body).length === 0) {
+    if (nextUsername == null && Object.keys(body).length === 0) {
       cancelEdit();
       return;
     }
+    savingRef.current = true;
     setSaving(true);
     const epoch = viewerCacheEpoch();
+    let usernameSaved = false;
     try {
-      const r = await patchProfile(body);
-      await applyOwnProfileChange(queryClient, userId, {
-        ...(r.name !== undefined ? { name: r.name } : {}),
-        ...(r.bio !== undefined ? { bio: r.bio } : {}),
-      }, epoch);
+      if (nextUsername != null) {
+        // lib/usernameSave.ts (Edit Profile's too); `null` = the viewer changed.
+        const r = await saveUsername(queryClient, userId, nextUsername, { epoch, current: profile.username, locale: DATE_LOCALE });
+        if (r == null) return;
+        if (!r.ok) {
+          if (r.kind === 'field') setUsernameError(r.message);
+          // None left after all: the effect above drops the draft, the bar
+          // names the date; name and bio stay in the edit to save.
+          else if (r.kind === 'locked') setLockedShown(true);
+          else Alert.alert('Couldn’t Save', r.message);
+          return;
+        }
+        usernameSaved = true;
+        // The saved form (trimmed): the draft must not stay "changed" against
+        // it if the PATCH below fails (review 2026-11-14).
+        const saved = nextUsername;
+        setDraft((d) => (d ? { ...d, username: saved } : d));
+        // Better Auth's session carries the username too.
+        void session.refetch();
+      }
+      // 🔒 The viewer the save started for (lib/query.tsx epoch): after a
+      // sign-out (and another sign-in) during the username step, the PATCH
+      // would carry the NEW account's cookie (review 2026-11-14; Edit Profile
+      // checks between every step the same way).
+      if (viewerCacheEpoch() !== epoch) return;
+      if (Object.keys(body).length > 0) {
+        const r = await patchProfile(body);
+        await applyOwnProfileChange(queryClient, userId, {
+          ...(r.name !== undefined ? { name: r.name } : {}),
+          ...(r.bio !== undefined ? { bio: r.bio } : {}),
+        }, epoch);
+      }
       cancelEdit();
     } catch (e) {
-      Alert.alert('Couldn’t Save', errorText(e));
+      if (viewerCacheEpoch() !== epoch) return;
+      // The username went through on its own: say so (it is no longer a change).
+      Alert.alert('Couldn’t Save', usernameSaved ? `Your new username is saved. ${errorText(e)}` : errorText(e));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -279,7 +394,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   const bioLen = draft?.bio.length ?? 0;
   useEffect(() => {
     if (!editing || !focusedField || kbH === 0) return;
-    const input = (focusedField === 'name' ? nameRef : bioRef).current;
+    const input = fieldRef(focusedField).current;
     const t = setTimeout(() => {
       input?.measureInWindow((_x, y, _w, h) => {
         const visibleBottom = windowH - kbH - editBarH - 12;
@@ -320,7 +435,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
 
   // R5g2: a tile's cover. Throws to keep the sheet open (after alerting).
   const pinTilePhoto = useCallback(
-    async (tile: TileKey, url: string) => {
+    async (tile: TileKey, url: string | null) => {
       const epoch = viewerCacheEpoch();
       try {
         const r = await patchProfile({ tiles: { [tile]: url } });
@@ -355,12 +470,23 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
       ? {
           draft,
           focus,
-          setDraft: (field, value) => setDraft((d) => (d ? { ...d, [field]: value } : d)),
+          setDraft: (field, value) => {
+            if (savingRef.current) return;
+            setDraft((d) => (d ? { ...d, [field]: value } : d));
+            if (field === 'username') setUsernameError(null);
+          },
           start: startEdit,
           done: doneEdit,
-          onFieldFocus: setFocusedField,
+          onFieldFocus: (field) => {
+            setFocusedField(field);
+            if (field !== 'username') setLockedShown(false);
+          },
           nameRef,
+          usernameRef,
           bioRef,
+          usernameLocked: quota.locked,
+          onLockedUsername: () => setLockedShown(true),
+          doneBlocked: usernameBlocked,
           busy: imageBusy,
           onPhoto: () => changeImage('avatar'),
           onCover: () => changeImage('cover'),
@@ -386,9 +512,9 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   const shareOwn = () =>
     afterClose(async () => {
       const name = ok ? profile.name : await freshOwnName(queryClient, authSession?.user.name);
-      await shareProfile(name ?? '', userId);
+      await shareProfile(name ?? '', { id: userId, username: ok ? profile.username : authSession?.user.username });
     });
-  const shareTheirs = (name: string) => afterClose(() => void shareProfile(name, userId));
+  const shareTheirs = (name: string, username: string | null) => afterClose(() => void shareProfile(name, { id: userId, username }));
   // Your own ⋯ never depends on the profile query: Settings holds the only
   // signed-in Sign Out, so it must survive a failed or slow profile load.
   const showMenuButton = own || (profile && profile.state !== 'gone');
@@ -424,7 +550,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     </>
   ) : !profile ? null : profile.state === 'ok' ? (
     <>
-      <MenuItem icon="share" label="Share Profile" onPress={() => shareTheirs(profile.name)} />
+      <MenuItem icon="share" label="Share Profile" onPress={() => shareTheirs(profile.name, profile.username)} />
       <MenuItem icon="glass" label="Invite to a Moment" disabled />
       <MenuSeparator />
       <MenuItem
@@ -457,7 +583,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     </>
   ) : profile.state === 'shell' ? (
     <>
-      <MenuItem icon="share" label="Share Profile" onPress={() => shareTheirs(profile.name)} />
+      <MenuItem icon="share" label="Share Profile" onPress={() => shareTheirs(profile.name, profile.username)} />
       <MenuSeparator />
       {profile.isFollowing ? (
         <MenuItem
@@ -511,7 +637,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     // status, numbers or posts. Unblock right there.
     body = (
       <View style={{ paddingHorizontal: GUTTER, paddingTop: 4 }}>
-        <ProfileIdentity name={profile.name} imageUrl={null} />
+        <ProfileIdentity name={profile.name} username={profile.username} imageUrl={null} />
         <NoticeBox
           text={`You blocked ${firstName(profile.name)}.`}
           action={<Button size="sm" variant="secondary" title="Unblock" loading={busy} onPress={unblock} />}
@@ -523,7 +649,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     // one plain sentence (ruled 2026-11-12; the shell never says the tier).
     body = (
       <View style={{ paddingHorizontal: GUTTER, paddingTop: 4 }}>
-        <ProfileIdentity name={profile.name} imageUrl={null} />
+        <ProfileIdentity name={profile.name} username={profile.username} imageUrl={null} />
         <NoticeBox
           text={`${firstName(profile.name)}’s profile is private.`}
           action={
@@ -558,6 +684,9 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
             edit={edit}
             pulled={pulled}
             onPeople={openPeople}
+            onTile={openList}
+            onStatus={openStatus}
+            onPalate={openPalate}
           />
         }
         empty={
@@ -581,17 +710,34 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     // A SCREEN-LOCAL provider for the tile sheet: a root provider's gorhom
     // host gets zero height across the Stack boundary (the line-up's note).
     <BottomSheetModalProvider>
-      <View style={{ flex: 1, paddingTop: hero ? 0 : insets.top }}>
+      <View
+        style={{ flex: 1, paddingTop: hero ? 0 : insets.top }}
+        // While you edit, a tap outside the fields, the edit bar and Back shakes the bar (it is still open).
+        {...editTouchHandlers(() => {
+          if (editingRef.current) setShake((n) => n + 1);
+        })}
+      >
         <Stack.Screen options={{ statusBarStyle }} />
         <StatusBar style={statusBarStyle} />
         {hero ? null : (
           <View style={{ paddingHorizontal: GUTTER }}>
             <VBar
               back={!root}
+              backCapture={markNoShake}
               title={ok ? profile.name : ''}
               titleShown={ok && titled}
               titleLeading={barAvatar}
-              right={showMenuButton ? <AnchorButton onOpen={setMenu} accessibilityLabel="Profile Options" /> : null}
+              right={showMenuButton ? (
+                // Inert and dimmed while you edit, like the tiles (a tap there shakes the edit bar).
+                <View
+                  style={{ opacity: editing ? 0.35 : 1 }}
+                  pointerEvents={editing ? 'none' : 'auto'}
+                  accessibilityElementsHidden={editing}
+                  importantForAccessibility={editing ? 'no-hide-descendants' : 'auto'}
+                >
+                  <AnchorButton onOpen={setMenu} accessibilityLabel="Profile Options" />
+                </View>
+              ) : null}
             />
           </View>
         )}
@@ -604,9 +750,10 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
             back={!root}
             onBack={() => router.back()}
             onMenu={showMenuButton ? setMenu : undefined}
+            menuInert={editing}
           />
         ) : null}
-        {editing ? <EditBar busy={saving} onCancel={cancelEdit} onDone={doneEdit} onHeight={setEditBarH} /> : null}
+        {editing ? <EditBar busy={saving} onCancel={cancelEdit} onDone={doneEdit} onHeight={setEditBarH} shake={shake} line={editLine} doneDisabled={usernameBlocked} /> : null}
         <AnchoredMenu anchor={menu} onClose={close} onClosed={onMenuClosed} right={16} minWidth={220}>
           {menuItems}
         </AnchoredMenu>
@@ -615,6 +762,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
           <TileCoverSheet
             tile={tileSheet}
             shown={tileSheet ? profile.tiles[tileSheet]?.imageUrl ?? null : null}
+            pinned={tileSheet ? profile.tiles[tileSheet]?.pinned === true : false}
             onClose={() => setTileSheet(null)}
             onUse={pinTilePhoto}
             onUpload={uploadTileCover}
@@ -630,7 +778,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
 // photo + name), both off ONE useBarTitleProgress value, like the moment's
 // HeroTopBar. Height = heroBarHeight (lib/layout.ts).
 function ProfileHeroBar({
-  title, leading, collapsed, back, onBack, onMenu,
+  title, leading, collapsed, back, onBack, onMenu, menuInert,
 }: {
   title: string;
   leading?: React.ReactNode;
@@ -638,6 +786,8 @@ function ProfileHeroBar({
   back: boolean;
   onBack: () => void;
   onMenu?: (anchor: MenuAnchor) => void;
+  // While you edit: dimmed + inert (a tap there shakes the edit bar).
+  menuInert?: boolean;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -664,6 +814,7 @@ function ProfileHeroBar({
               accessibilityRole="button"
               accessibilityLabel="Back"
               onPress={onBack}
+              onStartShouldSetResponderCapture={markNoShake}
               hitSlop={8}
               style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}
             >
@@ -675,7 +826,12 @@ function ProfileHeroBar({
               GUTTER − the bar's 14 padding. */}
           <BarTitle title={title} leading={leading} progress={anim} inset={back ? 10 : GUTTER - 14} hidden={!collapsed} />
           {onMenu ? (
-            <View style={circle}>
+            <View
+              style={[circle, menuInert ? { opacity: 0.35 } : null]}
+              pointerEvents={menuInert ? 'none' : 'auto'}
+              accessibilityElementsHidden={menuInert}
+              importantForAccessibility={menuInert ? 'no-hide-descendants' : 'auto'}
+            >
               <AnchorButton onOpen={onMenu} accessibilityLabel="Profile Options" size={controlSize}>
                 <Icon name="more" size={iconSize} color={iconColor} />
               </AnchorButton>

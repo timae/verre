@@ -11,8 +11,11 @@ import { throwApiError } from './sessions';
 // `friendsInCommon` are null on your own row, `friendsInCommon` also when
 // their visibility hides their profile from you.
 export type PersonRow = {
-  id: number;
+  // The PUBLIC id (opaque string).
+  id: string;
   name: string;
+  // `@name`; null = not chosen yet. Shown on search rows, never on a People list (ruled 2026-11-14).
+  username: string | null;
   imageUrl: string | null;
   isFollowing: boolean;
   followsViewer: boolean;
@@ -34,7 +37,7 @@ export class PeopleGoneError extends Error {}
 
 // Friends = followers with a follow back (the server's `mutual=mutual`).
 export async function getPeoplePage(
-  id: number,
+  id: string,
   tab: PeopleTab,
   { known, q, cursor }: { known?: boolean; q?: string; cursor?: string | null } = {},
 ): Promise<PeoplePage> {
@@ -53,7 +56,7 @@ export async function getPeoplePage(
 // ['people', id, tab, known, q]: every list page of one person shares the
 // prefix ['people', id], and every list ['people'].
 export const PEOPLE_KEY = ['people'] as const;
-export function peopleKey(id: number, tab: PeopleTab, known: boolean, q: string) {
+export function peopleKey(id: string, tab: PeopleTab, known: boolean, q: string) {
   return ['people', id, tab, known, q] as const;
 }
 
@@ -71,8 +74,9 @@ export async function searchPeople(q: string): Promise<SearchPerson[]> {
 // whom you don't follow, latest shared moment first. `lastMoment.name` is null
 // for a nameless old moment.
 export type TastedWith = {
-  id: number;
+  id: string;
   name: string;
+  username: string | null;
   imageUrl: string | null;
   followsViewer: boolean;
   lastMoment: { name: string | null; at: string };

@@ -39,6 +39,10 @@ Per the cross-cutting rule in root CLAUDE.md:
   - `feed_item_likes`, `feed_item_tags` — both sides cascade via the user FK.
   - `bookmarks`, `user_badges`, `session_members`, `user_mutes`, `user_blocks`, `follows` — all cascade.
 
+- **Kept on purpose, with no user reference** (usernames, `docs/dev/proposals/usernames.md` § 3 + § 11):
+  - `username_holds` — the deleted account's username is held for 14 days so nobody takes it over at once. Written by the `BEFORE DELETE` trigger on `users` (`users_username_hold_delete`), not by `lib/accountDelete.ts`: the deletion path needs no username code, and a raw `DELETE FROM users` (an operator, a test) holds the name too. The row carries the name's SHA-256 only: `user_id` and the clear-text `username` are NULL. The user's OWN rename hold (their previous name, if they renamed in the last 14 days) loses its `user_id` and its clear text in the same trigger and keeps its date. The hash is guessable by whoever holds the database (ruled; `prisma/CLAUDE.md` § Usernames). The trigger's insert is an upsert, so it can never fail a deletion. Expired rows go with the daily prune (`lib/nativeSessionPrune.ts`), a day or two after their 14 days.
+  - `username_changes` (the rename-quota rows) are the user's own data and cascade.
+
 When adding a new table tied to users, decide which side it falls on using the test in root CLAUDE.md.
 
 ## S3 image reclaim is independent of cascade

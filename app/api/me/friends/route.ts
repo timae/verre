@@ -11,8 +11,11 @@ export async function GET(req: NextRequest) {
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
 
-  const friends = await prisma.$queryRaw<{ id: number; name: string; imageUrl: string | null }[]>`
-    SELECT u.id, u.name, u.image_url AS "imageUrl"
+  // `id` is the PUBLIC id (the tag picker sends it back as `taggedUserIds`).
+  // `username` (null = not chosen yet): the Invite sheet's friend search runs
+  // on the phone and matches it too (usernames § 7).
+  const friends = await prisma.$queryRaw<{ id: string; name: string; username: string | null; imageUrl: string | null }[]>`
+    SELECT u.public_id AS id, u.name, u.username, u.image_url AS "imageUrl"
     FROM follows f1
     JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
     JOIN users u ON u.id = f1.following_id
@@ -22,7 +25,7 @@ export async function GET(req: NextRequest) {
         WHERE (b.blocker_id = ${userId} AND b.blocked_id = f1.following_id)
            OR (b.blocker_id = f1.following_id AND b.blocked_id = ${userId})
       )
-    ORDER BY u.name ASC
+    ORDER BY u.name ASC, u.public_id ASC
   `
 
   return NextResponse.json(friends)

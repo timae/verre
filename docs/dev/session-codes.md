@@ -12,7 +12,13 @@ Server entry points run `normalizeCode()` which strips hyphens and uppercases, s
 
 ## A code is a credential
 
-🔒 Joining refuses only banned callers (`app/api/session/join/route.ts`), so knowing a code is enough to get in and read the lineup, ratings and address. Never put a code into anything served OUTSIDE the moment: a storage key in a public URL, a feed or profile payload, a public list. Two leaks of this kind were closed on 2026-11-11: the Hall of Fame feed (retired) and cover photos keyed `sessions/<code>_<ts>` (the create path until 2026-11-08, the settings path until 2026-11-11; new covers use a random key, and `lib/profileTiles.ts` never serves a code-bearing cover as a Moments tile). Codes already exposed stay valid: there is no code rotation.
+🔒 Joining refuses only banned callers (`app/api/session/join/route.ts`), so knowing a code is enough to get in and read the lineup, ratings and address. Never put a code into anything served OUTSIDE the moment: a storage key in a public URL, a feed or profile payload, a public list. Two leaks of this kind were closed on 2026-11-11: the Hall of Fame feed (retired) and cover photos keyed `sessions/<code>_<ts>` (the create path until 2026-11-08, the settings path until 2026-11-11; new covers use a random key, and `lib/profileTiles.ts` never serves a code-bearing cover as a Moments tile). The covers already stored under a code are re-keyed by `scripts/rekey-session-images.mts` (runbook: `docs/dev/deployment.md` § Re-key session images). Codes already exposed stay valid: there is no code rotation.
+
+## Guessing a code costs budget (leak-fixes F2)
+
+Every moment route answers "no such moment" (404) differently from "not yours" (401 / 403), and the join flow must say "no moment for that code", so guessing is bounded instead: a WRONG code costs budget that is never reset, a right code costs nothing. 60 wrong codes an hour per account, and per address 3,000 for 8-character codes and 300 for 4-character ones (separate budgets); a caller is charged once per code per hour. Once a budget is spent the entrance gate (`openSessionFor`, `lib/sessionRoute.ts`) lets only the moment's members past and gives everyone else the same "Too many codes tried" 429 for every code, right or wrong. Limits and rationale: `app/api/rate-limits.md`; the rule for new routes: `app/api/CLAUDE.md`.
+
+🔒 Residual R5 (ruled: old 4-character codes stay joinable): the 4-character space is 65,536 hex codes, and at 300 wrong codes an hour one address sweeps it in about 9 days; many addresses do it faster. Live 4-character moments are an operator check before the release (`deployment.md`).
 
 ## Helpers
 

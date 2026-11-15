@@ -62,16 +62,16 @@ export async function patchVisibility(
 
 // Your own lists, newest first. A muted user who blocked you is left out
 // server-side; the rows render initials only.
-export type ListedPerson = { id: number; name: string };
+export type ListedPerson = { id: string; name: string; username: string | null };
 export async function getBlocks(): Promise<ListedPerson[]> {
   const res = await apiFetch('/api/me/blocks');
   if (!res.ok) await throwApiError(res);
-  return ((await res.json()).blocks as ListedPerson[]).map(({ id, name }) => ({ id, name }));
+  return ((await res.json()).blocks as ListedPerson[]).map(({ id, name, username }) => ({ id, name, username: username ?? null }));
 }
 export async function getMutes(): Promise<ListedPerson[]> {
   const res = await apiFetch('/api/me/mutes');
   if (!res.ok) await throwApiError(res);
-  return ((await res.json()).mutes as ListedPerson[]).map(({ id, name }) => ({ id, name }));
+  return ((await res.json()).mutes as ListedPerson[]).map(({ id, name, username }) => ({ id, name, username: username ?? null }));
 }
 
 // Signed-in devices: web rows (uuid ids) and native rows (`ba:<id>`).

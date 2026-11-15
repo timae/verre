@@ -37,3 +37,8 @@ jobs:
 
       - name: Aroma picker-math pins
         run: npx tsx scripts/tests/aroma-pickers-units.ts
+
+      # What one pick in Filter Impressions matches (downward inheritance,
+      # broad plain picks, Pronounced, promoted leaves): core aroma/filter.ts.
+      - name: Aroma filter pins
+        run: npx tsx scripts/tests/aroma-filter-units.ts

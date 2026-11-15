@@ -1,53 +1,79 @@
 import { prisma } from '@/lib/prisma'
 import { NextRequest, NextResponse } from 'next/server'
+import { metaToWire } from '@/lib/sessionState'
+import { wireIdentity } from '@/lib/publicIds'
 import { resolveUser } from '@/lib/resolveUser'
 import { ensureMemberRow } from '@/lib/sessionMember'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { validateDisplayName } from '@verre/core'
 import { disambiguateAgainst } from '@/lib/displayName.server'
-import { checkRate, resetRate, getClientIp, formatWait } from '@/lib/rateLimit'
+import { checkRate, peekRate, refundRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { isSameOrigin } from '@/lib/csrf'
 import { newAnonIdentityId, newAnonToken, userIdentityId, participantOrBanned, authRemoved } from '@/lib/identity'
 import { withSessionMutation, refuse, ContractRefused, type MutationCtx } from '@/lib/sessionMutation'
-import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
+
+const JOIN_FAILURES = 30
+const GUEST_JOINS = 60
 
 export async function POST(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await resolveUser(req)
 
-  // Rate limit invalid session-code attempts: 30 per minute per IP.
-  // Counter is cleared on a successful join (real users with a typo
-  // streak shouldn't slowly accumulate toward a block once they get
-  // the right code). Counts everything until a successful match — so
-  // both "session not found" and a malformed/empty code count.
+  // Failed join attempts (a malformed body, a ban): 30 per minute per address,
+  // charged on failures only, never reset, so a venue full of people joining
+  // one moment is never throttled. A WRONG code is not a failure here: it pays
+  // the wrong-code budget at the entrance gate (leak-fixes F2), shared with
+  // every moment surface so they can't stack N+N.
   const ip = getClientIp(req)
-  const rlKey = `rl:join:ip:${ip}:1m`
-  const rl = await checkRate(rlKey, 30, 60)
-  if (!rl.allowed) {
-    return NextResponse.json(
-      { error: `Too many join attempts. Try again in ${formatWait(rl.retryAfter)}.`, retryAfter: rl.retryAfter },
-      { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
-    )
-  }
+  const failKey = `rl:join:ip:${ip}:1m`
+  const tooMany = (retryAfter: number) => NextResponse.json(
+    { error: `Too many join attempts. Try again in ${formatWait(retryAfter)}.`, retryAfter },
+    { status: 429, headers: { 'Retry-After': String(retryAfter) } },
+  )
+  const pk = await peekRate(failKey, JOIN_FAILURES)
+  if (!pk.allowed) return tooMany(pk.retryAfter)
+  const failed = async (res: NextResponse) => { await checkRate(failKey, JOIN_FAILURES, 60); return res }
 
   // Public field is `displayName` — see CLAUDE.md Auth section, names
   // are presentation-only and there is no concept of a username.
   const body = await req.json().catch(() => null)
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return failed(NextResponse.json({ error: 'invalid body' }, { status: 400 }))
   const { code, displayName: rawDisplayName } = body as Record<string, unknown>
-  if (!code || typeof code !== 'string') return NextResponse.json({ error: 'code required' }, { status: 400 })
+  if (!code || typeof code !== 'string') return failed(NextResponse.json({ error: 'code required' }, { status: 400 }))
 
   let displayName: string
   try { displayName = validateDisplayName(rawDisplayName) }
-  catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }) }
+  catch (e) { return failed(NextResponse.json({ error: (e as Error).message }, { status: 400 })) }
 
   const c = normalizeCode(code)
-  if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
-  // Opened first (a cold Postgres-backed moment is rebuilt): 404 only when the
-  // session is really gone, 503 while restoring.
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status, 'session not found')
+  if (!c) return failed(NextResponse.json({ error: 'session not found' }, { status: 404 }))
+  // The entrance gate (a cold Postgres-backed moment is rebuilt): 404 only
+  // when the session is really gone, 503 while restoring, 429 once the
+  // wrong-code budget is spent.
+  const opened = await openSessionFor(c, req, session, { notFound: 'session not found' })
+  if (opened instanceof NextResponse) return opened
+
+  // Guest joins mint a new guest each (a logged-in rejoin is idempotent):
+  // capped per address per moment, sized for a venue's shared Wi-Fi. Charged
+  // as a reservation BEFORE the join (a parallel burst can't read "room left"
+  // on every request) and refunded when the join doesn't go through (a busy
+  // retry costs nothing). No moment-wide cap: one person could spend it and
+  // lock every real guest out.
+  const guestKey = `rl:join:anon:${c}:ip:${ip}:10m`
+  const guestJoin = !session?.user?.id
+  if (guestJoin) {
+    const g = await checkRate(guestKey, GUEST_JOINS, 600)
+    if (!g.allowed) {
+      await refundRate(guestKey)
+      return NextResponse.json(
+        { error: `Too many guests joined from here. Try again in ${formatWait(g.retryAfter)}.`, retryAfter: g.retryAfter },
+        { status: 429, headers: { 'Retry-After': String(g.retryAfter) } },
+      )
+    }
+  }
 
   // Logged-in users have a stable identity-id (`u:<userId>`): an existing
   // registration keeps its stored displayName (repeated joins don't stack emoji
@@ -64,8 +90,8 @@ export async function POST(req: NextRequest) {
   // anonymous joiners, Redis is the authority: the fenced writes inside the
   // transaction are the change.
   //
-  // resetRate happens only on success — the ban path keeps consuming the
-  // rate-limit budget so banned-id probing via response timing stays bounded.
+  // A ban is a failure: it charges the failed-attempts budget (below), so
+  // banned-id probing via response timing stays bounded.
   let anonToken: string | null = null
   let identityId: string
   try {
@@ -126,19 +152,19 @@ export async function POST(req: NextRequest) {
         })
     }
   } catch (err) {
-    return contractFailure(err, c, { label: 'join' })
+    if (guestJoin) await refundRate(guestKey)
+    const res = await contractFailure(err, c, { label: 'join' })
+    return res.status === 403 ? failed(res) : res
   }
 
   await touchWithMeta(c)
-  // Reset the join rate-limit only on a successful join — a typo streak
-  // doesn't accumulate against legitimate users, but ban-rejections
-  // continue to count so banned-id probing is rate-limited.
-  await resetRate(rlKey)
 
+  // 🔒 Wire shapes only (public-user-ids § 4): meta through the allow-list,
+  // the caller's own identity as `u:<publicId>`.
   return NextResponse.json({
-    ...opened.meta,
+    ...await metaToWire(opened.meta),
     code: c,
-    id: identityId,
+    id: await wireIdentity(identityId),
     displayName,
     ...(anonToken ? { anonToken } : {}),
   })

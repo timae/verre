@@ -23,6 +23,7 @@ import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchS
 import { RatingSection } from '@/components/scoring/RatingSection';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Avatar } from '@/components/ui/Avatar';
+import { blockLook } from '@/lib/blockLook';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
@@ -31,6 +32,7 @@ import { BarTitle, useBarTitleProgress, VBar } from '@/components/VBar';
 import { ClampText } from '@/components/ui/ClampText';
 import { CenteredMessage, ReconnectingBar } from '@/components/ui/ConnectionState';
 import { SessionFatalView } from '@/components/moments/SessionFatalView';
+import { PersonPreviewProvider, usePersonPreview } from '@/components/moments/PersonPreviewSheet';
 import {
   ApiError,
   deleteWine,
@@ -51,9 +53,14 @@ import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { radius, useTheme } from '@/theme';
+import { markProfileHeaderStale } from '@/lib/feedCache';
+import { useMeId } from '@/lib/meId';
 
 const POLL_MS = 5000;
 const isGone = (e: unknown): e is ApiError => e instanceof ApiError && e.kind === 'not-found';
+// A spent wrong-code budget (the server's entrance gate, a non-member only):
+// the shared fatal view with a working Try Again (a refetch), never latched.
+const isLimited = (e: unknown): e is ApiError => e instanceof ApiError && e.kind === 'rate-limited';
 const GUTTER = 20; // 02e vbody runs 20px gutters (vs the line-up's 22) — deliberate override
 // Direction of the last sibling-wine replace — read by the incoming screen
 // to pick the replace animation (push for next, pop for previous).
@@ -106,7 +113,7 @@ export default function ImpressionDetail() {
     subscribed: screenFocused,
     refetchInterval: POLL_MS,
     // The app default (retry 1, lib/query.tsx) minus the 404, like useSessionPoll.
-    retry: (failureCount, error) => !isGone(error) && failureCount < 1,
+    retry: (failureCount, error) => !isGone(error) && !isLimited(error) && failureCount < 1,
   });
   useEffect(() => {
     if (isGone(state.error)) setGoneLatch({ code, error: state.error });
@@ -160,6 +167,7 @@ export default function ImpressionDetail() {
   // fall through to the stale view: their banned-vs-kicked copy lives in
   // useSessionPoll, which this screen's pre-hook poll has yet to adopt.
   const goneError = latched ?? (isGone(state.error) ? state.error : null);
+  const limitedError = goneError === null && isLimited(state.error) ? state.error : null;
   const gone = goneError !== null;
   const showReconnecting = !gone && (!online || (state.isError && wine !== null));
 
@@ -221,6 +229,7 @@ export default function ImpressionDetail() {
   // Crave = wine bookmark (web WineModal parity, optimistic). The local
   // override is keyed on the wine id, so a sibling-wine swap ignores it at
   // render time — no reset effect, no stale-heart frame.
+  const meIdForLists = useMeId();
   const bookmarks = useQuery({ queryKey: ['bookmarks'], queryFn: getBookmarkedWineIds });
   const [craveLocal, setCraveLocal] = useState<{ wineId: string; on: boolean } | null>(null);
   const craved = craveLocal?.wineId === wineId ? craveLocal.on : bookmarks.data?.has(wineId) ?? false;
@@ -228,7 +237,11 @@ export default function ImpressionDetail() {
     mutationFn: (vars: { wineId: string; on: boolean }) => setBookmark(code, vars.wineId, vars.on),
     onMutate: (vars) => setCraveLocal(vars),
     onError: (_e, vars) => setCraveLocal({ wineId: vars.wineId, on: !vars.on }),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['bookmarks'] }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['bookmarks'] });
+      // Your Cravings tile follows (lists plan D12) when you next look at it.
+      void markProfileHeaderStale(queryClient, meIdForLists);
+    },
   });
 
   const rateMut = useMutation({
@@ -237,6 +250,8 @@ export default function ImpressionDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['session-state', code, myIdentityId] });
       queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
+      // Your Impressions tile follows (lists plan D12) when you next look at it.
+      void markProfileHeaderStale(queryClient, meIdForLists);
     },
   });
 
@@ -437,15 +452,17 @@ export default function ImpressionDetail() {
   // MEASURED rendered height (onLayout), not a constant — see the prop doc.
   const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef, FOOT_CLEARANCE);
 
-  if (goneError) {
+  const fatalError = goneError ?? limitedError;
+  if (fatalError) {
     const glyphs = theme.scheme === 'dark' ? 'light' : 'dark';
     return (
       <View style={{ flex: 1, paddingTop: insets.top + 8, paddingHorizontal: GUTTER }}>
         <Stack.Screen options={{ statusBarStyle: glyphs }} />
         <StatusBar style={glyphs} />
         <VBar title="" />
-        {/* No Try Again on a 404 (the view shows it for 'http' only). */}
-        <SessionFatalView fatal={goneError} removedKind={null} sessionLabel={null} onRetry={() => {}} onBack={() => router.back()} />
+        {/* No Try Again on a 404; a 429 retries the poll. */}
+        <SessionFatalView fatal={fatalError} removedKind={null} sessionLabel={null}
+          onRetry={() => { void state.refetch(); }} onBack={() => router.back()} />
       </View>
     );
   }
@@ -502,8 +519,11 @@ export default function ImpressionDetail() {
   // mirrors PeopleSheet's `a:`-prefix anon test. Anon adders get the
   // user-glyph avatar + regular-weight name + "Unregistered" tag, same as
   // the People list; they never carry a profile avatar.
-  const broughtByAnon = wine.addedByDisplayName != null && wine.addedByUserId == null;
   const adderId = wine.addedByUserId != null ? `u:${wine.addedByUserId}` : null;
+  // 🔒 An adder who blocked you reads as a guest too (lib/blockLook.ts, the
+  // People sheet's look), never as a registered person.
+  const broughtByAnon = wine.addedByDisplayName != null &&
+    (adderId === null || blockLook(adderId, myIdentityId, meta?.viewerBlocksOut, meta?.viewerBlocksIn) === 'guest');
   // Avatar only for a logged-in adder whose profile the server exposed
   // (meta.participants is block/tier gated in buildMetaView).
   const adderImageUrl = adderId ? meta?.participants.find((p) => p.id === adderId)?.imageUrl ?? null : null;
@@ -517,6 +537,7 @@ export default function ImpressionDetail() {
           broughtBySelf={!!wine.isMine}
           broughtByAnon={broughtByAnon}
           broughtByImageUrl={adderImageUrl}
+          broughtById={adderId}
         />
       ) : null}
       {/* THE shared rating block (score · note · structure · aromas) —
@@ -548,6 +569,8 @@ export default function ImpressionDetail() {
     // (selection + browse) need a sized provider/portal host; without one
     // the gorhom modal throws 'BottomSheetModalInternalContext cannot be null'.
     <BottomSheetModalProvider>
+    {/* Brought By opens the person's preview (ruled 2026-11-15). */}
+    <PersonPreviewProvider code={code} meta={meta} myIdentityId={myIdentityId}>
     <View style={{ flex: 1 }}>
       {/* Previous replaces with the pop animation so the slide reads as
           going back; next keeps push. gestureResponseDistance narrows the iOS
@@ -709,6 +732,7 @@ export default function ImpressionDetail() {
         ) : null}
       </AnchoredMenu>
     </View>
+    </PersonPreviewProvider>
     </BottomSheetModalProvider>
   );
 }
@@ -1025,16 +1049,22 @@ function NameBlock({
 // description + "Where to buy". Renders only the rows the wine actually carries;
 // the whole block drops away when there's no metadata AND no provenance at all.
 function AboutBlock({
-  wine, broughtBy, broughtBySelf, broughtByAnon, broughtByImageUrl,
+  wine, broughtBy, broughtBySelf, broughtByAnon, broughtByImageUrl, broughtById,
 }: {
   wine: WireWine;
   broughtBy: string | null;
   broughtBySelf: boolean;
   broughtByAnon: boolean;
   broughtByImageUrl: string | null;
+  // The adder's identity (`u:<publicId>`), null for a guest adder or with
+  // "who brought it" hidden: a tap opens their preview (ruled 2026-11-15),
+  // never for a guest look or yourself (the provider's `canOpen`).
+  broughtById: string | null;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const preview = usePersonPreview();
+  const canPreview = !!broughtById && !!preview?.canOpen(broughtById);
   // wine.country is an ISO 3166-1 alpha-2 code ("IT"); show the full English
   // name ("Italy"), falling back to the raw code for anything off-list —
   // mirrors the web WineInfoPane's `countryName(country) || country`.
@@ -1054,14 +1084,21 @@ function AboutBlock({
   return (
     <View style={{ marginTop: 2, marginBottom: 4, paddingBottom: 18, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
       {broughtBy ? (
-        <View
-          style={{
+        <Pressable
+          disabled={!canPreview}
+          onPress={() => broughtById && preview?.open(broughtById)}
+          // Not previewable: no element of its own (reads as before).
+          accessible={canPreview}
+          accessibilityRole={canPreview ? 'button' : undefined}
+          accessibilityLabel={canPreview ? `Brought by ${broughtBy}` : undefined}
+          style={({ pressed }) => ({
             flexDirection: 'row',
             alignItems: 'center',
             gap: 12,
             paddingVertical: 10,
             marginBottom: rows.length > 0 || wine.description || wine.purchaseUrl ? 6 : 0,
-          }}
+            opacity: pressed ? 0.6 : 1,
+          })}
         >
           {/* Anon adder → user glyph (never initials); a logged-in adder gets
               their profile avatar only when the server exposed it
@@ -1099,7 +1136,7 @@ function AboutBlock({
                   matters for reassignment. */}
             </View>
           </View>
-        </View>
+        </Pressable>
       ) : null}
       {rows.map(([label, value], i) => {
         const lastRow = !rowsHaveTrailer && i === rows.length - 1;

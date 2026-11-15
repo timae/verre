@@ -1,43 +1,66 @@
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BIO_MAX, normalizeBio, validateDisplayName } from '@verre/core';
+import { BIO_MAX, checkUsername, normalizeBio, validateDisplayName } from '@verre/core';
 import { NotesField, pickPhotoOrRemove } from '@/components/moments/momentForm';
-import { GlassButton, SettingsFooter, SettingsScreenFallback } from '@/components/moments/settingsParts';
+import { GlassButton, SetTitle, SettingsFooter, SettingsScreenFallback } from '@/components/moments/settingsParts';
+import { TileCoverSheet } from '@/components/profile/TileCoverSheet';
+import { PhotoTiles } from '@/components/profile/PhotoTiles';
+import { compactCount } from '@/components/profile/ProfileHeader';
 import { SHEET_RISE } from '@/components/profile/coverGeometry';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
+import { RESERVED_TEXT, UsernameField } from '@/components/ui/UsernameField';
 import { VText } from '@/components/ui/VText';
 import { VBar } from '@/components/VBar';
 import {
-  applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover,
+  applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover, uploadTilePhoto, type TileKey, type TilePhoto,
 } from '@/lib/api/profile';
+import { USERNAME_KEY, getUsernameState } from '@/lib/api/username';
 import { profileKey, profileQueryOptions, type FullProfile, type Profile } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
 import { errorText, sentence } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
 import { FOOT_CLEARANCE, GUTTER, HERO_RATIO } from '@/lib/layout';
+import { DATE_LOCALE } from '@/lib/locale';
+import { saveUsername } from '@/lib/usernameSave';
+import { changeAgainText, usernameQuotaLine } from '@/lib/usernameCopy';
 import { useTheme } from '@/theme';
+import { useMeId } from '@/lib/meId';
 
 // Edit Profile (04 `setProfile`, ruling D1): your own profile's ⋯ → Edit
-// Profile. The cover and the photo with their edit buttons, Display Name,
+// Profile. The cover and the photo with their edit buttons, Name, Username,
 // Bio, Discard | Save. The way to add a FIRST cover (a coverless
 // profile has no hero to long-press); long-press stays the quick path.
 //
 // Everything is a DRAFT until Save: a picked image is held as a fitted data
 // URL, a removal as a flag; Discard drops them (nothing uploaded, nothing
-// reclaimed). Save runs photo → cover → text and stops at the first failure:
+// reclaimed). Save runs username → photo → cover → text and stops at the first failure:
 // finished steps stay saved and leave the draft, and the footer names what
 // didn't save. Pushed stack-relative (lib/sessionStack.ts profileEditHref);
 // the pill hides here (the sticky footer replaces it).
+//
+// Username (usernames, ruled 2026-11-14): the full field (the profile's
+// long-press edits it in place too since 2026-11-14, its feedback in the edit
+// bar; both save through lib/usernameSave.ts). Live "Available" / taken under
+// the field; the limit (5 changes per 90 days) stays quiet until the last two,
+// and with none left the field is read-only and names the date. Its own
+// request (`PUT /api/me/username`), saved FIRST: the one step someone else
+// can refuse (taken), before anything is uploaded.
+//
+// Profile Tiles (the lists step): the tiles as on your profile (`PhotoTiles`),
+// a pen on each, one TAP opening the tile's cover sheet (the long-press on the
+// profile's tile; ruled 2026-11-13, replacing settings rows). That sheet
+// saves on its own "Use Photo", like there: a tile change is not part of this
+// page's draft. Not in the mock (its setProfile page has no tiles).
 export default function EditProfile() {
-  const meId = authClient.useSession().data?.user.id;
-  const userId = meId != null ? Number(meId) : null;
-  const q = useQuery({ ...profileQueryOptions(userId ?? 0), enabled: userId != null });
+  const userId = useMeId();
+  const q = useQuery({ ...profileQueryOptions(userId ?? ''), enabled: userId != null });
   const profile = q.data;
   if (userId != null && profile?.state === 'ok') return <EditProfileForm userId={userId} profile={profile} />;
   return <SettingsScreenFallback title="Edit Profile" isError={q.isError || profile?.state === 'gone'} retrying={q.isFetching} onRetry={() => q.refetch()} />;
@@ -51,7 +74,7 @@ type ImageDraft = { kind: 'keep' } | { kind: 'new'; dataUrl: string; preview: st
 
 // Seeded ONCE (the form mounts after the profile resolves); a background
 // refetch never re-seeds mid-edit.
-function EditProfileForm({ userId, profile }: { userId: number; profile: FullProfile }) {
+function EditProfileForm({ userId, profile }: { userId: string; profile: FullProfile }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -63,11 +86,42 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
   const coverH = Math.round(windowH * HERO_RATIO);
   const [name, setName] = useState(profile.name);
   const [bio, setBio] = useState(profile.bio ?? '');
+  const [username, setUsername] = useState(profile.username ?? '');
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const { refetch: refetchSession } = authClient.useSession();
+  const usernameQ = useQuery({ queryKey: USERNAME_KEY, queryFn: getUsernameState });
+  const quota = usernameQ.data ? usernameQuotaLine(usernameQ.data, DATE_LOCALE) : { locked: false, text: null };
+  // A read-only field can't hold a changed draft (the limit can turn out
+  // spent after you typed: a slow read, a 409): back to the current name, or
+  // every Save would re-send the refused change and stop there.
+  const locked = quota.locked;
+  useEffect(() => {
+    if (!locked) return;
+    setUsername(profile.username ?? '');
+    setUsernameError(null);
+  }, [locked, profile.username]);
   const [avatar, setAvatar] = useState<ImageDraft>({ kind: 'keep' });
   const [cover, setCover] = useState<ImageDraft>({ kind: 'keep' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [badName, setBadName] = useState(false);
+
+  // A tile's cover (the profile's R5g2 sheet): throws to keep the sheet open.
+  const [tileSheet, setTileSheet] = useState<TileKey | null>(null);
+  const saveTile = useCallback(
+    async (tile: TileKey, run: () => Promise<Partial<Record<TileKey, TilePhoto>> | undefined>) => {
+      const epoch = viewerCacheEpoch();
+      try {
+        const tiles = await run();
+        if (tiles) await applyOwnProfileChange(queryClient, userId, { tiles }, epoch);
+        setTileSheet(null);
+      } catch (e) {
+        Alert.alert('Couldn’t Save', errorText(e));
+        throw e;
+      }
+    },
+    [queryClient, userId],
+  );
 
   const shown = (d: ImageDraft, current: string | null) => (d.kind === 'new' ? d.preview : d.kind === 'remove' ? null : current);
   const avatarUrl = shown(avatar, profile.imageUrl);
@@ -109,6 +163,16 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
       setError(sentence((e as Error).message));
       return;
     }
+    // Like the name: checked (and sent) only when it CHANGED.
+    let nextUsername: string | null = null;
+    if (!locked && username !== (profile.username ?? '')) {
+      const handle = checkUsername(username);
+      if (!handle.ok) {
+        setUsernameError(handle.reason === 'reserved' ? RESERVED_TEXT : sentence(handle.message));
+        return;
+      }
+      nextUsername = handle.username;
+    }
     setSaving(true);
     // 🔒 The viewer the save started for. A sign-out (and another account's
     // sign-in) while the steps run must stop the rest: the next request would
@@ -119,6 +183,30 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
       setSaving(false);
       setError(`Couldn’t save your ${what}. ${errorText(e)}`);
     };
+    const curUsername = (() => {
+      const p = queryClient.getQueryData<Profile>(profileKey(userId));
+      return p?.state === 'ok' ? p.username : profile.username;
+    })();
+    if (nextUsername != null && nextUsername !== curUsername) {
+      // lib/usernameSave.ts: the PUT + caches; `null` = the viewer changed.
+      const r = await saveUsername(queryClient, userId, nextUsername, { epoch, current: profile.username, locale: DATE_LOCALE });
+      if (r == null) return;
+      if (!r.ok) {
+        setSaving(false);
+        if (r.kind === 'field') setUsernameError(r.message);
+        // None left after all: the field locks (the effect drops the draft;
+        // the rest of the page can still be saved) and names the date.
+        else if (r.kind === 'locked') setUsername(profile.username ?? '');
+        else setError(r.message);
+        return;
+      }
+      // The saved form (trimmed): a later step's failure must not leave the
+      // field "changed" against it (review 2026-11-14).
+      setUsername(nextUsername);
+      // Better Auth's session carries the name too (fresh on every answer).
+      void refetchSession();
+    }
+    if (!sameViewer()) return;
     if (avatar.kind !== 'keep') {
       try {
         const imageUrl = avatar.kind === 'new' ? await uploadAvatar(avatar.dataUrl) : (await removeAvatar(), null);
@@ -162,6 +250,8 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
   };
 
   return (
+    // A SCREEN-LOCAL provider for the tile cover sheet (no root provider).
+    <BottomSheetModalProvider>
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
         <VBar title="Edit Profile" />
@@ -191,11 +281,12 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
               onPress={() => pick('cover')}
               style={({ pressed }) => ({ flex: 1, backgroundColor: theme.surfaceSunk, opacity: pressed ? 0.7 : 1 })}
             >
-              {/* The glyph above the caption, centred in the WHOLE cover area
-                  (ruled 2026-11-12: centred in the band above the photo's
-                  overlap it read high); the pair clears the photo, which
-                  covers only the bottom AVATAR_OVERLAP. */}
-              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: GUTTER }}>
+              {/* The glyph above the caption, centred MIDWAY between the box
+                  top and the photo's top (ruled 2026-11-13 on device: centred
+                  in the whole box it sat low, the photo covering the bottom
+                  AVATAR_OVERLAP of it; the 11-12 "centre it better" had
+                  moved it there). */}
+              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: GUTTER, paddingBottom: AVATAR_OVERLAP }}>
                 <Icon name="cam" size={24} color={theme.inkSoft} />
                 <VText variant="small" numberOfLines={2} style={{ fontFamily: 'InstrumentSans_600SemiBold', textAlign: 'center' }}>Add a cover photo</VText>
               </View>
@@ -213,7 +304,7 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
 
         <View style={{ marginBottom: 14 }}>
           <TextField
-            label="Display Name"
+            label="Name"
             value={name}
             onChangeText={(t) => {
               setName(t);
@@ -228,10 +319,56 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
           />
         </View>
         <View style={{ marginBottom: 14 }}>
+          <UsernameField
+            value={username}
+            onChange={(v) => {
+              setUsername(v);
+              setUsernameError(null);
+            }}
+            availability
+            current={profile.username}
+            error={usernameError}
+            hint={quota.text}
+            editable={!locked}
+          />
+        </View>
+        <View style={{ marginBottom: 14 }}>
           <NotesField label="Bio" placeholder="Add a bio" value={bio} onChange={setBio} maxLength={BIO_MAX} />
         </View>
+        {TILE_ROWS.some(([k]) => profile.tiles[k]) ? (
+          <View style={{ marginTop: 18 }}>
+            <SetTitle>Profile Tiles</SetTitle>
+            {/* The tiles as on your profile, a pen on each, one TAP opens the
+                tile's cover sheet (ruled 2026-11-13). */}
+            <PhotoTiles
+              tiles={TILE_ROWS.flatMap(([k, label]) => {
+                const t = profile.tiles[k];
+                return t ? [{
+                  label,
+                  count: compactCount(t.count),
+                  imageUrl: t.imageUrl,
+                  editable: true,
+                  onPress: () => setTileSheet(k),
+                  accessibilityLabel: `${compactCount(t.count)} ${label}, ${t.pinned ? 'chosen' : 'automatic'} cover`,
+                  accessibilityHint: 'Double-tap to choose its cover.',
+                }] : [];
+              })}
+            />
+          </View>
+        ) : null}
       </ScrollView>
       <SettingsFooter saving={saving} error={error} onDiscard={() => router.back()} onSave={onSave} bottomInset={insets.bottom} />
+      <TileCoverSheet
+        tile={tileSheet}
+        shown={tileSheet ? profile.tiles[tileSheet]?.imageUrl ?? null : null}
+        pinned={tileSheet ? profile.tiles[tileSheet]?.pinned === true : false}
+        onClose={() => setTileSheet(null)}
+        onUse={(tile, url) => saveTile(tile, async () => (await patchProfile({ tiles: { [tile]: url } })).tiles)}
+        onUpload={(tile, dataUrl) => saveTile(tile, () => uploadTilePhoto(tile, dataUrl))}
+      />
     </View>
+    </BottomSheetModalProvider>
   );
 }
+
+const TILE_ROWS: ReadonlyArray<readonly [TileKey, string]> = [['impressions', 'Impressions'], ['moments', 'Moments'], ['cravings', 'Cravings']];

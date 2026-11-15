@@ -1,8 +1,9 @@
 import { auth } from '@/auth'
 import { MeDashboard } from '@/components/me/MeDashboard'
+import { clientSession } from '@/lib/clientSession'
 
 export default async function MePage() {
-  const session = await auth()
-  if (!session?.user) return null
-  return <MeDashboard user={session.user} />
+  const user = clientSession(await auth())?.user
+  if (!user) return null
+  return <MeDashboard user={user} />
 }

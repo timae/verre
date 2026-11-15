@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { AnchoredMenu, MenuItem } from '@/components/ui/AnchoredMenu';
+import { blockLook, type BlockLook } from '@/lib/blockLook';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { BadgePill } from '@/components/moments/RoleChip';
@@ -11,6 +12,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { getMyFriends } from '@/lib/api/me';
+import { usePersonPreview } from '@/components/moments/PersonPreviewSheet';
 import { fuzzyIncludes } from '@/lib/search';
 import { usePhoneTokens } from '@/lib/layout';
 import {
@@ -58,6 +60,9 @@ export function PeopleSheet({
   const insets = useSafeAreaInsets();
   const phone = usePhoneTokens();
   const queryClient = useQueryClient();
+  // A row opens the person's preview (ruled 2026-11-15), pushed over this
+  // sheet; the host's ⋯ keeps its manage menu.
+  const preview = usePersonPreview();
 
   // Friends fetched once per open; an id Set gives O(1) "is this row a friend".
   // Gated on a logged-in viewer — an anon viewer has no friend graph and the
@@ -69,7 +74,7 @@ export function PeopleSheet({
     staleTime: 30_000,
   });
   const friendIds = useMemo(() => new Set((friends.data ?? []).map((f) => f.id)), [friends.data]);
-  const isFriendRow = (p: Participant) => p.id.startsWith('u:') && friendIds.has(Number(p.id.slice(2)));
+  const isFriendRow = (p: Participant) => p.id.startsWith('u:') && friendIds.has(p.id.slice(2));
 
   // Search + friends filter (Simon's ask, space-efficient): the row appears
   // only when the roster is big enough to need it; the Friends chip only when
@@ -305,10 +310,8 @@ export function PeopleSheet({
                 p={p}
                 first={i === 0}
                 role={roleOf(p)}
-                isAnon={p.id.startsWith('a:')}
-                isFriend={p.id.startsWith('u:') && friendIds.has(Number(p.id.slice(2)))}
-                isBlocked={(meta?.viewerBlocksOut ?? []).includes(p.id) || (meta?.viewerBlocksIn ?? []).includes(p.id)}
-                isSelf={p.id === myIdentityId}
+                look={blockLook(p.id, myIdentityId, meta?.viewerBlocksOut, meta?.viewerBlocksIn)}
+                isFriend={p.id.startsWith('u:') && friendIds.has(p.id.slice(2))}
                 busy={busyId === p.id}
                 // ⋯ shows only when the viewer has ≥1 available action. Host/
                 // cohost, not self, not the strict host — and a non-strict-host
@@ -319,6 +322,7 @@ export function PeopleSheet({
                   (roleOf(p) !== 'cohost' || strictHost)
                 }
                 onMenu={(anchorTop, anchorBottom) => setMenu({ id: p.id, anchorTop, anchorBottom })}
+                onPress={preview?.canOpen(p.id) ? () => preview.open(p.id) : undefined}
               />
             ))}
             {isHostViewer && !filtering ? (
@@ -428,30 +432,34 @@ function buildMenuItems({
   return items;
 }
 
-// .pl-row — avatar · name + role/relationship tags · ⋯.
+// .pl-row — avatar · name + role/relationship tags · ⋯. `onPress` (avatar +
+// name, PeopleRow's anatomy: the ⋯ stays its own button beside it) opens the
+// person's preview; absent for yourself and for a guest look.
 function PersonRow({
-  p, first, role, isAnon, isFriend, isBlocked, isSelf, busy, canManage, onMenu,
+  p, first, role, look, isFriend, busy, canManage, onMenu, onPress,
 }: {
   p: Participant;
   first: boolean;
   role: 'host' | 'cohost' | 'provider' | 'taster';
-  isAnon: boolean;
+  // lib/blockLook.ts: someone who blocked you is drawn as a guest, someone you
+  // blocked carries "· Blocked" (the web's matrix).
+  look: BlockLook;
   isFriend: boolean;
-  isBlocked: boolean;
-  isSelf: boolean;
   busy: boolean;
   canManage: boolean;
   onMenu: (anchorTopY: number, anchorBottomY: number) => void;
+  onPress?: () => void;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const surface = phone.surface('compactList');
   const rowRef = useRef<ViewInstance>(null);
   // Relationship suffix after the name: "· You / · Friend / · Blocked".
+  const isAnon = look === 'guest';
   const rel: { label: string; color: 'inkSoft' | 'critical' | 'positive' } | null =
-    isSelf ? { label: 'You', color: 'inkSoft' }
-    : isBlocked ? { label: 'Blocked', color: 'critical' }
-    : isFriend ? { label: 'Friend', color: 'positive' }
+    look === 'self' ? { label: 'You', color: 'inkSoft' }
+    : look === 'blocked-by-me' ? { label: 'Blocked', color: 'critical' }
+    : look === 'normal' && isFriend ? { label: 'Friend', color: 'positive' }
     : null;
 
   return (
@@ -459,28 +467,38 @@ function PersonRow({
       ref={rowRef}
       style={{ flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), paddingVertical: surface.paddingY(phone.lerp(11, 15)), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}
     >
-      {/* .pl-av — host = accent; anon = user glyph. */}
-      <Avatar imageUrl={p.imageUrl} name={p.displayName} size={phone.grow(40)} anon={isAnon} host={role === 'host'} />
+      <Pressable
+        disabled={!onPress}
+        onPress={onPress}
+        // Yourself / a guest look: no element of its own (reads as before).
+        accessible={!!onPress}
+        accessibilityRole={onPress ? 'button' : undefined}
+        accessibilityLabel={onPress ? [p.displayName, rel?.label, role === 'host' ? 'Host' : role === 'cohost' ? 'Co-host' : role === 'provider' ? 'Provider' : null].filter(Boolean).join(', ') : undefined}
+        style={({ pressed }) => ({ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), opacity: pressed ? 0.6 : 1 })}
+      >
+        {/* .pl-av — host = accent; anon = user glyph. */}
+        <Avatar imageUrl={p.imageUrl} name={p.displayName} size={phone.grow(40)} anon={isAnon} host={role === 'host'} />
 
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-          {/* Name, "·" (name color), relationship WORD (colored) as separate
-              flex siblings — the row's gap gives the spacing (nested-Text padding
-              didn't render). ROLES stay pill badges. */}
-          <VText surface="compactList" variant="body" style={{ fontFamily: isAnon ? 'InstrumentSans_400Regular' : 'InstrumentSans_600SemiBold', flexShrink: 1 }} color={isAnon ? 'inkSoft' : 'ink'} numberOfLines={1}>
-            {p.displayName}
-          </VText>
-          {rel ? (
-            <>
-              <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={isAnon ? 'inkSoft' : 'ink'}>·</VText>
-              <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={rel.color}>{rel.label}</VText>
-            </>
-          ) : null}
-          {role === 'host' ? <Tag label="Host" kind="host" /> : role === 'cohost' ? <Tag label="Co-host" kind="plain" /> : null}
-          {role === 'provider' ? <Tag label="Provider" kind="provider" /> : null}
-          {isAnon ? <Tag label="Unregistered" kind="anon" /> : null}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+            {/* Name, "·" (name color), relationship WORD (colored) as separate
+                flex siblings — the row's gap gives the spacing (nested-Text padding
+                didn't render). ROLES stay pill badges. */}
+            <VText surface="compactList" variant="body" style={{ fontFamily: isAnon ? 'InstrumentSans_400Regular' : 'InstrumentSans_600SemiBold', flexShrink: 1 }} color={isAnon ? 'inkSoft' : 'ink'} numberOfLines={1}>
+              {p.displayName}
+            </VText>
+            {rel ? (
+              <>
+                <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={isAnon ? 'inkSoft' : 'ink'}>·</VText>
+                <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={rel.color}>{rel.label}</VText>
+              </>
+            ) : null}
+            {role === 'host' ? <Tag label="Host" kind="host" /> : role === 'cohost' ? <Tag label="Co-host" kind="plain" /> : null}
+            {role === 'provider' ? <Tag label="Provider" kind="provider" /> : null}
+            {isAnon ? <Tag label="Unregistered" kind="anon" /> : null}
+          </View>
         </View>
-      </View>
+      </Pressable>
 
       {busy ? (
         <ActivityIndicator />

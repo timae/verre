@@ -7,6 +7,7 @@ import { VBar } from '@/components/VBar';
 import { ErrorState } from '@/components/ui/ConnectionState';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
+import { PersonPreviewProvider } from '@/components/moments/PersonPreviewSheet';
 import { ReadCard, SetGroup, SetNav, type SettingsRole } from '@/components/moments/settingsParts';
 import { ApiError, deleteMoment } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
@@ -113,6 +114,8 @@ export default function SettingsHub() {
     // per-screen provider pattern as the line-up — a root provider's gorhom host
     // gets zero height across the Stack boundary).
     <BottomSheetModalProvider>
+      {/* The People / Invite rows open a person's preview, as on the line-up. */}
+      <PersonPreviewProvider code={code} meta={meta} myIdentityId={myIdentityId}>
       <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
         <View style={{ paddingHorizontal: GUTTER }}>
           <VBar title="Settings" />
@@ -209,6 +212,7 @@ export default function SettingsHub() {
           </View>
         )}
       </View>
+      </PersonPreviewProvider>
     </BottomSheetModalProvider>
   );
 }

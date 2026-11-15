@@ -68,10 +68,11 @@ The whole wipe is ONE session mutation contract (`lib/sessionMutation.ts`): the 
 ## API surface
 
 - `GET /api/session/<C>/bans` — host or cohost. Lists banned identities.
-- `POST /api/session/<C>/bans` — host or cohost. Body `{identityId, mode: 'kick'|'ban', deleteAddedWines?: boolean}`. Strict-host required when targeting a cohost.
-- `DELETE /api/session/<C>/bans/:identityId` — host or cohost. Deletes the `session_bans` row, then lifts the ban-Set entry, under the ban lock (409 when another moderation action holds it); data is already gone (deleted at ban time) and not restored.
-- `GET /api/session/<C>/bans/preview/:identityId` — host or cohost. Returns `{identityId, displayName, ratingCount, addedWines}` for the host-side modal.
-- `GET /api/session/<C>/removed-state` — caller's own state. Returns `{state: 'banned'|'kicked'|'none', identityId?, hasRatings?}`. Used by `<RemovedView>` on the `/join/<C>?removed=1` bounce screen.
+- `POST /api/session/<C>/bans` — host or cohost. Body `{identityId, mode: 'kick'|'ban', deleteAddedWines?: boolean}`. Strict-host required when targeting a cohost. 🔒 `identityId` is the WIRE identity (`u:<publicId>`, `a:` / `d:` uuids; public-user-ids § 4): an integer `u:<int>` is malformed (400); an unknown public id charges the limiter and answers 200 with nothing written (today's nonexistent-target path). Stored (Redis set, `session_bans`) as the internal `u:<int>`; a CHECK on `session_bans.identity_id` refuses a wire identity, so a missed translation fails loudly.
+- `DELETE /api/session/<C>/bans/:identityId` — host or cohost. `:identityId` is the wire identity (an unknown one: 200 after the limiter, nothing written). Deletes the `session_bans` row, then lifts the ban-Set entry, under the ban lock (409 when another moderation action holds it); data is already gone (deleted at ban time) and not restored.
+- `GET /api/session/<C>/bans/preview/:identityId` — host or cohost. Returns `{identityId, displayName, ratingCount, addedWines}` for the host-side modal (wire identity in and out; an unknown one is a 404).
+- `GET /api/session/<C>/bans` — host or cohost. `{bans: [{identityId, displayName, imageUrl}]}`, wire identities; a ban whose users row is gone leaves the list. 🔒 The photo shows only when the CALLER could see it anyway (`lib/avatarGate.ts`, the participant list's rule; an anonymous caller gets the logged-out rule): a ban accepts any identity, even someone never in the moment, so the raw `users.image_url` would bypass their visibility (public-user-ids § 8a b).
+- `GET /api/session/<C>/removed-state` — caller's own state. Returns `{state: 'banned'|'kicked'|'none', identityId?, hasRatings?}` (`identityId` the wire identity). Used by `<RemovedView>` on the `/join/<C>?removed=1` bounce screen.
 - `POST /api/session/<C>/leave?cleanup={keep|full}` — kicked-user self-service. `keep` is a no-op (default). `full` runs the `kick-delete` wipe (ratings + bookmarks + session_members). Authorization: caller must be in `bans` or NOT in identities (active participants can't use this path).
 
 ## Ghost-rater UX note

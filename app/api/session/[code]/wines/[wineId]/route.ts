@@ -3,17 +3,19 @@ import { NextRequest, NextResponse } from 'next/server'
 import type { Prisma } from '@prisma/client'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta, scanKeys } from '@/lib/redis'
-import { isHostByIdentity, isProvider, mutateWines, isMutateReject, addWineToSession, mirrorLineup, reassignProvenance, wineToWire, buildKickedUserNameLookup, reclaimIfUnreferenced } from '@/lib/session'
+import { isHostByIdentity, isProvider, mutateWines, isMutateReject, addWineToSession, mirrorLineup, reassignProvenance, reclaimIfUnreferenced } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
-import { participantOrBanned, authInvalid, authRemoved, authUnavailable, isValidIdentityId, isTombstoneIdentityId } from '@/lib/identity'
-import { deleteImage } from '@/lib/s3'
+import { participantOrBanned, authInvalid, authRemoved, authUnavailable, isTombstoneIdentityId } from '@/lib/identity'
+import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { isSameOrigin } from '@/lib/csrf'
 import { checkRate, getClientIp } from '@/lib/rateLimit'
 import { resolveCatalogLink, applyIdentityEditRule, catalogLinkRateKey, CatalogValidationError } from '@/lib/catalogWrite'
 import { withSessionMutation, admitted, refuse, bestEffortMirror, ContractCold, type MutationCtx } from '@/lib/sessionMutation'
 import { readGrant, grantStatus, type AuthorizedIdentity } from '@/lib/sessionGrant'
-import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
-import type { WineMeta } from '@/lib/session'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
+import type { WineMeta, SessionMeta } from '@/lib/session'
+import { buildWineEcho } from '@/lib/sessionState'
 
 // A provider's own-wine check (plan § 2, G2): ownership is a privilege, so for
 // a `u:` caller with a grant it is read from the RECORD
@@ -46,11 +48,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
-
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
   const { meta, wines } = opened
   const pp = await participantOrBanned(c, req, session, opened.meta)
   if (pp.status === 'unavailable') return authUnavailable()
@@ -80,7 +81,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // so the critical section is S3-free and touches only the two provenance
   // fields. Record-first since release B (plan D2) — see reassignBroughtBy.
   if (body.broughtByIdentityId !== undefined) {
-    return reassignBroughtBy({ c, wineId, body, identity, isHost, showProvenance: meta.showProvenance !== false })
+    return reassignBroughtBy({ c, wineId, body, identity, isHost, meta, showProvenance: meta.showProvenance !== false })
   }
 
   // ── Catalog link on edit ─────────────────────────────────────────────────
@@ -149,9 +150,9 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // provenance (frozen on edits), the catalog link unless this edit set it
   // deliberately, and 🔒 revealedAt (r3-2 — a concurrent hide must not be undone
   // by this edit's stale copy). The lineup mirror projects the whole array.
-  let written: WineMeta
+  let lineup: WineMeta[]
   try {
-    written = await withSessionMutation(c, { label: 'wine-edit', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
+    lineup = await withSessionMutation(c, { label: 'wine-edit', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
       replacedUrl = null; mirrored = false   // per attempt (r3 P1)
       const caller = admitted(ctx)
       const wine = await currentWine(c, wineId)
@@ -182,7 +183,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       })
       if (isMutateReject(out)) throw refuse(404, out.reject)
       mirrored = await bestEffortMirror(tx, c, 'wine-list', () => mirrorLineup(tx, ctx.row?.id ?? null, out))
-      return out.find(w => w.id === wineId)!
+      return out
     })
   } catch (err) {
     if (uploaded) await reclaimIfUnreferenced(c, uploaded)
@@ -193,14 +194,12 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (replacedUrl && mirrored) reclaimImages([replacedUrl])
   await touchWithMeta(c)
 
-  // Same wire shape as GET so a client storing this response back into
-  // its wines cache doesn't see a different shape than the polling GET
-  // would produce — including the kicked-user fallback for the adder
-  // name, so an edit response and the next poll resolve to the same
-  // `addedByDisplayName` value.
-  const identities = await redis.hGetAll(k.identities(c))
-  const userNameLookup = await buildKickedUserNameLookup([written], identities)
-  return NextResponse.json(wineToWire(written, identity.id, identities, userNameLookup, meta.showProvenance !== false))
+  // The same per-viewer view as the line-up read (lib/sessionState.ts
+  // buildWineEcho), so a client storing this response back into its wines
+  // cache sees what the next poll shows: the kicked-user fallback for the
+  // adder name, and 🔒 Blind for All masking the host too (a no-op edit must
+  // not unmask a bottle on demand; leak-fixes F6).
+  return NextResponse.json(await buildWineEcho(c, meta, identity, lineup, wineId))
 }
 
 // Reassign "Brought by" (bounded v1), RECORD-FIRST inside the session mutation
@@ -212,9 +211,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 // Redis-first compensation could, after a crash). v1 is limited to
 // Postgres-backed moments (docs/dev/proposals/reassign-brought-by.md).
 async function reassignBroughtBy({
-  c, wineId, body, identity, isHost, showProvenance,
+  c, wineId, body, identity, isHost, meta, showProvenance,
 }: {
   c: string
+  meta: SessionMeta
   wineId: string
   body: Record<string, unknown>
   identity: AuthorizedIdentity
@@ -230,17 +230,21 @@ async function reassignBroughtBy({
   if (!showProvenance) {
     return NextResponse.json({ error: 'turn on “show who brought each impression” to change it' }, { status: 400 })
   }
-  // A tombstone (d:) is never a valid new owner.
-  if (!isValidIdentityId(body.broughtByIdentityId) || isTombstoneIdentityId(body.broughtByIdentityId)) {
+  // The WIRE identity (an old client's `u:<int>` is malformed). A tombstone
+  // (d:) is never a valid new owner.
+  const wireTarget = parseWireIdentity(body.broughtByIdentityId)
+  if (!wireTarget || (wireTarget.kind === 'other' && isTombstoneIdentityId(wireTarget.id))) {
     return NextResponse.json({ error: 'invalid identity' }, { status: 400 })
   }
-  const target = body.broughtByIdentityId as string
   try {
     const reassigned = await withSessionMutation(c, { label: 'reassign', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
       const caller = admitted(ctx)
       if (!isHostByIdentity(ctx.meta!, caller)) throw refuse(403, 'only a host or co-host can change who brought an impression')
       const provenanceShown = ctx.row ? ctx.row.showProvenance !== false : ctx.meta!.showProvenance !== false
       if (!provenanceShown) throw refuse(400, 'turn on “show who brought each impression” to change it')
+      // 🔒 An unknown public id takes the not-a-participant answer (§ 4).
+      const target = await internalIdentity(wireTarget, tx)
+      if (!target) throw refuse(400, 'that person is not in this moment')
       // The new owner must be a current participant: live roster entry (its name
       // is the snapshot), not banned or kicked — and admitted by the record for
       // a `u:` target.
@@ -262,8 +266,8 @@ async function reassignBroughtBy({
       const next = wines.slice()
       next[i] = { ...wines[i], addedByIdentityId: target, addedByDisplayName: targetName }
       await reassignProvenance(tx, ctx.row.id, next, next[i])
-      return next[i]
-    }, async (ctx, wine) => {
+      return { lineup: next, wine: next[i] }
+    }, async (ctx, { wine }) => {
       await mutateWines(ctx.fence!, (current) => {
         const i = current.findIndex(w => w.id === wineId)
         if (i === -1) return { reject: 'gone' }
@@ -273,10 +277,10 @@ async function reassignBroughtBy({
       })
     })
     await touchWithMeta(c)
-    const identities = await redis.hGetAll(k.identities(c))
-    const userNameLookup = await buildKickedUserNameLookup([reassigned], identities)
-    // Reaching here means showProvenance is on (gated above).
-    return NextResponse.json(wineToWire(reassigned, identity.id, identities, userNameLookup, true))
+    // The same per-viewer view as the line-up read (Blind for All masks a
+    // hidden bottle in the host's echo too; leak-fixes F6). Reaching here
+    // means showProvenance is on (gated above).
+    return NextResponse.json(await buildWineEcho(c, { ...meta, showProvenance: true }, identity, reassigned.lineup, wineId))
   } catch (err) {
     return contractFailure(err, c, { busy: 429, label: 'reassign' })
   }
@@ -288,9 +292,8 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await resolveUser(req)
-
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
   const { meta, wines } = opened
   const pp = await participantOrBanned(c, req, session, opened.meta)
   if (pp.status === 'unavailable') return authUnavailable()
@@ -335,13 +338,11 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   } catch (err) {
     return contractFailure(err, c, { busy: 429, label: 'wine-delete' })
   }
-  // The wine's S3 image after COMMIT: the URL it referenced (unique-keyed since
-  // r3) and the legacy id-keyed object. Fire-and-forget.
-  // Only when the record's wine row went too (r4 P1-1).
-  if (deleteMirrored) {
-    if (deletedUrl) reclaimImages([deletedUrl])
-    deleteImage(wineId).catch(() => {})
-  }
+  // The wine's S3 image after COMMIT: the URL it referenced (a legacy
+  // id-keyed photo's URL IS its key until the re-key script moves it, so this
+  // one reclaim covers both shapes). Fire-and-forget. Only when the record's
+  // wine row went too (r4 P1-1).
+  if (deleteMirrored && deletedUrl) reclaimImages([deletedUrl])
   await touchWithMeta(c)
   return NextResponse.json({ ok: true })
 }

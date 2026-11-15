@@ -8,8 +8,11 @@ import { prisma } from '@/lib/prisma'
 import { postPlace, type ProfileGateOk } from '@/lib/profileVisibility'
 import { getLevel } from '@/lib/badges'
 import { getProfileFlavor, type FlavorBlock } from '@/lib/profileFlavor'
+import { viewerBlockedAmong } from '@/lib/userBlock'
 import { decimalToNumber } from '@verre/core'
-import { loadSessionFeedWines, sessionIsOver, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
+import { impressionsCount } from '@/lib/profileLists'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 
 export type LoadedCheckin = {
@@ -33,7 +36,8 @@ export type LoadedCheckin = {
   createdAt: Date
   likeCount: number
   liked: boolean
-  tags: { id: number; name: string }[]
+  // `id` is the tagged user's PUBLIC id (lib/publicIds.ts).
+  tags: { id: string; name: string; username: string | null }[]
 }
 
 // Per-wine fan-out shape for a session feed_item on the profile.
@@ -53,8 +57,11 @@ export type LoadedSessionPost = {
 }
 
 export type LoadedProfile = {
-  id: number
+  // The PUBLIC id (public-user-ids § 4): the integer never leaves the server.
+  id: string
   name: string
+  // null = has not chosen one yet (usernames § 10).
+  username: string | null
   xp: number
   imageUrl: string | null
   // Native profile (You, step 2). Full (`ok`) payload only: loadProfile is
@@ -97,21 +104,19 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
-      id: true, name: true, xp: true, imageUrl: true, bio: true, coverPhotoUrl: true,
+      id: true, publicId: true, name: true, username: true, xp: true, imageUrl: true, bio: true, coverPhotoUrl: true,
       lifetimeRatings: true, lifetimeSessionsJoined: true,
       _count: { select: { earnedBadges: true, followers: true, following: true } },
     },
   })
   if (!user) return null
 
-  // "Check-ins" tile counts EVERY tasting (per-wine), not per-post —
-  // a session with 4 rated wines + 1 standalone = 5 check-ins.
-  // Sourced directly from `ratings` so it stays correct today regardless
-  // of the lifetime_ratings parity gap (today's session-rate bumps it,
-  // standalone POST doesn't — captured in .local/future-work-rewire.md).
-  // Cheap on Tim+Simon scale; revisit if the user grows a six-figure
-  // rating history.
-  const tastingCount = gate.sees.posts ? await prisma.rating.count({ where: { userId } }) : null
+  // The Impressions tile (the app) and the web's Tastes tile count EVERY
+  // rating (per bottle, not per post) minus those whose moment's line-up is
+  // hidden from THIS viewer (lists plan D7: a tile counts exactly what its
+  // list shows; the same SQL rule, lib/outsideView.ts). Blind rows still
+  // count: the list shows them as Blind Impression.
+  const tastingCount = gate.sees.posts ? await impressionsCount(userId, viewerId) : null
 
   // Block-pair counts: subtract any follower/following edge where the
   // other end is in a block-pair with the profile owner. Locked design:
@@ -150,8 +155,9 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
     : { hasActiveRatings: flavorFull.hasActiveRatings, avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
 
   const head = {
-    id: user.id,
+    id: user.publicId,
     name: user.name,
+    username: user.username,
     xp: user.xp,
     imageUrl: user.imageUrl,
     bio: user.bio,
@@ -178,6 +184,9 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   //
   // Never ship lat/lng on the public wire. No per-row visibility filter
   // here — the gate's `sees.posts` handled it above.
+  // 🔒 A moment post whose line-up is hidden from this viewer is left out in
+  // the query (lib/outsideView.ts), like the feed.
+  const hidden = await hiddenSessionIds(viewerId, [userId])
   const standaloneFeedItems = await prisma.feedItem.findMany({
     where: { userId, kind: 'standalone' },
     orderBy: { createdAt: 'desc' },
@@ -186,7 +195,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
       id: true,
       venueName: true, city: true, country: true, createdAt: true,
       _count: { select: { likes: true } },
-      tags: { include: { user: { select: { id: true, name: true } } } },
+      tags: { include: { user: { select: { id: true, publicId: true, name: true, username: true } } } },
       rating: {
         select: {
           score: true, flavors: true, aromas: true, notes: true,
@@ -207,7 +216,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   // for users with a strong skew either way; the renderer will slice as
   // appropriate. At Tim+Simon scale this is two cheap queries.
   const sessionFeedItems = await prisma.feedItem.findMany({
-    where: { userId, kind: 'session' },
+    where: { userId, kind: 'session', ...notHiddenPosts(hidden) },
     orderBy: { createdAt: 'desc' },
     take: 10,
     select: {
@@ -215,28 +224,16 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
       _count: { select: { likes: true } },
       session: {
         select: {
-          id: true, code: true, name: true, deletedAt: true, blind: true, blindForEveryone: true, dateFrom: true, dateTo: true, createdAt: true,
-          hostName: true, hostUserId: true,
+          id: true, name: true, deletedAt: true, blind: true, hostName: true,
         },
       },
     },
   })
 
-  // Per-wine bulk-load for the session feed_items, mirroring /api/feed.
-  // Tombstoned + expired short-circuits — see SessionFeedPair comment.
-
-  const sessionPairs: SessionFeedPair[] = sessionFeedItems.flatMap(f => {
-    if (!f.session) return []
-    return [{
-      authorId: userId,
-      sessionId: f.session.id,
-      blind: !!f.session.blind,
-      blindForEveryone: !!f.session.blindForEveryone,
-      deleted: !!f.session.deletedAt,
-      expired: !f.session.deletedAt && sessionIsOver(f.session),
-      hostUserId: f.session.hostUserId ?? null,
-    }]
-  })
+  // Per-wine bulk-load for the session feed_items, mirroring /api/feed (the
+  // one SQL rule decides what each bottle shows, lib/outsideView.ts).
+  const sessionPairs: SessionFeedPair[] = sessionFeedItems.flatMap(f =>
+    f.session ? [{ authorId: userId, sessionId: f.session.id }] : [])
   const sessionWines = await loadSessionFeedWines(sessionPairs, viewerId)
 
   // Hydrate viewer's "liked" state across BOTH standalone and session
@@ -281,20 +278,12 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   // session-rate), so only standalone matters here. The "other side" of
   // each block-pair row (not the profile owner) is the user id to filter
   // out of the tag list.
-  const tagUserIds = standaloneFeedItems.flatMap(f => f.tags.map(t => t.user.id))
-  const blockedTagUserIds = tagUserIds.length > 0
-    ? new Set(
-        (await prisma.userBlock.findMany({
-          where: {
-            OR: [
-              { blockerId: userId, blockedId: { in: tagUserIds } },
-              { blockedId: userId, blockerId: { in: tagUserIds } },
-            ],
-          },
-          select: { blockerId: true, blockedId: true },
-        })).map(b => b.blockerId === userId ? b.blockedId : b.blockerId)
-      )
-    : new Set<number>()
+  const tagUserIds = [...new Set(standaloneFeedItems.flatMap(f => f.tags.map(t => t.user.id)))]
+  const blockedTagUserIds = await viewerBlockedAmong(userId, tagUserIds)
+  // …and a tag of someone in a block pair with the VIEWER, either way
+  // (leak-fixes F6): you never see someone you blocked or who blocked you on
+  // anyone's list. Absence is no tell (you don't know who was tagged).
+  const viewerTagBlocked = viewerId === userId ? blockedTagUserIds : await viewerBlockedAmong(viewerId, tagUserIds)
 
   return {
     ...head,
@@ -328,15 +317,18 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
         createdAt: f.createdAt,
         likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
         liked: likedSet.has(f.id),
-        tags: (f.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id)).map(t => t.user),
+        tags: (f.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id) && !viewerTagBlocked.has(t.user.id)).map(t => ({ id: t.user.publicId, name: t.user.name, username: t.user.username })),
       }]
     }),
-    recentSessionPosts: sessionFeedItems.map<LoadedSessionPost>(f => {
+    recentSessionPosts: sessionFeedItems.flatMap<LoadedSessionPost>(f => {
       const deleted = !!f.session?.deletedAt
       const wines = !f.session
         ? []
         : (sessionWines.get(pairKey(userId, f.session.id)) ?? [])
-      return {
+      // The feed's empty-post drop (app/api/feed/route.ts): a LIVE moment post
+      // with nothing left to show is not rendered (a tombstone still is).
+      if (!deleted && wines.length === 0) return []
+      return [{
         id: f.id,
         sessionId: f.session?.id ?? null,
         // §8 contract: when soft-deleted, the session's name + hostName
@@ -350,7 +342,8 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
         createdAt: f.createdAt,
         likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
         liked: likedSet.has(f.id),
-      }
+      }]
     }),
   }
 }
+

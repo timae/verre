@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
+import { touchWithMeta } from '@/lib/redis'
+import { isHostByIdentity } from '@/lib/session'
+import { buildWineEcho } from '@/lib/sessionState'
 import { normalizeCode } from '@verre/core'
 import { openAsParticipant, hostLineupWrite } from '@/lib/sessionRoute'
 import { isSameOrigin } from '@/lib/csrf'
@@ -34,13 +35,12 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return next
   })
   if (out instanceof NextResponse) return out
-  const revealedWine = out.find(w => w.id === wineId)!
   await touchWithMeta(c)
 
-  const identities = await redis.hGetAll(k.identities(c))
-  const userNameLookup = await buildKickedUserNameLookup([revealedWine], identities)
+  // The same per-viewer view as the line-up read (Blind for All masks the
+  // host's echo of a hidden bottle too).
   return NextResponse.json(
-    { ok: true, wine: wineToWire(revealedWine, identity.id, identities, userNameLookup, meta.showProvenance !== false) },
+    { ok: true, wine: await buildWineEcho(c, meta, identity, out, wineId) },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }
@@ -69,13 +69,12 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     return next
   })
   if (out instanceof NextResponse) return out
-  const hiddenWine = out.find(w => w.id === wineId)!
   await touchWithMeta(c)
 
-  const identities = await redis.hGetAll(k.identities(c))
-  const userNameLookup = await buildKickedUserNameLookup([hiddenWine], identities)
+  // The same per-viewer view as the line-up read (Blind for All masks the
+  // host's echo of a hidden bottle too).
   return NextResponse.json(
-    { ok: true, wine: wineToWire(hiddenWine, identity.id, identities, userNameLookup, meta.showProvenance !== false) },
+    { ok: true, wine: await buildWineEcho(c, meta, identity, out, wineId) },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

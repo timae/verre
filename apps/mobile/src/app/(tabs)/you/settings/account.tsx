@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Platform, View } from 'react-native';
-import { SetNav, SetPage, SetTitle } from '@/components/moments/settingsParts';
+import { SetNav, SetPage, SetTitle, failedReads } from '@/components/moments/settingsParts';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
@@ -214,7 +214,7 @@ export default function Account() {
     // The cardless settings standard (ruled 2026-11-11, as Privacy): a
     // SetTitle per section, 32 apart, bare rows ~12 apart. Delete Account
     // stands alone at the end.
-    <SetPage title="Account" gap={32} bottomPad={TAB_BAR_CLEARANCE + 100}>
+    <SetPage title="Account" gap={32} bottomPad={TAB_BAR_CLEARANCE + 100} offline={failedReads(account, devices)}>
       <View>
         <SetTitle>Email and Password</SetTitle>
         <SetNav bare flush icon="mail" label="Email" value={account.data?.email ?? ''} onPress={() => router.push(settingsHref(mount, 'change-email'), { dangerouslySingular: true })} />

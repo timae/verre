@@ -7,7 +7,11 @@
 // — a session rating always names its rater, a live user or the (deleted
 // user, session) tombstone key. Account deletion is structured around that
 // refusal; dropping or loosening it would let a rating lose its rater with
-// every test still green. Sibling of check-catalog-contract-checks.mjs, much
+// every test still green. Also the two stored identity strings
+// (session_bans.identity_id, wines.added_by_identity_id: the internal
+// `u:<int>` / `a:` / `d:` shapes only, public-user-ids § 3), so a missed
+// inbound translation fails loudly instead of storing a ban that never
+// matches. Sibling of check-catalog-contract-checks.mjs, much
 // smaller: the tables below are not an import contract, so only the CHECK
 // bodies are compared.
 //
@@ -28,7 +32,7 @@ import { createPrismaClient } from './lib/prismaClient.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SNAPSHOT = join(root, 'prisma', 'session-record-checks.json')
-const TABLES = ['ratings', 'sessions', 'session_members', 'session_bans', 'session_tombstones']
+const TABLES = ['ratings', 'sessions', 'session_members', 'session_bans', 'session_tombstones', 'wines']
 
 const prisma = createPrismaClient()
 try {

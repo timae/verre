@@ -13,6 +13,7 @@ import { engagementCascadeIn, reclaimImages } from '@/lib/engagementCascade'
 import { withSessionMutation, admitted, refuse, ContractCold, ratingKeyWrite } from '@/lib/sessionMutation'
 import { contractFailure } from '@/lib/sessionRehydrate'
 import { openAsParticipant } from '@/lib/sessionRoute'
+import { lineupHiddenFor } from '@/lib/sessionState'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -20,7 +21,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await resolveUser(req)
-  // Reject malformed bodies up front so a stray empty/garbage POST
+  // The entrance gate first (leak-fixes F2). Identity comes from the auth
+  // cookie or x-vr-anon-token, never the body; the ban/kick gate runs against
+  // the record for a `u:` caller of a Postgres-backed session (and is re-made
+  // under the locks below).
+  const op = await openAsParticipant(c, req, session, 'identity required')
+  if (op instanceof NextResponse) return op
+  const { identity } = op
+  // Reject malformed bodies so a stray empty/garbage POST
   // doesn't produce a 500. The validators below also reject negatives,
   // floats, strings, arrays and objects masquerading as numbers — the
   // previous `score || 0` fallback let any truthy value land in Redis.
@@ -53,15 +61,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     return NextResponse.json({ error: 'notes too long' }, { status: 400 })
   }
 
-  // Identity comes from the auth cookie or x-vr-anon-token, never the body; the
-  // ban/kick gate runs against the record for a `u:` caller of a
-  // Postgres-backed session (and is re-made under the locks below).
-  const op = await openAsParticipant(c, req, session, 'identity required')
-  if (op instanceof NextResponse) return op
-  const { identity } = op
   // Early 404 for a wine that isn't in the session (re-checked under the locks):
   // a rate landing after a wine DELETE must not write an orphan rating.
-  if (!op.wines.some(w => w.id === wineId)) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
+  // …and the same 404 for a line-up hidden from the caller (an early reject:
+  // the decision is re-made under the locks below).
+  if (!op.wines.some(w => w.id === wineId) || lineupHiddenFor(op.meta, identity)) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
 
   const ratingScore = sc.value ?? 0
   const validFlavors = fl.value
@@ -110,7 +114,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
       if (raw === null) throw new ContractCold(c)
       const wines = JSON.parse(raw) as WineMeta[]
       const wine = wines.find(w => w.id === wineId)
-      if (!wine) throw refuse(404, 'wine not found')
+      // 🔒 A hidden line-up (the live rule, decided here from the fresh grant +
+      // meta) is the same 404: the read hides the bottle, so must the write.
+      if (!wine || !ctx.meta || lineupHiddenFor(ctx.meta, caller)) throw refuse(404, 'wine not found')
       // §6g gate + §5 zero-fill in one: the stored shape holds for every writer
       // whatever the client sent (an off-style zero key is stripped; a non-zero
       // descriptor key from a stale client → 400).

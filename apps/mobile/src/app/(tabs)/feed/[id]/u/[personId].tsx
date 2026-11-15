@@ -1,4 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
+import { normalizePublicUserId } from '@verre/core';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { ProfileScreen } from '@/components/profile/ProfileScreen';
 
@@ -8,7 +9,9 @@ import { ProfileScreen } from '@/components/profile/ProfileScreen';
 // is `personId`. The outer profile is feed/u/[id].tsx.
 export default function PostStackProfile() {
   const { personId } = useLocalSearchParams<{ personId: string }>();
-  const userId = Number(personId);
-  if (!Number.isInteger(userId) || userId < 1) return <CenteredMessage title="This profile isn’t available" />;
+  // A PUBLIC id (case-insensitive, canonical uppercase); an old integer link
+  // or anything else is not a person.
+  const userId = normalizePublicUserId(personId);
+  if (!userId) return <CenteredMessage title="This profile isn’t available" />;
   return <ProfileScreen userId={userId} />;
 }

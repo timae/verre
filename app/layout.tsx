@@ -1,8 +1,11 @@
 import type { Metadata, Viewport } from 'next'
 import { SessionProvider } from 'next-auth/react'
 import { auth } from '@/auth'
+import type { Session } from 'next-auth'
+import { clientSession } from '@/lib/clientSession'
 import { QueryProvider } from '@/components/QueryProvider'
 import { ImageLightbox } from '@/components/ui/ImageLightbox'
+import { UsernameGate } from '@/components/auth/UsernameGate'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -35,9 +38,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <script dangerouslySetInnerHTML={{__html:`(function(){var t=localStorage.getItem('vr_theme');if(t)document.documentElement.setAttribute('data-theme',t)})()`}} />
       </head>
       <body>
-        <SessionProvider session={session}>
+        {/* 🔒 Serialized into every page: the client copy (public id, no
+            userSessionId), never the server session (public-user-ids § 5). */}
+        <SessionProvider session={clientSession(session) as Session | null}>
           <QueryProvider>
-            {children}
+            <UsernameGate>{children}</UsernameGate>
             <ImageLightbox />
           </QueryProvider>
         </SessionProvider>

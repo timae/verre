@@ -5,9 +5,13 @@
     "sessions",
     "session_members",
     "session_bans",
-    "session_tombstones"
+    "session_tombstones",
+    "wines"
   ],
   "checks": {
-    "ratings.ratings_session_rater_known": "CHECK (((session_id IS NULL) OR (user_id IS NOT NULL) OR (tombstone_key IS NOT NULL)))"
+    "ratings.ratings_session_rater_known": "CHECK (((session_id IS NULL) OR (user_id IS NOT NULL) OR (tombstone_key IS NOT NULL)))",
+    "session_bans.session_bans_identity_id_chk": "CHECK ((((identity_id)::text ~ '^u:[0-9]+$'::text) OR ((identity_id)::text ~* '^a:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text) OR ((identity_id)::text ~* '^d:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)))",
+    "wines.wines_added_by_identity_id_chk": "CHECK (((added_by_identity_id IS NULL) OR ((added_by_identity_id)::text ~ '^u:[0-9]+$'::text) OR ((added_by_identity_id)::text ~* '^a:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text) OR ((added_by_identity_id)::text ~* '^d:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)))",
+    "wines.wines_catalog_link_check": "CHECK (((vintage_id IS NULL) OR (product_id IS NOT NULL)))"
   }
 }

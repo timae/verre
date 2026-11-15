@@ -14,22 +14,28 @@ import { motion, useTheme } from '@/theme';
 // `titleShown` makes the title a SCROLL title (the profile: it appears once
 // the header's name has scrolled under the bar); unset = always shown.
 // `titleLeading` sits before it (the profile's 26pt photo). `back={false}`
-// drops the chevron (a tab root) and its optical outdent.
+// drops the chevron (a tab root) and its optical outdent. `titleSlot`
+// replaces the title (a moment's host: the held title, then its field).
 export function VBar({
   title,
   right,
   titleShown,
   titleLeading,
+  titleSlot,
   back = true,
   onBack,
+  backCapture,
 }: {
   title: string;
   right?: React.ReactNode;
   titleShown?: boolean;
   titleLeading?: React.ReactNode;
+  titleSlot?: React.ReactNode;
   back?: boolean;
   /** Replaces the default router.back() (e.g. a stack-root fallback). */
   onBack?: () => void;
+  /** A never-claiming capture on the back button (the edit-bar shake skips it). */
+  backCapture?: () => boolean;
 }) {
   const { theme } = useTheme();
   const router = useRouter();
@@ -46,18 +52,21 @@ export function VBar({
           accessibilityRole="button"
           accessibilityLabel="Back"
           onPress={onBack ?? (() => router.back())}
+          onStartShouldSetResponderCapture={backCapture}
           hitSlop={8}
           style={({ pressed }) => ({ width: controlSize, height: controlSize, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
         >
           <Icon name="back" size={iconSize} color={theme.ink} />
         </Pressable>
       ) : null}
-      <BarTitle
-        title={title}
-        leading={titleLeading}
-        progress={titleShown === undefined ? undefined : progress}
-        hidden={titleShown === false}
-      />
+      {titleSlot ?? (
+        <BarTitle
+          title={title}
+          leading={titleLeading}
+          progress={titleShown === undefined ? undefined : progress}
+          hidden={titleShown === false}
+        />
+      )}
       {right}
     </View>
   );

@@ -6,10 +6,12 @@ import { participantOrBanned, authInvalid, authRemoved, authUnavailable } from '
 import { type SessionMeta, isHostByIdentity, isStrictHost, isHostless } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
-import { buildMetaView, viewerUserIdFrom } from '@/lib/sessionState'
+import { buildMetaView, viewerUserIdFrom, metaToWire } from '@/lib/sessionState'
+import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { withSessionMutation, refuse } from '@/lib/sessionMutation'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
-import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 
 // Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and
 // lib/session.ts. Adding a third named export to lib/s3.ts trips a Next 15.5 /
@@ -44,10 +46,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
-
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
   const p = await participantOrBanned(c, req, session, opened.meta)
   if (p.status === 'unavailable') return authUnavailable()
   if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
@@ -72,12 +73,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { targetId: targetIdFromBody, action, role: roleFromBody } = body as Record<string, unknown>
-
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
   // Banned/kicked callers get the `removed` bounce header (same as the polled
   // GETs and wine routes) so their client reroutes to /join/<C>?removed=1.
   const pp = await participantOrBanned(c, req, session, opened.meta)
@@ -111,8 +111,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
       // The target must be part of this session — an identities-map entry, or
       // for a `u:` of a Postgres-backed session the record (member or rater).
       // Object.hasOwn guards prototype names (`__proto__`, `constructor`).
-      if (typeof targetIdFromBody !== 'string' || !targetIdFromBody) throw refuse(400, 'targetId required')
-      const targetId = targetIdFromBody
+      // 🔒 The body carries the WIRE identity (`u:<publicId>`); a malformed one
+      // (an old client's `u:<int>`) and an unknown one both take the
+      // nonexistent-target answer, after the gates (public-user-ids § 4).
+      const wireTarget = parseWireIdentity(targetIdFromBody)
+      const targetId = wireTarget ? await internalIdentity(wireTarget, tx) : null
+      if (!targetId) throw refuse(400, 'targetId required')
       const identities = await redis.hGetAll(k.identities(c))
       const targetUserId = /^u:\d{1,18}$/.test(targetId) ? Number(targetId.slice(2)) : null
       const member = ctx.row && targetUserId !== null
@@ -174,7 +178,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
       if (r.project) await ctx.fence!.exec(m => { m.set(k.meta(c), JSON.stringify(r.meta), { XX: true, KEEPTTL: true }) })
     })
     // Carries coHostIds/providerIds — private, no-store like the GET.
-    return NextResponse.json({ ok: true, meta }, { headers: { 'Cache-Control': 'private, no-store' } })
+    return NextResponse.json({ ok: true, meta: await metaToWire(meta) }, { headers: { 'Cache-Control': 'private, no-store' } })
   } catch (err) {
     return contractFailure(err, c, { busy: 429, label: 'set-role' })
   }
@@ -207,9 +211,8 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await resolveUser(req)
-
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
 
   // Banned/kicked callers get the `removed` bounce header (same protocol as the
   // polled GETs and wine routes).

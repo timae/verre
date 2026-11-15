@@ -1,6 +1,7 @@
 'use client'
 import { useRef, useState } from 'react'
 import Link from 'next/link'
+import { profilePath } from '@verre/core'
 import { CheckinModal } from './CheckinModal'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
@@ -23,9 +24,9 @@ interface Props {
     venueName?: string|null; city?: string|null; country?: string|null
     flavors?: Record<string,number>|null; likeCount?: number
     aromas?: {a:string;m:string|null;p?:boolean}[]|null
-    createdAt?: string|Date|null; tags?: {id:number;name:string}[]
+    createdAt?: string|Date|null; tags?: {id:string;name:string}[]
   }
-  author?: {id:number;name:string;xp?:number;imageUrl?:string|null}|null
+  author?: {id:string;name:string;xp?:number;imageUrl?:string|null}|null
   liked?: boolean; showAuthor?: boolean; onDelete?: ()=>void; onEdited?: ()=>void; isOwn?: boolean
   // When provided on a non-own card, shows the "+ had a sip" button in the
   // same slot the edit button takes on own cards. Caller is responsible for
@@ -53,7 +54,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
       {/* ── Author row ─────────────────────────── */}
       {showAuthor && author && (
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
-          <Link href={`/u/${author.id}`} style={{ textDecoration:'none', display:'flex', alignItems:'center', gap:10 }}>
+          <Link href={profilePath(author.id)} style={{ textDecoration:'none', display:'flex', alignItems:'center', gap:10 }}>
             <Avatar name={author.name} imageUrl={author.imageUrl} size={40} />
             <div>
               <div style={{ fontSize:13, fontWeight:700, color:'var(--fg)', lineHeight:1.2 }}>{author.name}</div>
@@ -136,7 +137,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
             {checkin.tags && checkin.tags.length > 0 && (
               <div style={{ fontSize:10, color:'var(--fg-dim)', marginBottom:6 }}>
                 👥 with {checkin.tags.map((t,i) => (
-                  <span key={t.id}>{i>0&&', '}<a href={`/u/${t.id}`} style={{ color:'var(--accent)', textDecoration:'none' }}>{t.name}</a></span>
+                  <span key={t.id}>{i>0&&', '}<a href={profilePath(t.id)} style={{ color:'var(--accent)', textDecoration:'none' }}>{t.name}</a></span>
                 ))}
               </div>
             )}

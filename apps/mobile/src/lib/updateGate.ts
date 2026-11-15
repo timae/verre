@@ -32,6 +32,24 @@ export interface UpdateRequiredBody {
 let pending: UpdateRequiredBody | null = null;
 let navigationReady = false;
 
+// The pending body as SUBSCRIBABLE state (useSyncExternalStore in
+// `_layout.tsx`): while the session is unknown or stale no navigator is
+// mounted, so the layout renders the update screen itself in place of the
+// neutral screen (public-user-ids § 6). The buffered body is still the one
+// markUpdateNavigationReady() routes once a Stack exists.
+const listeners = new Set<() => void>();
+function setPending(next: UpdateRequiredBody | null) {
+  pending = next;
+  for (const l of listeners) l();
+}
+export function subscribePendingUpdate(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+export function getPendingUpdate(): UpdateRequiredBody | null {
+  return pending;
+}
+
 // Seam for tests — production never swaps this, so it always routes through
 // expo-router.
 type Replace = (body: UpdateRequiredBody) => void;
@@ -47,7 +65,7 @@ export function routeToUpdateRequired(body: UpdateRequiredBody | null) {
   const next = body ?? {};
   if (!navigationReady) {
     // Latest wins: a newer 426 carries the server's current requirement.
-    pending = next;
+    setPending(next);
     return;
   }
   replaceImpl(next);
@@ -61,14 +79,14 @@ export function markUpdateNavigationReady() {
   navigationReady = true;
   if (!pending) return;
   const body = pending;
-  pending = null; // cleared only here, on the known-ready path
+  setPending(null); // cleared only here, on the known-ready path
   replaceImpl(body);
 }
 
 // ── Test seam ──────────────────────────────────────────────────────────────
 // Not called by application code.
 export function __resetUpdateGate(replace?: Replace) {
-  pending = null;
+  setPending(null);
   navigationReady = false;
   replaceImpl = replace ?? defaultReplace;
 }

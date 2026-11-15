@@ -1,4 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
+import { normalizePublicUserId } from '@verre/core';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { PeopleScreen } from '@/components/people/PeopleScreen';
 import { peopleTab } from '@/lib/api/people';
@@ -8,7 +9,9 @@ import { peopleTab } from '@/lib/api/people';
 // post already holds `id` in this route tree; the person is `personId`.
 export default function PostStackPeople() {
   const { personId, tab, known } = useLocalSearchParams<{ personId: string; tab?: string; known?: string }>();
-  const userId = Number(personId);
-  if (!Number.isInteger(userId) || userId < 1) return <CenteredMessage title="These people aren’t available" />;
+  // A PUBLIC id (case-insensitive, canonical uppercase); an old integer link
+  // or anything else is not a person.
+  const userId = normalizePublicUserId(personId);
+  if (!userId) return <CenteredMessage title="These people aren’t available" />;
   return <PeopleScreen userId={userId} initialTab={peopleTab(tab)} initialKnown={known === '1'} />;
 }

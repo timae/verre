@@ -1,6 +1,7 @@
 import type { InfiniteData, QueryClient } from '@tanstack/react-query';
 import { FEED_KEY, feedItemId, feedKey, setFeedItemLike, type FeedItem, type FeedPage } from '@/lib/api/feed';
 import { profileKey } from '@/lib/api/users';
+import { PROFILE_LIST_KEY } from '@/lib/api/lists';
 import { viewerCacheEpoch } from '@/lib/query';
 import { useSyncExternalStore } from 'react';
 
@@ -80,7 +81,7 @@ export function refetchNetworkFeed(queryClient: QueryClient) {
 // One person's post list (['feed', 'user', id]) — after a follow / unfollow,
 // which can flip whether their Check-Ins Visible To shows you their posts
 // while the profile itself stays visible.
-export function refetchUserFeed(queryClient: QueryClient, userId: number) {
+export function refetchUserFeed(queryClient: QueryClient, userId: string) {
   return cancelThenRefetch(queryClient, { queryKey: feedKey(userId), exact: true });
 }
 
@@ -97,15 +98,39 @@ export function dropUnmountedFeedCaches(queryClient: QueryClient) {
 // header: impression count, average, tile photo. The header is a plain query,
 // not an infinite list, so invalidating it is safe (the never-invalidate rule
 // above is about the feed lists): mounted headers refetch, others on next open.
-export async function invalidateProfileHeader(queryClient: QueryClient, authorId: number | null) {
+export async function invalidateProfileHeader(queryClient: QueryClient, authorId: string | null) {
   if (authorId == null) return;
   const filters = { queryKey: profileKey(authorId), exact: true };
   await queryClient.cancelQueries(filters); // see cancelThenRefetch
+  // Their tile lists show the same posts (lists plan D12): refreshed with it.
+  void refetchProfileLists(queryClient, authorId);
   await queryClient.invalidateQueries(filters);
 }
 
+// After a write INSIDE a moment (a rate, a Crave) your header (tile counts,
+// tile photo) is only MARKED stale: your profile refetches it when it is in
+// front again (ProfileScreen), and the lists refetch on their own refocus
+// (useListRefresh). A tasting saves often while the You tab stays mounted, and
+// the header read is limited per IP (`rl:profile`, 60/min): a room on one
+// Wi-Fi would spend it in the background. An in-flight read may predate the
+// write, so it is cancelled first (a cancelled refetch keeps its data) and its
+// answer can't clear the mark; a first load (no data yet) is left to finish.
+export async function markProfileHeaderStale(queryClient: QueryClient, userId: string | null) {
+  if (userId == null) return;
+  const filters = { queryKey: profileKey(userId), exact: true };
+  if (queryClient.getQueryData(profileKey(userId)) !== undefined) await queryClient.cancelQueries(filters);
+  await queryClient.invalidateQueries({ ...filters, refetchType: 'none' });
+}
+
+// One person's MOUNTED tile lists (['profile-list', kind, id, …], lists plan
+// D12), every kind, in place: cancel, then refetch, never blanked.
+export function refetchProfileLists(queryClient: QueryClient, userId: string | null) {
+  if (userId == null) return Promise.resolve();
+  return cancelThenRefetch(queryClient, { queryKey: PROFILE_LIST_KEY, type: 'active', predicate: (q) => q.queryKey[2] === userId });
+}
+
 // A profile header after a relationship write (cancel first, as above).
-export function refetchProfileHeader(queryClient: QueryClient, userId: number) {
+export function refetchProfileHeader(queryClient: QueryClient, userId: string) {
   return cancelThenRefetch(queryClient, { queryKey: profileKey(userId), exact: true });
 }
 

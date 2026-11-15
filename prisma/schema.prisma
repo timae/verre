@@ -20,6 +20,26 @@ datasource db {
 
 model User {
   id                        Int                    @id @default(autoincrement())
+  // The ONLY user id the wire carries (docs/dev/proposals/public-user-ids.md):
+  // 12 Crockford characters, letter first. 🔒 Minted by the BEFORE INSERT
+  // trigger `users_public_id_mint` whatever an insert supplies (the DEFAULT is
+  // for the backfill and this declaration; never write it), immutable by
+  // `users_public_id_immutable`, format CHECK `users_public_id_format_chk`
+  // (all three invisible to migrate diff, pinned by the you-profile suite
+  // § 18). The integer stays the internal id everywhere; lib/publicIds.ts
+  // translates at the edge.
+  publicId                  String                 @unique @default(dbgenerated("gen_public_user_id()")) @map("public_id") @db.VarChar(12)
+  // The unique lookup and display name, `@simon` (docs/dev/proposals/usernames.md).
+  // NULL = has not chosen yet, for good (no later NOT NULL). Carries no trust.
+  // 🔒 Hand-written in `20261114090000_usernames`, invisible to migrate diff,
+  // pinned by the you-profile suite § 19: the format CHECK
+  // `users_username_format_chk` (= `isUsernameFormat`, @verre/core), the hold
+  // triggers on `users_username_hold()` (a renamed or deleted name is held 14
+  // days; a held name fails like a taken one), `users_username_keep` (set once,
+  // never back to NULL). 🔒 Written only under READ COMMITTED and only through
+  // MODEL calls (a raw statement surfaces a conflict as P2010, not P2002);
+  // lib/username.ts and the two sign-ups are the only writers (CI census).
+  username                  String?                @unique @db.VarChar(30)
   name                      String                 @db.VarChar(64)
   email                     String                 @unique @db.VarChar(255)
   // Nullable since native auth (Better Auth): a social-only user (Google/Apple)
@@ -70,6 +90,14 @@ model User {
   tileImpressionsUrl        String?                @map("tile_impressions_url") @db.VarChar(512)
   tileMomentsUrl            String?                @map("tile_moments_url") @db.VarChar(512)
   tileCravingsUrl           String?                @map("tile_cravings_url") @db.VarChar(512)
+  // Tile ownership (D2): the tile shows the user's OWN upload iff
+  // tile_*_url = tile_*_own_url. Written in the same update as the URL; a URL
+  // match rather than a boolean so a writer that ignores the column (the
+  // previous release during a rolling deploy) can only make it unequal (an
+  // orphan, never someone else's bytes). lib/profileTiles.ts isOwnTile.
+  tileImpressionsOwnUrl     String?                @map("tile_impressions_own_url") @db.VarChar(512)
+  tileMomentsOwnUrl         String?                @map("tile_moments_own_url") @db.VarChar(512)
+  tileCravingsOwnUrl        String?                @map("tile_cravings_own_url") @db.VarChar(512)
   // Profile visibility — see lib/profileVisibility.ts. Stored as VARCHAR(32)
   // (not a Postgres enum) so a future tier ('private', etc.) is a code-only
   // change. A CHECK constraint is hand-added in the migration; the lib-side
@@ -104,6 +132,8 @@ model User {
   userSessions              UserSession[]
   authAccounts              AuthAccount[]
   authSessions              AuthSession[]
+  usernameHolds             UsernameHold[]
+  usernameChanges           UsernameChange[]
   staffRoles                StaffRole[]            @relation("StaffRoleHolder")
   staffRolesGranted         StaffRole[]            @relation("StaffRoleGranter")
   // Catalog attribution. All SetNull — community catalog rows are never
@@ -121,7 +151,41 @@ model User {
   // index-eligible; without it the index would only support the default
   // tsvector lookups.
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  // The same for the username side of people search (`u.username LIKE …`).
+  @@index([username(ops: raw("gin_trgm_ops"))], type: Gin)
   @@map("users")
+}
+
+// A username nobody else may take yet (usernames § 3): the most recent old
+// name after a rename (held for its former owner, clear text kept so they can
+// be shown "switch back"), an earlier old name or a deleted account's name (no
+// user, no clear text, until its own date: the one row that survives a deleted
+// account on purpose), or a moderation block (no user, no end date). Written ONLY
+// by the triggers on `users`; `username_is_held(name, for_user)` is the one
+// spelling of the hash and of "a live hold by someone else". The hash is a
+// plain SHA-256: guessable by whoever holds the database (ruled, D1).
+model UsernameHold {
+  nameHash  Bytes    @id @map("name_hash")
+  userId    Int?     @map("user_id")
+  username  String?  @db.VarChar(30)
+  heldUntil DateTime @map("held_until") @db.Timestamptz(6)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([heldUntil])
+  @@map("username_holds")
+}
+
+// The rename quota's durable home (5 per rolling 90 days, lib/username.ts).
+// One row per counted change; a first choice and an operator rename add none.
+model UsernameChange {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  changedAt DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, changedAt])
+  @@map("username_changes")
 }
 
 // Audit trail of every change to the visibility settings (profile tier, FoF,
@@ -650,6 +714,9 @@ model Follow {
 
   @@id([followerId, followingId])
   @@index([followingId])
+  // People lists, newest follow first (lib/profilePeople.ts).
+  @@index([followingId, createdAt])
+  @@index([followerId, createdAt])
   @@map("follows")
 }
 

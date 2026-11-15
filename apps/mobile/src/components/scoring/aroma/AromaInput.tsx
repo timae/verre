@@ -8,7 +8,7 @@ import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { AnchoredMenu, AnchorButton, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { usePhoneTokens } from '@/lib/layout';
 import { useTheme } from '@/theme';
-import { useAromaOps, useTapOrDouble, AromaChip, RefineAddRow, SelectedChipsRow, canonicalPair, capFirst } from './parts';
+import { useAromaOps, useTapOrDouble, AromaChip, RefineAddRow, SelectedChipsRow, canonicalPair, capFirst, RATING_CAP_TEXT } from './parts';
 import { SelectionSheet } from './SelectionSheet';
 import { CanvasPicker } from './CanvasPicker';
 
@@ -48,6 +48,9 @@ export function AromaInput({
   value,
   onChange,
   onRequestScroll,
+  bare = false,
+  limitText = RATING_CAP_TEXT,
+  overflowSheet,
 }: {
   value: AromaSelection[];
   onChange: (v: AromaSelection[]) => void;
@@ -56,6 +59,12 @@ export function AromaInput({
   // below that point (field + suggestions + refine row + cap hint) — the
   // screen scrolls the minimal shift that fits the block above the keyboard.
   onRequestScroll?: (rowTopInWindow: number, blockBelow: number) => void;
+  /** No "Aromas" heading + hint + ⓘ: the host names it (Filter for Aromas). */
+  bare?: boolean;
+  /** The cap-rejection line, search AND canvas (a filter isn't "an impression"). */
+  limitText?: string;
+  /** Inside another sheet: the "+N more" sheet must push onto it. */
+  overflowSheet?: { stackBehavior: 'push'; layer: number };
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -149,7 +158,7 @@ export function AromaInput({
     <View>
       {/* section header — same weight/rhythm as the Structure Profile row,
           with the one-line hint + ⓘ explainer the structure panel also has. */}
-      <View style={{ paddingTop: 15, paddingBottom: 11, gap: 4 }}>
+      {bare ? null : <View style={{ paddingTop: 15, paddingBottom: 11, gap: 4 }}>
         <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>Aromas</VText>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           {/* flexShrink so long Dynamic Type wraps instead of pushing the ⓘ
@@ -159,7 +168,7 @@ export function AromaInput({
           </VText>
           <AnchorButton icon="info" iconColor={theme.inkSoft} accessibilityLabel="How Aromas Work" onOpen={setHelpAnchor} />
         </View>
-      </View>
+      </View>}
       <AnchoredMenu anchor={helpAnchor} onClose={() => setHelpAnchor(null)} right={16} minWidth={280}>
         <View style={{ paddingHorizontal: 14, paddingVertical: 12, gap: 12, maxWidth: 300 }}>
           <VText variant="small" style={{ color: theme.ink, fontFamily: 'InstrumentSans_600SemiBold' }}>
@@ -312,7 +321,7 @@ export function AromaInput({
             makes room (the spec bans a counter, not a rejection message). */}
         {q && capHit ? (
           <VText variant="small" style={{ marginTop: 8, textAlign: 'center', color: theme.critical }}>
-            Limit reached: an impression holds up to {AROMA_SELECTION_CAP} aromas.
+            {limitText}
           </VText>
         ) : null}
       </View>
@@ -327,7 +336,7 @@ export function AromaInput({
           {/* onEnsureVisible: the picker measures its OWN refine row in
               window coords; the screen hook scrolls the minimal shift that
               fits it above the keyboard/screen bottom. */}
-          <CanvasPicker ops={ops} onEnsureVisible={onRequestScroll} />
+          <CanvasPicker ops={ops} onEnsureVisible={onRequestScroll} capText={limitText} />
         </View>
       ) : null}
       {/* Keyboard-room spacer: while searching, guarantees the screen can
@@ -336,7 +345,7 @@ export function AromaInput({
           the results stay under the keyboard (feedback round 4). Sized to a
           keyboard-ish share of the screen; collapses when search ends. */}
       {searching ? <View style={{ height: Math.round(screenH * 0.45) }} /> : null}
-      <SelectionSheet open={selOpen} onClose={() => setSelOpen(false)} ops={ops} />
+      <SelectionSheet open={selOpen} onClose={() => setSelOpen(false)} ops={ops} stackBehavior={overflowSheet?.stackBehavior} layer={overflowSheet?.layer} />
     </View>
   );
 }

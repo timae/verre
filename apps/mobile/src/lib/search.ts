@@ -72,3 +72,18 @@ export function fuzzyIncludes(hay: string, query: string): boolean {
   const words = h.split(/[^a-z0-9]+/).filter(Boolean);
   return q.split(/\s+/).every((tok) => tokenHits(h, words, tok));
 }
+
+// A person against a search field that runs on the phone (the invite sheet's
+// friends, Add Friends' tasted-with rows): the name, forgivingly, or the
+// username as the server's search reads it (usernames § 7): a plain substring
+// of the lowercase name, and a query starting with `@` matches the username
+// ONLY and, like there, needs two characters after it.
+export function matchesPerson(person: { name: string; username?: string | null }, query: string): boolean {
+  const q = query.trim();
+  if (!q) return true;
+  const handle = /^@?[A-Za-z0-9._]+$/.test(q) ? q.replace(/^@/, '').toLowerCase() : null;
+  const byUsername = !!handle && !!person.username && person.username.includes(handle);
+  if (q.startsWith('@')) return byUsername && handle!.length >= 2;
+  return byUsername || fuzzyIncludes(person.name, q);
+}
+

@@ -1,4 +1,4 @@
-import type { Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { redis, k } from '@/lib/redis'
 import type { Identity } from '@/lib/identity'
@@ -53,6 +53,43 @@ export async function readGrant(db: Db, code: string, userId: number): Promise<G
     sessionId: r.id,
     createdAt: r.created_at ? r.created_at.getTime() : null,
     strictHost: r.host_user_id !== null && Number(r.host_user_id) === userId,
+    hostless: r.host_user_id === null,
+    role: (r.role as MemberRole | null) ?? null,
+    member: r.member,
+    kicked: r.removed_state === 'kicked',
+    banned: r.banned,
+    author: r.author,
+  }
+}
+
+// The entrance gate's record read (leak-fixes F2, lib/sessionRoute.ts): the
+// same answer as readGrant, but shaped so a wrong code plans and costs like a
+// right one: the code and the user enter as a one-row VALUES and everything
+// else LEFT JOINs to it, so the statement always returns its one row and the
+// plan is the same node tree whatever the code (pinned by EXPLAIN in the suite,
+// with a parity test against readGrant). A NULL user (a guest or signed-out
+// caller) runs the same statement and matches nothing. null = no live row.
+export function gateGrantSql(code: string, userId: number | null): Prisma.Sql {
+  return Prisma.sql`
+    SELECT s.id, s.created_at, s.host_user_id, m.role, (m.user_id IS NOT NULL) AS member, m.removed_state,
+           EXISTS (SELECT 1 FROM session_bans b WHERE b.session_code = s.code AND b.identity_id = q.ident) AS banned,
+           EXISTS (SELECT 1 FROM ratings r WHERE r.user_id = q.uid AND r.session_id = s.id) AS author
+      FROM (VALUES (${code}::text, ${userId}::int, ${userId === null ? null : `u:${userId}`}::text)) AS q(code, uid, ident)
+      LEFT JOIN sessions s ON s.code = q.code AND s.deleted_at IS NULL
+      LEFT JOIN session_members m ON m.session_code = s.code AND m.user_id = q.uid`
+}
+
+export async function readGateGrant(db: Db, code: string, userId: number | null): Promise<Grant | null> {
+  const rows = await db.$queryRaw<{
+    id: number | null; created_at: Date | null; host_user_id: number | null; role: string | null
+    member: boolean; removed_state: string | null; banned: boolean; author: boolean
+  }[]>(gateGrantSql(code, userId))
+  const r = rows[0]
+  if (!r || r.id === null) return null
+  return {
+    sessionId: r.id,
+    createdAt: r.created_at ? r.created_at.getTime() : null,
+    strictHost: userId !== null && r.host_user_id !== null && Number(r.host_user_id) === userId,
     hostless: r.host_user_id === null,
     role: (r.role as MemberRole | null) ?? null,
     member: r.member,

@@ -11,7 +11,8 @@ import { ApiError, throwApiError } from './sessions';
 
 // The author byline on every feed item.
 export type FeedAuthor = {
-  id: number;
+  // The PUBLIC id (opaque string; public-user-ids).
+  id: string;
   name: string;
   xp: number;
   imageUrl: string | null;
@@ -73,7 +74,7 @@ export type CheckinPayload = {
   aromas: AromaSelection[];
   likeCount: number;
   createdAt: string;
-  tags: { id: number; name: string }[];
+  tags: { id: string; name: string }[];
   liked: boolean;
   viewerFollowsAuthor: boolean;
 };
@@ -107,8 +108,8 @@ export type FeedPage = {
 // cursor-paginated (PAGE=20 server-side). No cursor = from now. `userId` =
 // ONE author's posts (the profile feed, `?user=`): same projection, gated like
 // the profile (404 unless the viewer may see it).
-export async function getFeed(cursor?: string | null, userId?: number | null): Promise<FeedPage> {
-  const qs = [cursor ? `cursor=${encodeURIComponent(cursor)}` : '', userId != null ? `user=${userId}` : '']
+export async function getFeed(cursor?: string | null, userId?: string | null): Promise<FeedPage> {
+  const qs = [cursor ? `cursor=${encodeURIComponent(cursor)}` : '', userId != null ? `user=${encodeURIComponent(userId)}` : '']
     .filter(Boolean)
     .join('&');
   const res = await apiFetch(`/api/feed${qs ? `?${qs}` : ''}`);
@@ -291,15 +292,41 @@ export function feedItemId(item: FeedItem): number {
 // exact-key read/write must use feedKey(), never FEED_KEY plus a hope.
 export const FEED_KEY = ['feed'] as const;
 export const FEED_STALE_MS = 15_000;
-export function feedKey(userId?: number | null): readonly ['feed'] | readonly ['feed', 'user', number] {
+export function feedKey(userId?: string | null): readonly ['feed'] | readonly ['feed', 'user', string] {
   return userId != null ? (['feed', 'user', userId] as const) : FEED_KEY;
 }
-export function feedQueryOptions(userId?: number | null) {
+export function feedQueryOptions(userId?: string | null) {
   return infiniteQueryOptions({
     queryKey: feedKey(userId) as readonly unknown[],
     queryFn: ({ pageParam }) => getFeed(pageParam, userId),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
+    staleTime: FEED_STALE_MS,
+  });
+}
+
+// ONE post of one author (lists plan D9), for opening an OLD post from a
+// profile list (Impressions / Cravings): `GET /api/feed?user=&item=`, the
+// list's own page shape under ['feed', 'user', id, 'item', postId], so every
+// lib/feedCache.ts helper on the ['feed'] prefix (like, edit echo, delete)
+// keeps it in step. A miss (another author's post, posts hidden, a hidden
+// moment) is an EMPTY page. 🔒 Prefetch it with `fetchInfiniteQuery`, never
+// `fetchQuery`: a plain { items } entry under a ['feed', …] key breaks
+// updateFeedCaches (`data.pages.map`) for every like / edit / delete.
+export async function getFeedItem(userId: string, postId: number): Promise<FeedPage> {
+  const res = await apiFetch(`/api/feed?user=${encodeURIComponent(userId)}&item=${postId}`);
+  if (!res.ok) await throwApiError(res);
+  return (await res.json()) as FeedPage;
+}
+export function feedItemKey(userId: string, postId: number) {
+  return ['feed', 'user', userId, 'item', postId] as const;
+}
+export function feedItemQueryOptions(userId: string, postId: number) {
+  return infiniteQueryOptions({
+    queryKey: feedItemKey(userId, postId) as readonly unknown[],
+    queryFn: () => getFeedItem(userId, postId),
+    initialPageParam: null as string | null,
+    getNextPageParam: (): string | null => null,
     staleTime: FEED_STALE_MS,
   });
 }

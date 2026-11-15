@@ -71,7 +71,7 @@ export async function getTilePhotos(pool: TileKey): Promise<{ photos: string[]; 
 }
 
 // What a write changed, merged into your own `['user-profile', me]` entry.
-export type OwnProfileChange = Partial<Pick<FullProfile, 'name' | 'bio' | 'imageUrl' | 'coverPhotoUrl'>> & {
+export type OwnProfileChange = Partial<Pick<FullProfile, 'name' | 'username' | 'bio' | 'imageUrl' | 'coverPhotoUrl'>> & {
   tiles?: Partial<Record<TileKey, TilePhoto>>;
 };
 
@@ -86,7 +86,7 @@ export type OwnProfileChange = Partial<Pick<FullProfile, 'name' | 'bio' | 'image
 // was sent (lib/query.tsx): if the viewer changed while it was in flight (a
 // sign-out + another account), nothing of the previous viewer's lands in the
 // new viewer's caches. Checked again after every await here.
-export async function applyOwnProfileChange(queryClient: QueryClient, userId: number, change: OwnProfileChange, epoch: number): Promise<void> {
+export async function applyOwnProfileChange(queryClient: QueryClient, userId: string, change: OwnProfileChange, epoch: number): Promise<void> {
   if (viewerCacheEpoch() !== epoch) return;
   const key = profileKey(userId);
   await queryClient.cancelQueries({ queryKey: key, exact: true });
@@ -104,11 +104,11 @@ export async function applyOwnProfileChange(queryClient: QueryClient, userId: nu
     }
     return next;
   });
-  if (change.name !== undefined) {
-    queryClient.setQueryData<MyAccount>(MY_ACCOUNT_KEY, (a) => (a ? { ...a, name: change.name ?? a.name } : a));
+  if (change.name !== undefined || change.username !== undefined) {
+    queryClient.setQueryData<MyAccount>(MY_ACCOUNT_KEY, (a) => (a ? { ...a, name: change.name ?? a.name, username: change.username ?? a.username } : a));
   }
   const jobs: Promise<unknown>[] = [queryClient.refetchQueries({ queryKey: key, exact: true })];
-  if (change.name !== undefined) jobs.push(queryClient.refetchQueries({ queryKey: MY_ACCOUNT_KEY, exact: true }));
+  if (change.name !== undefined || change.username !== undefined) jobs.push(queryClient.refetchQueries({ queryKey: MY_ACCOUNT_KEY, exact: true }));
   if (change.name !== undefined || change.imageUrl !== undefined) {
     dropUnmountedFeedCaches(queryClient);
     jobs.push(refetchFeedCaches(queryClient));

@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider, BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { countryName, filterVintageInput } from '@verre/core';
+import { blockLook } from '@/lib/blockLook';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { RoleChip } from '@/components/moments/RoleChip';
@@ -62,6 +63,12 @@ type ImpressionFormProps = {
   hostId?: string | null;
   coHostIds?: string[];
   providerIds?: string[];
+  /** The viewer + the session's block-pair lists (meta.viewerBlocksOut / In):
+   *  someone who blocked you reads as a guest in the bringer field + picker
+   *  (lib/blockLook.ts). */
+  myIdentityId?: string;
+  blocksOut?: readonly string[] | null;
+  blocksIn?: readonly string[] | null;
 };
 
 // A participant's session role — drives the picker's role tag + the "won't be
@@ -99,10 +106,11 @@ export default function AddImpression() {
   // is URL-addressable: a cold deep-link has no prior /visit, so /state 401s
   // (`invalid`). Rather than let the user fill out a form that will fail on
   // submit, bounce to the line-up — it owns the visit + rejoin flow (same idiom
-  // as useSettingsSession). not-found/removed bounce there too.
+  // as useSettingsSession). not-found/removed bounce there too, and so does
+  // rate-limited (a spent wrong-code budget: the line-up shows it with Try Again).
   const fatal =
     state.error instanceof ApiError &&
-    (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found');
+    (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found' || state.error.kind === 'rate-limited');
   useEffect(() => {
     if (fatal) router.replace(sessionHref(sessionTab, '', { code }));
   }, [fatal, code, router, sessionTab]);
@@ -133,6 +141,9 @@ export function ImpressionForm({
   hostId,
   coHostIds,
   providerIds,
+  myIdentityId = '',
+  blocksOut,
+  blocksIn,
 }: ImpressionFormProps) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -183,7 +194,10 @@ export function ImpressionForm({
   // resolved current owner (avatar), else just the snapshot name (no avatar).
   const shownBringer = bringer ?? currentOwner;
   const shownBringerName = bringer?.displayName ?? initialWine?.addedByDisplayName ?? 'Someone';
-  const shownBringerAnon = bringer ? bringer.id.startsWith('a:') : initialWine?.addedByUserId == null;
+  const lookOf = (id: string) => blockLook(id, myIdentityId, blocksOut, blocksIn);
+  const shownBringerAnon = bringer
+    ? lookOf(bringer.id) === 'guest'
+    : initialWine?.addedByUserId == null || lookOf(`u:${initialWine.addedByUserId}`) === 'guest';
   // Start the "Add more details" fold OPEN when editing a wine that already has
   // data in any disclosure-hidden field (region/country/process/description/
   // purchase link) — otherwise pre-existing values sit invisibly behind a
@@ -517,6 +531,7 @@ export function ImpressionForm({
           // so nothing is pre-highlighted (the resting label still shows them).
           selectedId={bringer?.id ?? (initialWine?.addedByUserId != null ? `u:${initialWine.addedByUserId}` : null)}
           roleOf={roleOf}
+          isGuest={(id) => lookOf(id) === 'guest'}
           onSelect={(p) => { setBringer(p); setBringerOpen(false); }}
           onClose={() => setBringerOpen(false)}
         />
@@ -638,12 +653,14 @@ function BringerField({
 // stable anchor above a scroll area, and a roster can be long, so this sheet is
 // always scroll-mode (CountrySheet's recipe) rather than dynamic-fit.
 function BringerPicker({
-  open, participants, selectedId, roleOf, onSelect, onClose,
+  open, participants, selectedId, roleOf, isGuest, onSelect, onClose,
 }: {
   open: boolean;
   participants: SessionParticipant[];
   selectedId: string | null;
   roleOf: (id: string) => SessionRoleTag;
+  /** A guest, or someone who blocked you (lib/blockLook.ts). */
+  isGuest: (id: string) => boolean;
   onSelect: (p: SessionParticipant) => void;
   onClose: () => void;
 }) {
@@ -673,7 +690,7 @@ function BringerPicker({
             </VText>
           ) : (
             filtered.map((p) => {
-              const anon = p.id.startsWith('a:');
+              const anon = isGuest(p.id);
               const on = p.id === selectedId;
               const role = roleOf(p.id);
               return (

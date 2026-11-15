@@ -9,6 +9,7 @@ import 'expo-network';
 import 'expo-web-browser';
 import { expoClient } from '@better-auth/expo/client';
 import type { BetterAuthClientPlugin } from 'better-auth/client';
+import { inferAdditionalFields } from 'better-auth/client/plugins';
 import { createAuthClient } from 'better-auth/react';
 import { AUTH_USER_AGENT, CLIENT_VERSION, CLIENT_VERSION_HEADER } from './clientVersion';
 import { acceptAuthResponse, authGeneration, gateAuthRequest, signOutStarted } from './authGate';
@@ -73,6 +74,11 @@ export const authClient = createAuthClient({
       storage: secureStorage,
     }),
     lateGenerationCheck,
+    // Types only (no fetch hooks, so its place in the array is free): the
+    // server's `user.additionalFields.username` (lib/betterAuth.ts). Sign-up
+    // sends it; every auth response carries it FRESH, null = not chosen yet
+    // (the choose-your-username screen's cue, lib/bootGate.ts).
+    inferAdditionalFields({ user: { username: { type: 'string', required: false } } }),
   ],
   fetchOptions: {
     headers: authHeaders,

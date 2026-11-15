@@ -1,10 +1,11 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
-import { LongPressable } from '@/components/profile/ProfileEditParts';
+import { Pressable, StyleSheet, View } from 'react-native';
+import { LongPressable } from '@/components/ui/InPlaceEdit';
 import { VText } from '@/components/ui/VText';
-import { TILE_SCRIM, TILE_SCRIM_STOPS } from '@/lib/layout';
+import { Icon } from '@/components/ui/Icon';
+import { GLASS_FILL, TILE_SCRIM, TILE_SCRIM_STOPS } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 
 // .yo-ptiles — the profile's three photo tiles (Impressions · Moments ·
@@ -14,9 +15,12 @@ import { radius, useTheme } from '@/theme';
 // outlines the empty tile with a 1px rule — dropped per the no-borders ruling
 // (surfaces elevate by tone).
 //
-// The tiles don't open anything yet (their list pages are a later step). On
-// your own profile a LONG-PRESS opens the tile's cover picker (R5g2, scale
-// 0.95 while held); a tile with no photo to choose from stays inert.
+// A TAP opens the tile's list (Impressions / Moments / Cravings, the lists
+// step); on your own profile a LONG-PRESS still opens the tile's cover picker
+// (R5g2, scale 0.95 while held). Inert while you edit your name or bio
+// (`dimmed`): dimmed, and every tile DISABLED in place (no touch, no
+// VoiceOver activation), never swapped for a plain tile, which remounted it
+// and reloaded its photo.
 //
 // Fewer than three (step 4: a tile the owner hides is absent, Q6 / Q10): the
 // rest SHARE THE ROW (two → halves, one → full width) at the SAME HEIGHT as
@@ -24,7 +28,14 @@ import { radius, useTheme } from '@/theme';
 // wider). The height comes from a hidden three-column sizer row in the flow,
 // with the tiles laid over it: no measuring, no first-frame jump. None → no
 // row at all.
-export type PhotoTile = { label: string; count: string; imageUrl: string | null; onLongPress?: () => void };
+// `editable` (Edit Profile's "Profile Tiles", ruled 2026-11-13: the tiles as
+// on the profile, a pen on each, a single TAP edits): a small glass pen
+// top-right, the cover / photo edit buttons' look at the tile's scale; it
+// only marks the tile, the whole tile is the button.
+export type PhotoTile = {
+  label: string; count: string; imageUrl: string | null; onPress?: () => void; onLongPress?: () => void;
+  editable?: boolean; accessibilityLabel?: string; accessibilityHint?: string;
+};
 
 export function PhotoTiles({ tiles, dimmed }: { tiles: PhotoTile[]; dimmed?: boolean }) {
   if (tiles.length === 0) return null;
@@ -40,7 +51,10 @@ export function PhotoTiles({ tiles, dimmed }: { tiles: PhotoTile[]; dimmed?: boo
           t.onLongPress ? (
             <LongPressable
               key={t.label}
+              disabled={dimmed}
               onLongPress={t.onLongPress}
+              onPress={t.onPress}
+              accessibilityLabel={`${t.count} ${t.label}`}
               pressedScale={0.95}
               dim={false}
               fill
@@ -49,6 +63,19 @@ export function PhotoTiles({ tiles, dimmed }: { tiles: PhotoTile[]; dimmed?: boo
             >
               <Tile tile={t} />
             </LongPressable>
+          ) : t.onPress ? (
+            <Pressable
+              key={t.label}
+              disabled={dimmed}
+              accessible={!dimmed}
+              accessibilityRole="button"
+              accessibilityLabel={t.accessibilityLabel ?? `${t.count} ${t.label}`}
+              accessibilityHint={t.accessibilityHint}
+              onPress={t.onPress}
+              style={({ pressed }) => ({ flex: 1, opacity: pressed ? 0.85 : 1 })}
+            >
+              <Tile tile={t} />
+            </Pressable>
           ) : (
             <Tile key={t.label} tile={t} />
           ),
@@ -101,6 +128,11 @@ function Tile({ tile }: { tile: PhotoTile }) {
           {tile.label}
         </VText>
       </View>
+      {tile.editable ? (
+        <View pointerEvents="none" style={styles.pen}>
+          <Icon name="edit" size={14} color="#fff" />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -111,4 +143,5 @@ const styles = StyleSheet.create({
   sizer: { flex: 1, aspectRatio: 4 / 5 },
   tile: { flex: 1, borderRadius: radius.lg, overflow: 'hidden' },
   txt: { position: 'absolute', left: 11, right: 8, bottom: 10, gap: 1 },
+  pen: { position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: 14, backgroundColor: GLASS_FILL, alignItems: 'center', justifyContent: 'center' },
 });

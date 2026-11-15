@@ -11,14 +11,22 @@ import {
   postPlace,
   type VisibilitySettings,
 } from '@/lib/profileVisibility'
-import { parsePathId } from '@/lib/parsePathId'
+import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
 import { mutedUserIds } from '@/lib/userMute'
-import { blockPairIds } from '@/lib/userBlock'
-import { loadSessionFeedWines, sessionIsOver, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import { blockPairIds, viewerBlockedAmong } from '@/lib/userBlock'
+import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
+import { parsePathId } from '@/lib/parsePathId'
 import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 const PAGE = 20
 const NO_STORE = { 'Cache-Control': 'private, no-store' }
+
+// 🔒 The author leaves with the PUBLIC id only (public-user-ids § 4).
+// `username`: null until the person chose one (usernames § 6).
+type WireAuthor = { id: string; name: string; username: string | null; xp: number; imageUrl: string | null }
+const wireAuthor = (u: { publicId: string; name: string; username: string | null; xp: number; imageUrl: string | null }): WireAuthor =>
+  ({ id: u.publicId, name: u.name, username: u.username, xp: u.xp, imageUrl: u.imageUrl })
 
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
@@ -55,14 +63,27 @@ export async function GET(req: NextRequest) {
   // (docs/dev/mute.md), and opening someone's profile is an explicit choice
   // to look at them.
   const userParam = req.nextUrl.searchParams.get('user')
+  // `&item=<postId>` (lists plan D9): ONE post of that author, for opening an
+  // old post from a profile list. One more condition on the SAME query below,
+  // never a separate lookup; every miss (another author's post, posts hidden,
+  // a hidden moment) is the same 200 empty page. Requires `user`.
+  const itemParam = req.nextUrl.searchParams.get('item')
+  let itemId: number | null = null
+  if (itemParam !== null) {
+    if (userParam === null) return NextResponse.json({ error: 'item requires user' }, { status: 400, headers: NO_STORE })
+    itemId = parsePathId(itemParam)
+    if (itemId === null) return NextResponse.json({ error: 'invalid item' }, { status: 400, headers: NO_STORE })
+  }
   let allowedNetworkIds: number[]
   // The authors' settings, for the place rule (server-side only).
   let authorSettings: Map<number, VisibilitySettings>
   if (userParam !== null) {
-    const authorId = parsePathId(userParam)
-    if (authorId === null) return NextResponse.json({ error: 'invalid user' }, { status: 400, headers: NO_STORE })
-    const gate = await resolveProfileViewer(authorId, userId)
-    if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
+    // Format only; an unknown public id takes the 'gone' path (404).
+    const authorPublicId = parsePublicIdParam(userParam)
+    if (authorPublicId === null) return NextResponse.json({ error: 'invalid user' }, { status: 400, headers: NO_STORE })
+    const authorId = await userIdForPublicId(authorPublicId)
+    const gate = authorId === null ? null : await resolveProfileViewer(authorId, userId)
+    if (authorId === null || !gate || gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
     allowedNetworkIds = gate.sees.posts ? [authorId] : []
     authorSettings = new Map([[authorId, gate.settings]])
   } else {
@@ -78,27 +99,33 @@ export async function GET(req: NextRequest) {
   // the relations. Naive per-row accessors would N+1; the include shape
   // avoids it (one round-trip plus one per included relation, all
   // resolved via Prisma's WHERE … IN under the hood).
+  // 🔒 A moment post whose line-up is hidden from this viewer is left out IN
+  // the query, before paging (lib/outsideView.ts): `nextCursor` below is the
+  // last RAW row's time, so dropping them after the read would hand out a
+  // hidden post's exact time.
+  const hidden = await hiddenSessionIds(userId, allowedNetworkIds)
   const feedItems = await prisma.feedItem.findMany({
-    where: { userId: { in: allowedNetworkIds }, createdAt: { lt: cursor } },
+    where: {
+      userId: { in: allowedNetworkIds }, createdAt: { lt: cursor },
+      ...(itemId !== null ? { id: itemId } : {}),
+      ...notHiddenPosts(hidden),
+    },
     include: {
-      user: { select: { id: true, name: true, xp: true, imageUrl: true } },
+      user: { select: { id: true, publicId: true, name: true, username: true, xp: true, imageUrl: true } },
       _count: { select: { likes: true } },
-      tags: { include: { user: { select: { id: true, name: true } } } },
+      tags: { include: { user: { select: { id: true, publicId: true, name: true, username: true } } } },
       rating: {
         include: {
           wine: true,
           images: { orderBy: { sortOrder: 'asc' }, take: 1 },
         },
       },
-      // Session is included for kind='session' rendering — we read
-      // deletedAt (tombstone label), name, blind (phase 3 redaction),
-      // hostName + hostUserId (header byline + own-host bypass for the
-      // SessionFeedCard wine join). dateFrom/dateTo/createdAt drive the
-      // over-by-its-dates auto-reveal (sessionIsOver, owner ruling Q5).
+      // Session is included for kind='session' rendering: deletedAt
+      // (tombstone label), name, blind, hostName (header byline). The
+      // per-bottle redaction reads the record itself (lib/outsideView.ts).
       session: {
         select: {
-          id: true, code: true, deletedAt: true, name: true, blind: true, blindForEveryone: true, dateFrom: true, dateTo: true, createdAt: true,
-          hostName: true, hostUserId: true,
+          id: true, deletedAt: true, name: true, blind: true, hostName: true,
         },
       },
     },
@@ -179,29 +206,19 @@ export async function GET(req: NextRequest) {
       hiddenAuthorTag.add(`${r.blockedId}:${r.blockerId}`)
     }
   }
+  // …and a tag of someone in a block pair with the VIEWER, either way
+  // (leak-fixes F6, the People step's rule: you never see someone you
+  // blocked or who blocked you on anyone's list). Absence is no tell: you
+  // don't know who was tagged.
+  const viewerTagBlocked = await viewerBlockedAmong(userId, [...new Set(tagAuthorPairs.map(p => p.tagUserId))])
 
   // Per-wine ratings for kind='session' feed_items, in one bulk query
-  // (one query per page, not per session post). Server-side redaction
-  // applied — never ship unrevealed blind-wine identity over the wire.
-  // Tombstoned sessions short-circuit redaction (see SessionFeedPair
-  // comment for the trade-off); the session-level identity (name + host)
-  // is still scrubbed at the payload layer below.
-  // Over-blind auto-reveal — see SessionFeedPair `expired` for the rule (the
-  // record's dates, never cache absence). Tombstoned sessions short-circuit
-  // via `deleted`.
-
-  const sessionPairs: SessionFeedPair[] = feedItems.flatMap(f => {
-    if (f.kind !== 'session' || !f.session) return []
-    return [{
-      authorId: f.user.id,
-      sessionId: f.session.id,
-      blind: !!f.session.blind,
-      blindForEveryone: !!f.session.blindForEveryone,
-      deleted: !!f.session.deletedAt,
-      expired: !f.session.deletedAt && sessionIsOver(f.session),
-      hostUserId: f.session.hostUserId ?? null,
-    }]
-  })
+  // (one query per page, not per session post). Server-side redaction by the
+  // one SQL rule (lib/outsideView.ts): blind rows masked, hidden ones left
+  // out. The session-level identity of a tombstoned moment (name + host) is
+  // still scrubbed at the payload layer below.
+  const sessionPairs: SessionFeedPair[] = feedItems.flatMap(f =>
+    f.kind === 'session' && f.session ? [{ authorId: f.user.id, sessionId: f.session.id }] : [])
   const sessionWines = await loadSessionFeedWines(sessionPairs, userId)
 
   // Badge unlocks used to merge in as standalone 'badge' feed items.
@@ -220,8 +237,8 @@ export async function GET(req: NextRequest) {
   //     for blind sessions). Tombstoned sessions collapse to deleted=true
   //     with wines=[] and the renderer shows "[deleted session]".
   type OutgoingItem =
-    | { type: 'checkin'; createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; checkin: Record<string, unknown> }
-    | { type: 'session'; createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; session: SessionFeedPayload }
+    | { type: 'checkin'; createdAt: Date; author: WireAuthor; checkin: Record<string, unknown> }
+    | { type: 'session'; createdAt: Date; author: WireAuthor; session: SessionFeedPayload }
   const items: OutgoingItem[] = [
     ...feedItems.flatMap((f): OutgoingItem[] => {
       if (f.kind === 'standalone') {
@@ -234,7 +251,7 @@ export async function GET(req: NextRequest) {
         return [{
           type: 'checkin' as const,
           createdAt: f.createdAt,
-          author: f.user,
+          author: wireAuthor(f.user),
           checkin: {
             id: f.id,
             wineName: wine.name,
@@ -274,7 +291,7 @@ export async function GET(req: NextRequest) {
             // Tag filter: drop GLOBALLY block-pair tags. Same rule as
             // the like-count subtraction. Render-time only — the tag row
             // stays in DB.
-            tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`)).map(t => t.user),
+            tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`) && !viewerTagBlocked.has(t.user.id)).map(t => ({ id: t.user.publicId, name: t.user.name, username: t.user.username })),
             liked: myLikes.has(f.id),
             viewerFollowsAuthor: myFollowing.has(f.user.id),
           },
@@ -298,7 +315,7 @@ export async function GET(req: NextRequest) {
         return [{
           type: 'session' as const,
           createdAt: f.createdAt,
-          author: f.user,
+          author: wireAuthor(f.user),
           session: {
             id: f.id,
             sessionId: s?.id ?? null,

@@ -8,7 +8,12 @@ declare module 'next-auth' {
     userSessionId?: string
   }
   interface Session {
-    user: { id: string; name: string; email: string; role: string; pro: boolean; userSessionId?: string }
+    // Server-side `id` is the INTERNAL integer (as a string); `publicId` is the
+    // public id. 🔒 A client only ever receives clientSession(session)
+    // (lib/clientSession.ts), whose user.id IS the public id.
+    // `username`: null = not chosen yet (usernames § 10). Fresh on both
+    // branches of resolveUser (auth.ts session(), the native SELECT).
+    user: { id: string; name: string; username?: string | null; email: string; role: string; pro: boolean; userSessionId?: string; publicId?: string }
   }
 }
 

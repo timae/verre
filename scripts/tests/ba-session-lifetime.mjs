@@ -74,6 +74,7 @@ import { LAST_SEEN_BUCKET_MS, bucketStart } from '../../lib/lastSeen.ts'
 import { prisma } from '../../lib/prisma.ts'
 import { redis } from '../../lib/redis.ts'
 import { NextRequest } from 'next/server'
+import { fixtureUsername } from './lib/fixtureUsername.mjs'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
@@ -111,6 +112,16 @@ async function storeExpiry(token) {
     redis: cached?.session?.expiresAt ? new Date(cached.session.expiresAt).getTime() : null,
     redisTtl: await redis.ttl(token),
   }
+}
+
+// Sign-up is one step since usernames (§ 9): it needs a username and creates a
+// session itself. Sign-IN is this suite's subject and its assertions count
+// session rows from zero, so each fixture's sign-up session is retired through
+// Better Auth (both stores) right away.
+async function signUp(name, email, password) {
+  const res = await betterAuthServer.api.signUpEmail({ body: { name, email, password, username: fixtureUsername('lt') } })
+  if (res?.token) await (await betterAuthServer.$context).internalAdapter.deleteSession(res.token)
+  return res
 }
 
 async function signIn(email, password, userAgent) {
@@ -156,13 +167,14 @@ async function main() {
   const emailA = `${TAG}-a@example.test`
   const emailB = `${TAG}-b@example.test`
   const emailC = `${TAG}-c@example.test`
-  const suA = await betterAuthServer.api.signUpEmail({ body: { name: 'Lifetime A', email: emailA, password } })
-  const suB = await betterAuthServer.api.signUpEmail({ body: { name: 'Lifetime B', email: emailB, password } })
-  const suC = await betterAuthServer.api.signUpEmail({ body: { name: 'Lifetime C', email: emailC, password } })
+  const suA = await signUp('Lifetime A', emailA, password)
+  const suB = await signUp('Lifetime B', emailB, password)
+  const suC = await signUp('Lifetime C', emailC, password)
   const userA = Number(suA?.user?.id)
   const userB = Number(suB?.user?.id)
   const userC = Number(suC?.user?.id)
   check('fixture: three users signed up', [userA, userB, userC].every(Number.isInteger))
+  check('fixture: each sign-up session was retired (sign-in assertions count rows from zero)', (await prisma.authSession.count({ where: { userId: { in: [userA, userB, userC] } } })) === 0)
 
   console.log('\n§ 1 sign-in stamps a 365-day window in cookie, Postgres and Redis')
   const a = await signIn(emailA, password)
@@ -662,7 +674,7 @@ async function lastSeenSection(origin, password) {
   const fresh = async () => { const s = await signIn(emailD, password); await backdate(s.token); return s }
   await resetAuthFloors()
   const emailD = `${TAG}-d@example.test`
-  const userD = Number((await betterAuthServer.api.signUpEmail({ body: { name: 'Lifetime D', email: emailD, password } }))?.user?.id)
+  const userD = Number((await signUp('Lifetime D', emailD, password))?.user?.id)
   const budgetKey = `rl:native-lastseen:user:${userD}:5m`
   check('fixture: user D signed up', Number.isInteger(userD))
   try {

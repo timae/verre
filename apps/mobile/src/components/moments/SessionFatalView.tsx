@@ -1,4 +1,5 @@
-// Terminal session-screen states (gone / removed / banned / invalid / network)
+// Terminal session-screen states (gone / removed / banned / invalid / too many
+// codes / network)
 // — moved verbatim out of the line-up when Compare (02d) became the second
 // screen that needs identical handling for the shared /state poll's fatal
 // errors. Still a hand-rolled flex-center block: <CenteredMessage> has no
@@ -37,18 +38,25 @@ export function SessionFatalView({
       title = 'You were removed';
       body = 'The host removed you from this moment. You can rejoin with the code.';
     }
+  } else if (fatal.kind === 'rate-limited') {
+    // Too many wrong codes from this account or network: a non-member can't
+    // open moments for a while (the server's entrance gate). Its own copy
+    // carries the wait; Try Again re-runs the visit.
+    title = "Can't open this moment right now";
+    body = fatal.message && fatal.message !== 'rate-limited' ? fatal.message : 'Too many codes tried. Try again later.';
   } else if (fatal.kind === 'invalid') {
     body = "We couldn't verify you in this moment. Try joining again with the code.";
     title = 'Not part of this moment';
   }
+  const retryable = fatal.kind === 'http' || fatal.kind === 'rate-limited';
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 8 }}>
       <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('subhead'), textAlign: 'center' }}>{title}</VText>
       <VText color="inkSoft" style={{ textAlign: 'center', ...phone.text('small'), maxWidth: 280 }}>{body}</VText>
-      {fatal.kind === 'http' ? <Button title="Try Again" onPress={onRetry} style={{ marginTop: 10 }} /> : null}
+      {retryable ? <Button title="Try Again" onPress={onRetry} style={{ marginTop: 10 }} /> : null}
       {/* Plain "Back": this view is mounted on Moments, Feed, You and an
           opened post's stack, so it can't name where back lands. */}
-      <Button title="Back" variant="secondary" onPress={onBack} style={{ marginTop: fatal.kind === 'http' ? 0 : 10 }} />
+      <Button title="Back" variant="secondary" onPress={onBack} style={{ marginTop: retryable ? 0 : 10 }} />
     </View>
   );
 }

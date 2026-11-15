@@ -1,4 +1,4 @@
-import { S3Client, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 
 const BUCKET = process.env.S3_BUCKET
@@ -144,18 +144,6 @@ export const uploadImage = async (keyBase: string, dataUrl: string): Promise<str
   })
   await upload.done()
   return `${ENDPOINT}/${BUCKET}/${key}`
-}
-
-export const deleteImage = async (wineId: string): Promise<void> => {
-  if (!s3 || !BUCKET) return
-  for (const ext of ['jpg', 'jpeg', 'png', 'webp', 'gif']) {
-    const key = `wines/${wineId}.${ext}`
-    try {
-      await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
-    } catch (err) {
-      console.warn('[s3] deleteImage failed:', { key, err })
-    }
-  }
 }
 
 // Generic raw-bytes get for arbitrary keys (the image helpers above are

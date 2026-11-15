@@ -42,6 +42,38 @@
 //        limiter keys
 //   § 17 a moment's preview (guest / host / signed out / unknown, its own
 //        budget never reset by a hit, a block pair hides the host id, 429)
+//   Public user ids (docs/dev/proposals/public-user-ids.md § 9):
+//   § 18 the wire walk (every surface emits public ids), the inputs (the
+//        fixture's integer is malformed on EVERY input route), the null paths
+//        (blocked-me == unknown, limiter spent too), a deleted participant,
+//        the sealed people cursor + newest follow first, auth through the
+//        route module (sign-up free == taken, publicId refused, get-session,
+//        /list-accounts), schema triggers + CHECKs, Redis, tile ownership by
+//        row, the blocks / bans list photos, the re-key script
+//   The profile lists (.local/you-profile/lists-plan.md § Verification):
+//   § 19 the D4 state matrix over the SQL rule + SAFE_PHOTO
+//        (scripts/tests/outside-view-matrix.mts, mutation-checked), the
+//        hidden-line-up write refusal (anon host keeps pre-rating), the three
+//        lists (gate states, Show switches, block pairs, blind rows, hidden
+//        line-ups, both had, search, score range, paging + the had_at order
+//        after a re-rate), tile count == list total across D4 states, the
+//        sealed cravings cursor (score boundary, sort served as recent),
+//        someone's moments (codes only where you are a current member, the
+//        shared filter), ?item=, the feed's hidden posts left out before
+//        paging (nextCursor, a mixed page on the feed and profileLoad),
+//        /api/me/ratings + /api/me/bookmarks
+//   The leak fixes (.local/leak-fixes/plan.md § 5), scripts/tests/leak-fixes-section.mts:
+//   § 20 b the entrance gate: the route sweep (a spent budget answers every
+//        code alike on every moment route, nothing rebuilt, members pass),
+//        the budgets per surface and code length, the atomic charge, the
+//        joins, the kicked bounce, the primitive, the admission query
+//   Usernames (docs/dev/proposals/usernames.md § 12), scripts/tests/usernames-section.mts:
+//   § 21 the format CHECK vs the core validator, the hold triggers, the rename
+//        quota, races on two connections with their negative controls, honest
+//        one-step sign-up (app + web), by-username = the id route, `username`
+//        on every person outside a moment and never inside one, search, the
+//        limits, the writes census
+//   + the CANARY over every response of the run (no user integer leaves)
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
 // SDK actually sends, so "reclaimed" / "survives" is observed on the wire,
@@ -74,6 +106,8 @@ if (!process.env.AUTH_SECRET) throw new Error('AUTH_SECRET is required (Better A
 
 // ── Fake S3 (path-style: /<bucket>/<key>) ─────────────────────────────────────
 const store = new Set<string>()
+// Each object's LastModified (the listing reports it; § 20 c backdates some).
+const mtimes = new Map<string, number>()
 const puts: string[] = []
 const deletes: string[] = []
 const fake = createServer((req, res) => {
@@ -83,12 +117,20 @@ const fake = createServer((req, res) => {
     const key = decodeURIComponent(new URL(req.url ?? '/', 'http://s3').pathname).replace(/^\/verre\//, '')
     // CopyObject ("had a sip") is a PUT with x-amz-copy-source; the SDK needs the XML result.
     if (req.method === 'PUT' && req.headers['x-amz-copy-source']) {
-      store.add(key); puts.push(key); res.writeHead(200, { 'Content-Type': 'application/xml' })
+      store.add(key); mtimes.set(key, Date.now()); puts.push(key); res.writeHead(200, { 'Content-Type': 'application/xml' })
       return res.end('<?xml version="1.0" encoding="UTF-8"?><CopyObjectResult><ETag>"fake"</ETag><LastModified>2026-01-01T00:00:00.000Z</LastModified></CopyObjectResult>')
     }
-    if (req.method === 'PUT') { store.add(key); puts.push(key); res.writeHead(200, { ETag: '"fake"' }); return res.end() }
-    if (req.method === 'DELETE') { store.delete(key); deletes.push(key); res.writeHead(204); return res.end() }
-    res.writeHead(store.has(key) ? 200 : 404); res.end()
+    if (req.method === 'PUT') { store.add(key); mtimes.set(key, Date.now()); puts.push(key); res.writeHead(200, { ETag: '"fake"' }); return res.end() }
+    if (req.method === 'DELETE') { store.delete(key); mtimes.delete(key); deletes.push(key); res.writeHead(204); return res.end() }
+    // ListObjectsV2 (the re-key script's discovery, § 18).
+    const q = new URL(req.url ?? '/', 'http://s3').searchParams
+    if (req.method === 'GET' && q.get('list-type') === '2') {
+      const prefix = q.get('prefix') ?? ''
+      const keys = [...store].filter(x => x.startsWith(prefix)).sort()
+      res.writeHead(200, { 'Content-Type': 'application/xml' })
+      return res.end(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>verre</Name><Prefix>${prefix}</Prefix><KeyCount>${keys.length}</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>${keys.map(x => `<Contents><Key>${x}</Key><LastModified>${new Date(mtimes.get(x) ?? Date.now()).toISOString()}</LastModified><Size>1</Size></Contents>`).join('')}</ListBucketResult>`)
+    }
+    res.writeHead(store.has(key) ? 200 : 404, store.has(key) ? { 'Content-Type': 'image/png' } : {}); res.end()
   })
 })
 await new Promise<void>(r => fake.listen(0, '127.0.0.1', r))
@@ -102,6 +144,9 @@ const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJA
 const { prisma } = await import('../../lib/prisma.ts')
 const { redis, k, scanKeys } = await import('../../lib/redis.ts')
 const { betterAuthServer } = await import('../../lib/betterAuth.ts')
+const { fixtureUsername } = await import('./lib/fixtureUsername.mjs')
+const { syncCredential } = await import('../../lib/identityStore.ts')
+const { default: bcrypt } = await import('bcrypt')
 const { normalizeBio, BIO_MAX } = await import('../../packages/core/src/index.ts')
 const sessionRoute = await import('../../app/api/session/route.ts')
 const codeRoute = await import('../../app/api/session/[code]/route.ts')
@@ -130,12 +175,43 @@ const searchRoute = await import('../../app/api/users/search/route.ts')
 const followersRoute = await import('../../app/api/users/[id]/followers/route.ts')
 const followingRoute = await import('../../app/api/users/[id]/following/route.ts')
 const tastedWithRoute = await import('../../app/api/me/tasted-with/route.ts')
+// § 19 the profile lists (.local/you-profile/lists-plan.md)
+const impressionsRoute = await import('../../app/api/users/[id]/impressions/route.ts')
+const momentsListRoute = await import('../../app/api/users/[id]/moments/route.ts')
+const cravingsRoute = await import('../../app/api/users/[id]/cravings/route.ts')
+const meRatingsRoute = await import('../../app/api/me/ratings/route.ts')
+const meBookmarksRoute = await import('../../app/api/me/bookmarks/route.ts')
+const bookmarkRoute = await import('../../app/api/session/[code]/wines/[wineId]/bookmark/route.ts')
+const { outsideViewMatrix } = await import('./outside-view-matrix.mts')
+// § 20 the leak fixes (.local/leak-fixes/plan.md)
+const { leakFixes } = await import('./leak-fixes-section.mts')
+// § 21 usernames (docs/dev/proposals/usernames.md § 12)
+const { usernames } = await import('./usernames-section.mts')
+// § 18 public user ids
+const stateRoute = await import('../../app/api/session/[code]/state/route.ts')
+const visitRoute = await import('../../app/api/session/[code]/visit/route.ts')
+const settingsRoute = await import('../../app/api/session/[code]/settings/route.ts')
+const bansRoute = await import('../../app/api/session/[code]/bans/route.ts')
+const unbanRoute = await import('../../app/api/session/[code]/bans/[identityId]/route.ts')
+const banPreviewRoute = await import('../../app/api/session/[code]/bans/preview/[identityId]/route.ts')
+const removedStateRoute = await import('../../app/api/session/[code]/removed-state/route.ts')
+const wineRoute = await import('../../app/api/session/[code]/wines/[wineId]/route.ts')
+const reorderRoute = await import('../../app/api/session/[code]/wines/reorder/route.ts')
+const revealRoute = await import('../../app/api/session/[code]/wines/[wineId]/reveal/route.ts')
+const meSessionsRoute = await import('../../app/api/me/sessions/route.ts')
+const friendsRoute = await import('../../app/api/me/friends/route.ts')
+const blocksListRoute = await import('../../app/api/me/blocks/route.ts')
+const checkinRoute = await import('../../app/api/checkins/[id]/route.ts')
+const followRoute = await import('../../app/api/users/[id]/follow/route.ts')
+const nativeAuthRoute = await import('../../app/api/auth/native/[...all]/route.ts')
+const publicIds = await import('../../lib/publicIds.ts')
+const rekey = await import('../rekey-user-images.mts')
 const { canViewPosts, viewableProfiles } = await import('../../lib/profileVisibility.ts')
 const { canonicalPostAudience, applyVisibilityChanges } = await import('../../packages/core/src/index.ts')
 const { ensureBadgesSeedOnce } = await import('../../lib/badgeService.ts')
 const { ALL_BADGES } = await import('../../lib/badges.ts')
 const { resolveUser } = await import('../../lib/resolveUser.ts')
-const { listPickable, resolveTilePhotos, isOwnTileUpload } = await import('../../lib/profileTiles.ts')
+const { listPickable, resolveTilePhotos, isLegacyOwnTileUpload, isOwnTile } = await import('../../lib/profileTiles.ts')
 const { replaceProfileImage } = await import('../../lib/profileImage.ts')
 const { deleteAccountDurable, executeAccountDelete, AccountDeleteTooManyWipesError } = await import('../../lib/accountDelete.ts')
 
@@ -150,28 +226,97 @@ const section = (t: string) => console.log(`\n${t}`)
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const TAG = `yp-${Date.now()}`
 const resetLimits = async () => { const ks = await scanKeys('rl:*'); if (ks.length) await redis.del(ks) }
-type Actor = { cookie?: string }
-type User = { id: number; cookie: string; email: string; password: string }
+type Actor = { cookie?: string; anon?: string }
+type User = { id: number; pid: string; cookie: string; email: string; password: string }
 const BASE = 'http://localhost:3000'
 type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>
-async function call(handler: unknown, method: string, path: string, actor: Actor, body?: unknown, params: Record<string, string> = {}) {
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
+
+// ── The canary (public-user-ids § 9): "the integer never leaves" ────────────
+// Every fixture user is minted at ≥ 900000000 (setval below), so a whole
+// number of that size in a response can only be a user id. EVERY response the
+// harness sees (call(), and the direct calls via canary()) is scanned RAW, body
+// and headers: no fixture user integer as a whole number, no `u:` + a digit
+// (public ids start with a letter), no fixture user's integer or public id
+// inside an image URL. Old sections then get a TRANSLATED copy (wire ids back to
+// integers) so their assertions stay about what they test; § 18 asserts the
+// wire shape itself.
+const PIDRE = /^[A-HJKMNP-TV-Z][0-9A-HJKMNP-TV-Z]{11}$/
+const canaryViolations: string[] = []
+async function fixtureIds(): Promise<{ ints: number[]; pids: Map<string, number> }> {
+  const rows = await prisma.$queryRaw<{ id: number; public_id: string }[]>`SELECT id, public_id FROM users WHERE id >= 900000000`
+  return { ints: rows.map(r => r.id), pids: new Map(rows.map(r => [r.public_id, r.id])) }
+}
+async function canary(where: string, text: string, headers: Headers) {
+  const { ints, pids } = await fixtureIds()
+  const hdrs = [...headers.entries()].map(([k, v]) => `${k}: ${v}`).join('\n')
+  for (const [part, src] of [['body', text], ['headers', hdrs]] as const) {
+    if (/u:\d/.test(src)) canaryViolations.push(`${where} ${part}: u:<digit>`)
+    if (ints.length) {
+      const re = new RegExp(`(?<![0-9])(?:${ints.join('|')})(?![0-9])`)
+      const m = re.exec(src)
+      if (m) canaryViolations.push(`${where} ${part}: user integer ${m[0]}`)
+    }
+  }
+  for (const url of text.match(/https?:\/\/[^"\s\\]+/g) ?? []) {
+    for (const pid of pids.keys()) if (url.includes(pid)) canaryViolations.push(`${where}: public id in a URL`)
+  }
+}
+async function toInternal(v: unknown, field?: string): Promise<unknown> {
+  if (typeof v === 'string') {
+    const { pids } = await fixtureIdsCached()
+    if (v.startsWith('u:') && PIDRE.test(v.slice(2))) { const n = pids.get(v.slice(2)) ?? (await pidLookup(v.slice(2))); return n === null ? v : `u:${n}` }
+    if (field && /^(id|hostUserId|addedByUserId|userId)$/.test(field) && PIDRE.test(v)) { const n = pids.get(v) ?? (await pidLookup(v)); return n ?? v }
+    return v
+  }
+  if (Array.isArray(v)) return Promise.all(v.map(x => toInternal(x)))
+  if (v && typeof v === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, x] of Object.entries(v)) out[(await toInternal(k)) as string] = await toInternal(x, k)
+    return out
+  }
+  return v
+}
+let idCache: { at: number; v: Awaited<ReturnType<typeof fixtureIds>> } | null = null
+async function fixtureIdsCached() { if (!idCache || Date.now() - idCache.at > 2000) idCache = { at: Date.now(), v: await fixtureIds() }; return idCache.v }
+async function pidLookup(pid: string): Promise<number | null> {
+  const r = await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM users WHERE public_id = ${pid}`
+  return r[0]?.id ?? null
+}
+const pidOf = async (id: number) => (await prisma.user.findUniqueOrThrow({ where: { id }, select: { publicId: true } })).publicId
+
+async function call(handler: unknown, method: string, path: string, actor: Actor, body?: unknown, params: Record<string, string> = {}, extra: Record<string, string> = {}) {
+  const headers: Record<string, string> = { 'content-type': 'application/json', ...extra }
   if (actor.cookie) headers.cookie = actor.cookie
+  if (actor.anon) headers['x-vr-anon-token'] = actor.anon
   const req = new NextRequest(`${BASE}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
   const res = await (handler as Handler)(req, { params: Promise.resolve(params) })
-  let json: unknown = null
-  try { json = await res.json() } catch {}
-  return { status: res.status, json: json as Record<string, any> } // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON in a test harness
+  const text = await res.text()
+  await canary(`${method} ${path}`, text, res.headers)
+  let wire: unknown = null
+  try { wire = JSON.parse(text) } catch {}
+  return { status: res.status, json: (await toInternal(wire)) as Record<string, any>, wire: wire as Record<string, any>, headers: res.headers } // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON in a test harness
 }
 let userSeq = 0
-async function mkUser(name: string): Promise<User> {
+// Every other fixture user has NO username: an account from before usernames
+// (a credential and a sign-in, no sign-up), which is what every account is
+// right after the deploy. `username: true` forces one (§ 21 needs them).
+async function mkUser(name: string, opts: { username?: boolean } = {}): Promise<User> {
   await resetLimits()
   const email = `${TAG}-${++userSeq}@example.test`
   const password = `pw-${TAG}-${userSeq}`
-  await betterAuthServer.api.signUpEmail({ body: { name, email, password } })
-  const { headers } = await betterAuthServer.api.signInEmail({ body: { email, password }, returnHeaders: true })
-  const row = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } })
-  return { id: row.id, cookie: (headers.get('set-cookie') ?? '').split(';')[0], email, password }
+  if (!(opts.username ?? userSeq % 2 === 0)) {
+    const created = await prisma.user.create({ data: { name, email }, select: { id: true, publicId: true } })
+    await syncCredential(created.id, await bcrypt.hash(password, 4))
+    const signedIn = await betterAuthServer.api.signInEmail({ body: { email, password }, returnHeaders: true })
+    return { id: created.id, pid: created.publicId, cookie: (signedIn.headers.get('set-cookie') ?? '').split(';')[0], email, password }
+  }
+  // One step since usernames (§ 9): sign-up needs a username and creates the
+  // session itself, so the cookie comes FROM the sign-up (`returnHeaders`: the
+  // signed set-cookie; the body's `token` is the raw token) and a fixture user
+  // still has exactly one native session.
+  const { headers } = await betterAuthServer.api.signUpEmail({ body: { name, email, password, username: fixtureUsername() } as never, returnHeaders: true })
+  const row = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true, publicId: true } })
+  return { id: row.id, pid: row.publicId, cookie: (headers.get('set-cookie') ?? '').split(';')[0], email, password }
 }
 // Another native session for the same user (a second phone).
 async function signInAgain(u: User): Promise<User> {
@@ -211,7 +356,8 @@ const deleteMoment = (code: string, u: User) => call(codeRoute.DELETE, 'DELETE',
 const patchProfile = async (u: User, body: unknown) => { await resetLimits(); return call(profileRoute.PATCH, 'PATCH', '/api/me/profile', u, body) }
 async function getProfile(id: number, viewer: User) {
   await resetLimits()
-  const r = await call(usersRoute.GET, 'GET', `/api/users/${id}?view=header`, viewer, undefined, { id: String(id) })
+  const pid = await pidOf(id)
+  const r = await call(usersRoute.GET, 'GET', `/api/users/${pid}?view=header`, viewer, undefined, { id: pid })
   if (r.status !== 200) throw new Error(`profile GET ${r.status} ${JSON.stringify(r.json)}`)
   return r.json
 }
@@ -254,6 +400,10 @@ async function lockWaiters(n: number, ps: Promise<unknown>[]): Promise<boolean> 
   }
   return false
 }
+
+// The canary range: every user this suite creates gets an id ≥ 900000000
+// (GREATEST keeps a local re-run monotonic).
+await prisma.$queryRaw`SELECT setval('users_id_seq', GREATEST(900000000, (SELECT COALESCE(max(id), 0) FROM users)))`
 
 try {
   // ── § 1 Bio + PATCH /api/me/profile ───────────────────────────────────────
@@ -435,22 +585,25 @@ try {
   // ── § 5 Replace protocol ──────────────────────────────────────────────────
   section('§ 5 profile image replace protocol')
   const Q = await mkUser('Quinn Replace')
-  const prefix = `avatars/u_${Q.id}_`
+  // 🔒 Keys carry nothing that points to the person (D2): `avatars/avatar_<rand>`.
+  const prefix = 'avatars/avatar_'
+  const putMark = puts.length
   const results = await Promise.all([1, 2, 3, 4].map(() => replaceProfileImage(Q.id, 'avatar', PNG)))
-  const qPuts = puts.filter(p => p.startsWith(prefix))
+  const qPuts = puts.slice(putMark).filter(p => p.startsWith(prefix))
   const [{ image_url: finalAvatar }] = await prisma.$queryRaw<{ image_url: string | null }[]>`SELECT image_url FROM users WHERE id = ${Q.id}`
-  const live = [...store].filter(p => p.startsWith(prefix))
+  const live = qPuts.filter(p => store.has(p))
+  check('🔒 avatar keys: the kind marker + a random part, no user id or public id', qPuts.every(p => /^avatars\/avatar_[0-9a-f]{32}\.png$/.test(p) && !p.includes(String(Q.id)) && !p.includes(Q.pid)), qPuts)
   check('4 concurrent replaces: 4 distinct keys uploaded', results.every(x => x.ok) && new Set(qPuts).size === 4, qPuts)
   check('…exactly ONE object left, the one the row points at (no orphan)', live.length === 1 && urlOf(live[0]) === finalAvatar, { live, finalAvatar })
   await resetLimits()
   let rr = await call(avatarRoute.POST, 'POST', '/api/me/avatar', Q, { imageData: PNG })
   check('avatar route: same wire contract { imageUrl }, prior reclaimed', rr.status === 200 && typeof rr.json.imageUrl === 'string' && !store.has(keyOf(finalAvatar)), rr)
   rr = await call(avatarRoute.DELETE, 'DELETE', '/api/me/avatar', Q)
-  check('avatar DELETE → { ok }, nothing of Q\'s avatars left', rr.status === 200 && rr.json.ok === true && ![...store].some(p => p.startsWith(prefix)))
+  check('avatar DELETE → { ok }, nothing of Q\'s avatars left', rr.status === 200 && rr.json.ok === true && !puts.slice(putMark).filter(p => p.startsWith(prefix)).some(p => store.has(p)))
   rr = await call(coverRoute.POST, 'POST', '/api/me/cover', Q, { imageData: PNG })
   const firstCover = rr.json.coverPhotoUrl as string
   rr = await call(coverRoute.POST, 'POST', '/api/me/cover', Q, { imageData: PNG })
-  check('cover route: { coverPhotoUrl } under avatars/cover_u_<id>_, the replaced one reclaimed', rr.status === 200 && keyOf(rr.json.coverPhotoUrl).startsWith(`avatars/cover_u_${Q.id}_`) && !store.has(keyOf(firstCover)) && store.has(keyOf(rr.json.coverPhotoUrl)), rr)
+  check('cover route: { coverPhotoUrl } under avatars/cover_<rand> (no user), the replaced one reclaimed', rr.status === 200 && /^avatars\/cover_[0-9a-f]{32}\.png$/.test(keyOf(rr.json.coverPhotoUrl)) && !store.has(keyOf(firstCover)) && store.has(keyOf(rr.json.coverPhotoUrl)), rr)
   rr = await call(coverRoute.POST, 'POST', '/api/me/cover', Q, { imageData: 'data:text/plain;base64,aGk=' })
   check('a rejected (non-image) upload → 500, the stored cover unchanged', rr.status === 500 && (await prisma.user.findUnique({ where: { id: Q.id }, select: { coverPhotoUrl: true } }))?.coverPhotoUrl !== null)
 
@@ -460,23 +613,26 @@ try {
   const del = deleteAccountDurable(Q2.id, { hooks: { beforeUserDelete: async () => { atHook = true; await g.p } } })
   for (let i = 0; !atHook && i < 500; i++) await sleep(20)
   if (!atHook) throw new Error('account deletion never reached beforeUserDelete')
+  const lateMark = puts.length
   const late = replaceProfileImage(Q2.id, 'cover', PNG)
   check('a replace racing the account deletion blocks on the users-row lock', await blockedOnLock(late))
   g.open()
   await del
   const lr = await late
-  const lateKeys = puts.filter(p => p.startsWith(`avatars/cover_u_${Q2.id}_`))
+  const lateKeys = puts.slice(lateMark).filter(p => p.startsWith('avatars/cover_'))
   check('…finds no row and reclaims its OWN upload', !lr.ok && lr.reason === 'gone' && lateKeys.length === 1 && !store.has(lateKeys[0]), { lr, lateKeys })
 
   // ── § 5b a tile's own photo ───────────────────────────────────────────────
   section('§ 5b a tile\'s own photo: upload, always live, reclaimed only when owned')
   const T = await mkUser('Tilda Tiles')
-  const ownKey = (k: string) => isOwnTileUpload(urlOf(k), 'impressions', T.id)
-  check('isOwnTileUpload: this tile + this user, the last path segment only', ownKey(`avatars/tile_impressions_u_${T.id}_1_ab.png`) && !ownKey(`avatars/tile_impressions_u_${T.id}5_1_ab.png`) && !ownKey(`avatars/tile_moments_u_${T.id}_1_ab.png`) && !ownKey(`avatars/tile_impressions_u_${T.id}_/x.png`) && !isOwnTileUpload(null, 'impressions', T.id))
+  const ownKey = (k: string) => isLegacyOwnTileUpload(urlOf(k), 'impressions', T.id)
+  check('legacy own key (until the re-key): this tile + this user, the last path segment only', ownKey(`avatars/tile_impressions_u_${T.id}_1_ab.png`) && !ownKey(`avatars/tile_impressions_u_${T.id}5_1_ab.png`) && !ownKey(`avatars/tile_moments_u_${T.id}_1_ab.png`) && !ownKey(`avatars/tile_impressions_u_${T.id}_/x.png`) && !isLegacyOwnTileUpload(null, 'impressions', T.id))
+  check('isOwnTile: url = own_url, or the legacy key; null / another url never', isOwnTile('x', 'x', 'impressions', T.id) && !isOwnTile('x', 'y', 'impressions', T.id) && !isOwnTile(null, null, 'impressions', T.id) && isOwnTile(urlOf(`avatars/tile_impressions_u_${T.id}_1_ab.png`), null, 'impressions', T.id))
   const postTile = async (u: User, tile: string, imageData = PNG) => { await resetLimits(); return call(tilesRoute.POST, 'POST', `/api/me/profile/tiles/${tile}`, u, { imageData }, { tile }) }
   let tr = await postTile(T, 'impressions')
   const own1 = tr.json.tiles?.impressions?.imageUrl as string
-  check('upload → 200, pinned, keyed avatars/tile_impressions_u_<id>_', tr.status === 200 && tr.json.tiles.impressions.pinned === true && keyOf(own1).startsWith(`avatars/tile_impressions_u_${T.id}_`) && store.has(keyOf(own1)) && (await pins(T.id)).i === own1, tr.json)
+  const ownUrlOf = async (id: number) => (await prisma.user.findUniqueOrThrow({ where: { id }, select: { tileImpressionsOwnUrl: true } })).tileImpressionsOwnUrl
+  check('upload → 200, pinned, keyed avatars/tile_impressions_<rand> (no user), own_url = url', tr.status === 200 && tr.json.tiles.impressions.pinned === true && /^avatars\/tile_impressions_[0-9a-f]{32}\.png$/.test(keyOf(own1)) && store.has(keyOf(own1)) && (await pins(T.id)).i === own1 && (await ownUrlOf(T.id)) === own1, tr.json)
   const tp = await getProfile(T.id, T)
   check('shown with an EMPTY pool: always live, never cleared as dead', tp.tiles.impressions.imageUrl === own1 && tp.tiles.impressions.pinned === true && (await pins(T.id)).i === own1, tp.tiles.impressions)
   check('another viewer sees it too', (await getProfile(T.id, V)).tiles.impressions.imageUrl === own1)
@@ -522,17 +678,17 @@ try {
   const m4 = await mkUser('Moe IBlocked')
   for (const t of [m1, m2, m3, m4]) {
     await resetLimits()
-    const r = await call(muteRoute.POST, 'POST', `/api/me/mutes/${t.id}`, M, undefined, { id: String(t.id) })
+    const r = await call(muteRoute.POST, 'POST', `/api/me/mutes/${t.pid}`, M, undefined, { id: t.pid })
     if (r.status !== 200) throw new Error(`mute ${r.status}`)
     await sleep(5)
   }
-  const blockedMe = await call(blockRoute.POST, 'POST', `/api/me/blocks/${M.id}`, m3, undefined, { id: String(M.id) })
-  const iBlocked = await call(blockRoute.POST, 'POST', `/api/me/blocks/${m4.id}`, M, undefined, { id: String(m4.id) })
+  const blockedMe = await call(blockRoute.POST, 'POST', `/api/me/blocks/${M.pid}`, m3, undefined, { id: M.pid })
+  const iBlocked = await call(blockRoute.POST, 'POST', `/api/me/blocks/${m4.pid}`, M, undefined, { id: m4.pid })
   check('fixture: both blocks land', blockedMe.status === 200 && iBlocked.status === 200, [blockedMe.status, iBlocked.status])
   await resetLimits()
   const ml = await call(mutesRoute.GET, 'GET', '/api/me/mutes', M)
   const ids = (ml.json?.mutes ?? []).map((m: { id: number }) => m.id)
-  check('200 with { mutes: [{ id, name, createdAt }] }, no imageUrl', ml.status === 200 && ml.json.mutes.every((m: Record<string, unknown>) => typeof m.id === 'number' && typeof m.name === 'string' && typeof m.createdAt === 'string' && !('imageUrl' in m)), ml.json)
+  check('200 with { mutes: [{ id (public), name, createdAt }] }, no imageUrl', ml.status === 200 && ml.wire.mutes.every((m: Record<string, unknown>) => typeof m.id === 'string' && PIDRE.test(m.id as string) && typeof m.name === 'string' && typeof m.createdAt === 'string' && !('imageUrl' in m)), ml.wire)
   check('🔒 a muted user who BLOCKED me is left out', !ids.includes(m3.id), ids)
   check('one I blocked stays', ids.includes(m4.id), ids)
   check('newest first', JSON.stringify(ids) === JSON.stringify([m4.id, m2.id, m1.id]), ids)
@@ -690,7 +846,7 @@ try {
   })
   if (ci.status !== 201) throw new Error(`check-in POST ${ci.status} ${JSON.stringify(ci.json)}`)
   const postId = ci.json.id as number
-  check('D12: the check-in photo key carries a random suffix', /^wines\/ci_\d+_\d+_[A-Za-z0-9_-]{12}\.png$/.test(keyOf(ci.json.imageUrl)), keyOf(ci.json.imageUrl))
+  check('D12 + D2: the check-in photo key is random, with nothing that points to the person', /^wines\/ci_[0-9a-f]{32}\.png$/.test(keyOf(ci.json.imageUrl)), keyOf(ci.json.imageUrl))
   const OM = await createSession(O, 'Olga Owner')
   const ow = await addWine(OM, O, 'Moment Bottle')
   await rate(OM, O, ow.id)
@@ -698,10 +854,10 @@ try {
   await ensureBadgesSeedOnce()
   await prisma.userBadge.create({ data: { userId: O.id, badgeId: ALL_BADGES[0].id } })
 
-  const feedOf = (v: User, user?: number) => call(feedRoute.GET, 'GET', user ? `/api/feed?user=${user}` : '/api/feed', v)
+  const feedOf = async (v: User, user?: number) => call(feedRoute.GET, 'GET', user ? `/api/feed?user=${await pidOf(user)}` : '/api/feed', v)
   const oItems = (f: { json: Record<string, any> }) => ((f.json?.items ?? []) as { author: { id: number } }[]).filter(i => i.author.id === O.id) // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON
   const oCheckin = (f: { json: Record<string, any> }) => (oItems(f) as unknown as { type: string; checkin?: Record<string, unknown> }[]).find(i => i.type === 'checkin')?.checkin // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON
-  const webProfile = async (id: number, v: User | Actor) => { await resetLimits(); return call(usersRoute.GET, 'GET', `/api/users/${id}`, v, undefined, { id: String(id) }) }
+  const webProfile = async (id: number, v: User | Actor) => { await resetLimits(); const pid = await pidOf(id); return call(usersRoute.GET, 'GET', `/api/users/${pid}`, v, undefined, { id: pid }) }
   const like = async (v: User, method: 'POST' | 'DELETE') => { await resetLimits(); return call(method === 'POST' ? likeRoute.POST : likeRoute.DELETE, method, `/api/feed-items/${postId}/like`, v, undefined, { id: String(postId) }) }
   const sip = async (v: User) => { await resetLimits(); return call(checkinsRoute.POST, 'POST', '/api/checkins', v, { wineName: `${TAG} sip`, score: 3, flavors: {}, copyFromCheckinId: postId }) }
 
@@ -803,8 +959,8 @@ try {
 
   // Badges: the earned date is owner-only.
   await resetLimits()
-  const bOther = await call(badgesRoute.GET, 'GET', `/api/users/${O.id}/badges`, Rf, undefined, { id: String(O.id) })
-  const bOwn = await call(badgesRoute.GET, 'GET', `/api/users/${O.id}/badges`, O, undefined, { id: String(O.id) })
+  const bOther = await call(badgesRoute.GET, 'GET', `/api/users/${O.pid}/badges`, Rf, undefined, { id: O.pid })
+  const bOwn = await call(badgesRoute.GET, 'GET', `/api/users/${O.pid}/badges`, O, undefined, { id: O.pid })
   const first = (b: { json: Record<string, any> }) => b.json.badges.find((x: { id: string }) => x.id === ALL_BADGES[0].id) // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON
   check('🔒 badges: another viewer sees earned, never earned_at', first(bOther)?.earned === true && bOther.json.badges.every((x: { earned_at: unknown }) => x.earned_at === null), first(bOther))
   check('badges: the owner sees the date', first(bOwn)?.earned === true && first(bOwn)?.earned_at !== null)
@@ -1069,7 +1225,8 @@ try {
   type Row = { id: number; name: string; xp: number | null; imageUrl: string | null; isFollowing: boolean; followsViewer: boolean; momentsTogether: number | null; friendsInCommon: number | null }
   const list = async (v: User, id: number, dir: 'followers' | 'following', qs = '') => {
     await resetLimits()
-    const r = await call(dir === 'followers' ? followersRoute.GET : followingRoute.GET, 'GET', `/api/users/${id}/${dir}${qs}`, v, undefined, { id: String(id) })
+    const pid = await pidOf(id)
+    const r = await call(dir === 'followers' ? followersRoute.GET : followingRoute.GET, 'GET', `/api/users/${pid}/${dir}${qs}`, v, undefined, { id: pid })
     return r as { status: number; json: { users: Row[]; nextCursor: string | null; knownCount?: number } }
   }
   const idsOf = (rows: { id: number }[]) => rows.map(r => r.id).sort((a, b) => a - b).join()
@@ -1210,9 +1367,9 @@ try {
 
   // The limiter: per user + a per-IP backstop, both charged after the 401.
   await resetLimits()
-  await call(followersRoute.GET, 'GET', `/api/users/${Ola}/followers`, {}, undefined, { id: String(Ola) })
+  await call(followersRoute.GET, 'GET', `/api/users/${await pidOf(Ola)}/followers`, {}, undefined, { id: await pidOf(Ola) })
   check('people lists: an anonymous 401 charges no IP budget', (await scanKeys('rl:profile-people:*')).length === 0)
-  await call(followersRoute.GET, 'GET', `/api/users/${Ola}/followers`, Vic, undefined, { id: String(Ola) })
+  await call(followersRoute.GET, 'GET', `/api/users/${await pidOf(Ola)}/followers`, Vic, undefined, { id: await pidOf(Ola) })
   const rlKeys = await scanKeys('rl:profile-people:*')
   check('people lists: charged per user AND per IP', rlKeys.includes(`rl:profile-people:u:${Vic.id}:1m`) && rlKeys.some(k => k.startsWith('rl:profile-people:ip:')), rlKeys)
 
@@ -1240,6 +1397,979 @@ try {
   await redis.set(`rl:moment-preview:u:${Gp.id}:1h`, '60', { EX: 3600 })
   pv = await preview(Gp, Cp)
   check('past 60 an hour → 429 with a wait', pv.status === 429 && /Try again in/.test(String(pv.json.error)), pv)
+  // ── § 18 public user ids (public-user-ids § 9) ───────────────────────────
+  {
+  section('§ 18 public user ids: the wire, inputs, null paths, auth, schema, images, people order')
+  const isPid = (v: unknown) => typeof v === 'string' && PIDRE.test(v)
+  const isWireU = (v: unknown) => typeof v === 'string' && v.startsWith('u:') && PIDRE.test(v.slice(2))
+  const UNKNOWN = 'ZZZZZZZZZZZZ'
+  check('setup: the unknown fixture id is not minted', !(await prisma.user.findFirst({ where: { publicId: UNKNOWN } })))
+  const Ap = await mkUser('Ada Public'), Bp = await mkUser('Ben Public'), Cq = await mkUser('Cy Public')
+  check('fixture users carry well-formed public ids, integers in the canary range', [Ap, Bp, Cq].every(u => isPid(u.pid) && u.id >= 900000000))
+  await prisma.follow.createMany({ data: [{ followerId: Ap.id, followingId: Bp.id }, { followerId: Bp.id, followingId: Ap.id }] })
+
+  // (1) The walk: every surface, ids are public.
+  await resetLimits()
+  let w = await call(usersRoute.GET, 'GET', `/api/users/${Bp.pid}`, Ap, undefined, { id: Bp.pid })
+  check('profile: id is the public id', w.status === 200 && w.wire.id === Bp.pid, w.wire)
+  await resetLimits()
+  w = await call(usersRoute.GET, 'GET', `/api/users/${Bp.pid.toLowerCase()}`, Ap, undefined, { id: Bp.pid.toLowerCase() })
+  check('profile: input is case-insensitive, the answer canonical', w.status === 200 && w.wire.id === Bp.pid)
+  for (const [dir, route] of [['followers', followersRoute], ['following', followingRoute]] as const) {
+    await resetLimits()
+    const r = await call(route.GET, 'GET', `/api/users/${Ap.pid}/${dir}`, Bp, undefined, { id: Ap.pid })
+    check(`people ${dir}: rows carry public ids`, r.status === 200 && r.wire.users.length > 0 && r.wire.users.every((u: { id: unknown }) => isPid(u.id)), r.wire)
+  }
+  await resetLimits()
+  w = await call(searchRoute.GET, 'GET', `/api/users/search?q=${encodeURIComponent('Ben Public')}`, Ap)
+  check('search: public ids', Array.isArray(w.wire) && w.wire.some((h: { id: unknown }) => h.id === Bp.pid), w.wire)
+  await resetLimits()
+  w = await call(friendsRoute.GET, 'GET', '/api/me/friends', Ap)
+  check('friends (the tag picker): public ids', Array.isArray(w.wire) && w.wire.some((f: { id: unknown }) => f.id === Bp.pid))
+  await resetLimits()
+  const ci1 = await call(checkinsRoute.POST, 'POST', '/api/checkins', Bp, { wineName: 'Public Bottle', score: 4, taggedUserIds: [Ap.pid, UNKNOWN] })
+  check('check-in POST: tags by public id (an unknown one dropped), echo userId public', ci1.status === 201 && ci1.wire.userId === Bp.pid, { status: ci1.status, userId: ci1.wire.userId, want: Bp.pid })
+  const ciId = ci1.wire.id as number
+  const tagRows = await prisma.feedItemTag.findMany({ where: { feedItemId: ciId }, select: { userId: true } })
+  check('…the stored tag is Ap (the unknown id dropped like a non-mutual)', tagRows.length === 1 && tagRows[0].userId === Ap.id, tagRows)
+  await resetLimits()
+  w = await call(feedRoute.GET, 'GET', '/api/feed', Ap)
+  const bItem = (w.wire.items as { type: string; author: { id: unknown }; checkin?: { id: number; tags: { id: unknown }[] } }[]).find(i => i.checkin?.id === ciId)
+  check('feed: author + tags are public ids', !!bItem && bItem.author.id === Bp.pid && bItem.checkin!.tags.every(t => t.id === Ap.pid), bItem)
+  await resetLimits()
+  w = await call(feedRoute.GET, 'GET', `/api/feed?user=${Bp.pid}`, Ap)
+  check('feed ?user=<publicId>: that author\'s posts', w.status === 200 && (w.wire.items as { author: { id: unknown } }[]).every(i => i.author.id === Bp.pid) && w.wire.items.length > 0)
+  await resetLimits()
+  let pr = await call(checkinRoute.PATCH, 'PATCH', `/api/checkins/${ciId}`, Bp, { taggedUserIds: [String(Ap.id)] }, { id: String(ciId) })
+  check('🔒 check-in PATCH with an integer tag list → 400 for the whole request', pr.status === 400, pr.wire)
+  pr = await call(checkinRoute.PATCH, 'PATCH', `/api/checkins/${ciId}`, Bp, { taggedUserIds: [Ap.id] }, { id: String(ciId) })
+  check('…numbers too → 400', pr.status === 400, pr.wire)
+  check('…and the stored tags are intact (never wiped to [])', (await prisma.feedItemTag.count({ where: { feedItemId: ciId } })) === 1)
+  const postsBefore = await prisma.feedItem.count({ where: { userId: Bp.id } })
+  await resetLimits()
+  pr = await call(checkinsRoute.POST, 'POST', '/api/checkins', Bp, { wineName: 'Old Tab Bottle', score: 3, taggedUserIds: [Ap.id] })
+  check('🔒 check-in POST with an integer tag → 400 and no post created', pr.status === 400 && (await prisma.feedItem.count({ where: { userId: Bp.id } })) === postsBefore, pr.wire)
+  await resetLimits()
+  pr = await call(checkinRoute.PATCH, 'PATCH', `/api/checkins/${ciId}`, Bp, { taggedUserIds: [Ap.pid] }, { id: String(ciId) })
+  check('check-in PATCH echo: userId public', pr.status === 200 && pr.wire.userId === Bp.pid, pr.wire)
+
+  // A moment, with a cover chosen at creation (§ 8a c).
+  await resetLimits()
+  const cr = await call(sessionRoute.POST, 'POST', '/api/session', Ap, { hostDisplayName: 'Ada Public', sessionName: `${TAG} public moment`, dateFrom, coverPhoto: PNG })
+  const Pm = cr.wire.code as string
+  check('create: id = u:<publicId>', cr.status === 200 && cr.wire.id === `u:${Ap.pid}`, cr.wire)
+  check('🔒 the cover chosen at creation has the settings path\'s random key (no timestamp, no code)', /^sessions\/[A-Za-z0-9_-]{16}\.png$/.test(keyOf(cr.wire.coverPhotoUrl)), keyOf(cr.wire.coverPhotoUrl))
+  await resetLimits()
+  const jr = await call(joinRoute.POST, 'POST', '/api/session/join', Bp, { code: Pm, displayName: 'Ben' })
+  check('join: id + meta wire (hostUserId public, hostIdentityId u:<publicId>)', jr.status === 200 && jr.wire.id === `u:${Bp.pid}` && jr.wire.hostUserId === Ap.pid && jr.wire.hostIdentityId === `u:${Ap.pid}`, jr.wire)
+  const vr = await call(visitRoute.POST, 'POST', `/api/session/${Pm}/visit`, Bp, {}, { code: Pm })
+  check('visit: id = u:<publicId>', vr.status === 200 && vr.wire.id === `u:${Bp.pid}`, vr.wire)
+  await resetLimits()
+  const sr = await call(codeRoute.PATCH, 'PATCH', `/api/session/${Pm}`, Ap, { action: 'set-role', targetId: `u:${Bp.pid}`, role: 'provider' }, { code: Pm })
+  check('set-role by u:<publicId>: echo meta providerIds wire', sr.status === 200 && (sr.wire.meta.providerIds as string[]).includes(`u:${Bp.pid}`) && sr.wire.meta.hostUserId === Ap.pid, sr.wire)
+  await resetLimits()
+  const wb = await call(winesRoute.POST, 'POST', `/api/session/${Pm}/wines`, Bp, { name: 'Ben Brought', type: 'red' }, { code: Pm })
+  check('wine POST echo: addedByUserId public', wb.status === 200 && wb.wire.addedByUserId === Bp.pid, wb.wire)
+  const wa = await call(winesRoute.POST, 'POST', `/api/session/${Pm}/wines`, Ap, { name: 'Ada Brought', type: 'white' }, { code: Pm })
+  await rate(Pm, Bp, wb.wire.id)
+  await resetLimits()
+  const st = await call(stateRoute.GET, 'GET', `/api/session/${Pm}/state`, Bp, undefined, { code: Pm })
+  check('state: participants, roles, ratings keys and wine adders are wire ids', st.status === 200
+    && (st.wire.meta.participants as { id: string }[]).every(p => isWireU(p.id) || p.id.startsWith('a:'))
+    && (st.wire.meta.participants as { id: string }[]).some(p => p.id === `u:${Bp.pid}`)
+    && Object.keys(st.wire.ratings).every(isWireU) && Object.keys(st.wire.ratings).includes(`u:${Bp.pid}`)
+    && (st.wire.wines as { addedByUserId: unknown }[]).every(x => x.addedByUserId === null || isPid(x.addedByUserId)), st.wire)
+  await resetLimits()
+  const pe = await call(wineRoute.PATCH, 'PATCH', `/api/session/${Pm}/wines/${wb.wire.id}`, Ap, { name: 'Ben Brought', type: 'red', producer: 'P' }, { code: Pm, wineId: wb.wire.id })
+  check('wine PATCH echo: addedByUserId public', pe.status === 200 && pe.wire.addedByUserId === Bp.pid, pe.wire)
+  await resetLimits()
+  const ro = await call(reorderRoute.POST, 'POST', `/api/session/${Pm}/wines/reorder`, Ap, { orderedIds: [wa.wire.id, wb.wire.id] }, { code: Pm })
+  check('reorder echo: addedByUserId public', ro.status === 200 && (ro.wire as unknown as { addedByUserId: unknown }[]).every(x => isPid(x.addedByUserId)), ro.wire)
+  await resetLimits()
+  const rv = await call(revealRoute.POST, 'POST', `/api/session/${Pm}/wines/${wb.wire.id}/reveal`, Ap, {}, { code: Pm, wineId: wb.wire.id })
+  check('reveal echo: addedByUserId public', rv.status === 200 && rv.wire.wine.addedByUserId === Bp.pid, rv.wire)
+  await resetLimits()
+  const se = await call(settingsRoute.PATCH, 'PATCH', `/api/session/${Pm}/settings`, Ap, { description: 'public ids' }, { code: Pm })
+  check('settings echo: meta wire', se.status === 200 && se.wire.meta.hostUserId === Ap.pid && se.wire.meta.hostIdentityId === `u:${Ap.pid}`, se.wire)
+  await resetLimits()
+  const bpBan = await call(banPreviewRoute.GET, 'GET', `/api/session/${Pm}/bans/preview/${encodeURIComponent(`u:${Bp.pid}`)}`, Ap, undefined, { code: Pm, identityId: encodeURIComponent(`u:${Bp.pid}`) })
+  check('ban preview echo: identityId wire', bpBan.status === 200 && bpBan.wire.identityId === `u:${Bp.pid}`, bpBan.wire)
+  // A ban on someone never in the moment (Cq), and one on a nonexistent integer straight into Redis.
+  await resetLimits()
+  const banC = await call(bansRoute.POST, 'POST', `/api/session/${Pm}/bans`, Ap, { identityId: `u:${Cq.pid}`, mode: 'ban' }, { code: Pm })
+  check('ban by u:<publicId> (a non-participant): 200, stored as the INTERNAL identity', banC.status === 200 && !!(await prisma.sessionBan.findUnique({ where: { sessionCode_identityId: { sessionCode: Pm, identityId: `u:${Cq.id}` } } })), banC.wire)
+  await redis.sAdd(k.bans(Pm), 'u:999999999')
+  await resetLimits()
+  const bl = await call(bansRoute.GET, 'GET', `/api/session/${Pm}/bans`, Ap, undefined, { code: Pm })
+  check('bans list: wire ids; a ban whose users row is gone leaves the list', bl.status === 200 && (bl.wire.bans as { identityId: string }[]).some(b => b.identityId === `u:${Cq.pid}`) && (bl.wire.bans as { identityId: string }[]).every(b => isWireU(b.identityId) || b.identityId.startsWith('a:')), bl.wire)
+  await redis.sAdd(k.bans(Pm), ['u:99999999999', 'u:0042'])
+  await resetLimits()
+  const stJ = await call(stateRoute.GET, 'GET', `/api/session/${Pm}/state`, Ap, undefined, { code: Pm })
+  const blJ = await call(bansRoute.GET, 'GET', `/api/session/${Pm}/bans`, Ap, undefined, { code: Pm })
+  const metaJ = stJ.wire.meta as { banCount?: number } | null
+  check('🔒 junk ban members (beyond int4, a leading zero) never break the host\'s view; the count is what the list shows', stJ.status === 200 && !!metaJ && metaJ.banCount === (blJ.wire.bans as unknown[]).length, { banCount: metaJ?.banCount, listed: (blJ.wire.bans as unknown[] | undefined)?.length })
+  await redis.sRem(k.bans(Pm), ['u:99999999999', 'u:0042'])
+  const bansBefore = await prisma.sessionBan.count({ where: { sessionCode: Pm } })
+  await resetLimits()
+  const banU = await call(bansRoute.POST, 'POST', `/api/session/${Pm}/bans`, Ap, { identityId: `u:${UNKNOWN}`, mode: 'ban' }, { code: Pm })
+  check('🔒 ban of an unknown public id: 200, the limiter charged, nothing written', banU.status === 200 && (await prisma.sessionBan.count({ where: { sessionCode: Pm } })) === bansBefore && Number(await redis.get(`rl:sessban:u:${Ap.id}:10m`)) === 1, banU.wire)
+  await resetLimits()
+  const rsC = await call(removedStateRoute.GET, 'GET', `/api/session/${Pm}/removed-state`, Cq, undefined, { code: Pm })
+  check('removed-state: identityId wire', rsC.status === 200 && rsC.wire.state === 'banned' && rsC.wire.identityId === `u:${Cq.pid}`, rsC.wire)
+  await resetLimits()
+  const pvw = await call(previewRoute.GET, 'GET', `/api/session/${Pm}/preview`, Cq, undefined, { code: Pm })
+  check('preview: banned → 403 (no ids)', pvw.status === 403)
+  await resetLimits()
+  const ms = await call(meSessionsRoute.GET, 'GET', '/api/me/sessions', Bp)
+  const msRow = (ms.wire as unknown as { code: string; people: { id: string }[] }[]).find(x => x.code === Pm)
+  check('/api/me/sessions: people[].id wire, no host_user_id', ms.status === 200 && !!msRow && msRow.people.some(p => p.id === `u:${Ap.pid}`) && msRow.people.every(p => isWireU(p.id)) && !('host_user_id' in msRow), msRow)
+  await resetLimits()
+  const msHost = await call(meSessionsRoute.GET, 'GET', `/api/me/sessions?tense=upcoming&hosts=${encodeURIComponent(`u:${Ap.pid}`)}`, Bp)
+  const msInt = await call(meSessionsRoute.GET, 'GET', `/api/me/sessions?tense=upcoming&hosts=${encodeURIComponent(`u:${Ap.id}`)}`, Bp)
+  const msUnk = await call(meSessionsRoute.GET, 'GET', `/api/me/sessions?tense=upcoming&hosts=${encodeURIComponent(`u:${UNKNOWN}`)}`, Bp)
+  check('hosts=u:<publicId> filters to that host', (msHost.wire as unknown as { code: string }[]).some(x => x.code === Pm))
+  check('🔒 hosts= with a malformed (integer) or unknown entry matches NOTHING (a FALSE clause, never a dropped filter)', (msInt.wire as unknown[]).length === 0 && (msUnk.wire as unknown[]).length === 0, { msInt: msInt.wire, msUnk: msUnk.wire })
+  await resetLimits()
+  const msPeople = await call(meSessionsRoute.GET, 'GET', `/api/me/sessions?people=${encodeURIComponent(`u:${Ap.id}`)}`, Bp)
+  check('people=u:<int> matches nothing', (msPeople.wire as unknown[]).length === 0)
+
+  // (2) Inputs: the fixture's integer gets the malformed answer on EVERY input route.
+  const intP = String(Bp.id), intU = `u:${Bp.id}`
+  const inputs: [string, () => Promise<{ status: number }>, number][] = [
+    ['profile GET', () => call(usersRoute.GET, 'GET', `/api/users/${intP}`, Ap, undefined, { id: intP }), 400],
+    ['badges GET', () => call(badgesRoute.GET, 'GET', `/api/users/${intP}/badges`, Ap, undefined, { id: intP }), 400],
+    ['followers GET', () => call(followersRoute.GET, 'GET', `/api/users/${intP}/followers`, Ap, undefined, { id: intP }), 400],
+    ['following GET', () => call(followingRoute.GET, 'GET', `/api/users/${intP}/following`, Ap, undefined, { id: intP }), 400],
+    ['feed ?user=', () => call(feedRoute.GET, 'GET', `/api/feed?user=${intP}`, Ap), 400],
+    ['follow POST', () => call(followRoute.POST, 'POST', `/api/users/${intP}/follow`, Cq, undefined, { id: intP }), 400],
+    ['follow DELETE', () => call(followRoute.DELETE, 'DELETE', `/api/users/${intP}/follow`, Ap, undefined, { id: intP }), 400],
+    ['block POST', () => call(blockRoute.POST, 'POST', `/api/me/blocks/${intP}`, Cq, undefined, { id: intP }), 400],
+    ['block DELETE', () => call(blockRoute.DELETE, 'DELETE', `/api/me/blocks/${intP}`, Cq, undefined, { id: intP }), 400],
+    ['mute POST', () => call(muteRoute.POST, 'POST', `/api/me/mutes/${intP}`, Cq, undefined, { id: intP }), 400],
+    ['mute DELETE', () => call(muteRoute.DELETE, 'DELETE', `/api/me/mutes/${intP}`, Cq, undefined, { id: intP }), 400],
+    ['set-role targetId', () => call(codeRoute.PATCH, 'PATCH', `/api/session/${Pm}`, Ap, { action: 'set-role', targetId: intU, role: 'co_host' }, { code: Pm }), 400],
+    ['bans POST identityId', () => call(bansRoute.POST, 'POST', `/api/session/${Pm}/bans`, Ap, { identityId: intU, mode: 'kick' }, { code: Pm }), 400],
+    ['unban', () => call(unbanRoute.DELETE, 'DELETE', `/api/session/${Pm}/bans/${encodeURIComponent(`u:${Cq.id}`)}`, Ap, undefined, { code: Pm, identityId: encodeURIComponent(`u:${Cq.id}`) }), 400],
+    ['ban preview', () => call(banPreviewRoute.GET, 'GET', `/api/session/${Pm}/bans/preview/${encodeURIComponent(intU)}`, Ap, undefined, { code: Pm, identityId: encodeURIComponent(intU) }), 400],
+    ['brought-by', () => call(wineRoute.PATCH, 'PATCH', `/api/session/${Pm}/wines/${wa.wire.id}`, Ap, { broughtByIdentityId: intU }, { code: Pm, wineId: wa.wire.id }), 400],
+  ]
+  for (const [label, run, want] of inputs) {
+    await resetLimits()
+    const r = await run()
+    check(`🔒 ${label} with the fixture's integer → ${want} (malformed, never resolved)`, r.status === want, r)
+  }
+  check('…none of them wrote: Bp is no cohost, Cq still banned, no follow / block / mute of Bp by Cq', !(await prisma.sessionMember.findFirst({ where: { sessionCode: Pm, userId: Bp.id, role: 'co_host' } }))
+    && !!(await prisma.sessionBan.findUnique({ where: { sessionCode_identityId: { sessionCode: Pm, identityId: `u:${Cq.id}` } } }))
+    && !(await prisma.follow.findFirst({ where: { followerId: Cq.id, followingId: Bp.id } }))
+    && !(await prisma.userBlock.findFirst({ where: { blockerId: Cq.id, blockedId: Bp.id } }))
+    && !(await prisma.userMute.findFirst({ where: { muterId: Cq.id, mutedId: Bp.id } })))
+
+  // (3) The null paths: blocked-me and unknown answer identically, also with the limiter spent.
+  const Ep = await mkUser('Eve Blocks')
+  await prisma.userBlock.create({ data: { blockerId: Ep.id, blockedId: Ap.id } })
+  const same = (a: { status: number; wire: unknown }, b: { status: number; wire: unknown }) => a.status === b.status && JSON.stringify(a.wire) === JSON.stringify(b.wire)
+  await resetLimits()
+  let ra = await call(usersRoute.GET, 'GET', `/api/users/${Ep.pid}`, Ap, undefined, { id: Ep.pid })
+  let rb = await call(usersRoute.GET, 'GET', `/api/users/${UNKNOWN}`, Ap, undefined, { id: UNKNOWN })
+  check('🔒 profile: blocked-me and unknown → the same 404', ra.status === 404 && same(ra, rb), { ra: ra.wire, rb: rb.wire })
+  await redis.set(`rl:profile:unknown:1m`, '60', { EX: 60 })
+  ra = await call(usersRoute.GET, 'GET', `/api/users/${Ep.pid}`, Ap, undefined, { id: Ep.pid })
+  rb = await call(usersRoute.GET, 'GET', `/api/users/${UNKNOWN}`, Ap, undefined, { id: UNKNOWN })
+  check('…and with the limiter spent: the same 429 (the lookup never runs before it)', ra.status === 429 && same(ra, rb), { ra: ra.status, rb: rb.status })
+  for (const [label, route, method] of [['follow', followRoute, 'POST'], ['block', blockRoute, 'POST'], ['mute', muteRoute, 'POST'], ['mute', muteRoute, 'DELETE'], ['follow', followRoute, 'DELETE'], ['block', blockRoute, 'DELETE']] as const) {
+    await resetLimits()
+    const path = label === 'follow' ? `/api/users/{id}/follow` : `/api/me/${label}s/{id}`
+    const h = (route as Record<string, unknown>)[method]
+    ra = await call(h, method, path.replace('{id}', Ep.pid), Ap, undefined, { id: Ep.pid })
+    rb = await call(h, method, path.replace('{id}', UNKNOWN), Ap, undefined, { id: UNKNOWN })
+    check(`🔒 ${label} ${method}: blocked-me and unknown → the same answer`, ra.status === rb.status && same(ra, rb), { ra: ra.wire, rb: rb.wire })
+  }
+  await resetLimits()
+  await call(muteRoute.DELETE, 'DELETE', `/api/me/mutes/${UNKNOWN}`, Ap, undefined, { id: UNKNOWN })
+  check('🔒 mute DELETE of an unknown id charges the limiter like a real target', Number(await redis.get(`rl:mute:u:${Ap.id}:1h`)) === 1)
+  await redis.set(`rl:follow:${Ap.id}:1h`, '60', { EX: 3600 })
+  ra = await call(followRoute.POST, 'POST', `/api/users/${Ep.pid}/follow`, Ap, undefined, { id: Ep.pid })
+  rb = await call(followRoute.POST, 'POST', `/api/users/${UNKNOWN}/follow`, Ap, undefined, { id: UNKNOWN })
+  check('🔒 follow with the limiter spent: blocked-me and unknown both 429', ra.status === 429 && same(ra, rb))
+  await resetLimits()
+  ra = await call(codeRoute.PATCH, 'PATCH', `/api/session/${Pm}`, Ap, { action: 'set-role', targetId: `u:${Ep.pid}`, role: 'provider' }, { code: Pm })
+  rb = await call(codeRoute.PATCH, 'PATCH', `/api/session/${Pm}`, Ap, { action: 'set-role', targetId: `u:${UNKNOWN}`, role: 'provider' }, { code: Pm })
+  check('set-role: a non-member and an unknown id → the same 400', ra.status === 400 && same(ra, rb), { ra: ra.wire, rb: rb.wire })
+  await resetLimits()
+  ra = await call(banPreviewRoute.GET, 'GET', `/api/session/${Pm}/bans/preview/${encodeURIComponent(`u:${UNKNOWN}`)}`, Ap, undefined, { code: Pm, identityId: encodeURIComponent(`u:${UNKNOWN}`) })
+  check('ban preview of an unknown id → 404', ra.status === 404)
+  await resetLimits()
+  ra = await call(unbanRoute.DELETE, 'DELETE', `/api/session/${Pm}/bans/${encodeURIComponent(`u:${UNKNOWN}`)}`, Ap, undefined, { code: Pm, identityId: encodeURIComponent(`u:${UNKNOWN}`) })
+  check('🔒 unban of an unknown id → 200 and the limiter charged', ra.status === 200 && Number(await redis.get(`rl:sessban:u:${Ap.id}:10m`)) === 1)
+  await resetLimits()
+  ra = await call(wineRoute.PATCH, 'PATCH', `/api/session/${Pm}/wines/${wa.wire.id}`, Ap, { broughtByIdentityId: `u:${UNKNOWN}` }, { code: Pm, wineId: wa.wire.id })
+  check('brought-by an unknown id → "not in this moment"', ra.status === 400 && /not in this moment/.test(String(ra.wire.error)), ra.wire)
+
+  // (4) A deleted participant before the d: migration (a best-effort projection).
+  const Dp = await mkUser('Dora Deleted')
+  await resetLimits()
+  await call(joinRoute.POST, 'POST', '/api/session/join', Dp, { code: Pm, displayName: 'Dora' })
+  await resetLimits()
+  let st2 = await call(stateRoute.GET, 'GET', `/api/session/${Pm}/state`, Ap, undefined, { code: Pm })
+  check('setup: the participant renders once (the forward cache now holds them)', (st2.wire.meta.participants as { id: string }[]).some(p => p.id === `u:${Dp.pid}`))
+  await prisma.$executeRaw`DELETE FROM users WHERE id = ${Dp.id}`
+  check('…their u:<int> still lingers in Redis (the projection never ran)', !!(await redis.hGet(k.identities(Pm), `u:${Dp.id}`)))
+  publicIds._resetPublicIdCache() // the 10-minute entry window passing
+  await resetLimits()
+  st2 = await call(stateRoute.GET, 'GET', `/api/session/${Pm}/state`, Ap, undefined, { code: Pm })
+  check('🔒 after the window: the lingering entry is DROPPED, never its integer (canary)', st2.status === 200 && !(st2.wire.meta.participants as { id: string }[]).some(p => p.id === `u:${Dp.pid}`) && !JSON.stringify(st2.wire).includes(String(Dp.id)), st2.wire.meta.participants)
+
+  // (5) The people cursor: sealed, bound to its list.
+  const Wo = await mkBare(`Wren Owner ${TAG}`)
+  const WoPid = await pidOf(Wo)
+  const fans: number[] = []
+  for (let i = 0; i < 35; i++) fans.push(await mkBare(`Fan ${i} ${TAG}`))
+  const t0 = Date.now() - 3600_000
+  // Distinct follow times: fan i followed at t0 + i seconds (newest = fan 34).
+  await prisma.follow.createMany({ data: fans.map((f, i) => ({ followerId: f, followingId: Wo, createdAt: new Date(t0 + i * 1000) })) })
+  await prisma.follow.create({ data: { followerId: Ap.id, followingId: Wo } })
+  await resetLimits()
+  const listPage = async (v: User, id: string, dir: 'followers' | 'following', qs = '') => { await resetLimits(); return call(dir === 'followers' ? followersRoute.GET : followingRoute.GET, 'GET', `/api/users/${id}/${dir}${qs}`, v, undefined, { id }) }
+  const p1 = await listPage(Bp, WoPid, 'followers')
+  const fanPids = await Promise.all(fans.map(pidOf))
+  const apFirst = (p1.wire.users as { id: string }[])[0]?.id === Ap.pid
+  const order1 = (p1.wire.users as { id: string }[]).map(u => u.id)
+  check('people order: newest follow first (Ap followed last, then fan 34, 33, …)', apFirst && order1.slice(1, 4).join() === [fanPids[34], fanPids[33], fanPids[32]].join(), order1.slice(0, 4))
+  check('…the cursor is opaque: no time, no id in it', typeof p1.wire.nextCursor === 'string' && !/\d{10}/.test(p1.wire.nextCursor) && !p1.wire.nextCursor.includes(WoPid))
+  // An unfollow between pages, of the very row the cursor was cut at: the
+  // keyset is value-based (no edge lookup), so the next page still follows.
+  check('setup: page 1 ends at fan 6', order1.length === 30 && order1[29] === fanPids[6], order1.slice(-2))
+  await prisma.follow.deleteMany({ where: { followerId: fans[6], followingId: Wo } })
+  const p2 = await listPage(Bp, WoPid, 'followers', `?cursor=${encodeURIComponent(p1.wire.nextCursor)}`)
+  const order2 = (p2.wire.users as { id: string }[]).map(u => u.id)
+  const all = [...order1, ...order2]
+  check('paging across an unfollow of the cursor row: page 2 = fans 5 … 0, no repeat, no skip', order2.join() === fanPids.slice(0, 6).reverse().join() && new Set(all).size === all.length && p2.wire.nextCursor === null, { order2 })
+  const tampered = p1.wire.nextCursor.slice(0, -2) + (p1.wire.nextCursor.endsWith('A') ? 'BB' : 'AA')
+  const pt = await listPage(Bp, WoPid, 'followers', `?cursor=${encodeURIComponent(tampered)}`)
+  check('🔒 a tampered cursor → an empty page', pt.status === 200 && pt.wire.users.length === 0 && pt.wire.nextCursor === null, pt.wire)
+  const pOther = await listPage(Cq, WoPid, 'followers', `?cursor=${encodeURIComponent(p1.wire.nextCursor)}`)
+  check('🔒 a cursor replayed by another VIEWER → empty', pOther.wire.users.length === 0)
+  const pTab = await listPage(Bp, WoPid, 'following', `?cursor=${encodeURIComponent(p1.wire.nextCursor)}`)
+  const pList = await listPage(Bp, Ap.pid, 'followers', `?cursor=${encodeURIComponent(p1.wire.nextCursor)}`)
+  const pFilter = await listPage(Bp, WoPid, 'followers', `?mutual=non&cursor=${encodeURIComponent(p1.wire.nextCursor)}`)
+  check('🔒 …onto another tab, another list, another filter → empty', pTab.wire.users.length === 0 && pList.wire.users.length === 0 && pFilter.wire.users.length === 0)
+  // Following + Friends order, and rows sharing one timestamp.
+  await prisma.follow.createMany({ data: fans.slice(0, 3).map((f, i) => ({ followerId: Wo, followingId: f, createdAt: new Date(t0 + (10 - i) * 1000) })) })
+  const fo = await listPage(Bp, WoPid, 'following')
+  check('Following: by when the owner followed them (fan 0 newest)', (fo.wire.users as { id: string }[]).map(u => u.id).join() === [fanPids[0], fanPids[1], fanPids[2]].join(), fo.wire.users)
+  const fr = await listPage(Bp, WoPid, 'followers', '?mutual=mutual')
+  check('Friends: by when the person followed the owner (fan 2 followed after 1 after 0)', (fr.wire.users as { id: string }[]).map(u => u.id).join() === [fanPids[2], fanPids[1], fanPids[0]].join(), fr.wire.users)
+  const Wt = await mkBare(`Wren Tie ${TAG}`)
+  await prisma.$executeRaw`INSERT INTO follows (follower_id, following_id) SELECT f, ${Wt} FROM unnest(${fans}::int[]) AS f`
+  const tie1 = await listPage(Bp, await pidOf(Wt), 'followers')
+  const tie2 = await listPage(Bp, await pidOf(Wt), 'followers', `?cursor=${encodeURIComponent(tie1.wire.nextCursor)}`)
+  const tieAll = [...tie1.wire.users, ...tie2.wire.users].map((u: { id: string }) => u.id)
+  check('rows sharing ONE timestamp (one INSERT … SELECT): 30 + 5, no repeat, tie-break public_id', tie1.wire.users.length === 30 && tieAll.length === 35 && new Set(tieAll).size === 35 && tieAll.join() === [...tieAll].sort().reverse().join(), { n1: tie1.wire.users.length, n2: tie2.wire.users.length })
+
+  // (6) Auth through the route MODULE (the wrapper rewrites the body).
+  const baBase = (await betterAuthServer.$context).baseURL
+  const baOrigin = new URL(baBase).origin
+  const ba = async (method: 'GET' | 'POST', path: string, body?: unknown, cookie?: string) => {
+    await resetLimits()
+    const baLimits = await scanKeys('*|/*') // Better Auth's own limiter keys (`<ip>|<path>`)
+    if (baLimits.length) await redis.del(baLimits)
+    const res = await (method === 'GET' ? nativeAuthRoute.GET : nativeAuthRoute.POST)(new NextRequest(`${baBase}${path}`, { method, headers: { 'content-type': 'application/json', origin: baOrigin, ...(cookie ? { cookie } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) }))
+    const text = await res.text()
+    await canary(`BA ${path}`, text, res.headers)
+    let json: any = null // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON in a test harness
+    try { json = text ? JSON.parse(text) : null } catch { json = text }
+    return { status: res.status, headers: res.headers, json }
+  }
+  // Sign-up answers HONESTLY and in ONE step since usernames (§ 9): the fake
+  // success for a taken email is gone (the conflict answers, a held name and
+  // the rest of the sign-up matrix: § 21, usernames-section.mts).
+  const freeEmail = `${TAG}-free@example.test`
+  const freeName = fixtureUsername('free')
+  const suFree = await ba('POST', '/sign-up/email', { name: 'Fran Free', email: freeEmail, password: 'pw-free-12345', username: freeName.toUpperCase() })
+  const freeRow = await prisma.user.findUnique({ where: { email: freeEmail }, select: { id: true, publicId: true, username: true } })
+  const suCookie = (suFree.headers.get('set-cookie') ?? '').split(';')[0]
+  check('sign-up (free): user.id is the new account\'s public id, the canonical username, no image', suFree.status === 200 && suFree.json.user.id === freeRow?.publicId && suFree.json.user.username === freeName && freeRow?.username === freeName && !('image' in suFree.json.user), suFree.json)
+  check('🔒 sign-up is ONE step: a token, a session cookie, exactly one device row', typeof suFree.json.token === 'string' && suCookie.startsWith('better-auth.session_token=') && (await prisma.authSession.count({ where: { userId: freeRow!.id } })) === 1, { token: suFree.json.token, suCookie: suCookie.slice(0, 30) })
+  const suTaken = await ba('POST', '/sign-up/email', { name: 'Fran Free', email: Ap.email, password: 'pw-free-12345', username: fixtureUsername('free') })
+  check('🔒 a taken email answers honestly: 422 EMAIL_TAKEN, no token, no cookie, no user object', suTaken.status === 422 && suTaken.json.code === 'EMAIL_TAKEN' && !('user' in suTaken.json) && !('token' in suTaken.json) && !suTaken.headers.get('set-cookie'), suTaken.json)
+  const badEmail = `${TAG}-bad@example.test`
+  const badFree = await ba('POST', '/sign-up/email', { name: 'x', email: badEmail, password: 'pw-free-12345', username: fixtureUsername('free') })
+  check('an invalid name → 400 INVALID_NAME, nothing created', badFree.status === 400 && badFree.json.code === 'INVALID_NAME' && !(await prisma.user.findUnique({ where: { email: badEmail } })), badFree.json)
+  const pidFree = await ba('POST', '/sign-up/email', { name: 'Pia Pick', email: `${TAG}-pick@example.test`, password: 'pw-free-12345', username: fixtureUsername('free'), publicId: 'AAAAAAAAAAAA' })
+  check('🔒 a sign-up body carrying publicId → 400 for a free email, nothing created', pidFree.status === 400 && !(await prisma.user.findUnique({ where: { email: `${TAG}-pick@example.test` } })), pidFree.json)
+  // The sign-up's own session is retired through Better Auth: the checks below
+  // are about a session a SIGN-IN created.
+  await (await betterAuthServer.$context).internalAdapter.deleteSession(suFree.json.token)
+  const si = await ba('POST', '/sign-in/email', { email: freeEmail, password: 'pw-free-12345' })
+  const siCookie = (si.headers.get('set-cookie') ?? '').split(';')[0]
+  check('sign-in: user.id public, no image, a session cookie', si.status === 200 && si.json.user.id === freeRow?.publicId && !('image' in si.json.user) && siCookie.startsWith('better-auth.session_token='), si.json)
+  const tok = decodeURIComponent(siCookie.split('=')[1] ?? '').split('.')[0]
+  const adapter = (await betterAuthServer.$context).internalAdapter
+  await adapter.updateSession(tok, { expiresAt: new Date(Date.now() + (365 - 2) * 86400_000) })
+  const gs = await ba('GET', '/get-session', undefined, siCookie)
+  check('get-session past updateAge: Set-Cookie KEPT, user.id + session.userId public, no image', gs.status === 200 && (gs.headers.get('set-cookie') ?? '').includes('better-auth.session_token=') && gs.json.user.id === freeRow?.publicId && gs.json.session.userId === freeRow?.publicId && !('image' in gs.json.user), { status: gs.status, user: gs.json?.user, sc: gs.headers.get('set-cookie')?.slice(0, 30) })
+  await redis.del(tok) // a Redis copy written before the deploy lacks publicId: the wrapper looks it up
+  const gs2 = await ba('GET', '/get-session', undefined, siCookie)
+  check('get-session served from Postgres (no copy): still the public id', gs2.status === 200 && gs2.json.user.id === freeRow?.publicId)
+  const la = await ba('GET', '/list-accounts', undefined, siCookie)
+  check('🔒 /list-accounts is disabled (404)', la.status === 404, la)
+
+  // (7) Schema invariants Prisma can't see.
+  const sqlErr = (p: Promise<unknown>) => p.then(() => null, (e: unknown) => String(e))
+  const [raw] = await prisma.$queryRaw<{ public_id: string }[]>`INSERT INTO users (name, email, public_id) VALUES ('Raw Insert', ${`${TAG}-raw@example.test`}, 'AAAAAAAAAAAA') RETURNING public_id`
+  check('🔒 the insert trigger overrides a supplied public_id', isPid(raw.public_id) && raw.public_id !== 'AAAAAAAAAAAA', raw)
+  check('🔒 the update trigger rejects a change', /immutable/.test((await sqlErr(prisma.$executeRaw`UPDATE users SET public_id = 'BBBBBBBBBBBB' WHERE email = ${`${TAG}-raw@example.test`}`)) ?? ''))
+  check('…an unrelated update still works', (await prisma.$executeRaw`UPDATE users SET xp = xp + 1 WHERE email = ${`${TAG}-raw@example.test`}`) === 1)
+  const chk = await sqlErr(prisma.$transaction(async tx => {
+    await tx.$executeRaw`ALTER TABLE users DISABLE TRIGGER users_public_id_mint`
+    await tx.$executeRaw`INSERT INTO users (name, email, public_id) VALUES ('Bad', ${`${TAG}-badfmt@example.test`}, '1AAAAAAAAAAA')`
+  }))
+  check('🔒 the format CHECK refuses a digit-first id (trigger off, rolled back)', /users_public_id_format_chk/.test(chk ?? ''), chk)
+  check('🔒 session_bans refuses a wire identity (u:<publicId>)', /session_bans_identity_id_chk/.test((await sqlErr(prisma.$executeRaw`INSERT INTO session_bans (session_code, identity_id) VALUES (${Pm}, ${`u:${Ap.pid}`})`)) ?? ''))
+  check('🔒 wines.added_by_identity_id refuses a wire identity', /wines_added_by_identity_id_chk/.test((await sqlErr(prisma.$executeRaw`UPDATE wines SET added_by_identity_id = ${`u:${Ap.pid}`} WHERE id = ${wa.wire.id}`)) ?? ''))
+  const conc = await Promise.all(Array.from({ length: 25 }, (_, i) => prisma.$queryRaw<{ public_id: string }[]>`INSERT INTO users (name, email) VALUES ('Conc', ${`${TAG}-conc-${i}@example.test`}) RETURNING public_id`))
+  check('concurrent signups: distinct, well-formed public ids', new Set(conc.map(r => r[0].public_id)).size === 25 && conc.every(r => isPid(r[0].public_id)))
+  await prisma.$executeRaw`DELETE FROM users WHERE email LIKE ${`${TAG}-conc-%`} OR email = ${`${TAG}-raw@example.test`}`
+
+  // (8) Redis: nothing stored a wire identity (a missed inbound translation would).
+  const leaked: string[] = []
+  for (const key of await scanKeys(`s:${Pm}:*`)) {
+    const t = await redis.type(key)
+    const vals = t === 'string' ? [await redis.get(key)] : t === 'hash' ? Object.entries(await redis.hGetAll(key)).flat() : t === 'set' ? await redis.sMembers(key) : []
+    for (const v of [key, ...vals]) if (v && /u:[A-HJKMNP-TV-Z][0-9A-HJKMNP-TV-Z]{11}/.test(v)) leaked.push(key)
+  }
+  check('🔒 no Redis key or value of the moment holds u:<publicId>', leaked.length === 0, leaked)
+
+  // (9) Images: tile ownership is the row, never the key.
+  const Tw = await mkUser('Tom Tiles')
+  const Mo = await createSession(Tw, 'Tom night')
+  const tw1 = await addWine(Mo, Tw, 'Tom Bottle')
+  await rate(Mo, Tw, tw1.id)
+  await resetLimits()
+  const up1 = await call(tilesRoute.POST, 'POST', '/api/me/profile/tiles/impressions', Tw, { imageData: PNG }, { tile: 'impressions' })
+  const ownA = up1.json.tiles.impressions.imageUrl as string
+  await prisma.$executeRaw`UPDATE users SET tile_impressions_url = ${tw1.url} WHERE id = ${Tw.id}`
+  check('🔒 a raw url update (an old writer) makes the tile not own: the pin is a reference', !(await prisma.user.findUniqueOrThrow({ where: { id: Tw.id }, select: { tileImpressionsUrl: true, tileImpressionsOwnUrl: true } }).then(r => r.tileImpressionsUrl === r.tileImpressionsOwnUrl)))
+  await resetLimits()
+  await call(tilesRoute.POST, 'POST', '/api/me/profile/tiles/impressions', Tw, { imageData: PNG }, { tile: 'impressions' })
+  check('…and the replace over it reclaims nothing that is referenced (the wine photo stays)', store.has(keyOf(tw1.url)))
+  const Ox = await mkUser('Oz Other')
+  await resetLimits()
+  const oxUp = await call(tilesRoute.POST, 'POST', '/api/me/profile/tiles/impressions', Ox, { imageData: PNG }, { tile: 'impressions' })
+  const oxUrl = oxUp.json.tiles.impressions.imageUrl as string
+  const pinOther = await patchProfile(Tw, { tiles: { impressions: oxUrl } })
+  check('🔒 a body pin of another user\'s tile URL is refused (not in the pool)', pinOther.status === 400)
+  await prisma.$executeRaw`UPDATE users SET tile_impressions_url = ${oxUrl} WHERE id = ${Tw.id}`
+  await resetLimits()
+  await call(tilesRoute.POST, 'POST', '/api/me/profile/tiles/impressions', Tw, { imageData: PNG }, { tile: 'impressions' })
+  check('🔒 …even stored by a raw write, it is never own: the replace reclaims nothing of theirs', store.has(keyOf(oxUrl)))
+  void ownA
+
+  // (10) The blocks list carries no photo (D5).
+  await resetLimits()
+  await call(blockRoute.POST, 'POST', `/api/me/blocks/${Cq.pid}`, Ap, undefined, { id: Cq.pid })
+  await prisma.user.update({ where: { id: Cq.id }, data: { imageUrl: 'https://img.test/cq.jpg' } })
+  const blk = await call(blocksListRoute.GET, 'GET', '/api/me/blocks', Ap)
+  check('🔒 blocks list: public ids, no imageUrl', blk.status === 200 && (blk.wire.blocks as Record<string, unknown>[]).every(b => isPid(b.id) && !('imageUrl' in b)) && (blk.wire.blocks as { id: string }[]).some(b => b.id === Cq.pid), blk.wire)
+  await prisma.userBlock.deleteMany({ where: { blockerId: Ap.id, blockedId: Cq.id } })
+
+  // (11) The bans list photo is judged for the CALLER (§ 8a b).
+  const Np = await mkUser('Nia Banned')
+  await prisma.user.update({ where: { id: Np.id }, data: { imageUrl: 'https://img.test/np.jpg', profileVisibility: 'public-mutual' } })
+  await resetLimits()
+  await call(bansRoute.POST, 'POST', `/api/session/${Pm}/bans`, Ap, { identityId: `u:${Np.pid}`, mode: 'ban' }, { code: Pm })
+  const npPhoto = async (u: Actor) => { await resetLimits(); const r = await call(bansRoute.GET, 'GET', `/api/session/${Pm}/bans`, u, undefined, { code: Pm }); return (r.wire.bans as { identityId: string; imageUrl: string | null }[] | undefined)?.find(b => b.identityId === `u:${Np.pid}`) }
+  check('🔒 bans list, logged-in host: a Friends-only stranger\'s photo is hidden', (await npPhoto(Ap))?.imageUrl === null)
+  await prisma.follow.createMany({ data: [{ followerId: Ap.id, followingId: Np.id }, { followerId: Np.id, followingId: Ap.id }] })
+  check('…shown once the host is their friend', (await npPhoto(Ap))?.imageUrl === 'https://img.test/np.jpg')
+  await resetLimits()
+  await call(codeRoute.PATCH, 'PATCH', `/api/session/${Pm}`, Ap, { action: 'set-role', targetId: `u:${Bp.pid}`, role: 'co_host' }, { code: Pm })
+  check('🔒 …but the COHOST (no friend of theirs) reading the same list still gets null (the caller is the viewer)', (await npPhoto(Bp))?.imageUrl === null)
+  await resetLimits()
+  const anonM = await call(sessionRoute.POST, 'POST', '/api/session', {}, { hostDisplayName: 'Anon Host', sessionName: `${TAG} anon`, dateFrom })
+  const anonA: Actor = { anon: anonM.wire.anonToken }
+  await resetLimits()
+  await call(bansRoute.POST, 'POST', `/api/session/${anonM.wire.code}/bans`, anonA, { identityId: `u:${Np.pid}`, mode: 'ban' }, { code: anonM.wire.code })
+  const anonPhoto = async () => { await resetLimits(); const r = await call(bansRoute.GET, 'GET', `/api/session/${anonM.wire.code}/bans`, anonA, undefined, { code: anonM.wire.code }); return (r.wire.bans as { identityId: string; imageUrl: string | null }[]).find(b => b.identityId === `u:${Np.pid}`) }
+  check('🔒 an anonymous host: the logged-out rule (Friends-only → null)', (await anonPhoto())?.imageUrl === null)
+  await prisma.user.update({ where: { id: Np.id }, data: { profileVisibility: 'public-internet' } })
+  check('…a public-internet photo shows', (await anonPhoto())?.imageUrl === 'https://img.test/np.jpg')
+
+  // (12) The re-key script on a fixture.
+  const Rk = await mkUser('Rex Rekey')
+  const legacy = {
+    avatar: `avatars/u_${Rk.id}_1_aa.png`, cover: `avatars/cover_u_${Rk.id}_1_bb.png`,
+    tile: `avatars/tile_impressions_u_${Rk.id}_1_cc.png`, ci: `wines/ci_${Rk.id}_1_dd.png`, orphan: `avatars/u_${Rk.id}_9_zz.png`,
+  }
+  for (const key of Object.values(legacy)) store.add(key)
+  // The tile is an OVERLAP-era own upload: own_url stale (NULL), the legacy key its owner's.
+  await prisma.$executeRaw`UPDATE users SET image_url = ${urlOf(legacy.avatar)}, cover_photo_url = ${urlOf(legacy.cover)}, tile_impressions_url = ${urlOf(legacy.tile)}, tile_impressions_own_url = NULL WHERE id = ${Rk.id}`
+  const ciW = await prisma.wine.create({ data: { id: `rk${Date.now()}`.slice(0, 21), name: 'Rekey', imageUrl: urlOf(legacy.ci) }, select: { id: true } })
+  const { S3Client } = await import('@aws-sdk/client-s3')
+  const s3 = new S3Client({ endpoint: S3, region: 'us-east-1', forcePathStyle: true, credentials: { accessKeyId: 'fake', secretAccessKey: 'fake' } })
+  const { mkdtempSync, existsSync, readFileSync, statSync, writeFileSync, unlinkSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const manifest = pjoin(mkdtempSync(pjoin(tmpdir(), 'rekey-')), 'manifest.jsonl')
+  const logs: Record<string, unknown>[] = []
+  const putsBefore = puts.length
+  const dry = await rekey.run({ mode: 'dry', manifest, prisma, s3, bucket: 'verre', log: o => logs.push(o) }) as Record<string, number>
+  check('re-key dry run: counts, writes nothing (no manifest, no copy, rows unchanged)', dry.objects >= 5 && dry.orphans >= 1 && dry.overlapEraOwnTiles >= 1 && !existsSync(manifest) && puts.length === putsBefore && (await prisma.user.findUniqueOrThrow({ where: { id: Rk.id }, select: { imageUrl: true } })).imageUrl === urlOf(legacy.avatar), dry)
+  // Apply, racing a fresh avatar replace for Rk.
+  const [, fresh] = await Promise.all([
+    rekey.run({ mode: 'apply', manifest, prisma, s3, bucket: 'verre', log: o => logs.push(o) }),
+    replaceProfileImage(Rk.id, 'avatar', PNG),
+  ])
+  const after = await prisma.user.findUniqueOrThrow({ where: { id: Rk.id }, select: { imageUrl: true, coverPhotoUrl: true, tileImpressionsUrl: true, tileImpressionsOwnUrl: true } })
+  check('🔒 apply under a concurrent replace keeps the FRESH photo', fresh.ok && after.imageUrl === fresh.url && store.has(keyOf(fresh.url)), { after, fresh })
+  const noPerson = (u: string | null) => !!u && !u.includes(String(Rk.id)) && !u.includes(Rk.pid)
+  check('the cover, the tile and the check-in photo moved to keys with nothing of the person', noPerson(after.coverPhotoUrl) && noPerson(after.tileImpressionsUrl) && noPerson((await prisma.wine.findUniqueOrThrow({ where: { id: ciW.id }, select: { imageUrl: true } })).imageUrl), after)
+  check('🔒 the overlap-era own tile stays OWN (own_url follows the url)', after.tileImpressionsUrl === after.tileImpressionsOwnUrl && store.has(keyOf(after.tileImpressionsUrl)), after)
+  const lines = readFileSync(manifest, 'utf8').trim().split('\n').map(l => JSON.parse(l) as { old: string; new: string | null })
+  check('the manifest records every pair (the orphan with no copy)', lines.some(l => l.old === legacy.cover && !!l.new) && lines.some(l => l.old === legacy.orphan && l.new === null))
+  check('🔒 the manifest is owner-only (0600), and its lock is gone after the run', (statSync(manifest).mode & 0o777) === 0o600 && !existsSync(`${manifest}.lock`), (statSync(manifest).mode & 0o777).toString(8))
+  writeFileSync(`${manifest}.lock`, '1')
+  let lockRefused = false
+  try { await rekey.run({ mode: 'reclaim', manifest, prisma, s3, bucket: 'verre', log: () => {} }) } catch (e) { lockRefused = /another --apply/.test(String(e)) }
+  unlinkSync(`${manifest}.lock`)
+  check('🔒 a second apply / reclaim on the same manifest is refused while the lock is held', lockRefused)
+  check('…the old objects remain until --reclaim (the way back)', store.has(legacy.cover) && store.has(legacy.tile))
+  const rc = await rekey.run({ mode: 'reclaim', manifest, prisma, s3, bucket: 'verre', log: o => logs.push(o) }) as Record<string, number>
+  check('--reclaim: unreferenced old objects + the orphan go, referenced new ones stay', !store.has(legacy.cover) && !store.has(legacy.tile) && !store.has(legacy.ci) && !store.has(legacy.orphan) && store.has(keyOf(after.coverPhotoUrl)) && store.has(keyOf(after.tileImpressionsUrl)) && rc.deleted >= 4, rc)
+  const avatarPair = lines.find(l => l.old === legacy.avatar)
+  check('…a copy that lost its race (the avatar replaced meanwhile) is reclaimed too', !!avatarPair?.new && !store.has(avatarPair.new) && store.has(keyOf(fresh.url)))
+  await prisma.wine.delete({ where: { id: ciW.id } })
+  }
+
+  // ── § 19 the profile lists (lists plan § Verification) ─────────────────────
+  {
+  section('§ 19 the profile lists: the D4 rule, the lists, the tile counts, the feed, the writes')
+  type J = Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON in a test harness
+  // The D4 state matrix (the SQL rule + SAFE_PHOTO against the plan's oracle).
+  const mx = await Promise.all(['Mx Host', 'Mx Adder', 'Mx Stranger', 'Mx Cohost', 'Mx Kicked', 'Mx Banned', 'Mx Taster'].map(n => mkUser(n)))
+  await outsideViewMatrix(prisma as never, check, { host: mx[0].id, adder: mx[1].id, stranger: mx[2].id, cohost: mx[3].id, kickedCohost: mx[4].id, bannedCohost: mx[5].id, taster: mx[6].id }, TAG)
+
+  const Oo = await mkUser('Odile Owner')
+  const Vv = await mkUser('Vera Viewer')
+  const Hx = await mkUser('Hugo Host')
+  const Ff = await mkUser('Fritz Friend')
+  const Nn = await mkUser('Nina Nonfriend')
+  await prisma.follow.createMany({ data: [
+    { followerId: Vv.id, followingId: Oo.id }, { followerId: Oo.id, followingId: Vv.id },
+    { followerId: Vv.id, followingId: Ff.id }, { followerId: Ff.id, followingId: Vv.id },
+  ] })
+  const inDays = (d: number) => new Date(Date.now() + d * 86_400_000).toISOString()
+  const createWith = async (u: User | Actor, body: Record<string, unknown>) => {
+    await resetLimits()
+    const r = await call(sessionRoute.POST, 'POST', '/api/session', u, { hostDisplayName: 'Hana Host', sessionName: `${TAG} m`, dateFrom, ...body })
+    if (r.status !== 200) throw new Error(`create failed ${r.status} ${JSON.stringify(r.json)}`)
+    return { code: r.json.code as string, anon: r.wire.anonToken as string | undefined }
+  }
+  const addW = async (code: string, u: User | Actor, name: string) => {
+    await resetLimits()
+    const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, u, { name, type: 'red' }, { code })
+    if (r.status !== 200) throw new Error(`add wine failed ${r.status} ${JSON.stringify(r.json)}`)
+    return r.json.id as string
+  }
+  const rateS = async (code: string, u: User | Actor, wineId: string, score: number) => {
+    await resetLimits()
+    return call(rateRoute.POST, 'POST', `/api/session/${code}/rate`, u, { wineId, score, flavors: {}, notes: 'n' }, { code })
+  }
+  const crave = async (code: string, u: User, wineId: string) => { await resetLimits(); return call(bookmarkRoute.POST, 'POST', `/api/session/${code}/wines/${wineId}/bookmark`, u, undefined, { code, wineId }) }
+  const list = async (kind: 'impressions' | 'moments' | 'cravings', owner: User, viewer: User | Actor, q = '') => {
+    await resetLimits()
+    const route = kind === 'impressions' ? impressionsRoute : kind === 'moments' ? momentsListRoute : cravingsRoute
+    return call(route.GET, 'GET', `/api/users/${owner.pid}/${kind}${q ? `?${q}` : ''}`, viewer, undefined, { id: owner.pid })
+  }
+  const tiles = async (owner: User, viewer: User) => (await getProfile(owner.id, viewer)).tiles as Record<string, { count: number }>
+  const postOf = async (userId: number, code: string) => (await prisma.$queryRaw<{ id: number }[]>`
+    SELECT fi.id FROM feed_items fi JOIN sessions s ON s.id = fi.session_id WHERE fi.user_id = ${userId} AND s.code = ${code}`)[0]?.id
+
+  // ── the hidden-line-up write refusal (the LIVE rule, inside the contract) ──
+  const HL = await createWith(Hx, { sessionName: `${TAG} hidden`, dateFrom: inDays(2), hideLineup: true, hideLineupMinutesBefore: 30 })
+  const hw = await addW(HL.code, Hx, `${TAG} Hidden Bottle`)
+  await join(HL.code, Vv)
+  const vRate = await rateS(HL.code, Vv, hw, 4)
+  const vCrave = await crave(HL.code, Vv, hw)
+  check('🔒 a taster rating a bottle of a hidden line-up → the same 404 "wine not found"', vRate.status === 404 && vRate.json.error === 'wine not found', vRate)
+  check('🔒 …and Crave → the same 404, nothing written', vCrave.status === 404 && (await prisma.bookmark.count({ where: { userId: Vv.id, wineId: hw } })) === 0, vCrave)
+  check('the strict host still pre-rates and craves it', (await rateS(HL.code, Hx, hw, 4)).status === 200 && (await crave(HL.code, Hx, hw)).status === 200)
+  const AN = await createWith({}, { sessionName: `${TAG} anon hidden`, dateFrom: inDays(2), hideLineup: true })
+  const anonHost: Actor = { anon: AN.anon }
+  const aw = await addW(AN.code, anonHost, 'Anon Bottle')
+  check('an ANONYMOUS host of a Redis-only moment keeps pre-rating (isHostByIdentity)', (await rateS(AN.code, anonHost, aw, 4)).status === 200)
+
+  // ── fixture: Odile's impressions ──
+  await resetLimits()
+  const ci0 = await call(checkinsRoute.POST, 'POST', '/api/checkins', Oo, { wineName: `${TAG} Solo`, score: 3, flavors: {} })
+  if (ci0.status !== 201) throw new Error(`check-in ${ci0.status}`)
+  const soloPost = ci0.json.id as number
+  const soloWine = (await prisma.$queryRaw<{ wine_id: string }[]>`SELECT r.wine_id FROM ratings r JOIN feed_items fi ON fi.rating_id = r.id WHERE fi.id = ${soloPost}`)[0].wine_id
+  const M1 = await createWith(Hx, { sessionName: `${TAG} Jura evening` })
+  const wa = await addW(M1.code, Hx, `${TAG} Alpha`)
+  const wb = await addW(M1.code, Hx, `${TAG} Beta`)
+  const we = await addW(M1.code, Hx, `${TAG} Epsilon`)
+  await join(M1.code, Oo); await join(M1.code, Vv); await join(M1.code, Ff)
+  await rateS(M1.code, Oo, wa, 3.5)
+  await sleep(5)
+  await rateS(M1.code, Oo, wb, 4.5)
+  await sleep(5)
+  await rateS(M1.code, Oo, wa, 3.5) // a re-rate moves rated_at, never had_at
+  await rateS(M1.code, Vv, wa, 2.75)
+  const M2 = await createWith(Hx, { sessionName: `${TAG} Blind night` })
+  const wc = await addW(M2.code, Hx, `${TAG} Gamma`)
+  await join(M2.code, Oo); await join(M2.code, Vv); await join(M2.code, Nn)
+  await rateS(M2.code, Oo, wc, 4)
+  await rateS(M2.code, Vv, wc, 4)
+  await prisma.$executeRaw`UPDATE sessions SET blind = true WHERE code = ${M2.code}`
+  const M3 = await createWith(Oo, { sessionName: `${TAG} Odile hidden`, dateFrom: inDays(2), hideLineup: true })
+  const wd = await addW(M3.code, Oo, `${TAG} Delta`)
+  check('fixture: Odile (the host) rates her hidden line-up', (await rateS(M3.code, Oo, wd, 5)).status === 200)
+
+  // ── Impressions ──
+  let r = await list('impressions', Oo, Vv)
+  const wineIds = (x: { json: J }) => (x.json.items as J[]).map(i => i.wineId)
+  check('impressions for Vera: newest post first, the hidden line-up LEFT OUT (had_at, not the re-rate)',
+    JSON.stringify(wineIds(r)) === JSON.stringify([wc, wb, wa, soloWine]) && !wineIds(r).includes(wd), wineIds(r))
+  const rowOf = (x: { json: J }, w: string) => (x.json.items as J[]).find(i => i.wineId === w) as J
+  const blindRow = rowOf(r, wc)
+  check('🔒 the blind row: no name / producer / vintage / photo, the moment name + score + style stay',
+    blindRow?.blind === true && blindRow.name === '' && blindRow.producer === null && blindRow.vintage === null && blindRow.imageUrl === null && blindRow.score === 4 && blindRow.momentName === `${TAG} Blind night` && blindRow.type === 'red', blindRow)
+  check('🔒 "both had": commonCount 1 (the blind bottle both rated never counts), yourScore on the shared one, null on the blind one',
+    r.json.commonCount === 1 && rowOf(r, wa)?.yourScore === 2.75 && blindRow?.yourScore === null && rowOf(r, wb)?.yourScore === null, { cc: r.json.commonCount, a: rowOf(r, wa) })
+  check('impression rows carry the post id (session = the moment post, standalone = its own)', rowOf(r, wa)?.postId === (await postOf(Oo.id, M1.code)) && rowOf(r, wb)?.postId === rowOf(r, wa)?.postId && (r.json.items as J[])[3]?.postId === soloPost, r.json.items)
+  check('common=1 → only the one you both had', JSON.stringify(wineIds(await list('impressions', Oo, Vv, 'common=1'))) === JSON.stringify([wa]))
+  check('🔒 search never matches a blind row by its bottle name…', wineIds(await list('impressions', Oo, Vv, 'q=Gamma')).length === 0)
+  check('…only by its moment name', JSON.stringify(wineIds(await list('impressions', Oo, Vv, `q=${encodeURIComponent('Blind night')}`))) === JSON.stringify([wc]))
+  check('search by name finds a shown row', JSON.stringify(wineIds(await list('impressions', Oo, Vv, 'q=Beta'))) === JSON.stringify([wb]))
+  check('score range 4 – 5 → only rows in range (unscored dropped)', JSON.stringify(wineIds(await list('impressions', Oo, Vv, 'min=4&max=5'))) === JSON.stringify([wc, wb]))
+  check('score range validation: off-step, out of range, min > max → 400',
+    (await list('impressions', Oo, Vv, 'min=0.1')).status === 400 && (await list('impressions', Oo, Vv, 'max=6')).status === 400 && (await list('impressions', Oo, Vv, 'min=4.5&max=4')).status === 400)
+  const own = await list('impressions', Oo, Oo)
+  check('your own impressions: the hidden line-up you host is there, the blind one is blind for you too, no commonCount',
+    wineIds(own).includes(wd) && rowOf(own, wc)?.blind === true && !('commonCount' in own.json) && !('yourScore' in (own.json.items as J[])[0]), own.json)
+  // D7: the tile count is the list's total, across the D4 states.
+  let t = await tiles(Oo, Vv)
+  const ownT = await tiles(Oo, Oo)
+  check('🔒 D7: Impressions tile == list total (Vera 4, Odile 5)', t.impressions?.count === 4 && ownT.impressions?.count === 5, { v: t.impressions, o: ownT.impressions })
+  const web = await call(usersRoute.GET, 'GET', `/api/users/${Oo.pid}`, Vv, undefined, { id: Oo.pid })
+  check('🔒 D7: the web Tastes count agrees (stats.checkins 4)', web.json.stats?.checkins === 4, web.json.stats)
+
+  // ── Cravings ──
+  const orphan = `orph${TAG.slice(-8)}`
+  await prisma.$executeRaw`INSERT INTO wines (id, name, image_url) VALUES (${orphan}, ${`${TAG} Orphan`}, ${urlOf('wines/orphan.png')})`
+  for (const w of [wa, we, wc, orphan]) await bookmark(Oo.id, w)
+  await bookmark(Oo.id, wd)
+  // Saved order ≠ id order (the first bookmark saved last), so "served as
+  // Recently Saved" is distinguishable from an id order.
+  await prisma.$executeRaw`UPDATE bookmarks SET saved_at = now() + interval '1 minute' WHERE user_id = ${Oo.id} AND wine_id = ${wa}`
+  const cv = await list('cravings', Oo, Vv)
+  const cIds = (x: { json: J }) => (x.json.items as J[]).map(i => i.wineId)
+  check('🔒 Vera sees Odile\'s cravings minus the hidden line-up, the blind bottle and the one whose moment can\'t be found',
+    JSON.stringify([...cIds(cv)].sort()) === JSON.stringify([wa, we].sort()), cIds(cv))
+  check('their score + post where they rated it (post gate), null where not; no moment, no who-from, no time on the wire',
+    rowOf(cv, wa)?.score === 3.5 && rowOf(cv, wa)?.postId === (await postOf(Oo.id, M1.code)) && rowOf(cv, we)?.score === null && rowOf(cv, we)?.postId === null
+    && !/momentName|savedAt|saved_at|"key"|\d{4}-\d{2}-\d{2}T/.test(JSON.stringify(cv.wire)), cv.wire)
+  const cvOwn = await list('cravings', Oo, Oo)
+  check('your own cravings: all five, the blind one blind, the orphan shown (named residual), the remove key = the wine id',
+    cIds(cvOwn).length === 5 && rowOf(cvOwn, wc)?.blind === true && rowOf(cvOwn, wc)?.name === '' && rowOf(cvOwn, orphan)?.key === orphan, cvOwn.json)
+  t = await tiles(Oo, Vv)
+  check('🔒 D7: Cravings tile == list total (Vera 2, Odile 5)', t.cravings?.count === 2 && (await tiles(Oo, Oo)).cravings?.count === 5, { v: t.cravings })
+  const byScore = await list('cravings', Oo, Oo, 'sort=score')
+  check('own sort=score: scored first (5, 4, 3.5), then unscored', JSON.stringify(cIds(byScore).slice(0, 3)) === JSON.stringify([wd, wc, wa]), cIds(byScore))
+  await prisma.user.update({ where: { id: Oo.id }, data: { checkinVisibility: 'only-me' } })
+  const hiddenScores = await list('cravings', Oo, Vv, 'sort=score')
+  const recentOrder = await list('cravings', Oo, Vv)
+  check('🔒 posts hidden: no scores, no post ids, and sort=score is served as Recently Saved',
+    (hiddenScores.json.items as J[]).every(i => i.score === null && i.postId === null) && JSON.stringify(cIds(hiddenScores)) === JSON.stringify(cIds(recentOrder))
+    && JSON.stringify(cIds(recentOrder)) === JSON.stringify([wa, we]), { s: cIds(hiddenScores), r: cIds(recentOrder) })
+  r = await list('impressions', Oo, Vv)
+  check('🔒 posts hidden: impressions 200 empty, no commonCount', r.status === 200 && r.json.items.length === 0 && r.json.nextCursor === null && !('commonCount' in r.json), r.json)
+  await prisma.user.update({ where: { id: Oo.id }, data: { checkinVisibility: null } })
+
+  // The reveal time passes: the hidden line-up comes back on both list and tile.
+  await prisma.$executeRaw`UPDATE sessions SET date_from = now() - interval '1 hour' WHERE code = ${M3.code}`
+  t = await tiles(Oo, Vv)
+  check('🔒 D7: after the reveal time, both lists and both tiles grow (impressions 5, cravings 3)',
+    (await list('impressions', Oo, Vv)).json.items.length === 5 && t.impressions?.count === 5 && (await list('cravings', Oo, Vv)).json.items.length === 3 && t.cravings?.count === 3, t)
+  await prisma.$executeRaw`UPDATE sessions SET date_from = now() + interval '2 days' WHERE code = ${M3.code}`
+
+  // Paging: 33 standalone posts in groups that share an exact time (the id tiebreak).
+  const Pg = await mkUser('Paula Pager')
+  const base = Date.now() - 86_400_000
+  for (let i = 0; i < 33; i++) {
+    const w = `pg${TAG.slice(-8)}${i}`
+    const at = new Date(base + Math.floor(i / 4) * 60_000)
+    await prisma.$executeRaw`INSERT INTO wines (id, name) VALUES (${w}, ${`Pager ${i}`})`
+    const [rt] = await prisma.$queryRaw<{ id: number }[]>`
+      INSERT INTO ratings (wine_id, user_id, origin, rater_name, score, rated_at) VALUES (${w}, ${Pg.id}, 'standalone', 'Paula', 3, now()) RETURNING id`
+    await prisma.$executeRaw`INSERT INTO feed_items (user_id, kind, rating_id, created_at) VALUES (${Pg.id}, 'standalone', ${rt.id}, ${at})`
+  }
+  const p1 = await list('impressions', Pg, Vv)
+  const p2 = await list('impressions', Pg, Vv, `cursor=${encodeURIComponent(p1.json.nextCursor ?? '')}`)
+  const all = [...p1.json.items, ...p2.json.items] as J[]
+  check('impressions paging: 30 + 3, no repeat, no skip, a tie broken by id, the last page has no cursor',
+    p1.json.items.length === 30 && p2.json.items.length === 3 && new Set(all.map(i => i.id)).size === 33 && p2.json.nextCursor === null
+    && all.every((x, i) => i === 0 || all[i - 1].hadAt > x.hadAt || (all[i - 1].hadAt === x.hadAt && all[i - 1].id > x.id)), { n1: p1.json.items.length, n2: p2.json.items.length })
+  check('Paula\'s tile count == her list total (33)', (await tiles(Pg, Vv)).impressions?.count === 33)
+
+  // The cravings score cursor across the scored / unscored boundary: 30 scored
+  // + 35 unscored → page 1 ends on a SCORED row (the next page is all NULLs:
+  // the `OR score IS NULL` branch), page 2 ends on an UNSCORED one (the null
+  // marker branch).
+  const qs = await prisma.$queryRaw<{ id: number }[]>`INSERT INTO sessions (code, name, created_at, date_from) VALUES (${`Q${TAG.slice(-9)}`.toUpperCase()}, 'Q moment', now(), now()) RETURNING id`
+  for (let i = 0; i < 65; i++) {
+    const w = `qq${TAG.slice(-8)}${i}`
+    await prisma.$executeRaw`INSERT INTO wines (id, session_id, name) VALUES (${w}, ${qs[0].id}, ${`Q ${i}`})`
+    if (i < 30) await prisma.$executeRaw`INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, rated_at) VALUES (${w}, ${Pg.id}, ${qs[0].id}, 'session', 'Paula', ${1 + (i % 4)}::numeric, now())`
+    await prisma.$executeRaw`INSERT INTO bookmarks (user_id, wine_id, saved_at) VALUES (${Pg.id}, ${w}, ${new Date(base + Math.floor(i / 3) * 1000)})`
+  }
+  for (const sort of ['score', 'recent']) {
+    const pages: J[][] = []
+    let cur: string | null = null
+    do {
+      const c: { json: J } = await list('cravings', Pg, Vv, `sort=${sort}${cur ? `&cursor=${encodeURIComponent(cur)}` : ''}`)
+      pages.push(c.json.items as J[]); cur = c.json.nextCursor
+    } while (cur && pages.length < 5)
+    const rows = pages.flat()
+    const scores = rows.map(x => x.score as number | null)
+    const firstNull = scores.indexOf(null)
+    const scoreOrder = firstNull === 30 && scores.slice(firstNull).every(x => x === null) && scores.slice(0, 30).every((x, i, a) => i === 0 || (a[i - 1] as number) >= (x as number))
+    check(`cravings ${sort} paging: 30 + 30 + 5, 65 distinct${sort === 'score' ? ', the 30 scored desc then every unscored (no skip or repeat at either boundary)' : ''}`,
+      JSON.stringify(pages.map(x => x.length)) === '[30,30,5]' && new Set(rows.map(x => x.wineId)).size === 65 && (sort === 'recent' || scoreOrder), { sizes: pages.map(x => x.length), scores })
+  }
+  const pc = await list('cravings', Pg, Vv, 'sort=score')
+  // Flip a MIDDLE character: the last base64url characters can carry padding
+  // bits only, so a tail edit may decode to the very same bytes.
+  const pcur = pc.json.nextCursor as string
+  const tampered = pcur.slice(0, 20) + (pcur[20] === 'A' ? 'B' : 'A') + pcur.slice(21)
+  check('🔒 the sealed cursor: tampered → empty; replayed by another viewer or on the other sort → empty',
+    (await list('cravings', Pg, Vv, `sort=score&cursor=${tampered}`)).json.items.length === 0
+    && (await list('cravings', Pg, Oo, `sort=score&cursor=${encodeURIComponent(pc.json.nextCursor)}`)).json.items.length === 0
+    && (await list('cravings', Pg, Vv, `sort=recent&cursor=${encodeURIComponent(pc.json.nextCursor)}`)).json.items.length === 0)
+
+  // The Impressions sorts (2026-11-14): 40 scored (17 quarter values, so score
+  // ties) + 35 unrated (NULL and 0 alike), three to a shared post time (time
+  // ties). Every sort pages 30 + 30 + 15 in exactly the order the comparator
+  // gives, the score sorts across the scored → unrated boundary inside page 3
+  // and on from an unrated cursor (page 3 ends unrated).
+  const Ss = await mkUser('Sonia Sorter')
+  for (let i = 0; i < 75; i++) {
+    const w = `ss${TAG.slice(-8)}${i}`
+    const at = new Date(base + Math.floor(i / 3) * 60_000)
+    const score = i < 40 ? 1 + (i % 17) * 0.25 : i % 2 === 0 ? null : 0
+    await prisma.$executeRaw`INSERT INTO wines (id, name) VALUES (${w}, ${`Sorter ${i}`})`
+    const [rt] = await prisma.$queryRaw<{ id: number }[]>`
+      INSERT INTO ratings (wine_id, user_id, origin, rater_name, score, rated_at) VALUES (${w}, ${Ss.id}, 'standalone', 'Sonia', ${score}::numeric, now()) RETURNING id`
+    await prisma.$executeRaw`INSERT INTO feed_items (user_id, kind, rating_id, created_at) VALUES (${Ss.id}, 'standalone', ${rt.id}, ${at})`
+  }
+  const sortPages = async (sort: string | null) => {
+    const pages: J[][] = []
+    let cur: string | null = null
+    do {
+      const qs = [sort ? `sort=${sort}` : '', cur ? `cursor=${encodeURIComponent(cur)}` : ''].filter(Boolean).join('&')
+      const c: { json: J } = await list('impressions', Ss, Vv, qs)
+      pages.push(c.json.items as J[]); cur = c.json.nextCursor
+    } while (cur && pages.length < 5)
+    return pages
+  }
+  const byDate = (a: J, b: J) => (a.hadAt < b.hadAt ? -1 : a.hadAt > b.hadAt ? 1 : a.id - b.id)
+  const want: Record<string, (a: J, b: J) => number> = {
+    newest: (a, b) => byDate(b, a),
+    oldest: byDate,
+    highest: (a, b) => (a.score === null) !== (b.score === null) ? (a.score === null ? 1 : -1) : a.score !== b.score ? b.score - a.score : byDate(b, a),
+    lowest: (a, b) => (a.score === null) !== (b.score === null) ? (a.score === null ? 1 : -1) : a.score !== b.score ? a.score - b.score : byDate(b, a),
+  }
+  const firstPages: Record<string, string> = {}
+  for (const sort of ['newest', 'oldest', 'highest', 'lowest']) {
+    const pages = await sortPages(sort)
+    const rows = pages.flat()
+    const expected = [...rows].sort(want[sort])
+    firstPages[sort] = JSON.stringify(pages[0]?.map(x => x.id))
+    check(`impressions ${sort}: 30 + 30 + 15, 75 distinct, exactly the ${sort} order (ties by time, then id)`,
+      JSON.stringify(pages.map(x => x.length)) === '[30,30,15]' && new Set(rows.map(x => x.id)).size === 75
+      && JSON.stringify(rows.map(x => x.id)) === JSON.stringify(expected.map(x => x.id))
+      && (sort === 'newest' || sort === 'oldest' || (rows.slice(0, 40).every(x => x.score !== null) && rows.slice(40).every(x => x.score === null))),
+      { sizes: pages.map(x => x.length), scores: rows.map(x => x.score) })
+  }
+  check('no sort and an unknown sort both read as newest', JSON.stringify((await sortPages(null))[0].map(x => x.id)) === firstPages.newest
+    && JSON.stringify((await sortPages('bogus'))[0].map(x => x.id)) === firstPages.newest)
+  const hi = await list('impressions', Ss, Vv, 'sort=highest')
+  const hiCur = encodeURIComponent(hi.json.nextCursor as string)
+  check('a cursor is bound to its sort: a highest cursor under lowest / newest / no sort → an empty page; garbage → empty',
+    (await list('impressions', Ss, Vv, `sort=lowest&cursor=${hiCur}`)).json.items.length === 0
+    && (await list('impressions', Ss, Vv, `sort=newest&cursor=${hiCur}`)).json.items.length === 0
+    && (await list('impressions', Ss, Vv, `cursor=${hiCur}`)).json.items.length === 0
+    && (await list('impressions', Ss, Vv, `sort=highest&cursor=${encodeURIComponent(Buffer.from(Buffer.from(hi.json.nextCursor as string, 'base64url').toString('utf8').replace(/^h\.[^.]+\./, 'h.1000.')).toString('base64url'))}`)).json.items.length === 0
+    && (await list('impressions', Ss, Vv, 'sort=oldest&cursor=%%%')).json.items.length === 0)
+  // A score OFF the quarter grid (no CHECK keeps the column on it, only the
+  // write boundaries) still pages: the cursor carries the exact hundredths.
+  // 31 rows at 4.30 + one at 2: page 2 must hold the 31st 4.30 and the 2.
+  const Og = await mkUser('Otto Offgrid')
+  for (let i = 0; i < 32; i++) {
+    const w = `og${TAG.slice(-8)}${i}`
+    await prisma.$executeRaw`INSERT INTO wines (id, name) VALUES (${w}, ${`Offgrid ${i}`})`
+    const [rt] = await prisma.$queryRaw<{ id: number }[]>`
+      INSERT INTO ratings (wine_id, user_id, origin, rater_name, score, rated_at) VALUES (${w}, ${Og.id}, 'standalone', 'Otto', ${i < 31 ? '4.30' : '2'}::numeric, now()) RETURNING id`
+    await prisma.$executeRaw`INSERT INTO feed_items (user_id, kind, rating_id, created_at) VALUES (${Og.id}, 'standalone', ${rt.id}, ${new Date(base + i * 1000)})`
+  }
+  const og1 = await list('impressions', Og, Vv, 'sort=highest')
+  const og2 = await list('impressions', Og, Vv, `sort=highest&cursor=${encodeURIComponent(og1.json.nextCursor as string)}`)
+  const ogAll = [...og1.json.items, ...og2.json.items] as J[]
+  check('an off-grid score pages exactly: 30 + 2, 32 distinct, the 2 last',
+    og1.json.items.length === 30 && og2.json.items.length === 2 && new Set(ogAll.map(x => x.id)).size === 32 && ogAll[31]?.score === 2,
+    { n1: og1.json.items.length, n2: og2.json.items.length })
+  const ol1 = await list('impressions', Og, Vv, 'sort=lowest')
+  const ol2 = await list('impressions', Og, Vv, `sort=lowest&cursor=${encodeURIComponent(ol1.json.nextCursor as string)}`)
+  const olAll = [...ol1.json.items, ...ol2.json.items] as J[]
+  check('…and under lowest: 30 + 2, 32 distinct, the 2 first (a rounded cursor repeated rows there)',
+    ol1.json.items.length === 30 && ol2.json.items.length === 2 && new Set(olAll.map(x => x.id)).size === 32 && olAll[0]?.score === 2,
+    { n1: ol1.json.items.length, n2: ol2.json.items.length })
+
+  // ── someone's Moments: only shared ones, a code only where you are a member ──
+  const M4 = await createWith(Hx, { sessionName: `${TAG} Odile only` }); await join(M4.code, Oo)
+  const M5 = await createWith(Hx, { sessionName: `${TAG} Vera kicked` }); await join(M5.code, Oo); await join(M5.code, Vv)
+  await prisma.$executeRaw`UPDATE session_members SET removed_state = 'kicked', role = 'taster' WHERE session_code = ${M5.code} AND user_id = ${Vv.id}`
+  const M6 = await createWith(Hx, { sessionName: `${TAG} Vera banned` }); await join(M6.code, Oo); await join(M6.code, Vv)
+  await prisma.$executeRaw`INSERT INTO session_bans (session_code, identity_id) VALUES (${M6.code}, ${`u:${Vv.id}`})`
+  const M7 = await createWith(Hx, { sessionName: `${TAG} deleted` }); await join(M7.code, Oo); await join(M7.code, Vv)
+  await prisma.$executeRaw`UPDATE sessions SET deleted_at = now() WHERE code = ${M7.code}`
+  const mo = await list('moments', Oo, Vv, 'limit=30')
+  const codes = (x: { json: J }) => (x.json.items as J[]).map(i => i.code)
+  const notThere = [M3.code, M4.code, M5.code, M6.code, M7.code]
+  check('🔒 Vera sees ONLY the moments she shares with Odile (both member rows, neither kicked, not banned, live)',
+    JSON.stringify([...codes(mo)].sort()) === JSON.stringify([M1.code, M2.code].sort()), codes(mo))
+  check('🔒 …no code, name or row of any other moment anywhere in the payload', !notThere.some(c => JSON.stringify(mo.wire).includes(c)) && !JSON.stringify(mo.wire).includes('Odile only'))
+  check('otherCount = her other live memberships, unfiltered (hidden-host M3, M4, M5, M6)', mo.json.otherCount === 4, mo.json.otherCount)
+  check('rows carry THEIR role (taster → null) and the moment\'s own fields', (mo.json.items as J[]).every(i => i.role === null && typeof i.name === 'string' && 'coverPhotoUrl' in i && 'address' in i))
+  check('the shared filter: hosts = the host → both; = me / the owner / an unknown id → none',
+    codes(await list('moments', Oo, Vv, `limit=30&hosts=u:${Hx.pid}`)).length === 2 && codes(await list('moments', Oo, Vv, 'limit=30&hosts=me')).length === 0
+    && codes(await list('moments', Oo, Vv, `limit=30&hosts=u:${Oo.pid}`)).length === 0 && codes(await list('moments', Oo, Vv, 'limit=30&hosts=u:ZZZZZZZZZZZZ')).length === 0)
+  check('…people = a friend who was there → that moment; a non-friend who was there → nothing',
+    JSON.stringify(codes(await list('moments', Oo, Vv, `limit=30&people=u:${Ff.pid}`))) === JSON.stringify([M1.code]) && codes(await list('moments', Oo, Vv, `limit=30&people=u:${Nn.pid}`)).length === 0)
+  check('…roles reads THEIR role: host → none, taster → both', codes(await list('moments', Oo, Vv, 'limit=30&roles=host')).length === 0 && codes(await list('moments', Oo, Vv, 'limit=30&roles=taster')).length === 2)
+  check('…search over shared rows only (an unshared name finds nothing)', JSON.stringify(codes(await list('moments', Oo, Vv, `limit=30&q=${encodeURIComponent('Jura evening')}`))) === JSON.stringify([M1.code]) && codes(await list('moments', Oo, Vv, `limit=30&q=${encodeURIComponent('Odile only')}`)).length === 0)
+  check('the kicked / banned viewer sees none of those two', codes(mo).every(c => c !== M5.code && c !== M6.code))
+  check('Moments tile count == shared + other (6)', (await tiles(Oo, Vv)).moments?.count === (mo.json.items as J[]).length + mo.json.otherCount)
+  // The search's LIKE escape (lib/momentFacets.ts): `_` matches itself. "q_v"
+  // in "rq_vx" is a substring; its trigram similarity (0.25) is under the 0.3
+  // threshold, so only a working ESCAPE finds it (the old `ESCAPE ''` didn't).
+  const M8 = await createWith(Hx, { sessionName: `${TAG} rq_vx night` }); await join(M8.code, Oo); await join(M8.code, Vv)
+  check('moments search: a literal `_` matches by substring (the escape works)', JSON.stringify(codes(await list('moments', Oo, Vv, 'limit=30&q=q_v'))) === JSON.stringify([M8.code]))
+  await prisma.user.update({ where: { id: Oo.id }, data: { showMoments: false, showCravings: false } })
+  const off = await list('moments', Oo, Vv, 'limit=30')
+  const offC = await list('cravings', Oo, Vv)
+  check('🔒 Show Moments / Cravings off: 200 empty, no otherCount', off.status === 200 && off.json.items.length === 0 && !('otherCount' in off.json) && offC.status === 200 && offC.json.items.length === 0, [off.json, offC.json])
+  await prisma.user.update({ where: { id: Oo.id }, data: { showMoments: true, showCravings: true } })
+
+  // The craving's moment FALLBACK (D4): a bottle unhooked from a running moment
+  // (a ban / kick-delete sets wines.session_id NULL) whose rating still points
+  // at it; the line-up is hidden. Without the fallback it would be "no moment
+  // found" and show in full on the owner's own list and tile.
+  const [hlRow] = await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM sessions WHERE code = ${HL.code}`
+  const unhooked = `uh${TAG.slice(-8)}`
+  await prisma.$executeRaw`INSERT INTO wines (id, name, image_url, added_by_identity_id) VALUES (${unhooked}, ${`${TAG} Unhooked`}, ${urlOf('wines/unhooked.png')}, ${`u:${Hx.id}`})`
+  await prisma.$executeRaw`INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, rated_at) VALUES (${unhooked}, ${Hx.id}, ${hlRow.id}, 'session', 'Hugo', 4, now())`
+  await bookmark(Oo.id, unhooked)
+  const ownAfter = await list('cravings', Oo, Oo)
+  check('🔒 an unhooked bottle resolves its moment through its rating: hidden line-up → left out of the owner\'s own list, her tile count and someone\'s list',
+    !cIds(ownAfter).includes(unhooked) && (await tiles(Oo, Oo)).cravings?.count === 5 && !cIds(await list('cravings', Oo, Vv)).includes(unhooked), cIds(ownAfter))
+  check('🔒 …and it never becomes a picked Cravings photo', !(await listPickable('cravings', Oo.id, 50)).includes(urlOf('wines/unhooked.png')))
+  await prisma.bookmark.deleteMany({ where: { userId: Oo.id, wineId: unhooked } })
+
+  // ── gate states, 401, 400, limiter, headers ──
+  await prisma.userBlock.create({ data: { blockerId: Nn.id, blockedId: Oo.id } })
+  const gone = await Promise.all((['impressions', 'moments', 'cravings'] as const).map(k => list(k, Oo, Nn)))
+  check('🔒 a block pair → 404 on all three (both directions read as gone)', gone.every(x => x.status === 404 && x.headers.get('cache-control') === 'private, no-store'), gone.map(x => x.status))
+  const anonL = await Promise.all((['impressions', 'moments', 'cravings'] as const).map(k => list(k, Oo, {})))
+  check('signed out → 401 (private, no-store)', anonL.every(x => x.status === 401 && x.headers.get('cache-control') === 'private, no-store'))
+  const intId = await Promise.all((['impressions', 'moments', 'cravings'] as const).map(async k => { await resetLimits(); return call((k === 'impressions' ? impressionsRoute : k === 'moments' ? momentsListRoute : cravingsRoute).GET, 'GET', `/api/users/${Oo.id}/${k}`, Vv, undefined, { id: String(Oo.id) }) }))
+  check('§ 18: an integer id is malformed on all three → 400', intId.every(x => x.status === 400))
+  await resetLimits()
+  for (const k of ['impressions', 'cravings', 'moments'] as const) await call((k === 'impressions' ? impressionsRoute : k === 'moments' ? momentsListRoute : cravingsRoute).GET, 'GET', `/api/users/${Oo.pid}/${k}`, Vv, undefined, { id: Oo.pid })
+  check('D11: the three routes share rl:profile-lists:u (3 charges on one key)', (await redis.get(`rl:profile-lists:u:${Vv.id}:1m`)) === '3')
+
+  // ── ?item= (D9) ──
+  const m1Post = await postOf(Oo.id, M1.code)
+  const item = async (v: User, q: string) => { await resetLimits(); return call(feedRoute.GET, 'GET', `/api/feed?${q}`, v) }
+  let it = await item(Vv, `user=${Oo.pid}&item=${m1Post}`)
+  check('?item= returns that one post in the list\'s page shape', it.status === 200 && it.json.items.length === 1 && it.json.items[0].session?.id === m1Post && it.json.nextCursor === null, it.json)
+  it = await item(Vv, `user=${Oo.pid}&item=${await postOf(Vv.id, M1.code)}`)
+  check('🔒 ?item= of ANOTHER author\'s post → the same 200 empty', it.status === 200 && it.json.items.length === 0 && it.json.nextCursor === null)
+  it = await item(Vv, `user=${Oo.pid}&item=${await postOf(Oo.id, M3.code)}`)
+  check('🔒 ?item= of a post whose line-up is hidden from you → the same 200 empty', it.status === 200 && it.json.items.length === 0)
+  check('?item= without user → 400, a malformed id → 400', (await item(Vv, `item=${m1Post}`)).status === 400 && (await item(Vv, `user=${Oo.pid}&item=01`)).status === 400)
+
+  // ── the feed: hidden moment posts are left out BEFORE paging ──
+  const Pp = await mkUser('Pia Poster')
+  await prisma.follow.create({ data: { followerId: Vv.id, followingId: Pp.id } })
+  const hiddenTimes: string[] = []
+  for (let i = 0; i < 21; i++) {
+    const code = `H${TAG.slice(-8)}${i.toString(36)}`.toUpperCase()
+    const [hs] = await prisma.$queryRaw<{ id: number }[]>`
+      INSERT INTO sessions (code, name, host_user_id, created_at, date_from, hide_lineup) VALUES (${code}, 'Hidden', ${Hx.id}, now(), now() + interval '2 days', true) RETURNING id`
+    const w = `hw${TAG.slice(-8)}${i}`
+    await prisma.$executeRaw`INSERT INTO wines (id, session_id, name) VALUES (${w}, ${hs.id}, 'Secret')`
+    await prisma.$executeRaw`INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, rated_at) VALUES (${w}, ${Pp.id}, ${hs.id}, 'session', 'Pia', 4, now())`
+    const at = new Date(Date.now() - i * 1000)
+    hiddenTimes.push(at.toISOString())
+    await prisma.$executeRaw`INSERT INTO feed_items (user_id, kind, session_id, created_at) VALUES (${Pp.id}, 'session', ${hs.id}, ${at})`
+  }
+  const vis = `V${TAG.slice(-9)}`.toUpperCase()
+  const [vs] = await prisma.$queryRaw<{ id: number }[]>`INSERT INTO sessions (code, name, host_user_id, created_at, date_from) VALUES (${vis}, 'Visible', ${Hx.id}, now(), now()) RETURNING id`
+  await prisma.$executeRaw`INSERT INTO wines (id, session_id, name) VALUES (${`vw${TAG.slice(-8)}`}, ${vs.id}, 'Shown')`
+  await prisma.$executeRaw`INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, rated_at) VALUES (${`vw${TAG.slice(-8)}`}, ${Pp.id}, ${vs.id}, 'session', 'Pia', 4, now())`
+  const [visPost] = await prisma.$queryRaw<{ id: number }[]>`INSERT INTO feed_items (user_id, kind, session_id, created_at) VALUES (${Pp.id}, 'session', ${vs.id}, now() - interval '1 hour') RETURNING id`
+  await prisma.$executeRaw`INSERT INTO wines (id, name) VALUES (${`sw${TAG.slice(-8)}`}, 'Solo Shown')`
+  const [sr] = await prisma.$queryRaw<{ id: number }[]>`INSERT INTO ratings (wine_id, user_id, origin, rater_name, score, rated_at) VALUES (${`sw${TAG.slice(-8)}`}, ${Pp.id}, 'standalone', 'Pia', 3, now()) RETURNING id`
+  const [soloP] = await prisma.$queryRaw<{ id: number }[]>`INSERT INTO feed_items (user_id, kind, rating_id, created_at) VALUES (${Pp.id}, 'standalone', ${sr.id}, now() - interval '2 hours') RETURNING id`
+  const ids = (x: { json: J }) => (x.json.items as J[]).filter(i => i.author.id === Pp.id).map(i => i.session?.id ?? i.checkin?.id)
+  const fu = await item(Vv, `user=${Pp.pid}`)
+  check('🔒 ?user=: a page of 21 hidden moment posts is left out IN the query: the visible moment post + the check-in survive, nextCursor null (no hidden time)',
+    JSON.stringify(ids(fu)) === JSON.stringify([visPost.id, soloP.id]) && fu.json.nextCursor === null, { ids: ids(fu), c: fu.json.nextCursor })
+  const net = await item(Vv, '')
+  check('🔒 network feed: the same (no hidden post, no hidden time in the cursor)', JSON.stringify(ids(net)) === JSON.stringify([visPost.id, soloP.id]) && !hiddenTimes.includes(net.json.nextCursor), ids(net))
+  const host = await item(Hx, `user=${Pp.pid}`)
+  check('the moments\' host (bypass) sees the hidden posts: a full page with a cursor', ids(host).length === 20 && host.json.nextCursor !== null, ids(host).length)
+  const wpP = await call(usersRoute.GET, 'GET', `/api/users/${Pp.pid}`, Vv, undefined, { id: Pp.pid })
+  check('🔒 profileLoad (web): the grouped NOT keeps the visible moment post + the check-in, drops the hidden ones (never empties the moment query)',
+    JSON.stringify((wpP.json.recentSessionPosts as J[]).map(x => x.id)) === JSON.stringify([visPost.id]) && (wpP.json.recentCheckins as J[]).length === 1, wpP.json.recentSessionPosts)
+
+  // ── /api/me/ratings + /api/me/bookmarks (leak audit finding 1) ──
+  const [hsid] = await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM sessions WHERE code = ${HL.code}`
+  await prisma.$executeRaw`INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, rated_at) VALUES (${hw}, ${Vv.id}, ${hsid.id}, 'session', 'Vera', 4, now())`
+  await prisma.$executeRaw`INSERT INTO bookmarks (user_id, wine_id) VALUES (${Vv.id}, ${hw})`
+  await bookmark(Vv.id, wc)
+  await resetLimits()
+  const mr = await call(meRatingsRoute.GET, 'GET', '/api/me/ratings', Vv)
+  const mb = await call(meBookmarksRoute.GET, 'GET', '/api/me/bookmarks', Vv)
+  const mrBlind = (mr.json as unknown as J[]).find(x => x.wine_id === wc)
+  const mbBlind = (mb.json as unknown as J[]).find(x => x.wine_id === wc)
+  check('🔒 /api/me/ratings: the hidden line-up left out, the blind bottle a blind row',
+    !(mr.json as unknown as J[]).some(x => x.wine_id === hw) && mrBlind?._blind === true && mrBlind.wine_name === '' && mrBlind.image_url === null && mrBlind.score === 4, mrBlind)
+  check('🔒 /api/me/bookmarks: the same, grape + purchase link blank too',
+    !(mb.json as unknown as J[]).some(x => x.wine_id === hw) && mbBlind?._blind === true && mbBlind.name === '' && mbBlind.grape === null && mbBlind.purchase_url === null, mbBlind)
+  check('…and a shown row stays whole', (mr.json as unknown as J[]).find(x => x.wine_id === wa)?.wine_name === `${TAG} Alpha`)
+
+  // ── § 12 extended: no moment code on any of the new reads ──
+  const momentCodes = [M1.code, M2.code, M3.code, M4.code, M5.code, M6.code, M7.code, HL.code]
+  const readAll = JSON.stringify([(await list('impressions', Oo, Vv)).wire, (await list('cravings', Oo, Vv)).wire, (await list('impressions', Oo, Oo)).wire, (await list('cravings', Oo, Oo)).wire, (await item(Vv, `user=${Oo.pid}&item=${m1Post}`)).wire])
+  check('🔒 § 12: no impressions / cravings / ?item= payload carries a moment code', !momentCodes.some(c => readAll.includes(c)))
+  }
+
+  // ── § 20 the leak fixes (leak-fixes plan § 5) ────────────────────────────
+  await leakFixes({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, s3: { store, mtimes, puts, deletes, urlOf, keyOf, endpoint: S3 }, PNG })
+
+  // ── The canary over the whole run (every call() above and below) ─────────
+  await usernames({ call, check, section, mkUser: (name: string) => mkUser(name, { username: true }), createSession, resetLimits, canary, prisma, redis, scanKeys, betterAuthServer, TAG, DB })
+
+  // ── § 22 Filter Impressions: structure ranges + aroma picks (2026-11-14) ──
+  {
+  section('§ 22 impression filters: structure ranges, aroma picks, all / any, post-less rows')
+  const Pp = await mkUser('Pia Palate')
+  const Vw = await mkUser('Viktor Viewer')
+  const checkin = async (name: string, body: Record<string, unknown>) => {
+    await resetLimits()
+    const c = await call(checkinsRoute.POST, 'POST', '/api/checkins', Pp, { wineName: `${TAG} ${name}`, type: 'red', score: 3, ...body })
+    if (c.status !== 201) throw new Error(`check-in ${name} ${c.status} ${JSON.stringify(c.json)}`)
+    const w = (await prisma.$queryRaw<{ wine_id: string }[]>`SELECT r.wine_id FROM ratings r JOIN feed_items fi ON fi.rating_id = r.id WHERE fi.id = ${c.json.id as number}`)[0].wine_id
+    return { post: c.json.id as number, wine: w }
+  }
+  // c1: sweet 1, acid 4 (the rest filled as None); dried apricot (pronounced) + lemon.
+  const c1 = await checkin('F1', { flavors: { sweet: 1, acid: 4 }, aromas: [{ a: 'apricot', m: 'dried', p: true }, { a: 'lemon', m: null }] })
+  // c2: sweet 3, tannin 2; a coarse "berry" + grape + dried (stored as raisin).
+  const c2 = await checkin('F2', { flavors: { sweet: 3, tannin: 2 }, aromas: [{ a: 'fruity.berry', m: null }, { a: 'grape', m: 'dried' }] })
+  // c3: no structure, no aromas.
+  const c3 = await checkin('F3', { flavors: {} })
+  // c4: sparkling (Bubbles), only the family "fruity".
+  const c4 = await checkin('F4', { type: 'spark', flavors: { bubbles: 5, sweet: 2 }, aromas: [{ a: 'fruity', m: null }] })
+  // c5: apricot, its post removed: on Viktor's list it stays (unfiltered) but no aroma / structure filter may match it.
+  const c5 = await checkin('F5', { flavors: { sweet: 1 }, aromas: [{ a: 'apricot', m: null }] })
+  await prisma.$executeRaw`DELETE FROM feed_items WHERE id = ${c5.post}`
+  const raw = await prisma.$queryRaw<{ aromas: unknown }[]>`SELECT r.aromas FROM ratings r JOIN wines w ON w.id = r.wine_id WHERE w.id = ${c2.wine}`
+  check('fixture: grape + dried was stored as raisin', JSON.stringify(raw[0]?.aromas).includes('"raisin"'), raw[0]?.aromas)
+  const lst = async (viewer: User, q: string) => {
+    await resetLimits()
+    return call(impressionsRoute.GET, 'GET', `/api/users/${Pp.pid}/impressions${q ? `?${q}` : ''}`, viewer, undefined, { id: Pp.pid })
+  }
+  const set = (x: { json: J }) => ((x.json.items ?? []) as J[]).map(i => i.wineId as string).sort().join()
+  const of = (...cs: { wine: string }[]) => cs.map(c => c.wine).sort().join()
+  const ar = (picks: unknown[], mode?: 'any') => `ar=${encodeURIComponent(JSON.stringify(picks))}${mode ? '&armode=any' : ''}`
+  const expectSet = async (name: string, q: string, want: string, viewer: User = Vw) => {
+    const x = await lst(viewer, q)
+    check(name, x.status === 200 && set(x) === want, { status: x.status, got: set(x), want })
+  }
+  await expectSet('unfiltered: all five (the post-less one too)', '', of(c1, c2, c3, c4, c5))
+  // Structure.
+  await expectSet('st sweet 1–1 → c1 only (c5 is post-less)', 'st=sweet:1-1', of(c1))
+  await expectSet('st sweet 1–3 → c1, c2, c4', 'st=sweet:1-3', of(c1, c2, c4))
+  await expectSet('st tannin None → the ones rated None (filled 0), never the unrated one', 'st=tannin:0-0', of(c1, c4))
+  await expectSet('st bubbles 0–5 → only the sparkling rating carries the axis', 'st=bubbles:0-5', of(c4))
+  await expectSet('two axes → both must fit', 'st=sweet:1-3,acid:4-5', of(c1))
+  await expectSet('your own list: the post-less row matches', 'st=sweet:1-1', of(c1, c5), Pp)
+  // Aromas.
+  await expectSet('family → every subfamily and leaf under it (and itself)', ar([{ a: 'fruity' }]), of(c1, c2, c4))
+  await expectSet('subfamily citrus → lemon', ar([{ a: 'fruity.citrus' }]), of(c1))
+  await expectSet('never upward: strawberry misses a stored berry or fruity', ar([{ a: 'strawberry' }]), '')
+  await expectSet('plain apricot finds dried apricot (c5 post-less: left out)', ar([{ a: 'apricot' }]), of(c1))
+  await expectSet('your own list: plain apricot finds both', ar([{ a: 'apricot' }]), of(c1, c5), Pp)
+  await expectSet('dried apricot → only dried', ar([{ a: 'apricot', m: 'dried' }]), of(c1))
+  await expectSet('ripe apricot → none', ar([{ a: 'apricot', m: 'ripe' }]), '')
+  await expectSet('Pronounced apricot → the marked one', ar([{ a: 'apricot', p: true }]), of(c1))
+  await expectSet('Pronounced lemon → none (lemon is not marked)', ar([{ a: 'lemon', p: true }]), '')
+  await expectSet('grape finds raisin (the promoted leaf)', ar([{ a: 'grape' }]), of(c2))
+  await expectSet('fruity + dried finds dried apricot AND raisin', ar([{ a: 'fruity', m: 'dried' }]), of(c1, c2))
+  await expectSet('all: lemon AND raisin → none', ar([{ a: 'lemon' }, { a: 'raisin' }]), '')
+  await expectSet('any: lemon OR raisin → c1, c2', ar([{ a: 'lemon' }, { a: 'raisin' }], 'any'), of(c1, c2))
+  await expectSet('aromas AND structure together', `${ar([{ a: 'fruity' }])}&st=sweet:2-3`, of(c2, c4))
+  // Validation.
+  const bad = async (q: string) => (await lst(Vw, q)).status === 400
+  check('st validation: lo > hi, unknown axis, an axis twice, out of 0–5, junk → 400',
+    (await bad('st=sweet:3-1')) && (await bad('st=nope:1-2')) && (await bad('st=sweet:1-2,sweet:2-3')) && (await bad('st=sweet:1-6')) && (await bad('st=sweet')))
+  check('ar validation: not JSON, not an array, unknown id, a disallowed modifier, `p: null` → 400',
+    (await bad('ar=nope')) && (await bad(`ar=${encodeURIComponent('{"a":"fruity"}')}`)) && (await bad(ar([{ a: 'nope' }]))) && (await bad(ar([{ a: 'apricot', m: 'smoked' }]))) && (await bad(ar([{ a: 'apricot', p: null }]))))
+  void c3
+  // The moment rules hold under the new filters: a blind moment's bottle (its
+  // post shows her perception) matches and stays BLIND; a hidden line-up stays
+  // left out for Viktor (on her own list too, unless she hosts it: she does).
+  const Hb = await mkUser('Hedi Blindhost')
+  const MB = await createSession(Hb)
+  const wB = (await addWine(MB, Hb, `${TAG} Blind Bottle`)).id
+  await join(MB, Pp)
+  await resetLimits()
+  const rb = await call(rateRoute.POST, 'POST', `/api/session/${MB}/rate`, Pp, { wineId: wB, score: 4, flavors: { sweet: 2 }, aromas: [{ a: 'grapefruit', m: null }], notes: 'n' }, { code: MB })
+  await prisma.$executeRaw`UPDATE sessions SET blind = true WHERE code = ${MB}`
+  await resetLimits()
+  const MH = await call(sessionRoute.POST, 'POST', '/api/session', Pp, { hostDisplayName: 'Pia', sessionName: `${TAG} hidden`, dateFrom: new Date(Date.now() + 2 * 86_400_000).toISOString(), hideLineup: true, hideLineupMinutesBefore: 30 })
+  const hCode = MH.json.code as string
+  const wH = (await addWine(hCode, Pp, `${TAG} Hidden Bottle`)).id
+  await resetLimits()
+  const rh = await call(rateRoute.POST, 'POST', `/api/session/${hCode}/rate`, Pp, { wineId: wH, score: 4, flavors: { sweet: 2 }, aromas: [{ a: 'grapefruit', m: null }], notes: 'n' }, { code: hCode })
+  check('fixture: the blind and the hidden ratings landed', rb.status === 200 && rh.status === 200, { rb: rb.status, rh: rh.status })
+  const gx = await lst(Vw, ar([{ a: 'grapefruit' }]))
+  const gRow = ((gx.json.items ?? []) as J[])[0]
+  check('🔒 a blind bottle matches by her aromas and stays blind (no name, no photo); the hidden line-up is left out',
+    gx.status === 200 && (gx.json.items as J[]).length === 1 && gRow?.wineId === wB && gRow.blind === true && gRow.name === '' && gRow.imageUrl === null, gx.json)
+  await expectSet('🔒 the same with a structure range', 'st=sweet:2-2', of({ wine: wB }, c4))
+  await expectSet('her own list: she hosts the hidden line-up, so it matches there', ar([{ a: 'grapefruit' }]), of({ wine: wB }, { wine: wH }), Pp)
+  // A session sparkling wine re-typed to red after she rated it: her rating
+  // keeps its bubbles value, but the post's wheel no longer draws Bubbles, so
+  // the Bubbles filter must stop matching it (Codex review, 2026-11-14).
+  const MS = await createSession(Hb)
+  await resetLimits()
+  const ws = await call(winesRoute.POST, 'POST', `/api/session/${MS}/wines`, Hb, { name: `${TAG} Fizz`, type: 'spark' }, { code: MS })
+  await join(MS, Pp)
+  await resetLimits()
+  const rs = await call(rateRoute.POST, 'POST', `/api/session/${MS}/rate`, Pp, { wineId: ws.json.id, score: 4, flavors: { bubbles: 4 }, notes: 'n' }, { code: MS })
+  check('fixture: the sparkling session rating landed', ws.status === 200 && rs.status === 200, { ws: ws.status, rs: rs.status })
+  await expectSet('Bubbles 4–4 → the sparkling session wine', 'st=bubbles:4-4', of({ wine: ws.json.id as string }))
+  await prisma.$executeRaw`UPDATE wines SET style = 'red' WHERE id = ${ws.json.id as string}`
+  const kept = await prisma.$queryRaw<{ b: unknown }[]>`SELECT flavors -> 'bubbles' AS b FROM ratings WHERE wine_id = ${ws.json.id as string}`
+  check('fixture: re-typed to red, her rating still holds bubbles 4', Number(kept[0]?.b) === 4, kept)
+  await expectSet('🔒 …then no longer (the wheel stopped drawing Bubbles)', 'st=bubbles:0-5', of(c4))
+  }
+
+  section('canary: no response carried a user integer')
+  check('🔒 no response body or header carried a fixture user integer, a u:<digit>, or a public id inside a URL', canaryViolations.length === 0, [...new Set(canaryViolations)].slice(0, 20))
 } catch (err) {
   // A fixture throw must fail the run: `finally` exits with the check count.
   failed++

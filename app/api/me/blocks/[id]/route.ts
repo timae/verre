@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { isSameOrigin } from '@/lib/csrf'
-import { parsePathId } from '@/lib/parsePathId'
+import { parsePublicIdParam, userIdOrNoSuchUser } from '@/lib/publicIds'
 import { formatWait } from '@/lib/rateLimit'
 import { setBlock } from '@/lib/userBlock'
 
@@ -18,8 +18,11 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const blockerId = Number(session.user.id)
-  const blockedId = parsePathId((await params).id)
-  if (blockedId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  // Format only (an integer is malformed); an unknown public id takes the
+  // nonexistent-target path inside the helper (limiter included).
+  const publicId = parsePublicIdParam((await params).id)
+  if (publicId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  const blockedId = await userIdOrNoSuchUser(publicId)
 
   const result = await setBlock(blockerId, blockedId, true)
   if (!result.ok) {
@@ -41,8 +44,11 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const blockerId = Number(session.user.id)
-  const blockedId = parsePathId((await params).id)
-  if (blockedId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  // Format only (an integer is malformed); an unknown public id takes the
+  // nonexistent-target path inside the helper (limiter included).
+  const publicId = parsePublicIdParam((await params).id)
+  if (publicId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  const blockedId = await userIdOrNoSuchUser(publicId)
 
   const result = await setBlock(blockerId, blockedId, false)
   if (!result.ok) {

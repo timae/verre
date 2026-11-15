@@ -44,6 +44,18 @@ const config: NextConfig = {
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }]
   },
+  // `/@<username>` → the profile page (usernames § 5). A rewrite because an
+  // `@folder` in app/ is a parallel-routes slot, never a URL segment. The
+  // second source is the percent-encoded `@` some apps put in a shared link.
+  // The page checks the name's format; anything deeper (`/@name/x`) matches
+  // neither rule and 404s. Pinned against `next start`:
+  // scripts/tests/usernames-web.mts.
+  async rewrites() {
+    return [
+      { source: '/@:username', destination: '/u/by-username/:username' },
+      { source: '/%40:username', destination: '/u/by-username/:username' },
+    ]
+  },
 }
 
 export default config

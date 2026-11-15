@@ -107,3 +107,24 @@ jobs:
       # replace seam (no router, no renderer).
       - name: Update-gate readiness pins
         run: npx tsx scripts/tests/update-gate-units.ts
+
+      # The app's boot rules (lib/bootGate.ts, public-user-ids § 6): a cached
+      # session whose user.id isn't a public id is STALE (no mount on the
+      # integer, retried only while nothing is in flight), and a 426 that
+      # arrives while the session is unknown renders the update screen in place
+      # (no navigator exists to route into).
+      - name: Boot-gate pins (stale session, 426 before a navigator)
+        run: npx tsx scripts/tests/boot-gate-units.ts
+
+      # parseVerreCode: a public-id profile QR, a LEGACY integer QR (recognised,
+      # never requested), a moment invite, foreign origins.
+      - name: Scan-code pins
+        run: npx tsx scripts/tests/scan-code-units.ts
+
+      # The username validator (@verre/core username.ts, usernames § 4): the
+      # format table, the reserved set with its lookalike and brand rules, the
+      # read-side normalisers, the share path, and the route-word test (the
+      # first URL segment of every route in app/ and apps/mobile/src/app must
+      # be reserved, so a new route word can't be forgotten). Pure, no DB.
+      - name: Username pins
+        run: npx tsx scripts/tests/username-units.ts

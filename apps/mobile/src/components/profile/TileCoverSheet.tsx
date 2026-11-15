@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, View } from 'react-native';
 import { pickPhoto } from '@/components/moments/momentForm';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ToggleRow } from '@/components/moments/settingsParts';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
@@ -25,21 +26,31 @@ const PICKED = '__picked__';
 // pool; Use Photo is live when the selection is not the current pin (so an
 // automatic photo can be pinned, and an unchanged pin is never re-written).
 // Selected = the 3pt accent ring + check badge (a selection state, not a card
-// border — flagged in the plan). No "back to latest" control (not in the
-// design; the server accepts null for it).
+// border — flagged in the plan).
+// "Always Show the Newest" (ruled 2026-11-14, not in the design): the switch
+// is part of the selection, saved by the footer like a photo ("Use Newest",
+// the PATCH's null). On = no photo picked (it starts on for an automatic
+// tile); selecting a photo turns it off; turning it off goes back to the pin.
+// Leaving your own uploaded photo deletes it (server-side), as picking
+// another photo does.
 // Your own photo (ruled 2026-11-12): the first cell, Add Photo, offers Take
 // Photo / Choose from Library; the result joins the grid selected, and Use
 // Photo uploads + pins it (nothing is uploaded before, so Cancel leaves no
 // trace). A tile's own upload comes back from the server as the pin.
 export function TileCoverSheet({
-  tile, shown, onClose, onUse, onUpload,
+  tile, shown, pinned, onClose, onUse, onUpload,
 }: {
   tile: TileKey | null;
   // The image the tile shows now (the pre-selection when it is in the pool).
   shown: string | null;
+  // The header says the tile shows a CHOSEN cover. A chosen photo that was
+  // hidden again still shows on the tile (D3) but the pool can't offer it
+  // (`pin` null there), so the switch reads both.
+  pinned: boolean;
   onClose: () => void;
   // Resolves when saved; throws to keep the sheet open (the caller alerts).
-  onUse: (tile: TileKey, url: string) => Promise<void>;
+  // `null` = back to the newest photo (automatic).
+  onUse: (tile: TileKey, url: string | null) => Promise<void>;
   // The same for your own photo (a fitted data URL).
   onUpload: (tile: TileKey, dataUrl: string) => Promise<void>;
 }) {
@@ -59,6 +70,8 @@ export function TileCoverSheet({
     staleTime: 0,
   });
   const [selected, setSelected] = useState<string | null>(null);
+  // The switch; null until this opening's fresh pool says whether a photo is pinned.
+  const [auto, setAuto] = useState<boolean | null>(null);
   const [picked, setPicked] = useState<{ dataUrl: string; previewUri: string } | null>(null);
   const [gridW, setGridW] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -71,38 +84,59 @@ export function TileCoverSheet({
   }, [tile]);
   const fresh = tile != null && openedAt > 0 && photos.data != null && photos.dataUpdatedAt >= openedAt && !photos.isFetching;
   const pool = fresh ? photos.data!.photos : null;
-  // Seed the selection ONCE per opening, from the fresh pool: the shown photo
-  // when it is offered, else nothing (a pick made meanwhile is kept).
+  const pin = fresh ? photos.data!.pin : null;
+  const chosen = pinned || pin !== null;
+  // Seed ONCE per opening, from the fresh pool: an automatic tile starts with
+  // the switch on and nothing selected; a pinned one with the switch off and
+  // the shown photo selected when it is offered (a pick made meanwhile is kept).
   const seededFor = useRef<TileKey | null>(null);
+  // Anything you did in this opening (a photo, the switch, Add Photo) before
+  // the fresh pool arrived wins over the seed (Codex: a cleared selection is
+  // a choice too, not "untouched").
+  const touched = useRef(false);
   useEffect(() => {
     if (!tile) {
       seededFor.current = null;
+      touched.current = false;
       setSelected(null);
       setPicked(null);
+      setAuto(null);
       return;
     }
     if (seededFor.current === tile || !pool) return;
     seededFor.current = tile;
-    setSelected((cur) => cur ?? (shown && pool.includes(shown) ? shown : null));
-  }, [tile, pool, shown]);
+    if (touched.current) return;
+    setAuto(!chosen);
+    setSelected(chosen && shown && pool.includes(shown) ? shown : null);
+  }, [tile, pool, chosen, shown]);
+  const select = (url: string) => {
+    touched.current = true;
+    setSelected(url);
+    setAuto(false);
+  };
+  const toggleAuto = (on: boolean) => {
+    touched.current = true;
+    setAuto(on);
+    setSelected(on ? null : pin !== null && pool?.includes(pin) ? pin : null);
+  };
 
-  const pin = fresh ? photos.data!.pin : null;
-  // Live for your picked photo, or for a photo the FRESH pool offers that
-  // isn't already the pin.
-  const canUse = !saving && (selected === PICKED ? picked != null : pool != null && selected != null && pool.includes(selected) && selected !== pin);
+  // Live for "the newest" when a cover is chosen now, for your picked photo,
+  // or for a photo the FRESH pool offers that isn't already the pin.
+  const canUse = !saving && (auto ? fresh && chosen : selected === PICKED ? picked != null : pool != null && selected != null && pool.includes(selected) && selected !== pin);
   const use = useCallback(async () => {
-    if (!tile || !selected) return;
+    if (!tile || (!auto && !selected)) return;
     setSaving(true);
     try {
-      if (selected === PICKED) {
+      if (auto) await onUse(tile, null);
+      else if (selected === PICKED) {
         if (picked) await onUpload(tile, picked.dataUrl);
-      } else await onUse(tile, selected);
+      } else await onUse(tile, selected!);
     } catch {
       // The caller alerted; the sheet stays open with the selection.
     } finally {
       setSaving(false);
     }
-  }, [tile, selected, picked, onUse, onUpload]);
+  }, [tile, auto, selected, picked, onUse, onUpload]);
   // The open tile, read after the picker resolves: a pick that lands after the
   // sheet closed (or moved to another tile) is dropped, not carried into the
   // next opening (review 2026-11-12).
@@ -118,8 +152,10 @@ export function TileCoverSheet({
       Alert.alert('Couldn’t Use This Photo', 'Try another one.');
       return;
     }
+    touched.current = true;
     setPicked(r);
     setSelected(PICKED);
+    setAuto(false);
   }, []);
 
   const renderFooter = useCallback(
@@ -127,11 +163,11 @@ export function TileCoverSheet({
       <BottomSheetFooter {...props}>
         <View style={{ flexDirection: 'row', gap: 12, paddingHorizontal: 20, paddingTop: 10, paddingBottom: insets.bottom + 12, backgroundColor: theme.surface }}>
           <Button title="Cancel" variant="secondary" onPress={onClose} disabled={saving} style={{ flex: 1 }} />
-          <Button title="Use Photo" variant="primary" onPress={use} disabled={!canUse} loading={saving} style={{ flex: 1 }} />
+          <Button title={auto ? 'Use Newest' : 'Use Photo'} variant="primary" onPress={use} disabled={!canUse} loading={saving} style={{ flex: 1 }} />
         </View>
       </BottomSheetFooter>
     ),
-    [insets.bottom, theme.surface, onClose, use, canUse, saving],
+    [insets.bottom, theme.surface, onClose, use, canUse, saving, auto],
   );
 
   const label = active ? LABEL[active] : '';
@@ -143,6 +179,9 @@ export function TileCoverSheet({
         <View style={{ paddingHorizontal: 20, paddingTop: 8, gap: 6, paddingBottom: 14 }}>
           <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{`Cover for ${label}`}</VText>
           <VText variant="small" color="inkSoft">{`Pick a photo from your ${label.toLowerCase()}, or add your own.`}</VText>
+          <View style={{ paddingTop: 8 }}>
+            <ToggleRow flush title="Always Show the Newest" value={auto === true} onChange={toggleAuto} disabled={auto === null || saving} />
+          </View>
         </View>
         <BottomSheetScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: insets.bottom + 96 }} showsVerticalScrollIndicator={false}>
           {/* Add Photo + your picked photo first, then the tile's own photos. */}
@@ -150,9 +189,9 @@ export function TileCoverSheet({
             {gridW > 0 ? (
               <>
                 <AddCell width={(gridW - 2 * GAP) / 3} disabled={saving} onPress={() => void addOwn()} />
-                {picked ? <Cell url={picked.previewUri} width={(gridW - 2 * GAP) / 3} on={selected === PICKED} onPress={() => setSelected(PICKED)} /> : null}
+                {picked ? <Cell url={picked.previewUri} width={(gridW - 2 * GAP) / 3} on={selected === PICKED} onPress={() => select(PICKED)} /> : null}
                 {(photos.data?.photos ?? []).map((url) => (
-                  <Cell key={url} url={url} width={(gridW - 2 * GAP) / 3} on={url === selected} onPress={() => setSelected(url)} />
+                  <Cell key={url} url={url} width={(gridW - 2 * GAP) / 3} on={url === selected} onPress={() => select(url)} />
                 ))}
               </>
             ) : null}

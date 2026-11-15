@@ -1,9 +1,11 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useSession, signOut } from 'next-auth/react'
+import { useRouter } from 'next/navigation'
 import { clearSessionNames } from '@/lib/clientStorage'
 import { TIER_LABELS, TIER_ORDER, type ProfileVisibility, type VisibilitySettings } from '@/lib/profileVisibilityShared'
-import { extendedCircleApplies } from '@verre/core'
+import { checkUsername, extendedCircleApplies } from '@verre/core'
+import { UsernameField, usernameProblem, usernameSaveError } from '@/components/auth/UsernameField'
 
 function EyeIcon({ open }: { open: boolean }) {
   return open ? (
@@ -97,8 +99,9 @@ export function AccountSettings({ onSaved, onReady }: Props = {}) {
   const [error,     setError]     = useState('')
   const [success,   setSuccess]   = useState('')
 
-  // Returns true on success / no-op, false on any error.
-  async function saveAccount(): Promise<boolean> {
+  // Returns true on success / no-op, false on any error. `usernameSaved`: the
+  // username was stored just before, so a no-op here still closes the host.
+  async function saveAccount(usernameSaved = false): Promise<boolean> {
     setSaving(true); setError(''); setSuccess('')
 
     if (newPw && newPw.length < 8) {
@@ -123,7 +126,7 @@ export function AccountSettings({ onSaved, onReady }: Props = {}) {
     if (name  !== user?.name)  body.name  = name
     if (email !== user?.email) body.email = email
     if (newPw) { body.currentPassword = currentPw; body.newPassword = newPw }
-    if (Object.keys(body).length === 0) { setSaving(false); return true }
+    if (Object.keys(body).length === 0) { setSaving(false); if (usernameSaved) onSaved?.(); return true }
 
     const res = await fetch('/api/me/account', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -157,11 +160,37 @@ export function AccountSettings({ onSaved, onReady }: Props = {}) {
   // fields filled). Password fields aren't compared to a baseline
   // because the JWT doesn't carry the password hash — presence alone
   // means the user is trying to change something.
-  const dirty = (
+  const accountDirty = (
     name !== (user?.name ?? '') ||
     email !== (user?.email ?? '') ||
     !!currentPw || !!newPw || !!confirmPw
   )
+  // The Username section is a draft too (its own endpoint and button): a typed
+  // but unsaved username counts toward the host's close guard, and the footer
+  // Save saves it first (the one step someone else can refuse: taken).
+  const usernameDraft = useRef<UsernameDraft | null>(null)
+  const [usernameDirty, setUsernameDirty] = useState(false)
+  const onUsernameDraft = useCallback((d: UsernameDraft) => { usernameDraft.current = d; setUsernameDirty(d.dirty) }, [])
+  const dirty = accountDirty || usernameDirty
+
+  // The host's Save stays busy through BOTH steps (`saving` is the account
+  // PATCH's own flag): a second press must not start a second run.
+  const [savingAll, setSavingAll] = useState(false)
+  async function saveAll(): Promise<boolean> {
+    if (savingAll) return false
+    setSavingAll(true)
+    try {
+      const u = usernameDraft.current
+      const hadUsername = !!u?.dirty
+      if (hadUsername && !(await u!.save())) { setError('The username was not saved. See the message under it.'); return false }
+      if (accountDirty) return await saveAccount(hadUsername)
+      setError('')
+      if (hadUsername) onSaved?.()
+      return true
+    } finally {
+      setSavingAll(false)
+    }
+  }
 
   // Publish the save API + state to the host (modal) on every relevant
   // change so the footer button + close-guard + inline messages stay
@@ -172,16 +201,16 @@ export function AccountSettings({ onSaved, onReady }: Props = {}) {
   // otherwise stale-true the `dirty` derivation without firing this
   // effect (local state didn't change; only the JWT baseline did).
   useEffect(() => {
-    onReady?.({ save: saveAccount, saving, dirty, error, success })
+    onReady?.({ save: saveAll, saving: saving || savingAll, dirty, error, success })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saving, dirty, error, success, name, email, currentPw, newPw, confirmPw, user?.name, user?.email])
+  }, [saving, savingAll, dirty, usernameDirty, error, success, name, email, currentPw, newPw, confirmPw, user?.name, user?.email])
 
   if (!user) return null
 
   return (
     <div>
       <div className="field">
-        <div className="fl">display name</div>
+        <div className="fl">name</div>
         <input className="fi" value={name} onChange={e => setName(e.target.value)} maxLength={64} />
       </div>
       <div className="field">
@@ -198,11 +227,108 @@ export function AccountSettings({ onSaved, onReady }: Props = {}) {
           and renders the messages near the footer Save so they stay
           visible regardless of scroll position. */}
 
+      <UsernameSection onDraft={onUsernameDraft} />
       <ProfileVisibilitySection />
       <ConnectedDevicesSection />
       <BlockedUsersSection />
       <DangerZone email={user.email} />
     </div>
+  )
+}
+
+type UsernameState = { username: string | null; changesLeft: number; nextChangeAt: string | null }
+// The section's draft, for the host form: `dirty` = the typed text differs
+// from the saved name; `save` resolves false when nothing was stored.
+type UsernameDraft = { dirty: boolean; save: () => Promise<boolean> }
+
+// Your username: its own form and Save (its own endpoint, PUT /api/me/username,
+// with its own errors and a quota of 5 changes per rolling 90 days). Quiet
+// until it matters: no count is shown until 2 changes are left. Typing your
+// previous name switches back (the server keeps it available to its owner).
+function UsernameSection({ onDraft }: { onDraft?: (d: UsernameDraft) => void }) {
+  const { update } = useSession()
+  const router = useRouter()
+  const [state, setState] = useState<UsernameState | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  const [value, setValue] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/me/username', { cache: 'no-store' }).then(r => (r.ok ? r.json() : null)).catch(() => null).then((d: UsernameState | null) => {
+      if (cancelled) return
+      if (d) { setState(d); setValue(d.username ?? '') }
+      setLoaded(true)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const checked = checkUsername(value)
+  const locked = !!state && state.changesLeft <= 0
+  const changed = checked.ok && checked.username !== state?.username
+
+  // Returns true when the name was stored.
+  async function saveUsername(): Promise<boolean> {
+    if (!state || locked || saving) return false
+    if (!checked.ok) { setError(usernameProblem(checked)); return false }
+    if (!changed) return true
+    setSaving(true); setError(''); setSuccess('')
+    const res = await fetch('/api/me/username', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: checked.username }),
+    }).catch(() => null)
+    if (res?.status === 401) { window.location.href = '/login'; return false }
+    const d = res ? await res.json().catch(() => ({})) : {}
+    setSaving(false)
+    if (res?.ok) {
+      setState(d); setValue(d.username ?? '')
+      setSuccess('saved'); setTimeout(() => setSuccess(''), 2000)
+      // The session re-reads the name; the profile page under the modal re-renders.
+      await update()
+      router.refresh()
+      return true
+    }
+    if (res?.status === 409 && d.code === 'quota') {
+      setState({ ...state, changesLeft: 0, nextChangeAt: d.nextChangeAt ?? null }); setValue(state.username ?? '')
+      return false
+    }
+    setError(res ? usernameSaveError(res.status, d) : 'Could not save the username. Try again.')
+    return false
+  }
+
+  // Published on every change the host cares about; `saveUsername` closes over
+  // the latest text (the host never holds a stale one).
+  const draftDirty = !!state && !locked && value !== (state.username ?? '')
+  useEffect(() => {
+    onDraft?.({ dirty: draftDirty, save: saveUsername })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftDirty, value, state, saving])
+
+  const on = state?.nextChangeAt ? new Date(state.nextChangeAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : null
+  const note = !state ? ''
+    : locked ? (on ? `You can change it again on ${on}.` : 'You can change it again later.')
+    // The server names a date only once none are left (lib/username.ts).
+    : state.changesLeft === 2 ? '2 changes left for now.'
+    : state.changesLeft === 1 ? 'This is your last change for now.'
+    : ''
+
+  return (
+    <form onSubmit={e => { e.preventDefault(); void saveUsername() }} style={{marginTop:32,paddingTop:20,borderTop:'1px solid var(--border)'}}>
+      {!loaded ? (
+        <div style={{fontSize:11,color:'var(--fg-dim)'}}>loading…</div>
+      ) : !state ? (
+        <div style={{fontSize:11,color:'var(--danger)'}}>could not load your username</div>
+      ) : (
+        <>
+          <UsernameField value={value} onChange={v => { setValue(v); setError('') }} error={error} checkAvailable current={state.username} disabled={locked} />
+          {note && <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:-4,marginBottom:10,lineHeight:1.5}}>{note}</div>}
+          {!locked && <button type="submit" className="btn-s" disabled={!changed || saving} style={{opacity:!changed || saving ? 0.45 : 1}}>{saving ? 'saving…' : 'save username'}</button>}
+          {success && <p style={{color:'var(--accent2)',fontSize:11,marginTop:8}}>✓ {success}</p>}
+        </>
+      )}
+    </form>
   )
 }
 
@@ -212,10 +338,10 @@ export function AccountSettings({ onSaved, onReady }: Props = {}) {
 // powers the runtime filter (1000) — beyond that, the count itself is
 // abuse-scenario territory.
 function BlockedUsersSection() {
-  type Row = { id: number; name: string; imageUrl: string | null; createdAt: string }
+  type Row = { id: string; name: string; createdAt: string }
   const [rows, setRows] = useState<Row[] | null>(null)
   const [error, setError] = useState('')
-  const [working, setWorking] = useState<number | null>(null)
+  const [working, setWorking] = useState<string | null>(null)
 
   async function refresh() {
     setError('')
@@ -234,7 +360,7 @@ function BlockedUsersSection() {
   // boilerplate that buys nothing for this single-mount fetch.
   useEffect(() => { refresh() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function unblock(id: number) {
+  async function unblock(id: string) {
     if (working !== null) return
     setWorking(id)
     const res = await fetch(`/api/me/blocks/${id}`, { method: 'DELETE' })

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { nanoid } from 'nanoid'
+import { imageKey } from '@/lib/imageKeys'
+import { parseTagList, resolveTagList, publicIdFor } from '@/lib/publicIds'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
@@ -21,7 +22,7 @@ import { resolveCatalogLink, applyIdentityEditRule, CatalogValidationError } fro
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
-// exports live alongside the existing uploadImage/deleteImage. Until that
+// exports live alongside uploadImage (and the since-removed id-keyed delete). Until that
 // bundling bug is understood, keep this local copy so the route survives.
 const ENDPOINT = process.env.S3_ENDPOINT
 const BUCKET = process.env.S3_BUCKET
@@ -133,7 +134,12 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   ]
   for (const [k, v, max] of lenCheck) {
     if (typeof v === 'string' && v.length > max) return NextResponse.json({ error: `${k} too long (max ${max})` }, { status: 400 })
-  }
+  }  // 🔒 Tags are PUBLIC ids; any malformed element (an old tab's integer) is a
+  // 400 for the whole request BEFORE any upload or write, so it can never
+  // become `[]` and wipe the post's tags (lib/publicIds.ts parseTagList).
+  const tagPublicIds = Array.isArray(taggedUserIds) ? parseTagList(taggedUserIds) : undefined
+  if (tagPublicIds === null) return NextResponse.json({ error: 'invalid taggedUserIds' }, { status: 400 })
+
   // Run validators and capture the parsed values.
   let validScore: number | null | undefined = undefined
   let validFlavorsValue: Record<string, number> | undefined = undefined
@@ -188,10 +194,9 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     if (typeof imageData !== 'string' || imageData.length > MAX_IMAGE_DATA_URL_BYTES) {
       return NextResponse.json({ error: 'image too large' }, { status: 400 })
     }
-    // Same key scheme as POST (wines/ci_<userId>_<timestamp>_<random>): the
+    // Same key scheme as POST (lib/imageKeys.ts, nothing that points to the person): the
     // bucket is public, so a key must not be guessable.
-    const keyBase = `wines/ci_${userId}_${Date.now()}_${nanoid(12)}`
-    const uploaded = await uploadImage(keyBase, imageData).catch(() => null)
+    const uploaded = await uploadImage(imageKey('checkin'), imageData).catch(() => null)
     if (!uploaded) {
       // FAIL LOUDLY (2026-07-17): the caller explicitly sent a photo; a 200
       // that silently kept the old image reads as "saved" while the photo
@@ -208,15 +213,16 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // If the client sent taggedUserIds, verify each is a mutual follow before
   // we touch the tag rows. Same check as POST.
   let validTagIds: number[] | undefined
-  if (Array.isArray(taggedUserIds)) {
-    if (taggedUserIds.length === 0) {
+  if (tagPublicIds !== undefined) {
+    const tagIds = await resolveTagList(tagPublicIds)
+    if (tagIds.length === 0) {
       validTagIds = []
     } else {
       const mutuals = await prisma.$queryRaw<{ id: number }[]>`
         SELECT f1.following_id AS id
         FROM follows f1
         JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
-        WHERE f1.follower_id = ${userId} AND f1.following_id = ANY(${taggedUserIds}::integer[])
+        WHERE f1.follower_id = ${userId} AND f1.following_id = ANY(${tagIds}::integer[])
           AND NOT EXISTS (
             SELECT 1 FROM user_blocks b
             WHERE (b.blocker_id = ${userId} AND b.blocked_id = f1.following_id)
@@ -417,7 +423,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // Client-compatible legacy envelope, same shape as POST.
   return NextResponse.json({
     id: updatedFeedItem.id,
-    userId,
+    userId: (await publicIdFor(userId)) ?? null,
     wineName: updatedWine.name,
     producer: updatedWine.producer,
     vintage: updatedWine.vintage,

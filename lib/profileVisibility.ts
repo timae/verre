@@ -194,8 +194,8 @@ export type ProfileSees = { posts: boolean; cravings: boolean; moments: boolean 
 export type ProfileGateOk = { status: 'ok'; viewer: ProfileViewer; settings: VisibilitySettings; sees: ProfileSees }
 export type ProfileGateResult =
   | ProfileGateOk
-  | { status: 'shell'; name: string }
-  | { status: 'blocked-by-me'; name: string }
+  | { status: 'shell'; name: string; username: string | null }
+  | { status: 'blocked-by-me'; name: string; username: string | null }
   | { status: 'gone' }
 
 export async function resolveProfileViewer(
@@ -208,7 +208,7 @@ export async function resolveProfileViewer(
   // the user wasn't deleted out from under their own session.
   const row = await prisma.user.findUnique({
     where: { id: profileId },
-    select: { name: true, ...SETTINGS_SELECT },
+    select: { name: true, username: true, ...SETTINGS_SELECT },
   })
   if (!row) return { status: 'gone' }
   // Every `ok` below is built here. A corrupt profile tier never reaches a
@@ -235,13 +235,13 @@ export async function resolveProfileViewer(
   //     unblock affordance.
   if (viewerId !== null) {
     if (await authorBlocksViewer(viewerId, profileId)) return { status: 'gone' }
-    if (await viewerBlocksAuthor(viewerId, profileId)) return { status: 'blocked-by-me', name: row.name }
+    if (await viewerBlocksAuthor(viewerId, profileId)) return { status: 'blocked-by-me', name: row.name, username: row.username }
   }
   if (!tierOk) {
     // CHECK constraint should make this unreachable; if a bad value
     // ever lands, render the shell so the user is still findable but
     // their content stays gated (readSettings logged it).
-    return { status: 'shell', name: row.name }
+    return { status: 'shell', name: row.name, username: row.username }
   }
   if (viewerId === null) {
     // Anonymous viewer: no follow edges to resolve. Public-internet tier
@@ -250,7 +250,7 @@ export async function resolveProfileViewer(
     if (settings.visibility === 'public-internet') {
       return ok({ id: null, followsProfile: false, profileFollowsViewer: false })
     }
-    return { status: 'shell', name: row.name }
+    return { status: 'shell', name: row.name, username: row.username }
   }
 
   // Logged-in non-self viewer: always resolve the follow edges, even for
@@ -284,7 +284,7 @@ export async function resolveProfileViewer(
 
   const viewer: ProfileViewer = { id: viewerId, followsProfile, profileFollowsViewer, isFofOfProfile }
   if (!canViewProfile(settings.visibility, viewer, settings.fofEnabled)) {
-    return { status: 'shell', name: row.name }
+    return { status: 'shell', name: row.name, username: row.username }
   }
   return ok(viewer)
 }

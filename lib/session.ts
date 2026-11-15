@@ -108,10 +108,11 @@ export type WineMeta = {
 export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName'> & {
   isMine: boolean
   addedByDisplayName: string | null
-  // Public userId for logged-in adders ONLY (null for anon adders and
-  // pre-feature wines). Lets the brought-by surface render as a
-  // clickable profile link without re-exposing the raw addedByIdentityId.
-  addedByUserId: number | null
+  // PUBLIC user id (lib/publicIds.ts) of a logged-in adder ONLY (null for
+  // anon adders, pre-feature wines and an adder whose users row is gone).
+  // Lets the brought-by surface render as a clickable profile link without
+  // re-exposing the raw addedByIdentityId. 🔒 Never the integer.
+  addedByUserId: string | null
   _blind?: boolean
 }
 
@@ -126,12 +127,12 @@ export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName'
 //   3. snapshot on the wine                (kicked anon adder; pre-feature has no snapshot)
 //   4. null
 //
-// `addedByUserId` exposes ONLY logged-in adders' public userId so the
-// UI can render the brought-by name as a clickable profile link.
-// Anonymous adders' `a:<uuid>` is never surfaced (prevents anon-id
-// correlation across wines from the same adder, same rationale as the
-// `addedByIdentityId` strip). `/u/<id>` URLs are already public, so a
-// numeric userId carries no new privacy surface.
+// `addedByUserId` exposes ONLY logged-in adders' PUBLIC id (from the adder
+// lookup, which carries it in the same users read) so the UI can render the
+// brought-by name as a clickable profile link. Anonymous adders' `a:<uuid>`
+// is never surfaced (prevents anon-id correlation across wines from the same
+// adder, same rationale as the `addedByIdentityId` strip). A `u:` adder
+// missing from the lookup gets null (🔒 the integer never leaves).
 // `showProvenance` (default true) is the "Show who brought each impression"
 // session setting. When false the host opted OUT of attribution, so the
 // resolved name + userId are forced to null HERE — at the single sanctioned
@@ -146,12 +147,13 @@ export function wineToWire(
   w: WineMeta,
   callerId: string,
   identities: Record<string, string> = {},
-  userNameLookup: Map<string, string> = new Map(),
+  lookup: AdderLookup = emptyAdderLookup(),
   showProvenance = true,
 ): WireWine {
   const { addedByIdentityId: provenance, addedByDisplayName: snapshot, ...rest } = w
+  const userNameLookup = lookup.names
   let resolvedName: string | null = null
-  let userId: number | null = null
+  let userId: string | null = null
   const lookedUp = provenance ? userNameLookup.get(provenance) : undefined
   if (provenance && showProvenance && lookedUp === UNRESOLVED_USER) {
     // The users lookup failed: whether this adder still exists is unknown, so
@@ -170,7 +172,7 @@ export function wineToWire(
     else if (snapshot) resolvedName = snapshot
     if (provenance.startsWith('u:')) {
       const n = Number(provenance.slice(2))
-      if (Number.isInteger(n) && n > 0) userId = n
+      if (Number.isInteger(n) && n > 0) userId = lookup.publicIds.get(n) ?? null
     }
   }
   return {
@@ -444,21 +446,24 @@ export const UNRESOLVED_USER = '\u0000unresolved'
 
 // Batch-lookup the `u:<id>` adders of these wines: display names for those
 // no longer in the session's identities map (kicked / banned logged-in
-// users), and GONE_USER for those whose users row no longer exists (deleted
+// users), GONE_USER for those whose users row no longer exists (deleted
 // accounts — wineToWire then renders '[deleted]' whatever the identities map
-// or snapshot still say). One Prisma query per request; no `u:` adder
+// or snapshot still say), and every live adder's PUBLIC id (the wire's
+// `addedByUserId`). One Prisma query per request; no `u:` adder
 // short-circuits. Anonymous adders (`a:<uuid>`) have no users row and are
 // excluded.
 //
 // Used by the wines GET / reorder / POST / PATCH / reveal routes when
-// they build the wire response. Postgres failures collapse to an empty
-// map so the live wines polling endpoint keeps working through a DB
-// hiccup — the wire resolver still has the live-identities and
-// snapshot fallback paths.
-export async function buildKickedUserNameLookup(
+// they build the wire response. A Postgres failure withholds every `u:`
+// adder's name AND public id (fail closed) so the live wines polling endpoint
+// keeps working through a DB hiccup.
+export type AdderLookup = { names: Map<string, string>; publicIds: Map<number, string> }
+export const emptyAdderLookup = (): AdderLookup => ({ names: new Map(), publicIds: new Map() })
+
+export async function buildAdderLookup(
   wines: WineMeta[],
   identities: Record<string, string>,
-): Promise<Map<string, string>> {
+): Promise<AdderLookup> {
   const userIds = new Set<number>()
   for (const w of wines) {
     const id = w.addedByIdentityId
@@ -466,25 +471,26 @@ export async function buildKickedUserNameLookup(
     const n = Number(id.slice(2))
     if (Number.isInteger(n) && n > 0) userIds.add(n)
   }
-  if (userIds.size === 0) return new Map()
-  const out = new Map<string, string>()
+  const out = emptyAdderLookup()
+  if (userIds.size === 0) return out
   try {
     const rows = await prisma.user.findMany({
       where: { id: { in: [...userIds] } },
-      select: { id: true, name: true },
+      select: { id: true, name: true, publicId: true },
     })
     const found = new Map(rows.map(r => [`u:${r.id}`, r.name]))
+    for (const r of rows) out.publicIds.set(r.id, r.publicId)
     for (const n of userIds) {
       const id = `u:${n}`
       const name = found.get(id)
-      if (name === undefined) out.set(id, GONE_USER)
-      else if (!identities[id]) out.set(id, name)
+      if (name === undefined) out.names.set(id, GONE_USER)
+      else if (!identities[id]) out.names.set(id, name)
     }
   } catch (err) {
     // Fail closed on names: a deleted adder's stale identities entry or
     // snapshot must not render because Postgres was briefly unreachable.
-    console.error('[wines] buildKickedUserNameLookup failed — withholding u: adder names:', err)
-    for (const n of userIds) out.set(`u:${n}`, UNRESOLVED_USER)
+    console.error('[wines] buildAdderLookup failed — withholding u: adder names:', err)
+    for (const n of userIds) out.names.set(`u:${n}`, UNRESOLVED_USER)
   }
   return out
 }
@@ -508,7 +514,8 @@ export async function addWineToSession(
   // calls were separated by `await uploadImage(...)` — an S3 PUT that
   // takes 50–500ms — so the image got keyed by one timestamp and the
   // wine row stored a different one, leaking the S3 object whenever the
-  // wine was later deleted via deleteImage(wineId).)
+  // wine was later deleted by id; scripts/rekey-session-images.mts matches
+  // such photos by reference, never by id.)
   const id = existing?.id || nanoid()
 
   let imageUrl = existing?.imageUrl || ''

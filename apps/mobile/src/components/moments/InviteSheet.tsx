@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Share, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, ScrollView, Share, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import * as Clipboard from 'expo-clipboard';
 import { formatCode } from '@verre/core';
+import { usePersonPreview } from '@/components/moments/PersonPreviewSheet';
 import { FriendRow } from '@/components/ui/FriendRow';
 import { Icon } from '@/components/ui/Icon';
 import { QrCode } from '@/components/ui/QrCode';
@@ -14,7 +15,7 @@ import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
-import { fuzzyIncludes } from '@/lib/search';
+import { matchesPerson } from '@/lib/search';
 import { WEB_BASE } from '@/lib/config';
 import { radius, useTheme } from '@/theme';
 
@@ -25,6 +26,9 @@ import { radius, useTheme } from '@/theme';
 // affordance swaps the sheet to a full friends-list pane (one sheet). No invite
 // backend (Simon, milestone 5): all "Invite"/share affordances open the OS
 // share sheet; only "Joined" is truthful (block-scrubbed participant ids).
+// A browse row opens the friend's preview (2026-11-15, the moment's person
+// preview), pushed over this sheet; its Invite button stays its own target.
+// /api/me/friends drops block pairs both ways, so no row here is a guest look.
 
 export function InviteSheet({
   open,
@@ -41,6 +45,7 @@ export function InviteSheet({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const preview = usePersonPreview();
   const [pane, setPane] = useState<'invite' | 'browse'>('invite');
   // The pseudo-field opens the pane ready to type (keyboard up); the Browse
   // chip opens it for browsing, keyboard down (ruled 2026-11-12).
@@ -61,7 +66,13 @@ export function InviteSheet({
   useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
 
   const label = momentName?.trim() ? momentName.trim() : 'this moment';
-  const joinUrl = `${WEB_BASE}/join/${code}`;
+  // 🔒 The code in a shareable URL is the FORMATTED (hyphenated for 8-char) form
+  // — same contract as web's `joinPath` in `lib/sessionCode.ts`, so a link
+  // copied from the app and one copied from the web read identically. Server
+  // entry points run `normalizeCode`, which strips the hyphen, so both forms
+  // resolve; the hyphenated one is what we render. Do not interpolate a raw
+  // `code` here — that is display drift, not a shortcut.
+  const joinUrl = `${WEB_BASE}/join/${formatCode(code)}`;
   const shareMessage = `Join “${label}” on Verre`;
 
   const friends = useQuery({ queryKey: ['my-friends'], queryFn: getMyFriends, enabled: open, staleTime: 30_000 });
@@ -70,7 +81,7 @@ export function InviteSheet({
   const notIn = allFriends.filter((f) => !participantIds.has(`u:${f.id}`));
   const browseMatches = useMemo(() => {
     const needle = q.trim();
-    return needle ? allFriends.filter((f) => fuzzyIncludes(f.name, needle)) : allFriends;
+    return needle ? allFriends.filter((f) => matchesPerson(f, needle)) : allFriends;
   }, [allFriends, q]);
 
   const copyLink = async () => {
@@ -84,9 +95,26 @@ export function InviteSheet({
     copiedTimer.current = setTimeout(() => setCopied(false), 1500);
   };
 
-  const shareInvite = async (extra?: string) => {
+  const shareInvite = async () => {
     try {
-      await Share.share({ message: extra ? `${shareMessage}\n${extra}` : shareMessage, url: joinUrl });
+      // 🔒 The link is carried DIFFERENTLY per platform, and the fork is
+      // load-bearing — do not "simplify" it to one payload.
+      //
+      // Android: RN rebuilds the payload as `{title, message}` and DROPS `url`
+      // outright (`react-native/Libraries/Share/Share.js`; its own docs list
+      // only title/message for Android, "often will include a URL"). Passing
+      // the link solely as `url` shared a bare "Join X on Verre" with NO link.
+      // So Android gets it appended to the message.
+      //
+      // iOS: `message` and `url` are forwarded as SEPARATE activity items, so
+      // appending the link to the message too would show it twice in targets
+      // that render both. iOS keeps `url` alone — that is also what drives the
+      // rich link preview.
+      await Share.share(
+        Platform.OS === 'android'
+          ? { message: `${shareMessage}\n${joinUrl}` }
+          : { message: shareMessage, url: joinUrl },
+      );
     } catch {
       // user dismissed the OS sheet — no-op
     }
@@ -205,7 +233,14 @@ export function InviteSheet({
               <VText variant="label" color="inkSoft" style={{ marginBottom: 4, letterSpacing: 1.54 }}>ALL FRIENDS · {allFriends.length}</VText>
               <BottomSheetScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
                 {browseMatches.map((f, i) => (
-                  <FriendRow key={f.id} person={f} first={i === 0} joined={participantIds.has(`u:${f.id}`)} onInvite={() => shareInvite()} />
+                  <FriendRow
+                    key={f.id}
+                    person={f}
+                    first={i === 0}
+                    joined={participantIds.has(`u:${f.id}`)}
+                    onInvite={() => shareInvite()}
+                    onPress={preview?.canOpen(`u:${f.id}`, 'friends') ? () => preview.open(`u:${f.id}`, 'friends') : undefined}
+                  />
                 ))}
               </BottomSheetScrollView>
             </View>

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useIsFocused } from 'expo-router';
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
@@ -17,7 +18,10 @@ import { useTheme } from '@/theme';
 // Above the tab bar: the sheet renders IN-SCREEN (gorhom v5 hosts it in its own
 // BottomSheetHostingContainer inside the per-screen BottomSheetModalProvider).
 // To sit above the tab bar we HIDE the pill bar while a sheet is open
-// (lib/sheetVisibility.ts → (tabs)/_layout.tsx `hidden`), rather than a
+// (lib/sheetVisibility.ts → (tabs)/_layout.tsx `hidden`), only while the
+// sheet's SCREEN is focused: a sheet left open under a pushed screen (the
+// moment's People list behind a profile opened from it, ruled 2026-11-15)
+// must not hide the bar there, and hides it again when you come back. Rather than a
 // react-native-screens FullWindowOverlay — the overlay re-hosts the sheet in a
 // full-window native context whose height competes with the in-screen host
 // (bottom gap + collapsed dynamic panes) and traps in-sheet popups (share, row
@@ -77,6 +81,9 @@ export function Sheet({
   const { theme } = useTheme();
   const ref = useRef<BottomSheetModal>(null);
   const presented = useRef(false);
+  // Presented (open, or closing until onDismiss): the bar-hide input, with focus.
+  const [shown, setShown] = useState(false);
+  const focused = useIsFocused();
   // Whether THIS instance currently holds a +1 on the tab-bar-hide counter, so
   // we push/pop exactly once regardless of close path (button, swipe, unmount)
   // and never double-count.
@@ -96,12 +103,16 @@ export function Sheet({
   useEffect(() => {
     if (open) {
       presented.current = true;
-      markOpen();
+      setShown(true);
       ref.current?.present();
     } else if (presented.current) {
       ref.current?.dismiss();
     }
-  }, [open, markOpen]);
+  }, [open]);
+  useEffect(() => {
+    if (shown && focused) markOpen();
+    else markClosed();
+  }, [shown, focused, markOpen, markClosed]);
 
   // Unmount while open (e.g. navigating away mid-sheet) must release the
   // counter — otherwise the bar stays hidden. Idempotent via `contributing`.
@@ -131,7 +142,7 @@ export function Sheet({
       ref={ref}
       // onDismiss is the single funnel for every close path (button, backdrop,
       // swipe) — release the counter and the presented guard here.
-      onDismiss={() => { presented.current = false; markClosed(); onClose(); }}
+      onDismiss={() => { presented.current = false; setShown(false); markClosed(); onClose(); }}
       // See the prop doc — 'replace' default, 'push' for nested pickers.
       stackBehavior={stackBehavior}
       enablePanDownToClose

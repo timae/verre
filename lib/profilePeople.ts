@@ -4,8 +4,9 @@ import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { checkRates, getClientIp } from '@/lib/rateLimit'
 import { resolveProfileViewer, viewableProfiles } from '@/lib/profileVisibility'
-import { parsePathId } from '@/lib/parsePathId'
-import { blockScrub, friendsInCommon, momentsTogether } from '@/lib/peopleSql'
+import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
+import { sealPeopleCursor, openPeopleCursor, type PeopleCursorScope } from '@/lib/peopleCursor'
+import { blockScrub, friendsInCommon, momentsTogether, personSearch } from '@/lib/peopleSql'
 
 const PAGE = 30
 const SEARCH_MIN = 2
@@ -15,7 +16,14 @@ const SEARCH_MIN = 2
 // ?known=1             only people the VIEWER follows (someone else's list;
 //                      ignored on your own): the app's "Only people you know"
 // ?q=<query>           name substring (case-insensitive, min 2 chars)
-// ?cursor=<userId>     pagination (descending user id)
+// ?cursor=<sealed>     pagination (lib/peopleCursor.ts)
+//
+// Order (D3, public-user-ids § 4): NEWEST FOLLOW FIRST. Followers and Friends
+// by when the person followed the owner, Following by when the owner followed
+// them; tie-break public_id. Value-based keyset (survives an unfollow between
+// pages), written `f.created_at <= $t AND (f.created_at < $t OR u.public_id <
+// $p)` so the (following_id | follower_id, created_at) indexes serve deep pages.
+// A re-follow moves a person to the top.
 //
 // Logged-in only — anonymous viewers see profile basics + counts on /u/<id>
 // but enumerating someone's social graph requires an account. Limited per
@@ -48,25 +56,29 @@ export async function listProfilePeople(
   if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: noStore })
 
   const { id } = await params
-  const profileId = parsePathId(id)
-  if (profileId === null) {
+  const publicId = parsePublicIdParam(id)
+  if (publicId === null) {
     return NextResponse.json({ error: 'invalid id' }, { status: 400, headers: noStore })
   }
 
-  const gate = await resolveProfileViewer(profileId, viewerId)
+  // An unknown public id takes the 'gone' path (404).
+  const profileId = await userIdForPublicId(publicId)
+  const gate = profileId === null ? null : await resolveProfileViewer(profileId, viewerId)
   // 'shell' = profile exists but viewer can't see content — followers/
   // following list is content, so 404 (same shape as the doesn't-exist
   // path so a tier-denied viewer can't distinguish).
-  if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
+  if (profileId === null || !gate || gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
 
   const url = req.nextUrl
   const mutual = url.searchParams.get('mutual')
   const q = (url.searchParams.get('q') || '').trim().slice(0, 64)
   if (q && q.length < SEARCH_MIN) return NextResponse.json({ users: [], nextCursor: null }, { headers: noStore })
   const cursor = url.searchParams.get('cursor')
-  const cursorId = cursor && Number.isInteger(Number(cursor)) ? Number(cursor) : null
   const own = profileId === viewerId
   const known = !own && url.searchParams.get('known') === '1'
+  const scope: PeopleCursorScope = { viewerId, profileId, tab: direction, mutual, known, q }
+  const after = cursor ? openPeopleCursor(cursor, scope) : null
+  if (cursor && !after) return NextResponse.json({ users: [], nextCursor: null }, { headers: noStore })
 
   // For followers: rows where f.following_id = profileId; the "other" is f.follower_id.
   // For following: rows where f.follower_id  = profileId; the "other" is f.following_id.
@@ -82,11 +94,16 @@ export async function listProfilePeople(
     ? Prisma.sql`AND NOT EXISTS (SELECT 1 FROM follows fr WHERE fr.follower_id = ${reverseFollower} AND fr.following_id = ${reverseFollowing})`
     : Prisma.empty
 
-  // Substring match — escape ILIKE wildcards so a literal `%`/`_` in `q`
-  // doesn't act as a wildcard, then wrap in `%…%` for substring semantics.
-  const qEscaped = q.replace(/[\\%_]/g, '\\$&')
-  const qClause = q ? Prisma.sql`AND u.name ILIKE ${'%' + qEscaped + '%'}` : Prisma.empty
-  const cursorClause = cursorId ? Prisma.sql`AND u.id < ${cursorId}` : Prisma.empty
+  // Substring match on the name or the username, wildcards escaped
+  // (`personSearch`, the search route's own clause; `@…` = the username only,
+  // and an `@` query no username could contain matches no one).
+  const search = q ? personSearch(q) : undefined
+  const qClause = search === undefined ? Prisma.empty : search === null ? Prisma.sql`AND FALSE` : Prisma.sql`AND ${search.clause}`
+  // Exact µs: the bound is rebuilt from the integer, never through a float.
+  const atBound = after ? Prisma.sql`('epoch'::timestamptz + ${after.atUs.toString()}::bigint * interval '1 microsecond')` : null
+  const cursorClause = after
+    ? Prisma.sql`AND f.created_at <= ${atBound} AND (f.created_at < ${atBound} OR u.public_id < ${after.publicId})`
+    : Prisma.empty
 
   // Block pairs: no row with a block pair (either direction) between the
   // listed user and the profile owner OR the viewer, so the rows are
@@ -98,8 +115,9 @@ export async function listProfilePeople(
   const knownClause = Prisma.sql`AND EXISTS (SELECT 1 FROM follows fk WHERE fk.follower_id = ${viewerId} AND fk.following_id = ${otherCol})`
 
   const [rows, knownCount] = await Promise.all([
-    prisma.$queryRaw<{ id: number; name: string; xp: number; image_url: string | null }[]>`
-      SELECT u.id, u.name, u.xp, u.image_url
+    prisma.$queryRaw<{ id: number; public_id: string; name: string; username: string | null; xp: number; image_url: string | null; at_us: string }[]>`
+      SELECT u.id, u.public_id, u.name, u.username, u.xp, u.image_url,
+             (EXTRACT(EPOCH FROM f.created_at) * 1000000)::bigint::text AS at_us
       FROM follows f
       JOIN users u ON u.id = ${otherCol}
       WHERE ${fixedCol} = ${profileId}
@@ -108,11 +126,11 @@ export async function listProfilePeople(
         ${qClause}
         ${cursorClause}
         ${blockClause}
-      ORDER BY u.id DESC
+      ORDER BY f.created_at DESC, u.public_id DESC
       LIMIT ${PAGE + 1}
     `,
     // The same set as the rows' known filter, on the first page only.
-    !own && !cursorId && !q
+    !own && !cursor && !q
       ? prisma.$queryRaw<{ n: number }[]>`
           SELECT COUNT(*)::int AS n
           FROM follows f
@@ -125,7 +143,8 @@ export async function listProfilePeople(
   ])
 
   const slice = rows.slice(0, PAGE)
-  const nextCursor = rows.length > PAGE ? String(slice[slice.length - 1].id) : null
+  const last = slice[slice.length - 1]
+  const nextCursor = rows.length > PAGE ? sealPeopleCursor({ atUs: BigInt(last.at_us), publicId: last.public_id }, scope) : null
   const sliceIds = slice.map(r => r.id)
   const others = sliceIds.filter(i => i !== viewerId)
 
@@ -154,8 +173,9 @@ export async function listProfilePeople(
       users: slice.map(r => {
         const self = r.id === viewerId, sees = admitted.has(r.id), v = viewers.get(r.id)
         return {
-          id: r.id,
+          id: r.public_id,
           name: r.name,
+          username: r.username,
           xp: sees ? r.xp : null,
           imageUrl: sees ? r.image_url : null,
           isFollowing: v?.followsProfile ?? false,

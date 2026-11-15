@@ -11,12 +11,14 @@ import { prisma } from '@/lib/prisma'
 import { blockScrub } from '@/lib/peopleSql'
 import { viewableProfiles } from '@/lib/profileVisibility'
 import { resolveTilePhotos, TILE_KEYS, type TileKey } from '@/lib/profileTiles'
+import { cravingsCount } from '@/lib/profileLists'
 import type { CheckinVisibility, ProfileGateOk } from '@/lib/profileVisibility'
 
 // `pinned` (own profile only): the photo is the owner's chosen tile cover.
 export type ProfileTile = { count: number; imageUrl: string | null; pinned?: boolean }
 
-export type ProfileFace = { id: number; name: string; imageUrl: string | null }
+// `id` is the PUBLIC id (lib/publicIds.ts).
+export type ProfileFace = { id: string; name: string; imageUrl: string | null }
 
 export type ProfileHeaderExtras = {
   // Mutual follows, block-pair scrubbed like the follower/following counts
@@ -41,7 +43,8 @@ const FACES = 3
 // VISIBLE photo, from the newest FACE_POOL.
 const FACE_POOL = 12
 
-// `impressionsCount` is only read when the Impressions tile is shown.
+// `impressionsCount` is only read when the Impressions tile is shown (the
+// caller's profileLoad count: the Impressions list's total for this viewer, D7).
 export async function loadProfileHeaderExtras(
   profileId: number,
   gate: ProfileGateOk,
@@ -68,18 +71,19 @@ export async function loadProfileHeaderExtras(
     `,
     // In common (D4): the profile's friends the VIEWER follows, block-scrubbed
     // like the People lists (lib/peopleSql.ts), so `count` == the Friends
-    // tab's `knownCount`. Pick by id only: a photo-first ORDER BY on the raw
-    // column would choose by photos the gate may hide.
+    // tab's `knownCount`. Pick by public id only (random, so it says nothing
+    // about signup order): a photo-first ORDER BY on the raw column would
+    // choose by photos the gate may hide.
     inCommonViewer !== null
-      ? prisma.$queryRaw<{ id: number; name: string; image_url: string | null; total: number }[]>`
-          SELECT u.id, u.name, u.image_url, COUNT(*) OVER ()::int AS total
+      ? prisma.$queryRaw<{ id: number; public_id: string; name: string; username: string | null; image_url: string | null; total: number }[]>`
+          SELECT u.id, u.public_id, u.name, u.username, u.image_url, COUNT(*) OVER ()::int AS total
           FROM follows f1
           JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
           JOIN follows fv ON fv.follower_id = ${inCommonViewer} AND fv.following_id = f1.following_id
           JOIN users u ON u.id = f1.following_id
           WHERE f1.follower_id = ${profileId}
             AND ${blockScrub(profileId, inCommonViewer, Prisma.raw('u.id'))}
-          ORDER BY u.id DESC
+          ORDER BY u.public_id DESC
           LIMIT ${FACE_POOL}
         `
       : Promise.resolve(null),
@@ -94,7 +98,9 @@ export async function loadProfileHeaderExtras(
             AND sm.removed_state IS DISTINCT FROM 'kicked'
         `
       : Promise.resolve(null),
-    gate.sees.cravings ? prisma.bookmark.count({ where: { userId: profileId } }) : Promise.resolve(null),
+    // 🔒 D7: exactly the rows the Cravings list shows this viewer (hidden
+    // line-ups out; on someone else's also blind-for-you + no moment found).
+    gate.sees.cravings ? cravingsCount(profileId, viewerId) : Promise.resolve(null),
     // Photos only (pins + the automatic latest): lib/profileTiles.ts. The
     // counts above never depend on photo eligibility.
     resolveTilePhotos(profileId, shown),
@@ -108,7 +114,7 @@ export async function loadProfileHeaderExtras(
   let inCommon: ProfileHeaderExtras['inCommon']
   if (inCommonRows && inCommonViewer !== null) {
     const { admitted } = await viewableProfiles(inCommonViewer, inCommonRows.map(r => r.id))
-    const faces = inCommonRows.map(r => ({ id: r.id, name: r.name, imageUrl: admitted.has(r.id) ? r.image_url : null }))
+    const faces = inCommonRows.map(r => ({ id: r.public_id, name: r.name, username: r.username, imageUrl: admitted.has(r.id) ? r.image_url : null }))
     faces.sort((a, b) => Number(a.imageUrl === null) - Number(b.imageUrl === null))
     inCommon = { count: inCommonRows[0]?.total ?? 0, faces: faces.slice(0, FACES) }
   }

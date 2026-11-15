@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { checkRate, formatWait } from '@/lib/rateLimit'
+import { checkRate, checkRates, getClientIp, formatWait } from '@/lib/rateLimit'
+import { isSameOrigin } from '@/lib/csrf'
+import { redis } from '@/lib/redis'
+import { resolveUser } from '@/lib/resolveUser'
 
-const KEY = process.env.GOOGLE_PLACES_API_KEY
+// Read per request (the suite drives both upstream paths).
+const googleKey = () => process.env.GOOGLE_PLACES_API_KEY
+const QUERY_MAX = 100
 
 export interface PlaceResult {
   id: string; name: string; address: string
@@ -24,58 +29,106 @@ async function fetchJson(url: string, init: RequestInit, label: string): Promise
   return res.json()
 }
 
-// POST /api/places — public-by-design (no auth). The route is a thin
-// adapter over Google Places (when GOOGLE_PLACES_API_KEY is set) or OSM
-// Overpass+Nominatim (fallback). Both upstreams are themselves public; we
-// expose this endpoint without auth so the LocationPicker can be used by
-// anonymous users on the check-in modal. Per-IP rate-limiting protects
-// upstream quotas from abuse — Google Places billing and Nominatim's
-// 1-req/sec policy in particular.
+// POST /api/places: the location picker of the web check-in modal
+// (components/social/CheckinModal.tsx → LocationPicker), reached only signed
+// in (your feed, your own profile, your own post's edit); the app never calls
+// it. A thin adapter over Google Places (when GOOGLE_PLACES_API_KEY is set) or
+// OSM Overpass + Nominatim (the fallback).
+//
+// Signed in only (leak-fixes F1): every lookup can bill the Google key, and an
+// autocomplete fans out to up to 7 billed calls (1 autocomplete + 6 place
+// details). Limits after the 401: 30/min + 300/day per account, 120/min +
+// 1,000/day per address (free accounts multiply the per-account caps, the
+// per-address ones bound them), then an app-wide 2,000/day on the Google path
+// only, charged after the per-caller limits and the input checks pass. Over
+// it, and over Nominatim's 1 request a second for the WHOLE app (its usage
+// policy), the picker gets no results (`[]`, never a 429): the user types the
+// venue by hand. The real backstop is the Google console's daily quota
+// (docs/dev/deployment.md § GOOGLE_PLACES_API_KEY).
 //
 // body: { type: 'nearby', lat, lng } | { type: 'autocomplete', query, lat?, lng? }
 export async function POST(req: NextRequest) {
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
-  const rl = await checkRate(`rl:places:${ip}:1m`, 30, 60)
-  if (!rl.allowed) return NextResponse.json({ error: `Too many place lookups. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+  const session = await resolveUser(req)
+  if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
+  const userId = Number(session.user.id)
+  const ip = getClientIp(req)
+  const rl = await checkRates([
+    { key: `rl:places:u:${userId}:1m`, max: 30, windowSeconds: 60 },
+    { key: `rl:places:u:${userId}:1d`, max: 300, windowSeconds: 86400 },
+    { key: `rl:places:ip:${ip}:1m`, max: 120, windowSeconds: 60 },
+    { key: `rl:places:ip:${ip}:1d`, max: 1000, windowSeconds: 86400 },
+  ])
+  if (!rl.allowed) {
+    return NextResponse.json({ error: `Too many place lookups. Try again in ${formatWait(rl.retryAfter)}.`, retryAfter: rl.retryAfter }, { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } })
+  }
 
-  const body = await req.json().catch(() => ({} as Record<string, unknown>))
+  const body = await req.json().catch(() => null) as Record<string, unknown> | null
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const isNearby = body.type === 'nearby'
   const isAutocomplete = body.type === 'autocomplete'
   if (!isNearby && !isAutocomplete) return NextResponse.json({ error: 'type must be "nearby" or "autocomplete"' }, { status: 400 })
-  if (isNearby && (typeof body.lat !== 'number' || typeof body.lng !== 'number')) {
+  const coordOk = (v: unknown, max: number) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= max
+  if (isNearby && (!coordOk(body.lat, 90) || !coordOk(body.lng, 180))) {
     return NextResponse.json({ error: 'lat and lng (numbers) required for nearby search' }, { status: 400 })
   }
-  if (isAutocomplete && (typeof body.query !== 'string' || !body.query.trim())) {
-    return NextResponse.json({ error: 'query required for autocomplete' }, { status: 400 })
+  if (isAutocomplete) {
+    const q = typeof body.query === 'string' ? body.query.trim() : ''
+    if (!q) return NextResponse.json({ error: 'query required for autocomplete' }, { status: 400 })
+    if (q.length > QUERY_MAX) return NextResponse.json({ error: `query must be at most ${QUERY_MAX} characters` }, { status: 400 })
+    if ((body.lat != null && !coordOk(body.lat, 90)) || (body.lng != null && !coordOk(body.lng, 180))) {
+      return NextResponse.json({ error: 'lat and lng must be valid coordinates' }, { status: 400 })
+    }
+    body.query = q
   }
 
   // Await inside the try so async errors from the upstream calls (Overpass
   // timeouts, malformed JSON, etc.) are caught here and surface as an empty
   // result set rather than an unhandled rejection → 500.
   try {
+    const KEY = googleKey()
     if (KEY) {
+      if (!(await checkRate('rl:places:global:1d', 2000, 86400)).allowed) return NextResponse.json({ results: [] })
       return await (isNearby
-        ? googleNearby(body.lat as number, body.lng as number)
-        : googleAutocomplete(body.query as string, body.lat as number | undefined, body.lng as number | undefined))
+        ? googleNearby(KEY, body.lat as number, body.lng as number)
+        : googleAutocomplete(KEY, body.query as string, body.lat as number | undefined, body.lng as number | undefined))
     }
     // Fallback: OpenStreetMap (Overpass + Nominatim) — free, no key required
-    return await (isNearby
-      ? overpassNearby(body.lat as number, body.lng as number)
-      : nominatimSearch(body.query as string, body.lat as number | undefined, body.lng as number | undefined))
+    if (isNearby) return await overpassNearby(body.lat as number, body.lng as number)
+    if (!(await nominatimSlot())) return NextResponse.json({ results: [] })
+    return await nominatimSearch(body.query as string, body.lat as number | undefined, body.lng as number | undefined)
   } catch (err) {
     console.error('places error:', err)
     return NextResponse.json({ results: [] })
   }
 }
 
+// Nominatim's usage policy: 1 request a second for the whole application. A
+// lookup WAITS for the next free second (the picker sends one 350 ms after each
+// pause in typing, so refusing would drop a single user's own lookups), up to
+// about 1.2 s; then it degrades to no results. Fails open like the limiter.
+async function nominatimSlot(): Promise<boolean> {
+  const until = Date.now() + 1200
+  for (;;) {
+    try {
+      if (await redis.set('rl:places:nominatim:1s', '1', { NX: true, PX: 1000 })) return true
+    } catch (err) {
+      console.error('places: nominatim slot error', err)
+      return true
+    }
+    if (Date.now() >= until) return false
+    await new Promise(r => setTimeout(r, 100))
+  }
+}
+
 // ── Google Places API ─────────────────────────────────────────
 
-async function googleNearby(lat: number, lng: number) {
+async function googleNearby(KEY: string, lat: number, lng: number) {
   const data = await fetchJson('https://places.googleapis.com/v1/places:searchNearby', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Goog-Api-Key': KEY!,
+      'X-Goog-Api-Key': KEY,
       'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.addressComponents',
     },
     body: JSON.stringify({
@@ -87,10 +140,10 @@ async function googleNearby(lat: number, lng: number) {
   return NextResponse.json({ results: (data.places ?? []).map(parseGooglePlace) })
 }
 
-async function googleAutocomplete(query: string, lat?: number, lng?: number) {
+async function googleAutocomplete(KEY: string, query: string, lat?: number, lng?: number) {
   const data = await fetchJson('https://places.googleapis.com/v1/places:autocomplete', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': KEY! },
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': KEY },
     body: JSON.stringify({
       input: query,
       includedPrimaryTypes: ['bar', 'restaurant', 'wine_bar', 'liquor_store', 'cafe', 'establishment'],
@@ -102,7 +155,7 @@ async function googleAutocomplete(query: string, lat?: number, lng?: number) {
       const placeId = (s.placePrediction as Record<string, unknown>)?.placeId
       if (!placeId) return null
       const detail = await fetchJson(`https://places.googleapis.com/v1/places/${placeId}`, {
-        headers: { 'X-Goog-Api-Key': KEY!, 'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,types,addressComponents' },
+        headers: { 'X-Goog-Api-Key': KEY, 'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,types,addressComponents' },
       }, 'google place detail') as Record<string, unknown>
       return parseGooglePlace(detail)
     })
