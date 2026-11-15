@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Share, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, ScrollView, Share, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
@@ -66,7 +66,13 @@ export function InviteSheet({
   useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
 
   const label = momentName?.trim() ? momentName.trim() : 'this moment';
-  const joinUrl = `${WEB_BASE}/join/${code}`;
+  // 🔒 The code in a shareable URL is the FORMATTED (hyphenated for 8-char) form
+  // — same contract as web's `joinPath` in `lib/sessionCode.ts`, so a link
+  // copied from the app and one copied from the web read identically. Server
+  // entry points run `normalizeCode`, which strips the hyphen, so both forms
+  // resolve; the hyphenated one is what we render. Do not interpolate a raw
+  // `code` here — that is display drift, not a shortcut.
+  const joinUrl = `${WEB_BASE}/join/${formatCode(code)}`;
   const shareMessage = `Join “${label}” on Verre`;
 
   const friends = useQuery({ queryKey: ['my-friends'], queryFn: getMyFriends, enabled: open, staleTime: 30_000 });
@@ -89,9 +95,26 @@ export function InviteSheet({
     copiedTimer.current = setTimeout(() => setCopied(false), 1500);
   };
 
-  const shareInvite = async (extra?: string) => {
+  const shareInvite = async () => {
     try {
-      await Share.share({ message: extra ? `${shareMessage}\n${extra}` : shareMessage, url: joinUrl });
+      // 🔒 The link is carried DIFFERENTLY per platform, and the fork is
+      // load-bearing — do not "simplify" it to one payload.
+      //
+      // Android: RN rebuilds the payload as `{title, message}` and DROPS `url`
+      // outright (`react-native/Libraries/Share/Share.js`; its own docs list
+      // only title/message for Android, "often will include a URL"). Passing
+      // the link solely as `url` shared a bare "Join X on Verre" with NO link.
+      // So Android gets it appended to the message.
+      //
+      // iOS: `message` and `url` are forwarded as SEPARATE activity items, so
+      // appending the link to the message too would show it twice in targets
+      // that render both. iOS keeps `url` alone — that is also what drives the
+      // rich link preview.
+      await Share.share(
+        Platform.OS === 'android'
+          ? { message: `${shareMessage}\n${joinUrl}` }
+          : { message: shareMessage, url: joinUrl },
+      );
     } catch {
       // user dismissed the OS sheet — no-op
     }
