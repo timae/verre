@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import * as Clipboard from 'expo-clipboard';
 import { formatCode } from '@verre/core';
+import { usePersonPreview } from '@/components/moments/PersonPreviewSheet';
 import { FriendRow } from '@/components/ui/FriendRow';
 import { Icon } from '@/components/ui/Icon';
 import { QrCode } from '@/components/ui/QrCode';
@@ -25,6 +26,9 @@ import { radius, useTheme } from '@/theme';
 // affordance swaps the sheet to a full friends-list pane (one sheet). No invite
 // backend (Simon, milestone 5): all "Invite"/share affordances open the OS
 // share sheet; only "Joined" is truthful (block-scrubbed participant ids).
+// A browse row opens the friend's preview (2026-11-15, the moment's person
+// preview), pushed over this sheet; its Invite button stays its own target.
+// /api/me/friends drops block pairs both ways, so no row here is a guest look.
 
 export function InviteSheet({
   open,
@@ -41,6 +45,7 @@ export function InviteSheet({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const preview = usePersonPreview();
   const [pane, setPane] = useState<'invite' | 'browse'>('invite');
   // The pseudo-field opens the pane ready to type (keyboard up); the Browse
   // chip opens it for browsing, keyboard down (ruled 2026-11-12).
@@ -205,7 +210,14 @@ export function InviteSheet({
               <VText variant="label" color="inkSoft" style={{ marginBottom: 4, letterSpacing: 1.54 }}>ALL FRIENDS · {allFriends.length}</VText>
               <BottomSheetScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
                 {browseMatches.map((f, i) => (
-                  <FriendRow key={f.id} person={f} first={i === 0} joined={participantIds.has(`u:${f.id}`)} onInvite={() => shareInvite()} />
+                  <FriendRow
+                    key={f.id}
+                    person={f}
+                    first={i === 0}
+                    joined={participantIds.has(`u:${f.id}`)}
+                    onInvite={() => shareInvite()}
+                    onPress={preview?.canOpen(`u:${f.id}`, 'friends') ? () => preview.open(`u:${f.id}`, 'friends') : undefined}
+                  />
                 ))}
               </BottomSheetScrollView>
             </View>

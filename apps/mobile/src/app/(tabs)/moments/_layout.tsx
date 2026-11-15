@@ -2,10 +2,18 @@ import { Stack } from 'expo-router';
 import { SessionTabProvider, TAB_MOUNTS } from '@/lib/sessionStack';
 import { useTheme } from '@/theme';
 
+// Load-bearing since the profile sub-tree mounts here (the `<Stack.Screen>`s
+// below hoist their routes to the front, see feed/_layout.tsx): without the
+// anchor a fresh mount would cold-open the post route `[id]` with no params.
+export const unstable_settings = { anchor: 'index' };
+
 // The Moments tab is a stack: home (02s) → recents (02s·2) / session line-up
 // (02b) push within the tab, keeping the bottom nav visible. In-flow screens
 // draw the design's own .vbar (components/VBar) — the native header's
 // centered title + glass back-circle don't match the variant-B spec.
+// Since 2026-11-15 it also mounts Feed's post + profile sub-tree (one-line
+// mirrors: a person opened inside a moment, and everything reached from their
+// profile), so Back from a profile returns to the moment.
 export default function MomentsStack() {
   const { theme } = useTheme();
   // The owning tab for every screen in this stack (lib/sessionStack.ts
@@ -24,7 +32,24 @@ export default function MomentsStack() {
         // gestureResponseDistance on drag-heavy screens applies again.
         fullScreenGestureEnabled: false,
       }}
-    />
+    >
+      <Stack.Screen name="index" />
+      {/* See feed/_layout.tsx: the opened post's own stack (a contained
+          transparent modal, no native animation or back gesture: the detail
+          draws its own open and pull-down close) and the full-screen post
+          edits. The name must stay wholly dynamic (post identity). */}
+      <Stack.Screen
+        name="[id]"
+        options={{
+          presentation: 'containedTransparentModal',
+          animation: 'none',
+          gestureEnabled: false,
+          contentStyle: { backgroundColor: 'transparent' },
+        }}
+      />
+      <Stack.Screen name="edit/[id]" options={{ presentation: 'fullScreenModal' }} />
+      <Stack.Screen name="edit/details" options={{ presentation: 'fullScreenModal' }} />
+    </Stack>
     </SessionTabProvider>
   );
 }

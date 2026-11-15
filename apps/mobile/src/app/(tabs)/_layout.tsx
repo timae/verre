@@ -18,13 +18,13 @@ import { useTheme } from '@/theme';
 // pill is the design's own .tabbar-float anyway; classic JS tabs render it
 // deterministically. NativeTabs' baseline quirks (SF-symbol optical boxes)
 // went with it.
-// The opened post itself (`[id]` under Feed / You, numeric feed-item ids), a
+// The opened post itself (`[id]` under Feed / You / Moments, numeric feed-item ids), a
 // post opened as a card on its stack, and the post edit there (its sticky
 // Save / Done bars, like /feed/edit): no bottom nav. The rest of the post's
 // stack (a moment, a profile, settings) follows the normal rules below.
 // About / Attributions mirrored there too: they are designed without the pill
 // (no TAB_BAR_CLEARANCE), as at the app root.
-const OPENED_POST_PATH = /^\/(feed|you)\/\d+(\/(post|edit)\/[^/]+|\/about|\/attributions)?\/?$/;
+const OPENED_POST_PATH = /^\/(feed|you|moments)\/\d+(\/(post|edit)\/[^/]+|\/about|\/attributions)?\/?$/;
 
 export default function TabsLayout() {
   const { theme } = useTheme();
@@ -89,6 +89,7 @@ export default function TabsLayout() {
     /\/check-in(\/rate)?\/?$/.test(pathname) ||
     pathname.includes('/feed/edit') || // feed-post edit screens (sticky Save/Done bars)
     pathname.includes('/you/edit') || // the same edit screens mounted on the You stack
+    pathname.includes('/moments/edit/') || // … and on the Moments stack (never /moments/edit-…)
     // Edit Profile (sticky Discard / Save) incl. its mirrors on an opened
     // post's stack (/feed/<id>/edit-profile, /you/<id>/edit-profile), which
     // match neither OPENED_POST_PATH nor the two prefixes above.

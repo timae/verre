@@ -26,7 +26,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Optional profile pictures (round-mask cropper, EXIF/GPS stripped before upload)
 - Profile visibility tiers (public / Verre users / followers / mutual follows) with optional friends-of-friends extension, plus (in the app) who sees your check-ins (down to Only Me) and whether others see your Cravings, Moments and check-in places
 - Mute (quietly hide someone's content from your feed) and Block (full break — bidirectional invisibility outside shared sessions, render-only inside)
-- People in the app: anyone's friends, followers and following (with "only people you know"), Add Friends with your own QR code, people you tasted with, search, a profile link to share, and a scanner for Verre profile and moment codes
+- People in the app: anyone's friends, followers and following (with "only people you know"), Add Friends with your own QR code, people you tasted with, search, a profile link to share, and a scanner for Verre profile and moment codes; tapping someone inside a moment shows the same short preview (follow, or unblock someone you blocked)
 - Attributions page (`/legal/attributions` on web, You → About in the app) naming the sources and licences behind the wine catalog — a licence obligation, readable without an account
 
 Optional label scan:

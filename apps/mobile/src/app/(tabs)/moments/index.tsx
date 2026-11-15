@@ -629,7 +629,9 @@ function JoinBlock() {
             <Button title="Scan" icon="qr" iconSize={20} accessibilityLabel="Scan a QR Code" disabled={launching} onPress={() => void scan()} style={{ paddingHorizontal: 20 }} />
           </View>
         ) : (
-          <Button title="Join" loadingTitle="Joining…" variant="secondary" loading={busy} disabled={!code} onPress={join} style={{ paddingHorizontal: 20, minWidth: scanW || undefined }} />
+          // Filled like Scan as soon as the code is complete (ruled 2026-11-15);
+          // outlined and disabled while it isn't.
+          <Button title="Join" loadingTitle="Joining…" variant={code ? 'primary' : 'secondary'} loading={busy} disabled={!code} onPress={join} style={{ paddingHorizontal: 20, minWidth: scanW || undefined }} />
         )}
       </View>
       {error ? <VText variant="caption" color="critical">{error}</VText> : null}

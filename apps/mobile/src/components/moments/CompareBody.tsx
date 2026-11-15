@@ -7,6 +7,7 @@ import {
   aggregateFlavourAxes,
   consensusFromRatings,
   fillFlavourZeros,
+  formatScore,
   groupScoreAverage,
   resolveAxes,
   type ConsensusKey,
@@ -21,6 +22,7 @@ import {
 } from '@/components/moments/aromaCompareView';
 import { AromaCompareStrip } from '@/components/moments/AromaCompareStrip';
 import { AromaDetailSheet, TasteDetailSheet, type TasteDetailKind } from '@/components/moments/AromaDetailSheet';
+import { usePersonPreview } from '@/components/moments/PersonPreviewSheet';
 import { ComparisonWheel } from '@/components/scoring/ComparisonWheel';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { RadarOverlay } from '@/components/scoring/RadarOverlay';
@@ -1338,6 +1340,9 @@ function ShowAllSheet({
   const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
   const { height: windowH, fontScale } = useWindowDimensions();
+  // A row opens the person's preview (ruled 2026-11-15), pushed over this
+  // sheet; a guest look stays a plain row.
+  const preview = usePersonPreview();
   const [query, setQuery] = useState('');
   const [rowsH, setRowsH] = useState(0);
   const [dir, setDir] = useState<'high' | 'low'>('high');
@@ -1444,7 +1449,16 @@ function ShowAllSheet({
           style={{ paddingBottom: 8, ...(q && !needsScroll && rowsH > 0 ? { minHeight: rowsH } : null) }}
         >
           {rows.map((r, i) => (
-            <PersonRow key={r.id} first={i === 0} name={r.displayName}>
+            <PersonRow
+              key={r.id}
+              first={i === 0}
+              name={r.displayName}
+              onPress={preview?.canOpen(r.id) ? () => preview.open(r.id) : undefined}
+              // The row reads as ONE button: its value goes into the label.
+              accessibilityLabel={`${r.displayName}, ${view
+                ? askedAxis(r, view.k) ? `${intensityWord(r.filled[view.k] ?? 0)}, ${r.filled[view.k] ?? 0}` : 'not asked'
+                : (r.rating.score || 0) > 0 ? `${formatScore(r.rating.score)} stars` : 'no score'}`}
+            >
               {view ? (
                 askedAxis(r, view.k) ? (
                   <>

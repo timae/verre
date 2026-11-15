@@ -1,25 +1,23 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
-import { useRootNavigationState, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Pressable, View } from 'react-native';
-import { Avatar } from '@/components/ui/Avatar';
+import { Alert, Linking, Pressable, View } from 'react-native';
+import { PersonPreview, PreviewMessage, PreviewSpinner } from '@/components/people/PersonPreview';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
 import { UsernameLine } from '@/components/ui/UsernameLine';
 import { VText } from '@/components/ui/VText';
 import { ApiError, getMomentPreview, momentPreviewKey, type MomentPreview } from '@/lib/api/sessions';
-import { getProfileByUsername, profileQueryOptions } from '@/lib/api/users';
+import { getProfileByUsername } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
 import { WEB_BASE } from '@/lib/config';
-import { firstName } from '@/lib/initials';
 import { joinByCode, joinErrorText } from '@/lib/joinByCode';
 import { sessionWhen } from '@/lib/momentFormat';
-import { relate, usePersonBusy } from '@/lib/relationship';
 import { parseVerreCode, type VerreCode } from '@/lib/scanCode';
-import { feedHref, sessionHref, useSessionTab, type SessionMount } from '@/lib/sessionStack';
+import { feedHref, sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { useTheme } from '@/theme';
 
 // Scanning a Verre code (D8): the iPhone's own scanner (VisionKit through
@@ -125,20 +123,21 @@ export function useVerreScanner(active: boolean, onCode: (code: VerreCode) => vo
 }
 
 // 04·12d — what a scanned Verre code is, before anything happens: a person
-// (View Profile + Follow / Follow Back), private, blocked, your own code, an
-// unavailable one (an old integer QR included: `profile-legacy`, no
-// request), or a moment's preview (ruled 2026-11-12: cover, name, the
-// host (tappable), when, where; Join, or Open Moment when you're in it).
-// `leaveTo` closes the host sheet, then pushes (a profile, the moment).
+// (`PersonPreview`, the card a person tapped inside a moment shows too), your
+// own code, an unavailable one (an old integer QR included: `profile-legacy`,
+// no request), or a moment's preview (ruled 2026-11-12: cover, name, the host
+// (tappable), when, where; Join, or Open Moment when you're in it).
+// `leaveTo` closes the host sheet, then pushes (a profile, the moment), on
+// the caller's own stack (Moments has its own profile mount since 2026-11-15).
 export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId: string | null; leaveTo: (push: () => void) => void }) {
   const router = useRouter();
   const mount = useSessionTab();
-  const rootState = useRootNavigationState();
   const queryClient = useQueryClient();
   const sessionName = authClient.useSession().data?.user.name;
   // A shared `/@name` link is resolved to its person first (usernames § 5),
   // then everything runs on the public id like a scanned QR. Never cached by
-  // name (a name can change hands).
+  // name (a name can change hands). Its answer seeds the id's header
+  // (PersonPreview `seed`).
   const byName = result.kind === 'profile-username' ? result.username : null;
   const namedQ = useQuery({
     queryKey: ['profile-by-username', byName],
@@ -148,19 +147,6 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
   });
   const named = namedQ.data && namedQ.data.state !== 'gone' ? namedQ.data : null;
   const scannedId = result.kind === 'profile' ? result.id : named?.id ?? null;
-  const personId = scannedId != null && scannedId !== meId ? scannedId : null;
-  // The lookup's answer is the id's header, so it is asked for once: 🔒 as
-  // `initialData`, which TanStack writes only into an EMPTY entry, at the
-  // moment this query starts, with the lookup's own time. A write meanwhile (a
-  // follow or block through `relate`, another screen's read) is never
-  // overwritten by the older answer (Codex 2026-11-14: a late `setQueryData`
-  // from inside the lookup could).
-  const profileQ = useQuery({
-    ...profileQueryOptions(personId ?? ''),
-    enabled: personId != null,
-    initialData: named && named.id === personId ? named : undefined,
-    initialDataUpdatedAt: namedQ.dataUpdatedAt,
-  });
   const momentCode = result.kind === 'moment' ? result.code : null;
   const previewQ = useQuery({
     queryKey: momentPreviewKey(momentCode ?? ''),
@@ -171,7 +157,6 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
     // A missing moment, a ban or the code-guessing limit won't change on a retry.
     retry: (n, e) => !(e instanceof ApiError && e.kind !== 'http') && n < 1,
   });
-  const busy = usePersonBusy(personId);
   const [joining, setJoining] = useState(false);
   // Once you've left (a push, or the view is gone), a join that finishes later
   // must not push the moment over wherever you are (review 2026-11-12).
@@ -184,16 +169,7 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
     left.current = true;
     leaveTo(push);
   };
-  // Profiles have no Moments mount, so from Moments home they open on the Feed
-  // tab, and never on its OUTER stack above an open post (that presents over
-  // the contained post: the 2026-11-10 hang class): onto the post's own stack
-  // instead (review 2026-11-12; router-sim t15).
-  const profileMount = (): SessionMount => {
-    if (mount.tab !== 'moments') return mount;
-    const post = openFeedPost(rootState);
-    return post ? { tab: 'feed', post } : mount;
-  };
-  const openProfile = (id: string) => go(() => router.push(feedHref(profileMount(), 'profile', { id })));
+  const openProfile = (id: string) => go(() => router.push(feedHref(mount, 'profile', { id })));
   const openMoment = (code: string) => go(() => router.push(sessionHref(mount, '', { code })));
   const join = async (code: string) => {
     if (joining) return;
@@ -210,13 +186,13 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
 
   if (result.kind === 'moment') {
     const { data, error } = previewQ;
-    if (previewQ.isPending) return <Spinner />;
-    if (error instanceof ApiError && error.kind === 'not-found') return <Message text="This code isn’t available." />;
-    if (error instanceof ApiError && (error.kind === 'banned' || error.kind === 'rate-limited')) return <Message text={joinErrorText(error)} />;
+    if (previewQ.isPending) return <PreviewSpinner />;
+    if (error instanceof ApiError && error.kind === 'not-found') return <PreviewMessage text="This code isn’t available." />;
+    if (error instanceof ApiError && (error.kind === 'banned' || error.kind === 'rate-limited')) return <PreviewMessage text={joinErrorText(error)} />;
     if (error || !data) {
       return (
         <View style={{ gap: 14 }}>
-          <Message text="Couldn’t load this moment." />
+          <PreviewMessage text="Couldn’t load this moment." />
           <Button title="Try Again" variant="secondary" block onPress={() => void previewQ.refetch()} />
         </View>
       );
@@ -233,97 +209,23 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
     );
   }
   // An old QR (`/u/<digits>`, from before public ids): recognised, never looked up.
-  if (result.kind === 'profile-legacy') return <Message text="This code isn’t available." />;
+  if (result.kind === 'profile-legacy') return <PreviewMessage text="This code isn’t available." />;
   if (result.kind === 'profile-username') {
-    if (namedQ.isPending) return <Spinner />;
+    if (namedQ.isPending) return <PreviewSpinner />;
     if (namedQ.isError || !namedQ.data) {
       return (
         <View style={{ gap: 14 }}>
-          <Message text="Couldn’t load this profile." />
+          <PreviewMessage text="Couldn’t load this profile." />
           <Button title="Try Again" variant="secondary" block onPress={() => void namedQ.refetch()} />
         </View>
       );
     }
     // Renamed away, held or deleted: the link no longer names anyone.
-    if (namedQ.data.state === 'gone') return <Message text="This code isn’t available." />;
+    if (namedQ.data.state === 'gone') return <PreviewMessage text="This code isn’t available." />;
   }
-  if (scannedId === meId) return <Message text="This is your code." />;
-  if (profileQ.isPending) return <Spinner />;
-  const profile = profileQ.data;
-  if (profileQ.isError || !profile) {
-    return (
-      <View style={{ gap: 14 }}>
-        <Message text="Couldn’t load this profile." />
-        <Button title="Try Again" variant="secondary" block onPress={() => void profileQ.refetch()} />
-      </View>
-    );
-  }
-  if (profile.state === 'gone') return <Message text="This code isn’t available." />;
-  const viewBtn = <Button title="View Profile" variant="secondary" style={{ flex: 1 }} onPress={() => openProfile(profile.id)} />;
-  if (profile.state === 'blocked') {
-    return (
-      <View style={{ gap: 14 }}>
-        <Person name={profile.name} username={profile.username} imageUrl={null} line={`You blocked ${firstName(profile.name)}.`} />
-        <View style={{ flexDirection: 'row' }}>{viewBtn}</View>
-      </View>
-    );
-  }
-  const followsYou = profile.followsYou;
-  const line = profile.state === 'ok' && profile.inCommon && profile.inCommon.count > 0
-    ? `${profile.inCommon.count} ${profile.inCommon.count === 1 ? 'friend' : 'friends'} in common`
-    : null;
-  return (
-    <View style={{ gap: 14 }}>
-      <Person name={profile.name} username={profile.username} followsYou={followsYou} imageUrl={profile.state === 'ok' ? profile.imageUrl : null} line={line} />
-      {/* .yo-ffoot — View Profile + their follow button. */}
-      <View style={{ flexDirection: 'row', gap: 10 }}>
-        {viewBtn}
-        {profile.isFollowing ? (
-          <Button title={followsYou ? 'Friends' : 'Following'} icon="check" variant="secondary" style={{ flex: 1 }} disabled />
-        ) : (
-          <Button title={followsYou ? 'Follow Back' : 'Follow'} loading={busy} style={{ flex: 1 }} onPress={() => void relate(queryClient, profile.id, 'follow')} />
-        )}
-      </View>
-    </View>
-  );
-}
-
-// The post open on the Feed tab's outer stack (its top route is the `[id]`
-// modal), if any, from the root navigation state. `(tabs)` is found at any
-// depth: the container's state wraps the root layout in a `__root` route
-// (router-sim t15, the real expo-router 58 reducer).
-type NavState = { index?: number; routes?: readonly NavNode[] };
-type NavNode = { name?: string; params?: object; state?: NavState };
-function findChild(s: NavState | undefined, name: string): NavState | undefined {
-  for (const r of s?.routes ?? []) {
-    if (r.name === name) return r.state;
-    const deeper = findChild(r.state, name);
-    if (deeper) return deeper;
-  }
-  return undefined;
-}
-function openFeedPost(root: NavState | undefined): string | null {
-  const feed = findChild(root, '(tabs)')?.routes?.find((r) => r.name === 'feed')?.state;
-  const routes = feed?.routes ?? [];
-  const top = routes[feed?.index ?? routes.length - 1];
-  const id = top?.name === '[id]' ? (top.params as { id?: unknown } | undefined)?.id : undefined;
-  return typeof id === 'string' && id !== '' ? id : null;
-}
-
-function Person({ name, username, followsYou, imageUrl, line }: { name: string; username: string | null; followsYou?: boolean; imageUrl: string | null; line: string | null }) {
-  return (
-    // .yo-cam-person — the photo, the name, "@username · Follows you", one line.
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-      <Avatar imageUrl={imageUrl} name={name} size={56} initialsSize={20} />
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} numberOfLines={1}>{name}</VText>
-        {/* "Follows you" rides the username's line only: someone without a
-            username keeps the result from before (name + line). */}
-        {username ? <UsernameLine username={username} suffix={followsYou ? 'Follows you' : null} /> : null}
-        {line ? <VText variant="small" color="inkSoft">{line}</VText> : null}
-      </View>
-    </View>
-  );
+  if (scannedId == null) return <PreviewMessage text="This code isn’t available." />;
+  if (scannedId === meId) return <PreviewMessage text="This is your code." />;
+  return <PersonPreview id={scannedId} leaveTo={go} goneText="This code isn’t available." seed={named} seedAt={namedQ.dataUpdatedAt} />;
 }
 
 // A scanned moment before you join: cover, name, the host (tappable: their
@@ -369,16 +271,4 @@ function MomentCard({ preview, onHost }: { preview: MomentPreview; onHost?: () =
       ) : null}
     </View>
   );
-}
-
-function Spinner() {
-  return (
-    <View style={{ height: 96, alignItems: 'center', justifyContent: 'center' }}>
-      <ActivityIndicator />
-    </View>
-  );
-}
-
-function Message({ text }: { text: string }) {
-  return <VText variant="body" color="inkSoft" style={{ paddingVertical: 8 }}>{text}</VText>;
 }

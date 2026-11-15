@@ -7,6 +7,7 @@ import type { Href } from 'expo-router';
 // /(tabs)/feed/session/[code] and /(tabs)/you/session/[code] (thin re-export
 // route files), so entering a moment from a post stays ON that stack and back
 // returns to the post. (You mounts it because a profile lists posts too.)
+// Likewise Feed owns the post + profile sub-tree and You AND Moments mirror it.
 // An OPENED POST has its own nested stack on top of that (/(tabs)/<tab>/[id]/…,
 // the transparent modal's inner Stack): the moment, profile or post opened
 // from inside it pushes there as a real card. Every forward push INSIDE these
@@ -77,7 +78,7 @@ export function sessionHref(
 ): Href {
   const tail = `session/[code]${sub ? `/${sub}` : ''}`;
   if (mount.post != null) {
-    return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/${tail}`, params: { id: mount.post, ...params } } as Href;
+    return { pathname: `/(tabs)/${mount.tab}/[id]/${tail}`, params: { id: mount.post, ...params } } as Href;
   }
   return { pathname: `/(tabs)/${mount.tab}/${tail}`, params } as Href;
 }
@@ -91,8 +92,9 @@ export function tabHomeHref(tab: SessionTab): Href {
 
 // ── Posts + profiles (the feed sub-tree) ─────────────────────────────────────
 // The post detail, its edit screens and the profile screen are mounted under
-// Feed AND You (You's are one-line re-export mirrors), so their pushes are
-// mount-relative too. `user` on a post route names the list it came from: the
+// Feed, You AND Moments (You's and Moments' are one-line re-export mirrors;
+// Moments since 2026-11-15, for a person opened inside a moment), so their
+// pushes are mount-relative too. `user` on a post route names the list it came from: the
 // detail/edit read and write THAT list's cache (lib/api/feed.ts feedKey) —
 // absent = the network feed.
 //
@@ -116,14 +118,13 @@ export function tabHomeHref(tab: SessionTab): Href {
 //   "post is gone" exit is a plain pop back to the list (closePost).
 type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile' | 'people' | 'palate' | 'status' | ListSub;
 type ListSub = 'impressions' | 'moments' | 'cravings';
-type FeedTab = Exclude<SessionTab, 'moments'>;
 
 export function feedHref(
   mount: SessionMount,
   sub: FeedSub,
   params: { id?: string; index?: string; wine?: string; user?: string; tab?: string; known?: string; source?: 'item' } = {},
 ): Href {
-  const t = feedTab(mount.tab);
+  const t = mount.tab;
   const clean = (p: Record<string, string | undefined>) => Object.fromEntries(Object.entries(p).filter(([, v]) => v != null));
   const inPost = mount.post != null;
   let pathname: string;
@@ -199,7 +200,7 @@ export function feedHref(
 // the new moment on that stack. Never inside an opened post (the pills don't
 // show there: a reading context).
 export function checkinHref(mount: SessionMount, stage?: 'rate'): Href {
-  return `/(tabs)/${feedTab(mount.tab)}/check-in${stage ? '/rate' : ''}` as Href;
+  return `/(tabs)/${mount.tab}/check-in${stage ? '/rate' : ''}` as Href;
 }
 export function momentCreateHref(mount: SessionMount): Href {
   return (mount.tab === 'moments' ? '/(tabs)/moments/create' : `/(tabs)/${mount.tab}/moments/create`) as Href;
@@ -213,14 +214,14 @@ export function momentCreateHref(mount: SessionMount): Href {
 export type SettingsPage = 'privacy' | 'blocked' | 'muted' | 'account' | 'change-email' | 'change-password' | 'appearance';
 export function settingsHref(mount: SessionMount, page?: SettingsPage): Href {
   const tail = page ? `settings/${page}` : 'settings';
-  if (mount.post != null) return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/${tail}`, params: { id: mount.post } } as Href;
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/${tail}`, params: { id: mount.post } } as Href;
   return `/you/${tail}` as Href;
 }
 
 // Edit Profile (your own profile's ⋯ → Edit Profile, ruling D1): like
 // Settings, mirrored onto an opened post's stack when called from inside it.
 export function profileEditHref(mount: SessionMount): Href {
-  if (mount.post != null) return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/edit-profile`, params: { id: mount.post } } as Href;
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/edit-profile`, params: { id: mount.post } } as Href;
   return '/you/edit-profile' as Href;
 }
 
@@ -230,7 +231,7 @@ export function profileEditHref(mount: SessionMount): Href {
 // push there lands behind the presented post (device pass 2026-11-10: back
 // came out on You). The root routes stay the canonical ones.
 export function legalHref(mount: SessionMount, screen: 'about' | 'attributions'): Href {
-  if (mount.post != null) return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/${screen}`, params: { id: mount.post } } as Href;
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/${screen}`, params: { id: mount.post } } as Href;
   return `/${screen}` as Href;
 }
 
@@ -240,7 +241,7 @@ export function legalHref(mount: SessionMount, screen: 'about' | 'attributions')
 // always a profile pushed on THAT post's stack (`dismissTo` it pops whatever
 // sits above it there).
 export function feedListHref(mount: SessionMount, userId: string | null, meId: string | null): Href {
-  const t = feedTab(mount.tab);
+  const t = mount.tab;
   if (mount.post != null && userId != null) {
     return { pathname: `/(tabs)/${t}/[id]/u/[personId]`, params: { id: mount.post, personId: userId } } as Href;
   }
@@ -301,7 +302,3 @@ export function closeOpenedPost(navigation: NavLike, postId: string): boolean {
   return false;
 }
 
-// The feed sub-tree has no Moments mount; a stray caller there lands on Feed.
-function feedTab(tab: SessionTab): FeedTab {
-  return tab === 'you' ? 'you' : 'feed';
-}

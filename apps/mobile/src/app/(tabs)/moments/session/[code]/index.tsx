@@ -17,6 +17,7 @@ import { Thumb } from '@/components/ui/Thumb';
 import { BarTitle, VBar, useBarTitleProgress } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
+import { PersonPreviewProvider } from '@/components/moments/PersonPreviewSheet';
 import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE, heroBarHeight, usePhoneTokens } from '@/lib/layout';
 import { fuzzyIncludes } from '@/lib/search';
 import { alpha } from '@/theme/color';
@@ -643,6 +644,9 @@ export default function SessionLineup() {
     // #1884/#2035). Hosting it in this screen's flex:1 View gives the sheets a
     // sized provider + portal host.
     <BottomSheetModalProvider>
+    {/* A person tapped anywhere on this screen (People, Compare's Show All,
+        Aroma Details): one preview sheet, closed on a fatal state. */}
+    <PersonPreviewProvider code={code} meta={fatal ? null : meta} myIdentityId={myIdentityId}>
     {/* The hero variant runs the photo under the status bar, so its container
         drops the safe-area top padding (the floating bar re-applies it). */}
     {/* While a host edits in place, a tap outside the fields, the edit bar
@@ -919,6 +923,7 @@ export default function SessionLineup() {
       {/* The in-place edit's bar (rides the keyboard) + its date sheet. */}
       {edit && meta ? <MomentEditBar edit={edit} hasCover={hasCover} lineup={tab === 'lineup'} /> : null}
     </View>
+    </PersonPreviewProvider>
     </BottomSheetModalProvider>
   );
 }

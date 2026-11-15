@@ -26,3 +26,12 @@ export function blockLook(
   if (blocksOut?.includes(id)) return 'blocked-by-me';
   return 'normal';
 }
+
+// Whether a tap on this person opens their preview (the scan card, ruled
+// 2026-11-15): registered people, and people YOU blocked (the card offers
+// Unblock). 🔒 Never a 'guest' look: it covers real guests AND people who
+// blocked you, and a tap that behaved differently for the two would tell a
+// blocker from a guest (their header read is a 404). Never yourself.
+export function opensPreview(look: BlockLook): boolean {
+  return look === 'normal' || look === 'blocked-by-me';
+}

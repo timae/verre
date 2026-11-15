@@ -32,6 +32,7 @@ import { BarTitle, useBarTitleProgress, VBar } from '@/components/VBar';
 import { ClampText } from '@/components/ui/ClampText';
 import { CenteredMessage, ReconnectingBar } from '@/components/ui/ConnectionState';
 import { SessionFatalView } from '@/components/moments/SessionFatalView';
+import { PersonPreviewProvider, usePersonPreview } from '@/components/moments/PersonPreviewSheet';
 import {
   ApiError,
   deleteWine,
@@ -536,6 +537,7 @@ export default function ImpressionDetail() {
           broughtBySelf={!!wine.isMine}
           broughtByAnon={broughtByAnon}
           broughtByImageUrl={adderImageUrl}
+          broughtById={adderId}
         />
       ) : null}
       {/* THE shared rating block (score · note · structure · aromas) —
@@ -567,6 +569,8 @@ export default function ImpressionDetail() {
     // (selection + browse) need a sized provider/portal host; without one
     // the gorhom modal throws 'BottomSheetModalInternalContext cannot be null'.
     <BottomSheetModalProvider>
+    {/* Brought By opens the person's preview (ruled 2026-11-15). */}
+    <PersonPreviewProvider code={code} meta={meta} myIdentityId={myIdentityId}>
     <View style={{ flex: 1 }}>
       {/* Previous replaces with the pop animation so the slide reads as
           going back; next keeps push. gestureResponseDistance narrows the iOS
@@ -728,6 +732,7 @@ export default function ImpressionDetail() {
         ) : null}
       </AnchoredMenu>
     </View>
+    </PersonPreviewProvider>
     </BottomSheetModalProvider>
   );
 }
@@ -1044,16 +1049,22 @@ function NameBlock({
 // description + "Where to buy". Renders only the rows the wine actually carries;
 // the whole block drops away when there's no metadata AND no provenance at all.
 function AboutBlock({
-  wine, broughtBy, broughtBySelf, broughtByAnon, broughtByImageUrl,
+  wine, broughtBy, broughtBySelf, broughtByAnon, broughtByImageUrl, broughtById,
 }: {
   wine: WireWine;
   broughtBy: string | null;
   broughtBySelf: boolean;
   broughtByAnon: boolean;
   broughtByImageUrl: string | null;
+  // The adder's identity (`u:<publicId>`), null for a guest adder or with
+  // "who brought it" hidden: a tap opens their preview (ruled 2026-11-15),
+  // never for a guest look or yourself (the provider's `canOpen`).
+  broughtById: string | null;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const preview = usePersonPreview();
+  const canPreview = !!broughtById && !!preview?.canOpen(broughtById);
   // wine.country is an ISO 3166-1 alpha-2 code ("IT"); show the full English
   // name ("Italy"), falling back to the raw code for anything off-list —
   // mirrors the web WineInfoPane's `countryName(country) || country`.
@@ -1073,14 +1084,21 @@ function AboutBlock({
   return (
     <View style={{ marginTop: 2, marginBottom: 4, paddingBottom: 18, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
       {broughtBy ? (
-        <View
-          style={{
+        <Pressable
+          disabled={!canPreview}
+          onPress={() => broughtById && preview?.open(broughtById)}
+          // Not previewable: no element of its own (reads as before).
+          accessible={canPreview}
+          accessibilityRole={canPreview ? 'button' : undefined}
+          accessibilityLabel={canPreview ? `Brought by ${broughtBy}` : undefined}
+          style={({ pressed }) => ({
             flexDirection: 'row',
             alignItems: 'center',
             gap: 12,
             paddingVertical: 10,
             marginBottom: rows.length > 0 || wine.description || wine.purchaseUrl ? 6 : 0,
-          }}
+            opacity: pressed ? 0.6 : 1,
+          })}
         >
           {/* Anon adder → user glyph (never initials); a logged-in adder gets
               their profile avatar only when the server exposed it
@@ -1118,7 +1136,7 @@ function AboutBlock({
                   matters for reassignment. */}
             </View>
           </View>
-        </View>
+        </Pressable>
       ) : null}
       {rows.map(([label, value], i) => {
         const lastRow = !rowsHaveTrailer && i === rows.length - 1;

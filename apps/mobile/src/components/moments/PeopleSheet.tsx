@@ -12,6 +12,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { getMyFriends } from '@/lib/api/me';
+import { usePersonPreview } from '@/components/moments/PersonPreviewSheet';
 import { fuzzyIncludes } from '@/lib/search';
 import { usePhoneTokens } from '@/lib/layout';
 import {
@@ -59,6 +60,9 @@ export function PeopleSheet({
   const insets = useSafeAreaInsets();
   const phone = usePhoneTokens();
   const queryClient = useQueryClient();
+  // A row opens the person's preview (ruled 2026-11-15), pushed over this
+  // sheet; the host's ⋯ keeps its manage menu.
+  const preview = usePersonPreview();
 
   // Friends fetched once per open; an id Set gives O(1) "is this row a friend".
   // Gated on a logged-in viewer — an anon viewer has no friend graph and the
@@ -318,6 +322,7 @@ export function PeopleSheet({
                   (roleOf(p) !== 'cohost' || strictHost)
                 }
                 onMenu={(anchorTop, anchorBottom) => setMenu({ id: p.id, anchorTop, anchorBottom })}
+                onPress={preview?.canOpen(p.id) ? () => preview.open(p.id) : undefined}
               />
             ))}
             {isHostViewer && !filtering ? (
@@ -427,9 +432,11 @@ function buildMenuItems({
   return items;
 }
 
-// .pl-row — avatar · name + role/relationship tags · ⋯.
+// .pl-row — avatar · name + role/relationship tags · ⋯. `onPress` (avatar +
+// name, PeopleRow's anatomy: the ⋯ stays its own button beside it) opens the
+// person's preview; absent for yourself and for a guest look.
 function PersonRow({
-  p, first, role, look, isFriend, busy, canManage, onMenu,
+  p, first, role, look, isFriend, busy, canManage, onMenu, onPress,
 }: {
   p: Participant;
   first: boolean;
@@ -441,6 +448,7 @@ function PersonRow({
   busy: boolean;
   canManage: boolean;
   onMenu: (anchorTopY: number, anchorBottomY: number) => void;
+  onPress?: () => void;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -459,28 +467,38 @@ function PersonRow({
       ref={rowRef}
       style={{ flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), paddingVertical: surface.paddingY(phone.lerp(11, 15)), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}
     >
-      {/* .pl-av — host = accent; anon = user glyph. */}
-      <Avatar imageUrl={p.imageUrl} name={p.displayName} size={phone.grow(40)} anon={isAnon} host={role === 'host'} />
+      <Pressable
+        disabled={!onPress}
+        onPress={onPress}
+        // Yourself / a guest look: no element of its own (reads as before).
+        accessible={!!onPress}
+        accessibilityRole={onPress ? 'button' : undefined}
+        accessibilityLabel={onPress ? [p.displayName, rel?.label, role === 'host' ? 'Host' : role === 'cohost' ? 'Co-host' : role === 'provider' ? 'Provider' : null].filter(Boolean).join(', ') : undefined}
+        style={({ pressed }) => ({ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), opacity: pressed ? 0.6 : 1 })}
+      >
+        {/* .pl-av — host = accent; anon = user glyph. */}
+        <Avatar imageUrl={p.imageUrl} name={p.displayName} size={phone.grow(40)} anon={isAnon} host={role === 'host'} />
 
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
-          {/* Name, "·" (name color), relationship WORD (colored) as separate
-              flex siblings — the row's gap gives the spacing (nested-Text padding
-              didn't render). ROLES stay pill badges. */}
-          <VText surface="compactList" variant="body" style={{ fontFamily: isAnon ? 'InstrumentSans_400Regular' : 'InstrumentSans_600SemiBold', flexShrink: 1 }} color={isAnon ? 'inkSoft' : 'ink'} numberOfLines={1}>
-            {p.displayName}
-          </VText>
-          {rel ? (
-            <>
-              <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={isAnon ? 'inkSoft' : 'ink'}>·</VText>
-              <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={rel.color}>{rel.label}</VText>
-            </>
-          ) : null}
-          {role === 'host' ? <Tag label="Host" kind="host" /> : role === 'cohost' ? <Tag label="Co-host" kind="plain" /> : null}
-          {role === 'provider' ? <Tag label="Provider" kind="provider" /> : null}
-          {isAnon ? <Tag label="Unregistered" kind="anon" /> : null}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+            {/* Name, "·" (name color), relationship WORD (colored) as separate
+                flex siblings — the row's gap gives the spacing (nested-Text padding
+                didn't render). ROLES stay pill badges. */}
+            <VText surface="compactList" variant="body" style={{ fontFamily: isAnon ? 'InstrumentSans_400Regular' : 'InstrumentSans_600SemiBold', flexShrink: 1 }} color={isAnon ? 'inkSoft' : 'ink'} numberOfLines={1}>
+              {p.displayName}
+            </VText>
+            {rel ? (
+              <>
+                <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={isAnon ? 'inkSoft' : 'ink'}>·</VText>
+                <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={rel.color}>{rel.label}</VText>
+              </>
+            ) : null}
+            {role === 'host' ? <Tag label="Host" kind="host" /> : role === 'cohost' ? <Tag label="Co-host" kind="plain" /> : null}
+            {role === 'provider' ? <Tag label="Provider" kind="provider" /> : null}
+            {isAnon ? <Tag label="Unregistered" kind="anon" /> : null}
+          </View>
         </View>
-      </View>
+      </Pressable>
 
       {busy ? (
         <ActivityIndicator />
