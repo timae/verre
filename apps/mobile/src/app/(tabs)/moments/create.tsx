@@ -4,10 +4,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { Image, Keyboard, Pressable, ScrollView, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withDelay, withSequence, withTiming } from 'react-native-reanimated';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider, BottomSheetView } from '@gorhom/bottom-sheet';
 import { Button } from '@/components/ui/Button';
+import { Gradient } from '@/components/ui/Gradient';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
@@ -430,6 +430,7 @@ function CoverPicker({
 const SPAWN_MAX_H = 400; // safely taller than the Hide-line-up block ever is
 function SpawnedRow({ show, children }: { show: boolean; children: React.ReactNode }) {
   const { theme } = useTheme();
+  const glowEdge = theme.accentTint.replace(/[\d.]+\)\s*$/, '0)');
   // mounted stays true through the exit animation; flipped off when it ends.
   const [mounted, setMounted] = useState(show);
   const opacity = useSharedValue(show ? 1 : 0);
@@ -467,11 +468,12 @@ function SpawnedRow({ show, children }: { show: boolean; children: React.ReactNo
           transparent top-to-bottom, so it's strong through the middle of the
           row and fades out at the top/bottom edges — a hue, not a flat block. */}
       <Animated.View pointerEvents="none" style={[{ position: 'absolute', top: -44, left: -52, right: -52, bottom: -60 }, glowStyle]}>
-        <LinearGradient
-          colors={['transparent', theme.accentTint, theme.accentTint, 'transparent']}
+        {/* The edges are the tint at alpha 0, not `transparent`: iOS swaps a
+            transparent-black stop for the PREVIOUS colour at alpha 0, so the
+            first edge would fade through black and the last not. */}
+        <Gradient
+          colors={[glowEdge, theme.accentTint, theme.accentTint, glowEdge]}
           locations={[0, 0.28, 0.72, 1]}
-          start={{ x: 0.5, y: 0 }}
-          end={{ x: 0.5, y: 1 }}
           style={{ position: 'absolute', inset: 0, borderRadius: radius.lg }}
         />
       </Animated.View>

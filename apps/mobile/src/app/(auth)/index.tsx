@@ -1,11 +1,11 @@
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
 import { router, Stack, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
+import { Gradient } from '@/components/ui/Gradient';
 import { VText } from '@/components/ui/VText';
 import { usePhoneTokens, WELCOME_SCRIM, WELCOME_SCRIM_STOPS } from '@/lib/layout';
 import welcomeHero from '../../../assets/images/welcome-hero.jpg';
@@ -51,7 +51,7 @@ export default function Launch() {
         alt=""
       />
       {/* .welcome .scrim — the design's 4-stop gradient. */}
-      <LinearGradient
+      <Gradient
         pointerEvents="none"
         colors={[...WELCOME_SCRIM]}
         locations={[...WELCOME_SCRIM_STOPS]}

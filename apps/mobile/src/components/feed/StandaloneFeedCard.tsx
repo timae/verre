@@ -11,7 +11,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Avatar } from '@/components/ui/Avatar';
-import { Scrim } from '@/components/ui/Scrim';
+import { Gradient } from '@/components/ui/Gradient';
 import { FeedCardMenu } from '@/components/feed/FeedCardMenu';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
@@ -266,7 +266,7 @@ function PhotoHero({
             if (src?.width && src?.height) setRaw(rawAspect(src.width, src.height));
           }}
         />
-        <Scrim
+        <Gradient
           colors={FEED_PANEL_SCRIM}
           style={StyleSheet.absoluteFill}
           pointerEvents="none"

@@ -31,7 +31,7 @@ import Reanimated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Icon } from '@/components/ui/Icon';
-import { Scrim } from '@/components/ui/Scrim';
+import { Gradient } from '@/components/ui/Gradient';
 import { VText } from '@/components/ui/VText';
 import { ClampText } from '@/components/ui/ClampText';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
@@ -907,10 +907,10 @@ export default function FeedImpression() {
             />
           </Reanimated.View>
           <Reanimated.View style={[StyleSheet.absoluteFill, cardScrimStyle]}>
-            <Scrim colors={FEED_PANEL_SCRIM} style={StyleSheet.absoluteFill} />
+            <Gradient colors={FEED_PANEL_SCRIM} style={StyleSheet.absoluteFill} />
           </Reanimated.View>
           <Reanimated.View style={[StyleSheet.absoluteFill, heroScrimStyle]}>
-            <Scrim colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
+            <Gradient colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
           </Reanimated.View>
         </Reanimated.View>
       ) : null}
@@ -1777,7 +1777,7 @@ function DetailPage({
               every other touch falls through to the photo's gallery Pressable.
               The gradient stays pointerEvents none. */}
           <Reanimated.View pointerEvents="box-none" style={[StyleSheet.absoluteFill, heroImgStyle]}>
-            <Scrim pointerEvents="none" colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
+            <Gradient pointerEvents="none" colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
             <HeroTitle wine={wine} index={index} onNamePress={scrollToAbout} />
           </Reanimated.View>
         </View>

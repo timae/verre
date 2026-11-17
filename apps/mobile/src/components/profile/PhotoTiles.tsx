@@ -2,7 +2,7 @@ import { Image } from 'expo-image';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { LongPressable } from '@/components/ui/InPlaceEdit';
-import { Scrim } from '@/components/ui/Scrim';
+import { Gradient } from '@/components/ui/Gradient';
 import { VText } from '@/components/ui/VText';
 import { Icon } from '@/components/ui/Icon';
 import { GLASS_FILL, TILE_SCRIM, TILE_SCRIM_STOPS } from '@/lib/layout';
@@ -106,7 +106,7 @@ function Tile({ tile }: { tile: PhotoTile }) {
             transition={150}
             onError={() => setFailedUrl(tile.imageUrl)}
           />
-          <Scrim colors={TILE_SCRIM} locations={TILE_SCRIM_STOPS} style={StyleSheet.absoluteFill} />
+          <Gradient colors={TILE_SCRIM} locations={TILE_SCRIM_STOPS} style={StyleSheet.absoluteFill} />
         </>
       ) : null}
       <View style={styles.txt}>

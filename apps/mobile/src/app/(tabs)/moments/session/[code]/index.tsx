@@ -1,5 +1,4 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
@@ -12,6 +11,7 @@ const MorphPath = Reanimated.createAnimatedComponent(Path);
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Avatar } from '@/components/ui/Avatar';
+import { Gradient } from '@/components/ui/Gradient';
 import { Icon } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
 import { BarTitle, VBar, useBarTitleProgress } from '@/components/VBar';
@@ -1349,7 +1349,7 @@ function CoverHeroLineup({
           )}
           {/* Shared HERO_SCRIM (converged to the impression hero's gradient — was
               0.28/0.05/0.72, slightly lighter at the bottom). */}
-          <LinearGradient
+          <Gradient
             pointerEvents="none"
             colors={HERO_SCRIM}
             locations={[0, 0.45 * scrimEnd, scrimEnd]}

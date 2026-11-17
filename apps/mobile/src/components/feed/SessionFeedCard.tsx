@@ -21,7 +21,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Avatar } from '@/components/ui/Avatar';
-import { Scrim } from '@/components/ui/Scrim';
+import { Gradient } from '@/components/ui/Gradient';
 import { useScreenReaderEnabled } from '@/lib/screenReader';
 import { FeedCardMenu } from '@/components/feed/FeedCardMenu';
 import { Icon } from '@/components/ui/Icon';
@@ -477,7 +477,7 @@ function WineSlide({
         </View>
       )}
       {/* bottom scrim so the glass panel + text keep contrast over any photo */}
-      <Scrim
+      <Gradient
         colors={FEED_PANEL_SCRIM}
         style={StyleSheet.absoluteFill}
         pointerEvents="none"

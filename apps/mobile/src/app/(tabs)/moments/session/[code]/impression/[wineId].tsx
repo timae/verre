@@ -1,7 +1,6 @@
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import * as Haptics from 'expo-haptics';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
@@ -22,6 +21,7 @@ import { countryName, validateScore, fillFlavourZeros, gateAromaSelections, type
 import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchScroll';
 import { RatingSection } from '@/components/scoring/RatingSection';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { Gradient } from '@/components/ui/Gradient';
 import { Avatar } from '@/components/ui/Avatar';
 import { blockLook } from '@/lib/blockLook';
 import { Button } from '@/components/ui/Button';
@@ -961,7 +961,7 @@ function Hero({
       <Pressable accessibilityRole="button" accessibilityLabel="Open photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
         <Image source={{ uri: wine.imageUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
       </Pressable>
-      <LinearGradient
+      <Gradient
         pointerEvents="none"
         colors={HERO_SCRIM}
         locations={[0, 0.45 * scrimEnd, scrimEnd]}
