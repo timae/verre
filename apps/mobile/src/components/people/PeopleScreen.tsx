@@ -25,6 +25,7 @@ import { feedHref, useSessionTab } from '@/lib/sessionStack';
 import { usePushGuard } from '@/lib/usePushGuard';
 import { useTheme } from '@/theme';
 import { useMeId } from '@/lib/meId';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // People (handoff 04·11 / 04·11a / 04·11c): someone's Friends / Followers /
 // Following, yours or anyone's whose profile you may see. Pushed from the
@@ -45,6 +46,7 @@ import { useMeId } from '@/lib/meId';
 // (ruled 2026-11-12).
 
 export function PeopleScreen({ userId, initialTab, initialKnown }: { userId: string; initialTab: PeopleTab; initialKnown: boolean }) {
+  const screenReader = useScreenReaderEnabled();
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
   const router = useRouter();
@@ -170,6 +172,7 @@ export function PeopleScreen({ userId, initialTab, initialKnown }: { userId: str
           </View>
         </View>
         <FlatList
+          removeClippedSubviews={!screenReader}
           data={listBody ? [] : rows}
           keyExtractor={(r) => String(r.id)}
           keyboardDismissMode="on-drag"

@@ -17,6 +17,7 @@ import { ApiError, getMomentsPage, type MomentQuery, type MySessionRow } from '@
 import { GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
 import { recentMeta } from '@/lib/momentFormat';
 import { useTheme } from '@/theme';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // ── search + filters (Simon's 2026-07-03 spec: date, your role, host) ───────
 //
@@ -43,6 +44,7 @@ const MIN_SCROLLABLE = 12;
 // whatever its age); one deleted since the list loaded lands on the session
 // screen's "This moment isn't available" state.
 export default function AllMoments() {
+  const screenReader = useScreenReaderEnabled();
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -205,6 +207,7 @@ export default function AllMoments() {
             </View>
           ) : null}
           <FlatList
+            removeClippedSubviews={!screenReader}
             data={moments}
             keyExtractor={(r) => String(r.id)}
             contentContainerStyle={{

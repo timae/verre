@@ -17,6 +17,7 @@ import { ListNote, ListRow, MonthHeader, ScoreColumn, ToolRow, groupByMonth, typ
 import { ToolButton, type ToolAnchor } from '@/components/ui/ToolButton';
 import { useListRefresh } from './useListRefresh';
 import { useOpenListPost } from './useOpenListPost';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // Someone's (or your) Impressions (lists plan D3 / D8 / D9, design 04·6a /
 // herImps): every rating, through their post visibility, newest post first,
@@ -34,6 +35,7 @@ import { useOpenListPost } from './useOpenListPost';
 const SORTS: [ImpressionSort, string][] = [['newest', 'Newest First'], ['oldest', 'Oldest First'], ['highest', 'Highest Rated'], ['lowest', 'Lowest Rated']];
 
 export function ImpressionsPane({ userId, active: shown }: { userId: string; active: boolean }) {
+  const screenReader = useScreenReaderEnabled();
   const { theme } = useTheme();
   const { width: windowW } = useWindowDimensions();
   const meId = useMeId();
@@ -135,6 +137,7 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
   } else {
     body = (
       <FlatList
+        removeClippedSubviews={!screenReader}
         data={grouped}
         keyExtractor={(g) => g.key}
         keyboardDismissMode="on-drag"

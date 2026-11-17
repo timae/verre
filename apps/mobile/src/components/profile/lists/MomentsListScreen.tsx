@@ -21,6 +21,7 @@ import { useTheme } from '@/theme';
 import { ListNote, ListRow, MonthHeader, ToolRow, groupByMonth } from './ListParts';
 import { ToolButton } from '@/components/ui/ToolButton';
 import { useListRefresh } from './useListRefresh';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // Your Moments (design 04·9a) or someone's (lists plan D5, herMoms): grouped
 // by month (the moment's date, else when it was made), newest first, both
@@ -37,6 +38,7 @@ import { useListRefresh } from './useListRefresh';
 type Row = { key: string; code: string; name: string; when: string | null; dateFrom: string | null; address: string | null; cover: string | null; role: SessionRole };
 
 export function MomentsPane({ userId, active: shown }: { userId: string; active: boolean }) {
+  const screenReader = useScreenReaderEnabled();
   const { theme } = useTheme();
   const router = useRouter();
   const mount = useSessionTab();
@@ -99,6 +101,7 @@ export function MomentsPane({ userId, active: shown }: { userId: string; active:
   } else {
     body = (
       <FlatList
+        removeClippedSubviews={!screenReader}
         data={grouped}
         keyExtractor={(g) => g.key}
         keyboardDismissMode="on-drag"

@@ -14,6 +14,7 @@ import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { closeOpenedPost, feedHref, useSessionTab } from '@/lib/sessionStack';
 import { space, useTheme } from '@/theme';
 import { useMeId } from '@/lib/meId';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // The caller's handle on the list's scroll position, whichever layout is
 // showing (the list, or the error state's scroll view).
@@ -88,6 +89,7 @@ export function FeedList({
   const { theme } = useTheme();
   const router = useRouter();
   const tab = useSessionTab();
+  const screenReader = useScreenReaderEnabled();
   const queryClient = useQueryClient();
   // Tapping the tab while on its root scrolls the list to top (Simon) — the
   // standard tabPress→scrollToTop behavior via react-navigation's hook.
@@ -408,6 +410,15 @@ export function FeedList({
       {deadEnd}
       {conn === 'banner' && <ConnectionBanner onRetry={() => feed.refetch()} />}
       <FlatList
+        // iOS keeps every row's native views attached by default (Android
+        // detaches off-screen ones): with every loaded post attached, each
+        // navigation into or out of this screen stalled the main thread
+        // (~300 ms for 20 posts, the 0.1.5 You-tab lag); not while a screen
+        // reader is on (a detached row leaves its tree). strictMode: cells
+        // re-render only when their item, renderItem or extraData changes, not
+        // on every list render (keep renderItem's deps complete).
+        removeClippedSubviews={!screenReader}
+        strictMode
         ref={listRef}
         data={postsHidden ? [] : items}
         keyExtractor={(item) => `${item.type}:${feedItemId(item)}`}

@@ -19,6 +19,7 @@ import { ListNote, ListRow, ToolRow, type RowHandle } from './ListParts';
 import { ToolButton, type ToolAnchor } from '@/components/ui/ToolButton';
 import { useListRefresh } from './useListRefresh';
 import { useOpenListPost } from './useOpenListPost';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // Your Cravings (design 04·10) or someone's (lists plan D6): sort + search,
 // Recently Saved (default) or Highest Rated (offered only while scores show:
@@ -34,6 +35,7 @@ import { useOpenListPost } from './useOpenListPost';
 // whom" (04·10b) and the Places sorts.
 
 export function CravingsPane({ userId, active: shown }: { userId: string; active: boolean }) {
+  const screenReader = useScreenReaderEnabled();
   const { theme } = useTheme();
   const { width: windowW } = useWindowDimensions();
   const queryClient = useQueryClient();
@@ -104,6 +106,7 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
     const rowWidth = windowW - 2 * GUTTER;
     body = (
       <FlatList
+        removeClippedSubviews={!screenReader}
         data={rows}
         keyExtractor={(r) => r.wineId}
         keyboardDismissMode="on-drag"

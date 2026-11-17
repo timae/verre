@@ -1,5 +1,4 @@
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -22,6 +21,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Avatar } from '@/components/ui/Avatar';
+import { Scrim } from '@/components/ui/Scrim';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
 import { FeedCardMenu } from '@/components/feed/FeedCardMenu';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
@@ -101,6 +102,7 @@ export function SessionFeedCard({
   // points at whichever carousel renders (photo or all-photoless — both page
   // at photoW).
   const carouselRef = useRef<ScrollViewInstance>(null);
+  const screenReader = useScreenReaderEnabled();
   useEffect(
     () =>
       registerFeedLanding(session.id, (i) => {
@@ -302,6 +304,7 @@ export function SessionFeedCard({
           <GestureDetector gesture={Gesture.Exclusive(doubleTap, singleTap)}>
             <ScrollView
               ref={carouselRef}
+              removeClippedSubviews={!screenReader}
               horizontal
               pagingEnabled
               showsHorizontalScrollIndicator={false}
@@ -347,6 +350,7 @@ export function SessionFeedCard({
            because all-bare slides are naturally the same height. */
         <ScrollView
           ref={carouselRef}
+          removeClippedSubviews={!screenReader}
           horizontal
           pagingEnabled
           showsHorizontalScrollIndicator={false}
@@ -473,7 +477,7 @@ function WineSlide({
         </View>
       )}
       {/* bottom scrim so the glass panel + text keep contrast over any photo */}
-      <LinearGradient
+      <Scrim
         colors={FEED_PANEL_SCRIM}
         style={StyleSheet.absoluteFill}
         pointerEvents="none"

@@ -1,5 +1,4 @@
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, useWindowDimensions, type StyleProp, type TextInputInstance, type ViewStyle } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
@@ -7,6 +6,7 @@ import { BIO_MAX, USERNAME_MAX } from '@verre/core';
 import { BadgePill } from '@/components/moments/RoleChip';
 import { PhotoTiles } from '@/components/profile/PhotoTiles';
 import { InlineField, LongPressable, markNoShake } from '@/components/ui/InPlaceEdit';
+import { Scrim } from '@/components/ui/Scrim';
 import {
   COVER_SPEC, FONT, NAME_GAP, NAME_LIFT, NAME_RIGHT, PHOTO_BASE, PLAIN_SPEC, SHEET_RISE, anchoredIndent, coverLines, curveLeft, fitProfileName, notchBox, notchPath, plainLines,
   type NameAnchor, type NameRing,
@@ -677,7 +677,7 @@ function CoverHero({
         {failed !== uri ? (
           <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} onError={() => setFailed(uri)} />
         ) : null}
-        <LinearGradient pointerEvents="none" colors={PROFILE_SCRIM} locations={PROFILE_SCRIM_STOPS} style={StyleSheet.absoluteFill} />
+        <Scrim pointerEvents="none" colors={PROFILE_SCRIM} locations={PROFILE_SCRIM_STOPS} style={StyleSheet.absoluteFill} />
         {edit?.busy === 'cover' ? (
           <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
             <ActivityIndicator color="#fff" />

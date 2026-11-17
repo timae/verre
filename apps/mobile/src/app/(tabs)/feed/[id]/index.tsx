@@ -1,5 +1,4 @@
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -32,6 +31,7 @@ import Reanimated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Icon } from '@/components/ui/Icon';
+import { Scrim } from '@/components/ui/Scrim';
 import { VText } from '@/components/ui/VText';
 import { ClampText } from '@/components/ui/ClampText';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
@@ -907,10 +907,10 @@ export default function FeedImpression() {
             />
           </Reanimated.View>
           <Reanimated.View style={[StyleSheet.absoluteFill, cardScrimStyle]}>
-            <LinearGradient colors={FEED_PANEL_SCRIM} style={StyleSheet.absoluteFill} />
+            <Scrim colors={FEED_PANEL_SCRIM} style={StyleSheet.absoluteFill} />
           </Reanimated.View>
           <Reanimated.View style={[StyleSheet.absoluteFill, heroScrimStyle]}>
-            <LinearGradient colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
+            <Scrim colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
           </Reanimated.View>
         </Reanimated.View>
       ) : null}
@@ -1777,7 +1777,7 @@ function DetailPage({
               every other touch falls through to the photo's gallery Pressable.
               The gradient stays pointerEvents none. */}
           <Reanimated.View pointerEvents="box-none" style={[StyleSheet.absoluteFill, heroImgStyle]}>
-            <LinearGradient pointerEvents="none" colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
+            <Scrim pointerEvents="none" colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
             <HeroTitle wine={wine} index={index} onNamePress={scrollToAbout} />
           </Reanimated.View>
         </View>
