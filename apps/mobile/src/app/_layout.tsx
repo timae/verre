@@ -26,6 +26,7 @@ import { bootScreen, bootState, marksResolved, needsUsername, sessionConfirmed, 
 import { getPendingUpdate, markUpdateNavigationReady, subscribePendingUpdate } from '@/lib/updateGate';
 import { UpdateRequiredView } from './update-required';
 import { ThemeProvider, useTheme } from '@/theme';
+import { SessionTabRootProvider } from '@/lib/sessionStack';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -199,6 +200,7 @@ function RootNavigator() {
 
   return (
     <NavThemeProvider value={navTheme}>
+      <SessionTabRootProvider>
       <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
       {/* fullScreenGestureEnabled false: edge-only back gesture — see
           moments/_layout.tsx (iOS 26 flipped the RNS default to true).
@@ -254,6 +256,7 @@ function RootNavigator() {
         <Stack.Screen name="about" />
         <Stack.Screen name="attributions" />
       </Stack>
+      </SessionTabRootProvider>
     </NavThemeProvider>
   );
 }

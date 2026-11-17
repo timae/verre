@@ -570,8 +570,7 @@ reference for the app; the app's design lives here + in `docs/design/`.)
   would stop at the last attached row (React Native switches it on a mounted
   view both ways). `FeedList` also sets
   `strictMode` (cells re-render only when their item, `renderItem` or
-  `extraData` changes, so `renderItem`'s deps must stay complete; every
-  navigation re-renders the list through `useSessionTab`'s segments).
+  `extraData` changes, so `renderItem`'s deps must stay complete).
 - **Tab bar hiding**: the tabs layout computes one `hidden` boolean (pathname
   list + sheet/reveal signal + keyboard) and simply doesn't render the
   `PillTabBar` — the pill is an absolute overlay, so hide/show never resizes
@@ -796,10 +795,14 @@ sub-trees mount there too. Two rules follow:
   THAT list's cache (`feedQueryOptions(user)`), and the "post is gone" exits
   land back on that list. 🔒 `useSessionTab()` reads the owning tab from
   `SessionTabProvider`, which each tab's stack `_layout.tsx` provides — the
-  MOUNT location. The global segments are only a fallback: a component that
-  first renders in a background tab (a profile's post list mounting once its
-  header query resolves after you switched tabs) would otherwise pin the
-  focused tab and push onto the wrong stack. A new tab stack must provide it. Entry points that
+  MOUNT location. The global segments are only the ROOT fallback
+  (`SessionTabRootProvider` around the root Stack, for root pages like About):
+  read from them, a component that first renders in a background tab (a
+  profile's post list mounting once its header query resolves after you
+  switched tabs) would pin the focused tab and push onto the wrong stack. A
+  new tab stack must provide it. `useSessionTab()` itself never subscribes to
+  route state (it did, and re-rendered every caller on every navigation;
+  removed 2026-11-17). Entry points that
   genuinely live on one tab (moments home/recents/join/create) keep their
   absolute paths.
 - **A new session screen needs its mirror files** under `feed/session/`,

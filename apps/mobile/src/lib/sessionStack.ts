@@ -1,4 +1,4 @@
-import { createContext, useContext, useRef } from 'react';
+import { createContext, createElement, useContext, useRef, type ReactNode } from 'react';
 import { useSegments } from 'expo-router';
 import type { Href } from 'expo-router';
 
@@ -39,23 +39,32 @@ export const TAB_MOUNTS: Readonly<Record<SessionTab, SessionMount>> = {
 // mount once the header query resolves after you switched tabs (Codex,
 // 2026-11-09).
 //
-// Fallback (no provider — called somewhere unexpected): segments look like
-// ['(tabs)', 'feed', 'session', '[code]', ...], the tab route group is the
-// second; default 'moments' (the original home of the sub-tree). That is
-// global "current route" state, not "the stack this instance is mounted in",
-// so it is PINNED at first render: an EFFECT firing on a blurred background
-// instance would otherwise resolve the FOREGROUND tab and bounce on the
-// wrong stack. A mounted instance's owning stack can never change.
+// Fallback, for screens outside every tab stack (the root About /
+// Attributions pages): `SessionTabRootProvider` around the root Stack provides
+// the tab of the CURRENT route (segments look like ['(tabs)', 'feed',
+// 'session', '[code]', ...], the tab route group is the second; default
+// 'moments', the original home of the sub-tree). That is global "current
+// route" state, not "the stack this instance is mounted in", so every mount is
+// PINNED at first render: an EFFECT firing on a blurred background instance
+// would otherwise resolve the FOREGROUND tab and bounce on the wrong stack. A
+// mounted instance's owning stack can never change. useSessionTab() itself
+// never subscribes to route state: it did (useSegments), and every caller in
+// the app re-rendered on every navigation (2026-11-17); now a navigation
+// re-renders the root provider alone, and its consumers only when the tab
+// changes (every tab stack re-provides its own value).
 const SessionTabContext = createContext<SessionMount | null>(null);
 export const SessionTabProvider = SessionTabContext.Provider;
 
+export function SessionTabRootProvider({ children }: { children: ReactNode }) {
+  const segments = useSegments();
+  const tab: SessionTab = segments[1] === 'feed' ? 'feed' : segments[1] === 'you' ? 'you' : 'moments';
+  return createElement(SessionTabContext.Provider, { value: TAB_MOUNTS[tab] }, children);
+}
+
 export function useSessionTab(): SessionMount {
   const fromLayout = useContext(SessionTabContext);
-  const segments = useSegments();
   const pinned = useRef<SessionMount | null>(null);
-  if (pinned.current === null) {
-    pinned.current = fromLayout ?? TAB_MOUNTS[segments[1] === 'feed' ? 'feed' : segments[1] === 'you' ? 'you' : 'moments'];
-  }
+  if (pinned.current === null) pinned.current = fromLayout ?? TAB_MOUNTS.moments;
   return pinned.current;
 }
 
