@@ -170,11 +170,17 @@ orphaning is always a later UPDATE); `SET NOT NULL` lands in § 12 step 9. Backf
 `standalone` when its rating has `origin = 'standalone'`. What is left (no session and
 no rating: a deleted check-in leaves its wine row behind,
 `app/api/checkins/[id]/route.ts:659-663`, and so does an orphaned bottle nobody rated) is
-unreferenced by construction; the migration marks it `standalone` when it has no adder
-and no position (the check-in shape), else `session`. ⚠️ That guess is wrong for an
-orphaned session bottle whose adder account deletion nulled (`lib/accountDelete.ts:429`)
-and that predates positions, so the verdict list (§ 6) carries the computed origin as a
-column and a human confirms it for every such row. The orphaning
+unreferenced by construction; the migration marks it `session` when its id is a legacy
+13-digit id (`id ~ '^[0-9]{13}$'`: the old session add path minted `Date.now()` ids,
+`lib/session.ts:139` as of 2026-05-10, and standalone wines only exist since the
+2026-05-14 rewire, with hex-21 or nanoid ids) or when it has an adder or a position, else
+`standalone` (the check-in shape). Measured on prod (re-survey, 2026-11-18): without the
+id clause the guess labels 53 orphaned session bottles `standalone` (they predate both
+adder and position); with it the 67 rows resolve as 63 `session` and 4 `standalone`
+(check-ins whose rating was deleted), 124 and 26 in all. ⚠️ The guess can still be wrong
+for a post-rewire session bottle whose adder account deletion nulled
+(`lib/accountDelete.ts:429`) and that predates positions, so the verdict list (§ 6)
+carries the computed origin as a column and a human confirms it. The orphaning
 itself stays as built (the lifecycle matrix in § 8a is corrected to match).
 
 **Table name.** The occurrence keeps the physical table `wines` during this change.
@@ -651,8 +657,9 @@ table that links into the catalogue is covered the day it lands.
 
 ## 6. Migration
 
-**Production held 130 `wines` rows in July (about 140 on 2026-11-15). Roughly 35 are real
-wines.** The rest is test exhaust from before there was a test environment — `a` ×6,
+**Production held 130 `wines` rows in July and 150 at the re-survey (2026-11-18: 69 with
+ratings, 4 with cravings, 81 with neither, 93 without a moment, 0 linked). About 60 are
+real wines.** The rest is test exhaust from before there was a test environment — `a` ×6,
 `fghfg`, `Wine in S2`, `S3 reclaim test wine`, `Impression 1–4`, `Crockford verify wine`.
 
 ⚠️ **Re-survey before the list is drawn up (2026-11-18).** The July prod survey's headline
@@ -702,11 +709,13 @@ decides every link. The RFC's vintage-string cases (year / NV token / anything e
 product grain) still describe how a kept wine's vintage text resolves, and its "never
 mints" rule bounded an automatic pass, not a human mint through the ordinary path.
 
-⚠️ **"Unreferenced" is not the same as "junk".** 58 rows have no rating and no bookmark,
-but some of those are real wines whose session was deleted — `Riesling Kabinett / Robert
-Weil`, `Blaue Libelle / Andreas Tscheppe`, several Sardinian producers. The rule is "keep
-what is a real wine, drop what is test litter", and only a human reading the list can tell
-the difference.
+⚠️ **"Unreferenced" is not the same as "junk".** In July 58 rows had no rating and no
+bookmark, and some of those read as real wines whose session was deleted (`Riesling
+Kabinett / Robert Weil`, `Blaue Libelle / Andreas Tscheppe`, several Sardinian producers).
+At the re-survey (2026-11-18) it is 81 rows, those named wines each carry a standalone
+rating, and 14 of the 81 still sit on a moment's line-up (two of them real bottles; the
+other 67 are the orphans below). The rule is "keep what is a real wine, drop what is test litter", and only a
+human reading the list can tell the difference.
 
 ### 🔒 Deleting a wine cascades to its ratings and bookmarks
 
@@ -714,13 +723,17 @@ the difference.
 `onDelete: Cascade` (`prisma/schema.prisma:460`, `:509`). A `DELETE FROM wines` for
 anything classified as litter **silently takes user data with it**.
 
-This is not hypothetical in the real data. `MxR-tJewUQAo01VyP6Co5` is named `"test"` and
-has 1 rating **and** 1 bookmark. Several rows named `"a"` carry ratings. A label that looks
-synthetic is not evidence that nothing references the row.
+This is not hypothetical in the real data. In July `MxR-tJewUQAo01VyP6Co5`, named
+`"test"`, had 1 rating **and** 1 bookmark (both gone by 2026-11-18, so it is now among
+the orphans the conversion deletes); six rows named `"a"` still carry ratings. A label
+that looks synthetic is not evidence that nothing references the row, and a reference
+count is only true on the day it is read: the conversion re-reads it in its own
+transaction.
 
 **Rules for the migration, all three mandatory:**
 
-1. **Per-row disposition, written down before anything runs.** Every one of the 130 rows
+1. **Per-row disposition, written down before anything runs.** Every row (150 at the
+   2026-11-18 re-survey; rows added later get a verdict before the run)
    gets an explicit verdict — link (to a named delivered entry) / mint (a provisional
    entry) / drop / needs-a-look — reviewed as a list, not decided inside a `WHERE` clause.
 2. **A referenced row is never dropped as a side effect.** If a referenced row is genuinely
@@ -731,8 +744,13 @@ synthetic is not evidence that nothing references the row.
    lesson as the phase-1 runbook guard: **verify what the statement did, not what the
    state looks like afterwards** — state can always be satisfied by pre-existing state.
 
-Dropping the litter is optional. Leaving it unconverted and unreferenced costs nothing;
-deleting it wrongly costs user data. When in doubt, leave the row.
+🔒 **Ruled (Simon, 2026-11-18; was "dropping is optional, when in doubt leave the row"):
+the 67 orphans are deleted by the conversion**: rows with no moment, no rating and no
+craving, which no screen shows. Every other row is kept, test rows with ratings and test
+moments' line-ups included. Verified on the rehearsal (§ 6a): only `ratings` and
+`bookmarks` reference `wines`, neither references these rows, and no tile pin or other row
+shares their 3 photos (reclaimed after the commit). The conversion re-asserts all of it at
+run time, under the three rules above.
 
 ### 🔒 Existing photos must survive the migration
 
@@ -780,6 +798,12 @@ arguably one product), and `Soif Blanc / Kleines Gut / 2024` appearing twice.
 
 **Minted entries enter the review queue like any other user-minted entry.** Duplicates
 among them are resolved by merge, never by pre-collapsing — the same 🔒 rule.
+"Pre-collapsing" means an automatic match (Simon, 2026-11-18): rows a PERSON judged to be
+the same wine in the verdict list share one new entry, and a new producer is created
+once; a later merge covers what the list missed. 🔒 **A linked wine missing our year
+gets the year added** (ruled the same day; the add flow's missing-vintage branch, an NV
+vintage for an NV token), so the mint list owed to the catalogue-maintenance side carries
+vintages too.
 
 **Existing wine ids are inherited by the occurrences they become.** This costs nothing at
 migration time and keeps every stored address, deep link and cached mobile screen
@@ -801,9 +825,10 @@ differs from the chain (§ 0.1). A rehearsal on a chain-built database would pas
 exactly the differences that can fail a deploy (a `DROP INDEX` of what is a CONSTRAINT on
 prod fails the deploy; `ratings_score_check` exists only on prod). So:
 
-1. **Schema**: `.local/catalog-fill/prod-schema-2026-11-17.sql` (read-only `pg_dump
-   --schema-only` of prod) restored into a throwaway local Postgres 17, re-dumped from
-   prod by Simon on the day of the final rehearsal (prod may have moved).
+1. **Schema**: a read-only `pg_dump --schema-only --no-owner --no-privileges` of prod
+   (step 0 used `.local/catalog-model-change/prod-schema-2026-11-18.sql`, identical to the
+   2026-11-17 dump) restored into a throwaway local Postgres 17, re-dumped from prod by
+   Simon on the day of the final rehearsal (prod may have moved).
 2. **`_prisma_migrations`**: copied from prod as DATA (the 48 rows with their names,
    checksums, `finished_at` and the one rolled-back row), so `prisma migrate deploy`
    sees exactly prod's applied set and applies only the new migrations;
@@ -819,7 +844,11 @@ prod fails the deploy; `ratings_score_check` exists only on prod). So:
    placeholders or blanks too, by an enumerated column list in the export script:
    `ratings.rater_name` and `notes`, `wines.added_by_display_name`, `sessions.name` /
    `host_name` / `address` / `description` / `link`, feed text, and every check-in
-   location (`feed_items.venue_name`, `city`, `country`, `lat`, `lng`; Codex r1). Wine names stay (they are
+   location (`feed_items.venue_name`, `city`, `country`, `lat`, `lng`; Codex r1; prod's
+   `feed_items` has no free-text column). As built (step 0): moment codes and image URLs
+   are replaced by salted stand-ins that keep every join and equality (a code is a join
+   credential, and covers uploaded before 2026-11-11 carry it in their URL), and a wine's
+   own free text (description, vinification, purchase link) by placeholders. Wine names stay (they are
    the conversion's input). The load runs with triggers off on the throwaway database
    only for `users` (`ALTER TABLE users DISABLE TRIGGER USER`, then `ENABLE`):
    `users_public_id_mint` would otherwise mint a new `public_id` on every insert, and the
@@ -846,6 +875,24 @@ prod fails the deploy; `ratings_score_check` exists only on prod). So:
    `pg_constraint` on the rehearsal: every constraint present before the migration is
    present after, and the new ones are exactly the expected list. The old-release
    suites are the compatibility check, the CI gates stay the shape check.
+6. **As built (step 0, 2026-11-18)**: `.local/catalog-model-change/rehearsal-build.sh`
+   (export: `rehearsal-export.sql`). Two facts the build found: (a) the server must be
+   `postgres:17.11` on Debian with a libc `C.UTF-8` database (prod's minor and locale):
+   Alpine's musl stores the collation as `C`, and 17.12 adds a `pg_attver` option to every
+   new column; either one fails the catalogue loader's fingerprint. (b) 🔒 **A schema-only
+   dump does not round-trip prod's 16 varchar `IN (…)` CHECKs**: prod stores
+   `ANY ((ARRAY['a'::varchar, …])::text[])`, the dump prints that, and re-parsing the
+   printed text stores `ANY (ARRAY[('a'::varchar)::text, …])`, the same predicate in
+   other text. The build re-creates them from the `IN` form, then requires a re-dump of the
+   rehearsal to equal the prod dump line for line. With that, the loader's own report
+   equals prod's (build, counts, content digest, schema fingerprint, fold identity). The
+   `pg_constraint` before/after diff above therefore compares prod's own CHECK text.
+   After the step-0 review, the build (c) runs as a non-superuser role limited to 20
+   connections, like prod's (a migration that needs a superuser must fail here, not on
+   deploy), on a loopback-only port, and (d) re-exports every loaded table and requires it
+   byte for byte equal to its file. `--reset` restores the last build from a template copy.
+   The export keeps its salt inside the server session (the first run sent it as a literal,
+   so its files were re-keyed locally with a salt that never left the machine).
 
 ---
 
@@ -1621,7 +1668,13 @@ Carried from phase 2, both now due, because this change OPENS the fence:
     processes hit `53300 too many connections` once three ran at once). Prod is the same
     plan, so the same limit is assumed (Simon), and `DATABASE_CONNECTION_LIMIT` is sized so every instance during a rolling
     deploy, the migrate job and the scheduled jobs fit under it. This is a standing
-    risk today, not only a catalogue one.
+    risk today, not only a catalogue one. **Prod facts (2026-11-18):** the re-survey
+    measured the role limit (20) and `max_connections` (256) on prod; the app is one
+    replica of size `micro` (⅛ core, 256 MiB), and `DATABASE_CONNECTION_LIMIT` is NOT set
+    (Simon). So the pool is sized from `/proc/cpuinfo`, which in a container normally
+    lists the host's CPUs, not the ⅛-core quota (not measured on Deplo.io): one instance's
+    pool can exceed the limit on its own. And ⅛ core bounds the app tier itself, which the
+    probe (database only) did not measure.
 
 ### 🔒 Release conditions — deploy is blocked until all hold
 
