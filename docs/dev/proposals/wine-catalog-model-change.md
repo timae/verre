@@ -2,6 +2,9 @@
 
 **Status:** proposal, not started. Planned before any code, per the ruling in
 `wine-catalog-implementation.md` § "RULED: the per-event fields move OFF `wines`".
+**Refreshed for build 2026-11-18** (§ 0): reconciled with the shipped Redis rehydration,
+public user ids, usernames, wine-photo retention and the profile lists; the catalogue is
+loaded; new rulings recorded; build order in § 12.
 
 **What this is.** Today a `wines` row is a bottle-at-a-tasting: it carries both what the
 wine *is* (name, producer, vintage) and what happened at that event (which session, who
@@ -19,8 +22,15 @@ no-find-or-create rule and the blind-redaction rule all stand and are load-beari
 
 **Why now.** Every `wines.product_id` is NULL, and the volume of legacy rows needing
 hand-disposition is small — both only grow. The measured scope is small at the schema
-level (two FKs point at `wines`) and large at the code level (43 files touch the
-table), so the cost is dominated by code that accretes over time.
+level (two FKs point at `wines`) and large at the code level, so the cost is dominated by
+code that accretes over time. Re-measured 2026-11-18 (tracked files, migrations and docs
+excluded): **34 files touch `wines` directly** (19 runtime: 8 in `app/api`, 11 in `lib`;
+6 operator scripts; 2 schema-check scripts; 7 suites), **46 with the 12 runtime files
+that write it through helpers** (`mirrorLineup`, `ensurePromoted`, `hostLineupWrite`,
+the wipes, account deletion). July's "43" did not say what it counted. The legacy `type`
+token is read or written in about 14 server, 3 `@verre/core`, 17 web and 27 app files;
+the axis helpers have **40 call sites** (`resolveAxes` 15, `resolveAxesColoured` 9,
+`fillFlavourZeros` 12, `gateAndFillFlavors` 4).
 
 ⚠️ **CORRECTED (2026-07-26): this argument previously opened with "the catalog
 tables are empty", which the ruled execution order makes FALSE by the time this
@@ -33,6 +43,76 @@ written), which exists precisely because the catalog is populated at
 curation time. The related precondition at § 2 ("pick an existing entry" is a dead
 end against an empty catalog) is the reason the order is what it is, and is
 unaffected.
+
+---
+
+## 0. Refresh for build (2026-11-18)
+
+This section records what changed between the July review and the build. The sections
+below are edited in place to match; where a ruling stands unchanged it is not repeated.
+
+### 0.1 State at hand-off
+
+- **The catalogue is loaded on prod** (committed 2026-11-18 10:17:39 UTC, `VACUUM
+  ANALYZE` done): 49,180 producers, 257,019 products, 1,962,433 vintages, 257,019
+  product–producer links, 0 EANs, all `confirmed`. `CATALOG_PUBLIC_ENABLED` is unset and
+  no client calls catalogue search or link. The attributions surface is live (PR #93).
+- **The undo window is open** until the first real link through the new add-flow (the
+  catalogue-maintenance side keeps its redo exception until then). The first link closes
+  it: they are told, and from then on the catalogue changes only by review and merge;
+  a manual delete goes in `docs/dev/catalog-manual-deletions.md` before the SQL.
+- **The Redis rehydration shipped** (releases A, B, C): a Postgres-backed moment is
+  Postgres-authoritative for authorization and membership, Redis is its rebuildable
+  cache, every durable writer runs inside the session mutation contract
+  (`lib/sessionMutation.ts`). Much of § 8a shipped in that form; § 8a now says, item by
+  item, what is done, done differently and still owed.
+- **Also shipped since July:** public user ids (`lib/publicIds.ts`), usernames,
+  wine-photo retention D8/D9, the post gate and the one outside-the-moment rule
+  (`lib/outsideView.ts`), the profile lists (`lib/profileLists.ts`, `lib/profileTiles.ts`),
+  the proxy-wide version floor (`proxy.ts`, `lib/clientVersion.ts`). § 0.3 lists what each
+  means here.
+- **Prod's schema differs from the migration chain** in seven baseline-era tables
+  (bookmarks, ratings, session_members, sessions, user_badges, users, wines):
+  `timestamp` vs `timestamp(6)`, `now()` vs `CURRENT_TIMESTAMP`, four uniques that are
+  CONSTRAINTS on prod but INDEXES in the chain (`bookmarks_user_id_wine_id_key` among
+  them), and `ratings_score_check` exists only on prod. This change rewrites exactly
+  wines, ratings and bookmarks, so it is rehearsed on prod's schema (§ 6a), not on the
+  chain.
+
+### 0.2 Rulings taken 2026-11-18 (Simon)
+
+- **New entry fields:** producer + name + today's type picker (red / white / rosé →
+  `colour`; sparkling → `sparkling`, colour unknown; alcohol-free → `abv = 0`). The flow
+  lets someone **find the producer first** and create only the wine under it, and **add
+  a missing vintage to an existing wine**. Both are existing add-flow branches
+  (`lib/catalogAddFlow.ts` branch 3 and branch 2); they need screens, not server work.
+  This closes § 2's reopened point.
+- **One craving per wine, remembering where it was first craved** (§ 5): "you can only
+  crave once, but check in many"; the bookmark points at the catalogue wine and keeps the
+  first place as its source ("you craved it here"); "where you had it" aggregates your
+  check-ins and moments. A first craving made on a blind bottle stays out of your
+  Cravings until the reveal; an already-craved wine changes nothing.
+- **Web scope: a plain working picker** — search, pick or create, inside today's
+  modals; Saved shows each wine once with its vintages. No new web screens; the web is
+  slated for redesign.
+- **§ 10 does not block:** the app keeps its words (an *impression* in a moment, a
+  *check-in* on its own); "occurrence" is a word in code only. No photo moves onto a
+  catalogue entry in this phase, so the Terms of Service wait.
+- **Search capacity: no bigger database plan.** Find whether the ceiling is our side or
+  the queries, and optimise before opening (§ 9).
+- **Rehearsal data:** a copy of prod's real rows with people reduced to bare ids and
+  rating notes blanked (§ 6a).
+
+### 0.3 What the shipped features mean here
+
+| Feature | What it means for this change |
+|---|---|
+| **Public user ids** | Occurrence provenance stays the INTERNAL identity (`u:<int>` / `a:<uuid>` / `d:<uuid>`, CHECK `wines_added_by_identity_id_chk`); it leaves the server only through `wineToWire` + `buildAdderLookup` (public id, a miss dropped). Any new person-bearing field on an occurrence, bookmark or proposal follows `lib/publicIds.ts`, and a new user-facing route joins § 18 of `scripts/tests/you-profile-integration.mts`. |
+| **Usernames** | Nothing inside a moment carries a username, occurrence provenance included (`buildAdderLookup` selects `{id, name, publicId}`; reverse canary `usernames-section.mts`). A proposal's proposer outside a moment would follow the emission rule (`app/api/CLAUDE.md`). |
+| **Wine-photo retention D8/D9** | The predicate ("no rating and no bookmark references the wine", `app/api/session/[code]/route.ts` DELETE and `lib/accountDelete.ts`, written out twice) moves onto occurrences. It keeps its bookmark half because a bookmark keeps its source pointer (§ 5). The wine DELETE and PATCH reclaim without it, by design (the host removes the bottle). |
+| **Post gate + `lib/outsideView.ts`** | The `w` alias becomes the occurrence (`revealed_at`, `added_by_identity_id`). A craving finds its moment through its source occurrence, as today (`cravingSessionIdSql`: `w.session_id`, else that occurrence's session ratings), so the blind / hidden-line-up rule keeps working; a craving whose source is hidden for its owner is LEFT OUT of the owner's lists (§ 5; today it shows as a blind row). A craving with no source (its bottle deleted, or a later save from a product page) has no moment: shown on your own list, dropped from someone else's (today's rule, `lib/profileLists.ts:245`). |
+| **Profile lists, tiles** | Impressions join ratings → occurrence; display fields come from the catalogue entry, else the snapshot. "Both had" stays *same occurrence* (both rated that bottle at that moment); a product-level "both had" is new aggregation, not part of this change. Cravings key on the bookmark id (shared with Moment Visibility step 3, § 7). Tile pools read occurrence photos; pins are URLs and keep working. |
+| **Blind redaction** | The line-up item carries catalogue identity under ONE key that `redactWine` replaces wholesale (it spreads `...rest`, so a flat new field leaks by default). Catalogue ids, names, grapes, region and a catalogue photo are all label identity; so are the snapshot's name, producer and vintage. 🔒 `colour` and `sparkling` stay on a blind row, as `type` does today (`lib/wineRedaction.ts:53-59`): the taster needs them for the axes, and they are what a pour shows anyway. |
 
 ---
 
@@ -56,7 +136,7 @@ ratings of this wine, across every time you had it".
 🔒 **One entity covers both a bottle at a tasting and a standalone check-in** (F4). The
 first draft called this a "lineup row" and had no home for standalone check-ins, which
 today create a `Wine` row plus a `Rating` with `origin: 'standalone'`
-(`app/api/checkins/route.ts:302`). There is no check-ins table and never was.
+(`app/api/checkins/route.ts:313` creates the wine row). There is no check-ins table and never was.
 
 An occurrence is *one encounter with one bottle*. It comes in two kinds:
 
@@ -73,6 +153,35 @@ The kind is already expressible: `ratings.origin` carries `'session' | 'standalo
 today, and the same distinction moves onto the occurrence. Session-only fields are null
 for standalone occurrences — the same shape `wines` already has, where `session_id` is
 nullable.
+
+⚠️ **`session_id IS NULL` does not mean standalone, today or after** (verified
+2026-11-18): three paths ORPHAN session bottles — the session DELETE
+(`app/api/session/[code]/route.ts:268`), account deletion's empty-moment wipe
+(`lib/accountDelete.ts:520`) and the ban-with-delete of a banned adder's bottles
+(`lib/sessionWipe.ts:167`). So the occurrence gets an explicit **`origin`**
+(`'session' | 'standalone'`, CHECK), and every reader that classifies an occurrence uses
+it. 🔒 **Nullable until the contract step** (review r1 B1): the previous release keeps
+running during the rolling deploy and writes wine rows without it (`upsertLineup`, the
+check-in create, promotion), so a `NOT NULL` in the expand step fails every logged-in
+rate, save, promotion and check-in until the old instances are gone. A `BEFORE INSERT`
+trigger sets it from `session_id` when the writer leaves it NULL (correct at insert time:
+orphaning is always a later UPDATE); `SET NOT NULL` lands in § 12 step 9. Backfill:
+`session` when `session_id` is set or any rating of the row has `origin = 'session'`,
+`standalone` when its rating has `origin = 'standalone'`. What is left (no session and
+no rating: a deleted check-in leaves its wine row behind,
+`app/api/checkins/[id]/route.ts:659-663`, and so does an orphaned bottle nobody rated) is
+unreferenced by construction; the migration marks it `standalone` when it has no adder
+and no position (the check-in shape), else `session`. ⚠️ That guess is wrong for an
+orphaned session bottle whose adder account deletion nulled (`lib/accountDelete.ts:429`)
+and that predates positions, so the verdict list (§ 6) carries the computed origin as a
+column and a human confirms it for every such row. The orphaning
+itself stays as built (the lifecycle matrix in § 8a is corrected to match).
+
+**Table name.** The occurrence keeps the physical table `wines` during this change.
+Renaming it breaks the previous release for the length of the rolling deploy (its every
+statement names `wines`) and touches the prod-drifted constraints for no gain; the Prisma
+model may be called `Occurrence` with `@@map("wines")`. A rename, if wanted, is its own
+later migration.
 
 🔒 **Each check-in is its own occurrence** (Simon's ruling, F4). Drinking the same wine in
 January and again in June produces two occurrences, each with its own photo and purchase
@@ -104,16 +213,19 @@ occurrence is the unit, not the catalog link.
 | Field on `wines` today | Destination | Why |
 |---|---|---|
 | `name`, `producer`, `vintage` | Catalog entry **+ snapshot on the occurrence** | Identity lives in the catalog; the occurrence keeps a display snapshot so an unlinked or purged row still renders (§ 5a) |
+| *(new)* `colour`, `sparkling` | **Snapshot on the occurrence** (+ catalog entry) | Closes § 9's snapshot gap: an unlinked or purged occurrence keeps its Bubbles axis and its colour mark. Copied from the entry at link time; legacy rows derived from `style` in the migration (`spark` → sparkling, `red`/`white`/`rose` → colour, `nonalc` → neither) |
 | `grape` | Catalog entry | What the wine is |
-| `category`, `style` | Catalog entry | Same |
-| `region`, `country`, `description`, `vinification` | Catalog entry | Same |
+| `category`, `style` | Catalog entry | Same. `style` stays on the row until the contract migration (§ 12 step 9) as the legacy source of the snapshot |
+| *(new)* `origin` | Occurrence | `session` / `standalone`; `session_id IS NULL` is ambiguous (orphaning, above) |
+| `region` | Catalog entry (`wine_products.region`) | Same. The occurrence keeps its stored value as history |
+| `country` (of origin), `description`, `vinification` | **New catalogue columns on `wine_products`** (Simon, 2026-11-18: the catalogue had no place for them; `producers.country` is the company's home, never the wine's origin) | A contract change, announced to the catalogue-maintenance side before the push (§ 9 condition 3a). The occurrence keeps its stored values as history; nothing is dropped in step 9 |
 | `session_id` | Occurrence | Per-event; null for standalone |
 | `added_by_identity_id`, `added_by_display_name` | Occurrence | Who brought this bottle, this time |
 | `revealed_at` | Occurrence | Per-tasting blind state |
 | `image_url` | Occurrence + rating + catalog | Three layers, see § 4 |
 | `purchase_url` | Occurrence | Per-event — covers standalone too |
 | `product_id`, `vintage_id` | Occurrence | The link *is* the row's purpose |
-| *(position)* | Occurrence | New — has no durable home today |
+| *(position)* | Occurrence | ✅ Shipped with the rehydration (`wines.position`, renormalized on every mirror) |
 
 **Purchase link stays per-event** (Simon's ruling). A Swiss shop is not a property of a
 wine; it is where *this person* bought *this bottle*. The catalog reserves the field but
@@ -143,15 +255,45 @@ distinct wines silently and irreversibly.
 orange one" is a valid entry. As a permanent catalog row it is unfindable and unmergeable.
 Three required fields is a keystroke of friction, not a barrier.
 
-⚠️ **Reopened (2026-11-09): "type" predates the colour / sparkling / style split.** A
-catalog product now carries `colour` (nullable), `sparkling` and `style` (dessert /
-fortified / NULL) instead of one type token (`catalog-colour-sparkling.md`). What a user
-must supply when minting is decided when this phase is built. Imported entries are valid
-with colour NULL, sparkling false and style NULL either way.
+✅ **RULED (Simon, 2026-11-18), closing the 2026-11-09 reopening** ("type" predated the
+colour / sparkling / style split, `catalog-colour-sparkling.md`): a new entry needs
+**producer + name + today's type picker**. Behind the picker: red / white / rosé set
+`colour`; sparkling sets `sparkling = true` with colour unknown; alcohol-free sets
+`abv = 0` with colour unknown. A sparkling rosé or an alcohol-free red cannot be said
+in the picker; the entry is still valid and a curator or a delivery fills the rest.
+Imported entries stay valid with colour NULL, sparkling false and style NULL.
+**The flow offers the two partial creations first**: find the producer and create only
+the wine under it (add-flow branch 3), and add a missing vintage to an existing wine
+(branch 2). Both exist server-side (`lib/catalogAddFlow.ts`); only branch 4 mints a
+producer.
 
-⚠️ **The anon restriction has a precondition.** "Pick an existing entry" is a dead end
-against an empty catalog. The restriction is therefore switched on when the first catalog
-fill has happened — not when this model change ships. See § 7.
+✅ **The anon restriction's precondition is met** ("pick an existing entry" was a dead
+end against an empty catalog): the fill is loaded, so the restriction is on from the
+first deploy of this change.
+
+🔒 **Guests search from inside the moment (Simon, 2026-11-18; review r1 B2).** Picking
+needs a search, and `GET /api/catalog/search` answers 401 to anyone not signed in
+(`app/api/catalog/search/route.ts:26`, on purpose: no open enumeration channel). Without
+more, a guest who hosts or brings bottles could add none. So a **moment-scoped search**:
+under `/api/session/<code>/…`, behind the entrance gate (`openSessionFor`, so a wrong
+code pays the wrong-code budget like every moment route), for a caller who may add
+bottles to THAT moment (host, cohost, provider: the same test as the wine POST),
+budgeted per user when signed in (`rl:catalog-search`, shared with the global route so
+the two don't stack) and **per IP when a guest** (guest identities are re-minted per
+join, the `catalogLinkRateKey` reasoning): starting value 60 a minute per address (one
+venue's guests share an address, but only hosts and bringers search), set against step
+1's numbers and recorded in `app/api/rate-limits.md`. Same query, same response shape as the global
+search, no status or adder fields. Effect, accepted: anyone who creates a guest moment
+can search the catalogue (it is open by ruling; this only widens who may search it, at a
+bounded rate). Guests still never create an entry.
+
+🔒 **Picking an existing vintage needs a read path** (Codex r1): product search returns no
+vintages (`lib/catalogSearch.ts`), and the only way to get a vintage id today is the
+add-flow's branch 2, a signed-in POST that may create one. So both search routes (the
+global one and the moment-scoped one) answer a vintage lookup for a chosen product: ids
+and years (NV included), nothing else, same gate, same budget, same generic denials.
+Selecting an existing vintage then needs no create request; ADDING a missing vintage is
+branch 2 and stays registered-only.
 
 🔒 **This precondition is WHY the execution order is fill-first, and it is the reason a
 reorder was rejected.** Running the model change against a genuinely empty catalog would
@@ -317,16 +459,120 @@ Today a bookmark points at a bottle-at-a-tasting, so saving the same Barolo at t
 tastings produces two bookmarks, and `@@unique([userId, wineId])` does not dedupe them
 because the wine ids differ. The wine row is also deliberately orphaned rather than
 deleted when its session goes, purely to keep the bookmark resolving. Pointing at the
-catalog removes the need for that orphaning entirely.
+catalog removes that reason for orphaning (the orphaning itself stays, § 1: it keeps the
+ratings' grouping).
 
 **Context is derived, not stored** (Simon's ruling). Opening a saved wine shows your
 ratings of it — which tells you when and where you had it, and stays correct if you drink
-it again. Nothing extra to store. A saved wine you have never rated shows no context,
-which is right, because there is none.
+it again. Nothing extra to store beyond where it was first craved (below). A saved wine
+you have never rated shows no context, which is right, because there is none.
 
 `app/api/me/bookmarks/route.ts` already resolves session context via ratings rather than
 `wines.session_id`, and its header comment names this as the future direction. That part
 is already built.
+
+🔒 **A craving is one per wine and remembers where it was first craved (Simon,
+2026-11-18).** "You can only crave once, but check in many": one bookmark per
+`(user, product, vintage)`, the ruling above, unchanged. It points at a catalogue wine
+(only legacy unconverted and purged rows have none, § 5a); **"you craved it here"** is the place it was first craved (a bottle in a moment, a
+check-in, someone else's post: all occurrences), kept as the bookmark's source
+(`wine_id`, nullable from now on). **"Where you had it"** is never stored: it aggregates
+your check-ins and moments of that wine (your ratings, § 5 above). On any later moment,
+bottle or post of that wine you see that you already crave it (a per-viewer `craved`
+flag in the line-up view and the feed, computed wine-level).
+
+🔒 **Blind, in Simon's words**: "If the first time craving happens on a blind wine, we
+hide it in the cravings list unless revealed. If it is already in the cravings list,
+nothing changes in the cravings list except that the aggregate of where you had this does
+not show it yet." Made exact, with the rules that keep it from hinting what a blind bottle
+is:
+
+- **Hidden while its source is hidden for you.** A craving whose source is hidden for its
+  owner by the outside-the-moment rule (`outsideViewSql`: redacted OR hidden line-up;
+  `lib/outsideView.ts`) is left out of Cravings, Saved, their counts, badges and every
+  wine-level `craved` flag, for the owner, and for any viewer of the owner's list (the
+  viewer term stays, `lib/profileLists.ts`). It shows once its source is revealed for
+  the owner (a reveal, or the moment over by its record dates). "Where you had it"
+  applies the same rule to the blind bottle itself.
+- 🔒 **On a bottle hidden for you, the crave button is neutral** (the one addition to
+  Simon's description, needed because "you already crave it" on "Wine N" names the
+  wine): it always offers Crave, and the answer is the same whether a new craving was
+  stored (hidden) or the wine was already craved (nothing changes). No un-crave there
+  until the reveal. Decided by the live rule (`lib/sessionState.ts`, the one that
+  redacts the bottle on the moment screen), under the contract's locks, before any other
+  refusal ("not in the catalogue yet" included), so no answer depends on the hidden
+  bottle's link.
+- **A craving from a place you can see re-points a craving whose source is still hidden
+  for you**: if you crave wine P on a visible bottle or post while your craving of P
+  is sourced from a still-hidden bottle, the craving's source moves to the visible place
+  and it shows. 🔒 A re-point is a DELETE + INSERT in one transaction (new id,
+  `saved_at = now()`, a fresh snapshot, the new source and its `source_session_id`): Cravings sort and page on `saved_at` and the id
+  (`lib/profileLists.ts`) and Saved shows `saved_at`, so a moved row keeping its old date
+  would sit where the blind craving was made and say the hidden bottle was P (review r7).
+  Answer, count, position, date and id then match a fresh craving of P exactly.
+- **Deleting a bottle** keeps the cravings first made there, losing "you craved it here"
+  AND their stored moment (both pointers cleared together, Codex r2: a moment pointer
+  without its bottle would read `revealed_at` as NULL and hide a craving that was
+  visible); EXCEPT a craving whose source is still hidden for its owner (`outsideViewSql`),
+  which goes with the bottle (with no source left, nothing could keep its label hidden).
+  🔒 **Mechanism (Codex r1): the source FK KEEPS `ON DELETE CASCADE`.** The new wine
+  DELETE first detaches (`wine_id = NULL`) the cravings sourced from that bottle that
+  are visible to their owner, in the same transaction, then deletes; the hidden ones
+  cascade. The deploy job runs migrations BEFORE the previous release stops serving
+  (`.deploio.yaml`), so a `SET NULL` FK would leave an old instance's wine DELETE
+  stranding hidden cravings as source-less (visible) rows; with the FK unchanged the old
+  code keeps today's behaviour and the new code adds only the detach.
+- 🔒 **A craving keeps its MOMENT itself** (`bookmarks.source_session_id`, written with the
+  source, backfilled at migration from the bottle's session, else its ratings' session;
+  Codex r1). `cravingSessionIdSql` reads it first. A bottle that is orphaned (ban with
+  delete, reconciliation) or loses its last rating (a rating reset, a kick wipe) then
+  changes nothing: the outside rule still finds the moment and the bottle's
+  `revealed_at`, and a still-blind moment keeps the craving hidden until it is revealed
+  or over. No pre-orphaning cleanup is needed (it replaces review r7/r8's rule).
+  Residual, named: a legacy bookmark whose bottle is ALREADY orphaned with no rating left
+  backfills no moment and shows, as it does today.
+- **Re-linking a bottle** (an identity edit, § 3): a craving sourced from it whose source
+  is still hidden for its owner (`outsideViewSql`) follows the bottle to the new wine (or disappears into an
+  existing craving of that wine, which shows nothing new while it is hidden); a visible
+  craving stays on its wine and loses "you craved it here" and its stored moment
+  together.
+- **Collisions** (the purge's vintage-null, the conversion's merges, a re-link into an
+  existing craving): keep the visible row, else the earlier `saved_at`.
+- **Badges** count visible cravings only (the raw `bookmark.count` at
+  `lib/badgeService.ts:115` changes); a hidden one counts after its reveal. No crave path
+  awards badges or XP in its own answer (today only the rate POST calls
+  `checkAndAwardBadges`); keep it that way, or the answer becomes the oracle.
+- **`craved` is never emitted on a row redacted for the viewer**, by whichever rule
+  redacts that surface: the live rule in the moment, the outside rule in the feed and on
+  profiles (a feed "Wine N" must not light up because the viewer craves P). Craving from
+  someone else's POST goes through the post gate (`viewerCanSeePosts`) and the outside
+  rule for the caller, the same neutral answer when the post's bottle is redacted for
+  them.
+- **The old by-wine routes go**: `DELETE /api/session/[code]/wines/[wineId]/bookmark`
+  (`deleteMany` by wine id, no participant check) and `DELETE /api/me/bookmarks/[wineId]`
+  would be an un-crave on a hidden bottle; removal is by bookmark id only, and refused
+  (the neutral answer) while the craving's source is hidden for the caller.
+- **Residuals, named** (review r7): (1) *live-hidden, outside-visible*: the live rule has
+  no "moment over by dates" term (`lib/sessionState.ts`), the outside rule does
+  (`lib/outsideView.ts`); in a moment that is over but unrevealed, the neutral crave stores
+  a craving that shows at once, labelled. No new leak (the outside rule already shows
+  that label), but the button stays neutral there. (2) *Lost blind craves*: with P already
+  craved visibly, craving "Wine N" (= P) stores nothing; if the host then re-links N to
+  Q, the user does not crave Q after the reveal. (3) A visible craving disappears from
+  the list if its source's moment is later switched to blind or to a hidden line-up;
+  craving the wine anywhere visible re-points it. (4) The cohost case below.
+- **Residual (4), the cohost**: a cohost sees labels in the moment (the live rule bypasses cohosts)
+  but the outside rule bypasses only the strict host and the adder, so a cohost's
+  craving made in an unrevealed blind moment stays out of their Cravings until that
+  moment's reveal, and its button on that bottle shows the wine-level state the outside
+  rule allows. Inconvenient, not a leak.
+
+This replaces, before any code, the held-save design that review rounds two to six
+refined (`held_for_reveal`, per-bottle rows, convert-on-conflict): Simon's model keeps the
+database's one-per-wine unique and needs no marker, no conversion and no collision rule
+beyond "keep the visible row". The kept `bookmarks_user_id_wine_id_key` (one per user per
+source) is implied by it and is dropped in § 12 step 9 with `DROP CONSTRAINT IF EXISTS`
+and `DROP INDEX IF EXISTS` (a CONSTRAINT on prod, an INDEX in the chain).
 
 ---
 
@@ -352,7 +598,7 @@ a rating or a bookmark.** Concretely, extending the existing purge transaction:
   purged. The occurrence survives as an unlinked historical record.
 - **Bookmark collision** — nulling `vintage_id` can collide with an existing product-grain
   bookmark for the same user under the `NULLS NOT DISTINCT` constraint. The purge must
-  merge the pair (keep the earlier `saved_at`), not fail.
+  merge the pair, not fail, keeping the visible row, else the earlier `saved_at` (§ 5).
 
 This makes the **historical snapshot on the occurrence load-bearing.** An occurrence keeps
 its own `name` / `producer` / `vintage` strings — not as denormalised catalog data, but so
@@ -388,13 +634,55 @@ achieve renderability without retaining the purged identity.
 The `NoAction`/`Restrict` FKs stay as the backstop: a purge that forgets a reference class
 fails and rolls back rather than half-applying.
 
+🔒 **Every FK this change adds INTO the catalogue is `NO ACTION`, never `CASCADE`**
+(agreed with the catalogue-maintenance side, 2026-11-18; same as `wines` today,
+`prisma/schema.prisma` `Wine.product` / `Wine.vintage`). Per FK: `bookmarks.product_id →
+wine_products.id` NO ACTION; `bookmarks (vintage_id, product_id) → wine_vintages (id,
+product_id)` NO ACTION (the composite form `wines` uses, so a vintage of another product
+is unrepresentable) plus the `(vintage_id IS NULL OR product_id IS NOT NULL)` CHECK; the
+occurrence keeps `wines_product_id_fkey` and `wines_vintage_id_product_id_fkey` as they
+are. A **CI pin** reads `pg_constraint` on a migrated database and fails unless every FK
+whose target is one of the five catalogue tables is `NO ACTION`, the one exception being
+the catalogue-internal `product_producers.product_id` (`CASCADE` by ruling,
+`prisma/CLAUDE.md`). It lists FKs from the catalog, not from a fixed list, so a future
+table that links into the catalogue is covered the day it lands.
+
 ---
 
 ## 6. Migration
 
-**Production holds 130 `wines` rows. Roughly 35 are real wines.** The rest is test exhaust
-from before there was a test environment — `a` ×6, `fghfg`, `Wine in S2`, `S3 reclaim test
-wine`, `Impression 1–4`, `Crockford verify wine`.
+**Production held 130 `wines` rows in July (about 140 on 2026-11-15). Roughly 35 are real
+wines.** The rest is test exhaust from before there was a test environment — `a` ×6,
+`fghfg`, `Wine in S2`, `S3 reclaim test wine`, `Impression 1–4`, `Crockford verify wine`.
+
+⚠️ **Re-survey before the list is drawn up (2026-11-18).** The July prod survey's headline
+"unreferenced = 0" is WRONG: its predicate compared LEFT JOIN counts with `= 0`, and a
+NULL never equals 0, so no row was ever counted (the per-row counts, which used
+`coalesce`, are right and list about 55 rows with neither rating nor bookmark). The
+re-survey fixes the predicate, adds the rows since July, and, now that the catalogue is
+loaded, proposes **link candidates** per kept row (the add-flow's own KNN order, top 5
+products and producers). Read-only; Simon runs it on prod from his Mac.
+
+🔒 **The conversion is an operator step, not migration SQL.** The migration (§ 12 step 2)
+is generic: columns, backfills that follow from the rows' own data (`origin`, the
+snapshot's colour / sparkling, bookmark snapshots). The per-row verdicts name prod rows
+and prod catalogue ids, so they live in a reviewed verdict file outside the repo and are
+applied after the deploy by a guarded script: one transaction, every statement's
+`ROW_COUNT` asserted against the list, links written to the occurrence AND to the
+bookmarks sourced from it, mints through `lib/catalogWrite.ts` only. Until it runs,
+legacy rows are valid unlinked occurrences and their bookmarks render from their
+snapshot. ⚠️ **The first link it writes closes the undo window** (§ 0.1): the
+catalogue-maintenance side is told before it runs.
+
+Two lists are owed to the catalogue-maintenance side from the conversion (July rulings,
+re-checked 2026-11-18, not written in until now):
+- **The mint list**: every entry minted during the conversion, entity type + id. They
+  record it as minted on our side, which protects it from re-minting; nothing on our side
+  knows an entry's origin, so the list is load-bearing.
+- **The flagged-link list**: a kept row whose delivered entry disagrees with our string
+  (an accent, a name) is linked as is or flagged; flagged rows go to them as a plain list,
+  not as change proposals (that table is phase 3). The occurrence's snapshot keeps our
+  string either way. A LONG list is itself a finding (systematic disagreement).
 
 **This is a hand-curated conversion, not an algorithm.** At this volume every row can be
 read by a human, which is both cheaper and more accurate than any matching rule. It also
@@ -464,8 +752,8 @@ Two homes exist in production, and both carry over:
 the S3 key stays valid and no bytes are copied or re-uploaded.
 
 ⚠️ **Correction — standalone check-ins do NOT use `wines.image_url`.** A previous revision
-claimed they did. `app/api/checkins/route.ts:294` deliberately leaves it null and stores
-the user's photo in `rating_images` (`:358`), with a comment giving the reason: a
+claimed they did. `app/api/checkins/route.ts` deliberately leaves it null (`:323`, the
+reason at `:309`) and stores the user's photo in `rating_images` (`:372`), with a comment giving the reason: a
 cascade-delete of the rating would otherwise leave a dangling S3 pointer on a surviving
 bookmarked wine. So a check-in photo is already in the layer this proposal wants it in, and
 needs no migration at all.
@@ -495,15 +783,77 @@ among them are resolved by merge, never by pre-collapsing — the same 🔒 rule
 
 **Existing wine ids are inherited by the occurrences they become.** This costs nothing at
 migration time and keeps every stored address, deep link and cached mobile screen
-resolving. Worth doing regardless of the app situation below.
+resolving. Worth doing regardless of the app situation below. With the table kept (§ 1)
+it is literal: the row IS the occurrence, `ratings.wine_id` and the Redis rating keys
+`s:{C}:r:{identity}:{wineId}` need no rewrite.
+
+**Existing bookmarks** keep `wine_id` as their source (§ 5), take `product_id` /
+`vintage_id` from that wine's link (NULL for every row today) and a snapshot from it.
+The conversion then links them with their wine. Two bookmarks of one user whose wines
+link to the same entry collide under the new uniqueness: the conversion merges them as
+the purge does (§ 5a: keep the visible row, else the earlier `saved_at`), and says so in
+its count.
+
+### 6a. Rehearsal on prod's schema
+
+The migration rewrites wines, ratings and bookmarks: three of the seven tables where prod
+differs from the chain (§ 0.1). A rehearsal on a chain-built database would pass on
+exactly the differences that can fail a deploy (a `DROP INDEX` of what is a CONSTRAINT on
+prod fails the deploy; `ratings_score_check` exists only on prod). So:
+
+1. **Schema**: `.local/catalog-fill/prod-schema-2026-11-17.sql` (read-only `pg_dump
+   --schema-only` of prod) restored into a throwaway local Postgres 17, re-dumped from
+   prod by Simon on the day of the final rehearsal (prod may have moved).
+2. **`_prisma_migrations`**: copied from prod as DATA (the 48 rows with their names,
+   checksums, `finished_at` and the one rolled-back row), so `prisma migrate deploy`
+   sees exactly prod's applied set and applies only the new migrations;
+   `scripts/check-migration-checksums.mjs` then passes against the repo.
+3. **Catalogue**: the data-only handover dump (`.local/handover/`, the build that
+   loaded prod) restored into the five tables, then `VACUUM ANALYZE`.
+4. **Rows (ruled 2026-11-18)**: a copy of prod's sessions, wines, ratings,
+   rating_images, bookmarks, feed_items, session_members and session_bans, exported by
+   Simon with a script that reduces people to bare ids and blanks rating notes. `users`
+   rows keep `id` and `public_id`; `name` and `email` are `NOT NULL` on prod, so they get
+   placeholders (`user-<id>`, `user-<id>@example.invalid`), every other personal column
+   NULL or its default. The other places a person's name, words or whereabouts sit get
+   placeholders or blanks too, by an enumerated column list in the export script:
+   `ratings.rater_name` and `notes`, `wines.added_by_display_name`, `sessions.name` /
+   `host_name` / `address` / `description` / `link`, feed text, and every check-in
+   location (`feed_items.venue_name`, `city`, `country`, `lat`, `lng`; Codex r1). Wine names stay (they are
+   the conversion's input). The load runs with triggers off on the throwaway database
+   only for `users` (`ALTER TABLE users DISABLE TRIGGER USER`, then `ENABLE`):
+   `users_public_id_mint` would otherwise mint a new `public_id` on every insert, and the
+   username hold triggers would fire. Not `session_replication_role = replica`: that also
+   switches off foreign keys and the catalogue's constraint triggers, so dangling rows
+   would load silently and the suites would run on states prod cannot hold (review r3).
+   After the load, anti-join checks confirm every FK target exists, and every sequence is
+   `setval`ed to its table's max id. ⚠️ The reference rows come from migrations, not from a
+   schema-only dump: `categories` and `category_styles` are exported with the rows (or
+   re-inserted from their migrations) BEFORE the wines and the catalogue load, whose FKs
+   need them (review r4). 🔒 This order is authoritative over the numbering above:
+   reference rows, `users`, the catalogue (item 3; its `added_by` / `curated_by`
+   reference users), then the rest of item 4 (review r5, r6). Deleted after the rehearsal.
+5. **Pass criteria**: `migrate deploy` exits 0; the deploy-time backfills match the counts
+   the re-survey predicts; **the PREVIOUS release's suites pass on the expanded database**
+   (the rolling-deploy test: old code against the new schema); the backfills re-run after
+   that pass and change only what the old code wrote meanwhile (they are idempotent, and
+   on release day they re-run once the old instances are gone: an old writer leaves
+   `sparkling = false` on a `spark` row and a bookmark with no snapshot); the conversion
+   script's dry run and real run match the verdict list; the FK pin passes; the new
+   suites pass against it. 🔒 The chain-built CHECK snapshot gates are NOT run against
+   the rehearsal (prod carries `ratings_score_check`, which the chain does not, and the
+   gate rejects any extra CHECK; Codex r1). Instead an explicit before/after diff of
+   `pg_constraint` on the rehearsal: every constraint present before the migration is
+   present after, and the new ones are exactly the expected list. The old-release
+   suites are the compatibility check, the CI gates stay the shape check.
 
 ---
 
 ## 7. Sequencing
 
 ```
-attributions page ✅ → first catalog fill → model change → review queue
-     (SHIPPED PR #93)      ← NEXT
+attributions page ✅ → first catalog fill ✅ → model change → review queue
+     (SHIPPED PR #93)      (prod 2026-11-18)     ← NEXT
 ```
 
 - **Attributions page** — ✅ **SHIPPED (PR #93, 2026-07-27).** A config-driven page in web and
@@ -511,8 +861,9 @@ attributions page ✅ → first catalog fill → model change → review queue
   data without it is a breach. ⚠️ Standing rule, not a one-time tick: a source ADDED to the
   corpus later must have its entry shipped before its data does.
   Hard gate on the fill. Corpus-level, never per-record.
-- **First catalog fill** — loading real wine data into the empty tables. Ends with
-  `VACUUM ANALYZE` on the catalog tables as an explicit runbook step, not an afterthought.
+- **First catalog fill** — ✅ **DONE on prod, committed 2026-11-18 10:17:39 UTC**, then
+  `VACUUM ANALYZE` (§ 0.1). The one direct load; every later delivery goes through the
+  phase-4 import path, and none comes before it exists.
 - **Model change** — this document.
 - **Review queue** — the curator screens (phase 3).
 
@@ -526,6 +877,14 @@ dozen wines is real cost for no benefit.
 *record* unreviewed entries from day one, even before anyone can act on them. Otherwise
 there is no way to tell afterwards which entries were never reviewed.
 
+⚠️ **`status = 'provisional'` alone is not that record** (2026-11-18): a delivery into a
+user-created entry may move it to `confirmed` (ruled 2026-11-12), and then nothing says
+that no curator ever looked at it; `lib/catalogWrite.ts` writes no audit row at creation.
+So every user mint also writes a **review item** (entity type + id, reason `user-mint`,
+created at; resolved at / by stay empty until phase 3) in the same transaction, from
+`lib/catalogWrite.ts`. It is its own table, not a column on the five catalogue tables,
+so it does not change the shared contract.
+
 **Why the fill must precede the model change:** once anonymous users can only pick existing
 entries, an empty catalog means they cannot add anything at all. If the fill slips, ship
 the model change with the anon restriction switched off — it is a flag, not a redesign,
@@ -535,18 +894,93 @@ and it decouples this work from the data timeline.
 
 TestFlight has shipped; roughly five testers, using the app mainly during tastings.
 
-`lib/clientVersion.ts` is built and live: the app sends `X-Verre-Client:
-<platform>/<version>/<update>`, the server compares against `NATIVE_MIN_VERSION_IOS` /
-`NATIVE_MIN_VERSION_ANDROID` and returns **426 with a store link**. It is
-environment-variable driven, so the floor is raised without a deploy.
-
-Two caveats:
-- It is currently wired only to `app/api/auth/native/*`. That is a good chokepoint — a
-  stale app hits auth on launch — but **confirm it fires for an already-signed-in app that
-  does not re-authenticate**, before relying on it.
+✅ **The version floor is proxy-wide (shipped with public user ids; re-verified
+2026-11-18).** The app sends `X-Verre-Client: <platform>/<version>/<update>`;
+`proxy.ts` runs `clientVersionGate` on **every `/api/*` call**, so an already-signed-in
+app polling a moment gets the 426 without re-authenticating, and `apiFetch`
+(`apps/mobile/src/lib/apiFetch.ts:39`) sends it to the update screen. The native-auth
+wrapper keeps it as a belt. The July caveat ("wired only to `auth/native/*`") is closed.
+- 🔒 **The floor is in CODE**: `CODE_FLOOR_IOS` (`lib/clientVersion.ts:22`, `0.1.5`
+  today); the effective floor is `max(NATIVE_MIN_VERSION_IOS, CODE_FLOOR_IOS)`. An env
+  var loads at boot, so setting it after the deploy would be a second rolling release;
+  the floor is raised in code, in the same change as the breaking wire change. Android
+  has no code floor (env only).
+- The floor compares the NATIVE version; an over-the-air JS update does not lift a
+  binary over it. This release needs a new native build anyway (Moment Visibility's
+  universal link needs associated domains).
+- **The web twin**: `WEB_WIRE_GENERATION` (`2`) sent as `X-Verre-Web`; `proxy.ts`
+  bounces a SIGNED-IN moment call without it (an old tab reloads through `/join/<code>`).
+  It covers `/api/session/<code>/*` only. ⚠️ **A guest tab open across the deploy is not
+  bounced** (review r1 M3; `proxy.ts:52`: a guest has no decoded token, and bouncing with
+  `X-Vr-Auth: invalid` would make the old `sessionFetch` drop its guest token). It would
+  post adds with no id and no link and read line-ups without `type`. So the server
+  answers a moment WRITE that lacks the new generation and the app header with one
+  `409` and NO `X-Vr-Auth`, so the guest token survives (not 403 or 429, which the old
+  tab maps to a permission or rate message). ⚠️ The old tab does not show the server's
+  text: its add modal shows a fixed "Could not save wine", its rating "Save failed (N).
+  Try again." (`components/wine/AddWineModal.tsx`, `WineModal.tsx:488-493`). Residual,
+  accepted: an old guest tab fails its writes with that generic error until it reloads;
+  its reads keep working. The `REMOVED_PATH` exemption (`proxy.ts:33`: leave and
+  removed-state) stays, or an old removed tab's "Delete my ratings" would be refused. The
+  test harness's hard-coded `X-Verre-Web: 2` (`.local/test-env/scripts/_lib.sh`) moves
+  with the bump. And the converse during the rollout: a NEW signed-in tab reaching an OLD
+  instance is bounced once (the old proxy accepts only `2`) and reloads: residual. An old
+  signed-in tab's `/api/checkins` post (outside `MOMENT_PATH`) fails the new validation
+  (no link) with a plain 400: named residual. ⚠️ An old `/me/saved` tab open across the deploy
+  still calls `/api/me/bookmarks` with the old join; accepted residual, on the condition
+  that it can only read wrong until reloaded: the new `/api/me/bookmarks/[id]` DELETE takes
+  a bookmark id parsed strictly (`lib/parsePathId.ts`), so the old tab's wine-id DELETE is
+  a 400/404, never a deletion of something else. Bump the generation in this change.
 - The header is self-reported. Fine for helping honest clients update; not a defence.
+- **Consequence for the colour / sparkling split (§ 9):** no shipped build reaches the
+  new server, so nothing needs a derived legacy `type` on the wire or legacy writes.
+  What still carries the old shape is DATA: Redis line-ups cached before the deploy
+  (anonymous moments have no record to rebuild from) are read tolerantly.
 
 Plan: raise the floor when this ships, inherit the wine ids anyway, and tell the testers.
+
+#### 🔒 One forced update, shared with Moment Visibility (Simon, 2026-11-15)
+
+The rest of Moment Visibility (steps 1a, 1b, 2, 3, go-live) ships under the SAME floor
+raise as this cutover. What the shared release must hold (Moment Visibility itself is
+planned in its own proposal):
+
+- **The floor rises in the deploy that carries MV step 1a**, not at MV's flag flip: 1a is
+  live without its flag (blind rows of the feed and of Impressions lose their wine id,
+  every feed row gains `ratingId`), and an old build matching by wine id opens the wrong
+  blind row. This cutover is breaking from its first deploy too. One deploy, one floor.
+- **The app build both need** carries: this change's line-up, check-in, bookmark and
+  craving shapes; MV step 2's switches, reading a 404 from `GET …/visibility` as
+  "feature off" (the flag flips later); Cravings keyed on the **bookmark id** (MV step 3
+  re-keys Cravings on it, this change moves bookmarks off the wine: one new row shape for
+  both, never two cutovers); no wine id, catalogue id or catalogue photo on a blind row.
+- **Shared schema surfaces**: both migrations touch `sessions` and
+  `prisma/session-record-checks.json`; MV 1a's scrub test fails on any non-NULL column of
+  a tombstoned session, so `sessions.lineup_revision` (§ 8a) is nullable and joins both
+  delete scrubs. Migration timestamps are ordered at rebase. ⚠️ MV's proposal carries a
+  `sessions.look_rev` bumped on line-up writes; its step-1 plan dropped it (T2) and brings
+  it back only if MV 1b's measurement asks for a cache. If it returns, the line-up events
+  bump ONE counter (this change's `lineup_revision`) and `look_rev` covers only what the
+  line-up revision does not (settings, wipes); decide there, never two counters for the
+  same event.
+- **Order on release day**: the TestFlight build is uploaded and processed beforehand but
+  not yet given to testers → the expand migrations (MV 1a's and this change's) →
+  `scripts/rehydration-precheck.mts` on prod, read by Simon (every record-only row, § 8a)
+  → the server and web code with `CODE_FLOOR_IOS` raised, in a quiet window (no moment in
+  use) → **every serving instance verified on the cutover build** (a build id the server
+  reports; Codex r1: an old instance accepts a newer app and would serve it old shapes,
+  `lib/clientVersion.ts`, `proxy.ts:50`) → the build released to testers (the
+  gap is minutes; old builds see the update screen meanwhile) → the warm-up
+  reconciliation (§ 8a.0) → the conversion (§ 6) → MV's go-live runbook and flag, later.
+  The version number is Simon's call.
+- 🔒 **The fence opens WITH the code** (review r1): every new bottle must link, and while
+  search is staff-only nobody else could add one. So the new code's gate defaults to
+  OPEN (`lib/catalogGate.ts`), and `CATALOG_PUBLIC_ENABLED=false` becomes the kill switch
+  (it closes search, the moment-scoped search and entry creation again; adding then
+  needs staff). No env change, no second restart on the day, no gap. Its conditions (the
+  interleaved test, the search-capacity decision) are met BEFORE the day. Setting the env
+  before the push instead would open the OLD code's catalogue endpoints for the length of
+  the rollout. `docs/dev/deployment.md` § `CATALOG_PUBLIC_ENABLED` changes with it.
 
 #### ⚠️ Inheriting ids is not sufficient on its own (F6)
 
@@ -565,7 +999,7 @@ consume bookmark **responses** as occurrence ids in three distinct ways, all ver
 | Call site | What it does with `wine_id` |
 |---|---|
 | `components/session/SessionShell.tsx:241` | Builds a `Set` of ids to drive the in-session save toggle |
-| `apps/mobile/src/lib/api/sessions.ts:294` | Same set, for the native save toggle |
+| `apps/mobile/src/lib/api/sessions.ts:299` | Same set, for the native save toggle |
 | `components/me/SavedClient.tsx:59` | Cross-matches bookmarks to ratings — its comment calls `wine_id` "the only stable join key" |
 
 Returning catalog ids to those clients silently breaks all three: the toggle shows the
@@ -580,17 +1014,17 @@ path is not worth it for five testers who use the app mainly at tastings.
 ### 🔒 RELEASE GATE: the version gate must cover the changed endpoints
 
 **This is a deployment condition, not owed work.** Hard cutover means a stale signed-in
-client reaching the changed bookmark endpoints is *known* to misbehave. The version gate is
-currently wired only to `app/api/auth/native/*` (`lib/clientVersion.ts`), so a client that
-never re-authenticates never sees the 426.
+client reaching the changed bookmark endpoints is *known* to misbehave. ✅ The July
+concern (gate wired only to `app/api/auth/native/*`) is closed: `proxy.ts` gates every
+`/api/*` call (above).
 
 **Ship condition — both must hold before deploy:**
 
-1. Verified that the gate fires for an **already-signed-in** native client, **or** the gate
-   extended to every endpoint this phase changes (bookmarks POST/GET/DELETE, session wines,
-   ratings).
-2. `NATIVE_MIN_VERSION_IOS` / `NATIVE_MIN_VERSION_ANDROID` raised past the last
-   pre-cutover build.
+1. ✅ The gate fires for an **already-signed-in** native client (proxy-wide). Re-checked on
+   the release build.
+2. **`CODE_FLOOR_IOS` raised in code** past the last pre-cutover build, in the cutover's
+   own deploy (an env var is read at boot; § 7 above). Android: `NATIVE_MIN_VERSION_ANDROID`
+   if an Android build is in anyone's hands.
 
 If neither holds, the cutover ships a silent break rather than an update prompt. That is
 the failure this gate exists to prevent.
@@ -606,6 +1040,71 @@ Not the schema. Three places.
 
 ### 8a. Persistence: one state machine, two modes
 
+#### 8a.0 What the rehydration already shipped (verified against the code, 2026-11-18)
+
+The rehydration (`redis-rehydration.md` § 3, § 5.4) built most of this section's
+machinery for the whole session; it left the occurrence CONTENT authority to this change
+by name (§ 3 "best-effort mirrors": *"Turning a content-mirror failure into a request
+failure with Redis compensation is the authoritative-write matrix of the model change"*).
+
+| Item in this section | Status | Where / what remains |
+|---|---|---|
+| Two modes, keyed on the `sessions` row, never the caller | ✅ shipped | `ctx.row` inside the contract, read `FOR UPDATE` under the advisory lock |
+| Promotion under a lock, one-way, idempotent, copying ids, order, reveal state | ✅ shipped differently | `ensurePromoted` (`lib/session.ts`) inside the mutation contract (fenced Redis lock → `pg_advisory_xact_lock(hashtext('session:'‖code))` → live row `FOR UPDATE`); also copies bans and a member row per registered `u:`, sets lifespan `unlimited`, checks `session_tombstones`. Still owed: initialise `lineup_revision` in that transaction |
+| Occurrence mutations take the same lock | ✅ shipped | every wine writer runs in `withSessionMutation` |
+| Durable `position` | ✅ shipped | `wines.position`, renormalized on every mirror (rehydration § 4.6) |
+| Reveal state always has a row in a promoted session | ✅ shipped | the mirror runs on every list write, keyed on `ctx.row` (the reveal-route bug below is closed) |
+| `pgUpsertWine` in silent `catch {}` | ✅ gone | replaced by `mirrorLineup` inside the contract; what remains best-effort is `bestEffortMirror` (a SAVEPOINT) around the line-up content |
+| NX to create, XX + `KEEPTTL` to update, lint-gated | ✅ shipped | the revision REPLACE below is an `XX` write |
+| **Content authority in a promoted session** | ❌ owed | today Redis-first: `mutateWines` decides on the cached array, `mirrorLineup` projects it under a SAVEPOINT, a failed mirror is logged and repaired by the next list write. This change makes it record-first (matrices below) |
+| **Revision-stamped line-up** | ❌ owed, and `s:{C}:gen` does not replace it | below |
+| Client-generated ids, insert-only create, 409 | ❌ owed | ids are minted server-side (`lib/session.ts:519` `existing?.id \|\| nanoid()`) |
+| Redis-only sessions cannot attach images | ❌ owed | `addWineToSession` uploads for any caller today |
+| Image attach separate from create, S3→DB reclaim | ❌ owed | today the image rides the POST / PATCH body; `reclaimIfUnreferenced` covers a refused add |
+| Reorder / reveal / hide-all decided by Postgres in a promoted session | ❌ owed | today `mutateWines` + mirror, as everything else |
+
+🔒 **A cutover hazard this creates** (not in the July text): before the deploy, a promoted
+session's cache can hold a bottle whose best-effort mirror failed, so the record lacks
+it. The first record-first read would rebuild the line-up FROM THE RECORD and drop that
+bottle and orphan its Redis ratings. Closed by construction, not by deploy order
+(review r1 B3): a NULL `lineup_revision` means "not reconciled", and the first contract
+that meets it with a present cache copies cache → record strictly before anything may
+replace the cache (§ 8a, Staleness). The operator script (extending
+`scripts/rehydration-precheck.mts`, which compares cache and record already) does the
+same ahead of time, dry run first, listing both directions (cache-only bottles to
+copy, record-only rows to orphan).
+
+🔒 **The cached line-up keeps the OLD fields until the contract step** (review r2): during
+the rollout, an old instance's rate or bookmark POST mirrors the WHOLE cached array into
+the record strictly (`rate/route.ts:157`, `bookmark/route.ts:53`), writing `style` from
+`w.type` and the links from flat `w.productId` / `w.vintageId` (`lib/session.ts:745-761`).
+If the new projection dropped those fields, one rating on an old instance would null
+every link of that moment, and record-first would make it permanent. So `WineMeta` in
+Redis stays a superset: flat `productId`, `vintageId`, `grape`, `region`, `country`,
+`description`, `vinification` and a legacy `type`, written correctly by the new code;
+the catalogue `entry` exists only on the WIRE, built in `wineToWire`. 🔒 **`style` until
+step 9** (review r3, r4): for a row with a stored `style`, the Redis `type` IS that
+`style` verbatim (so `nonalc` survives, which no colour / sparkling pair can express),
+derived from colour / sparkling (§ 9's last colour bullet) only when `style` is NULL.
+**Every new-code statement that sets `colour` or `sparkling` sets `style` in the same
+statement**: the derived token when the stored one no longer derives to the new pair,
+else unchanged (so an unrelated edit of a `nonalc` row keeps `nonalc`). A LINK always
+rewrites `style` from the entry's pair, so a linked `nonalc` row loses the token even when
+the pair is unchanged; the alcohol-free fact is the entry's `abv` (product or vintage,
+both carry it), which the runtime link reads and never writes. So the `nonalc` badge
+count (`lib/badgeService.ts:101`, `w.style = 'nonalc'` today) becomes "the token OR the
+effective entry's `abv = 0`", or linking would regress `type_nonalc_5` / `type_all`.
+The conversion's links set the snapshot from the entry, as every link does. An old instance's PATCH replaces
+the object wholesale and mirrors `style` but not `colour` / `sparkling`
+(`[wineId]/route.ts:167`, `addWineToSession` returns only the old keys); so the backfill
+re-run, and only it ("style wins" is never a read rule), re-derives the pair where
+`derive(colour, sparkling) IS DISTINCT FROM style` — one direction only, with `''` ≡
+NULL and `nonalc` or any unknown token ≡ "neither" — never the reverse, which would erase
+the colour of a sparkling rosé (`spark` derives no colour). A test
+drives the OLD `upsertLineup` over a new-projected blob and asserts no row changes, with
+a fixture that fills all fifteen compared columns, a `nonalc` row, and a `revealed_at`
+written by new code (millisecond vs microsecond precision).
+
 🔒 **A session is in exactly one of two persistence modes, and the transition is one-way.**
 
 ```
@@ -614,9 +1113,11 @@ Not the schema. Three places.
 ```
 
 🔒 **Mode is determined by whether the Postgres `sessions` row exists — never by the
-current caller's login state.** This is the rule that makes the transition race-free, and
-it is a change from today, where `wines/route.ts:142` decides persistence from
-`if (session?.user)` on each request.
+current caller's login state.** This is the rule that makes the transition race-free.
+✅ Shipped by the rehydration: the mirror decides on `ctx.row` under the locks (the July
+text pointed at a per-request `if (session?.user)` that no longer exists). The TRIGGER
+of promotion stays "a logged-in caller acted" (`ensurePromoted` is called by the
+wine add, rate, visit and bookmark routes, before their own contract).
 
 | | Redis-only | Postgres-authoritative |
 |---|---|---|
@@ -635,51 +1136,113 @@ stays true as written.**
 
 #### 🔒 Promotion protocol
 
-**The race this closes:** today `visit/route.ts:76` creates the Postgres session while
-`wines/route.ts:142` independently decides persistence per-request from the caller's login
-state. A wine add running concurrently with a promotion can miss *both* the snapshot copy
+**The race this closed** (July wording; the cited lines are gone): `/visit` created the
+Postgres session while the wine add independently decided persistence per request from
+the caller's login state. A wine add running concurrently with a promotion can miss *both* the snapshot copy
 and the later Postgres write, and vanish.
 
-Promotion runs **under a per-session advisory lock** (`pg_advisory_xact_lock`, keyed on the
-session code hash), as one transaction. The established precedent for this primitive is
-`lib/staffRole.ts:154` — the last-admin guard, which takes the lock **first, before any row
-lock**, and whose migration comment (`20260725090000_wine_catalog_schema/migration.sql:867`)
-explains the choice: the resource being protected is a *predicate over rows*, not a row.
-⚠️ Follow its lock-ordering invariant (advisory first, then rows) — the staff-role path
-documents a deadlock that inverted ordering produced.
+✅ **Shipped as `ensurePromoted` (`lib/session.ts`) inside the session mutation contract**
+(`lib/sessionMutation.ts`; `lib/CLAUDE.md` § Session mutation contract): fenced Redis lock
+`lock:session:{CODE}` → `pg_advisory_xact_lock(hashtext('session:' || code))` → the live
+row `FOR UPDATE`, in that order (the lock-order rule, never a Redis lock while holding an
+advisory one). Inside: re-check the row (another request promoted → no-op), check
+`session_tombstones` (a committed delete is not promoted back), create the row
+(`unlimited`), copy the cached line-up with ids, positions and `revealed_at`, the bans,
+and a member row per registered `u:`; projection after COMMIT rewrites meta from the
+record and re-stamps every key's TTL. One-way and idempotent as specified.
 
-1. Take the lock. Re-check whether the `sessions` row exists — if so, another request
-   already promoted; release and proceed as Postgres-authoritative.
-2. Create the `sessions` row.
-3. **Copy every occurrence currently in Redis** into Postgres, preserving ids, order and
-   `revealed_at`.
-4. Initialise `wines_revision`.
-5. Commit, then rewrite the cache stamped with the new revision.
+What this change adds to it: **initialise `lineup_revision` in the creating transaction
+and stamp the projected line-up with it**, and copy the line-up through the same
+record-first insert the create uses (so a copied bottle and an added one are one code
+path).
 
-🔒 **Occurrence mutations take the same lock.** That is what makes step 3 atomic with
-respect to a concurrent add: the add either completes before promotion (and is copied) or
-blocks until promotion commits (and then writes to Postgres directly). It cannot fall
-between.
-
-⚠️ Promotion must be **idempotent and one-way**. A second promotion attempt is a no-op, and
-no path ever deletes the `sessions` row to return a session to Redis-only.
+🔒 **Occurrence mutations take the same locks** (shipped): an add either completes before
+promotion (and is copied) or waits until promotion commits (and then writes to Postgres
+directly). It cannot fall between. ⚠️ A FAILED promotion leaves the session Redis-only
+and the add proceeds in Redis-only mode (`wines/route.ts:125`, best-effort by design; the
+next logged-in act retries). Correct under the two-mode model; the concurrency test
+(§ 9) covers the add racing a promotion, not a promotion failing.
 
 #### 🔒 Staleness is not self-detecting — the cache carries a revision
 
 **Verified defect in the first revision.** It claimed a failed cache write "self-heals on
-the next read". It does not: `getWines` (`lib/session.ts:250`) is three lines —
-`redis.get`, parse, return — with no validity check. A key holding ten bottles when the
-eleventh failed to cache stays stale until TTL.
+the next read". It does not, and it still does not after the rehydration (re-verified
+2026-11-18; `getWines` no longer exists, its successors behave the same):
+`openSession` / `loadLiveWines` (`lib/sessionRehydrate.ts:523-543`) serve any present
+blob; the rebuild writes the line-up `NX` (`:425`), so even a forced rebuild keeps a
+present stale one; a projection that fails after COMMIT only deletes META
+(`scopedInvalidate`), and a process killed between COMMIT and its projection invalidates
+nothing. Today that is harmless because content is Redis-first (the cache is never BEHIND
+the record, only ahead of it). Under record-first content each of these leaves a stale
+line-up for the cache's lifetime, which is `unlimited` for every promoted moment.
 
-- `sessions` gains a monotonic `wines_revision`, bumped in the same transaction as any
-  occurrence mutation.
-- The cached blob stores the revision it was built from.
-- `getWines` compares them. Equal → serve cache. Missing, unparseable, or behind →
-  **rebuild from Postgres, write back, serve.**
+🔒 **`s:{C}:gen` is not the revision.** The publication generation fences a rebuild's
+PUBLISH against lease-less writers (a rebuild that read the record before their change
+cannot publish over it). It lives in Redis only; the record never learns it, so it cannot
+tell that a present line-up is behind the record. The two have different jobs and both
+stay.
 
-Costs one extra read per session-wines request; measure before assuming it is acceptable
-(§ 9). What is *not* acceptable is the current shape, where a stale cache is
-indistinguishable from a fresh one.
+- `sessions` gains **`lineup_revision integer NULL`** (nullable so the session-delete
+  scrub can NULL it, which Moment Visibility's scrub test requires; `integer`, not
+  `bigint`, so a session row that reaches a serialised object never carries a `BigInt`),
+  bumped `COALESCE(lineup_revision, 0) + 1 … RETURNING` in the same transaction as every
+  occurrence mutation of that session.
+- 🔒 **NULL means "not reconciled"** (review r1 B3). Every promoted session starts NULL at
+  the deploy, and its cache may hold a bottle the record lacks (§ 8a.0). The first
+  contract that meets a NULL revision with a PRESENT cache reconciles BOTH ways, then
+  stamps 1: cached bottles the record lacks are copied in strictly (today's mirror, not
+  best-effort), and record rows of that session the cache does not list are ORPHANED
+  (`session_id = NULL`, ratings kept, the ban-wipe treatment; review r2). The second half
+  matters: `mirrorLineup` deliberately leaves the rows of a DELETE whose mirror failed
+  (`lib/session.ts:782-785`), so without it the first projection from the record would
+  put a deleted bottle back, ratings attached. With no cache it stamps 1 from the record,
+  and a cold session cannot tell such a row from a live one. ⚠️ Nor can a warm one
+  always (review r3): a cache restored BEHIND the record (a Redis failover) makes a live,
+  rated bottle look exactly like a failed-DELETE leftover. So the human gate is on prod,
+  before the code that orphans: `scripts/rehydration-precheck.mts` (it reports both
+  directions, `onlyInRecord` included) runs between the expand migration and the code
+  deploy, and Simon reads every record-only row (the script reports ids, and only for warm
+  sessions with a present line-up; the release adds a names lookup and re-runs it
+  immediately before the push; a failover after that last run is the named residual).
+  Orphaning happens before the mirror
+  re-ranks unlisted rows (`lib/session.ts:790-794`); the photo follows the D8 predicate;
+  cravings sourced from an orphaned row keep their source and their stored moment
+  (`source_session_id`, § 5) and stay hidden until the outside rule allows; nothing is
+  deleted. Only a non-NULL revision may REPLACE a cache from the record.
+  So the order of the deploy and the operator script no longer matters: the script is a
+  warm-up that does the same reconciliation ahead of the first poll, with a dry run that
+  reports what it will copy. Promotion stamps 1 in its creating transaction.
+- The cached line-up carries the revision it was built from in a **sibling key**
+  (`s:{C}:wrev`), written in the SAME fenced `MULTI` as the line-up. Never inside the
+  blob: the previous release during the rolling deploy and about ten raw readers parse
+  `s:{C}:wines` as `WineMeta[]`.
+- The line-up read (`openSession`, `loadLiveWines`, and every contract that reads the
+  line-up to decide) compares it with the record: one primary-key read of
+  `lineup_revision`. Equal → serve. Missing, unparseable or behind (record non-NULL) →
+  **rebuild the line-up from the record as a fenced REPLACE** (`XX KEEPTTL` under the
+  lease, not `NX`), then serve. Ahead (the cache names a revision the record never
+  committed: an `EXEC` that landed before a failed COMMIT) → the same REPLACE.
+- Redis-only sessions have no record and no revision: unchanged.
+- 🔒 **Every writer of a promoted session's bottles bumps** (review r1 M2), not only the
+  five routes in the matrix below: the ban-with-delete (`lib/sessionWipe.ts:164-173`), the
+  brought-by reassign (`lib/session.ts` `reassignProvenance`), account deletion's
+  provenance updates and its Lua rewrite of the cached line-up (`lib/accountDelete.ts`,
+  the `d:` migration), `wipeEmptySession` (`lib/accountDelete.ts:520`), the operator
+  scripts `scripts/rekey-session-images.mts`, `scripts/rekey-user-images.mts` (rewrites
+  `wines.image_url` across sessions) and `scripts/backfill-lineup-positions.mts`, the
+  session DELETE's orphaning (it ends the
+  session, so it scrubs rather than bumps). A standalone check-in's occurrence has no
+  session and no revision. A **census gate** (the `scripts/check-username-writes.mjs`
+  pattern) lists every `INSERT` / `UPDATE` / `DELETE` on `wines` and every write of
+  `k.wines(…)`, and fails on one not in its expected list, so a new writer cannot forget
+  the bump. ⚠️ Correction to the paragraph above: the cache can already be BEHIND the
+  record today for provenance (a reassign is record-first; the rebuild's `patchedWines`
+  exists to repair it, `lib/sessionRehydrate.ts:426`).
+
+Costs one extra indexed read per line-up read (the moment screen polls every 5 s per
+participant); measure on staging before assuming it is acceptable (§ 9). What is *not*
+acceptable is the current shape, where a stale cache is indistinguishable from a fresh
+one.
 
 #### 🔒 Occurrence ids are client-generated
 
@@ -687,9 +1250,13 @@ indistinguishable from a fresh one.
 nanoid, as today — and sends it.
 
 This is required for retry-safety: ids are minted server-side today
-(`lib/session.ts:442`), so a lost response followed by a retry creates a **second**
-occurrence — and since two identical bottles in one lineup are legal (§ 1), the duplicate
-is indistinguishable from a deliberate one.
+(`lib/session.ts:519`, `existing?.id || nanoid()`), so a lost response followed by a retry
+creates a **second** occurrence — and since two identical bottles in one lineup are legal
+(§ 1), the duplicate is indistinguishable from a deliberate one. The rule holds in BOTH
+modes: in a Redis-only session the add's pure transform finds the id in the cached array
+and returns it unchanged when session and adder match, else rejects with 409. Standalone
+check-ins mint their occurrence the same way (`app/api/checkins/route.ts:313` mints a
+server id today), keyed on the client id.
 
 Chosen over an idempotency-key column because it adds no schema, and because it makes the
 S3 key known *before* the row exists, which the image protocol below depends on.
@@ -708,6 +1275,26 @@ thing a conflicting POST can do is return someone else's row (when identity matc
 a genuine retry) or fail.
 
 Server-side validation also required: the id must match the expected nanoid shape.
+
+🔒 **A reply that returns an EXISTING row goes through the viewer's redaction** (Codex r1):
+the add's echo is a plain `wineToWire` today (`wines/route.ts:173`, "the adder just typed
+the bottle"), which is right for a fresh insert only. A retry that returns the stored
+occurrence may return what a host changed since (a re-link under Blind for Everyone, or
+under a hidden line-up), so it answers with an identity-free acknowledgement (the id
+and "already added"), and the client re-reads the line-up through the GET, which
+applies every rule. Not `buildWineEcho`: it passes `echo: true`, which skips the
+hidden-line-up gate (`lib/sessionState.ts:225`, `:290`; Codex r2). Test: an adder's
+bottle re-linked by the host under Blind for Everyone, and again under a hidden
+line-up, then the adder retries its POST.
+
+🔒 **A check-in retry replays the WHOLE check-in** (Codex r1): a check-in is an
+occurrence, a rating and a feed item in one transaction (`app/api/checkins/route.ts`),
+and nothing stops a second standalone rating of one occurrence today (`feed_items.rating_id`
+is unique, the rating is not). So: one rating per standalone occurrence (a partial unique
+on `ratings (wine_id) WHERE session_id IS NULL`, checked against prod by the re-survey
+first), and an `ON CONFLICT` on the client occurrence id returns the existing check-in
+(occurrence, rating, feed item) when the caller owns it, else 409. Tests: concurrent
+retries, and a response lost after COMMIT, end with exactly one of each.
 
 #### 🔒 Redis-only sessions cannot attach occurrence images
 
@@ -769,9 +1356,9 @@ existing capture/commit/reclaim-after rule for deletes.
 
 #### 🔒 Ordering authority moves with the data
 
-`app/api/session/[code]/wines/reorder/route.ts:34` is a pure `mutateWines` call today — the
-permutation is validated and committed entirely inside the Redis WATCH/MULTI transform, and
-Postgres is never touched. Once Postgres owns `position`, **reorder becomes a Postgres
+July text, updated: the reorder runs `hostLineupWrite` (`lib/sessionRoute.ts`): the
+permutation is decided inside the fenced `mutateWines` transform and then mirrored to
+Postgres best-effort (`lib/sessionRoute.ts:163`); Postgres decides nothing. Once Postgres owns `position`, **reorder becomes a Postgres
 transaction** and the cache is rewritten from the committed result.
 
 ⚠️ **Qualified by mode.** In **Redis-only** sessions `mutateWines` remains the ordering
@@ -783,15 +1370,12 @@ today.
 **Divergence rule:** where cache and authority disagree, **Postgres wins and the cache is
 rebuilt.** No merge, no last-writer-wins heuristics.
 
-#### The bug this fixes
+#### The bug this fixes — ✅ closed by the rehydration
 
-`app/api/session/[code]/wines/[wineId]/reveal/route.ts:44` documents that the Postgres row
-may not exist when a host reveals a wine — because `pgUpsertWine` fires only when a
-logged-in user acts, never on the wine merely existing. Keying on the session row rather
-than the caller closes this for every promoted session.
-
-⚠️ It remains open for fully anonymous sessions, which have no Postgres row by design. That
-is the accepted cost of the two-mode model.
+The July text cited `reveal/route.ts:44` (the Postgres row might not exist when a host
+reveals a wine, because the old `pgUpsertWine` fired only on a logged-in act). The
+rehydration's mirror keyed on `ctx.row` closed it for every promoted session. Fully
+anonymous sessions have no row by design, the accepted cost of the two-mode model.
 
 #### 🔒 The lifecycle matrix
 
@@ -802,11 +1386,12 @@ untouched.
 |---|---|---|---|---|---|
 | **Session expiry** (Redis-only) | Expires with TTL | Redis ratings expire with TTL | None exists | — | 🔒 **None exists, by invariant** — images are rejected in this mode |
 | **Session expiry** (promoted) | Survives | Survives | — | Survives | Retained |
-| **Session soft-delete** | Survives; `session_id` retained, pointing at the tombstone | Survives | — | Survives | Cover reclaimed; occurrence photos retained |
+| **Session soft-delete** | Survives, ORPHANED (`session_id = NULL`, as built; `origin` keeps it a session occurrence) — corrected 2026-11-18, the July row said "retained" | Survives (keeps its `session_id`, the grouping signal) | Survives with its source | Survives | Cover reclaimed; occurrence photo kept while a rating or a bookmark's source references it (D8), else reclaimed after commit |
+| **Ban with delete-their-bottles** | Survives, orphaned (`lib/sessionWipe.ts:167`); leaves the line-up | Others' ratings survive; the target's go per the ban scope | Others' cravings keep their source and stored moment and stay hidden until the outside rule allows (§ 5); the target's own cravings sourced in that moment are deleted (`lib/sessionWipe.ts:144-145`) | Survives | No wine-photo reclaim (as built) |
 | **Catalog merge** | Link follows the pointer at read time | Unchanged | Unchanged | Unchanged | — |
 | **Catalog hard purge** | `vintage_id` and/or `product_id` nulled; row survives | Survives | Survives; snapshot renders it | 🔒 **Load-bearing** — the only thing left to display | Retained |
-| **Account deletion** | Session occurrences tombstone; standalone cascade | Per the existing split rule | Cascade | Retained on tombstoned rows | Reclaimed via explicit `reclaimImage` |
-| **Occurrence delete** | Gone | Cascade | — | Gone | Capture → commit → reclaim after |
+| **Account deletion** | Session occurrences: provenance tombstoned (`d:` / `'[deleted]'`), as built; standalone ones as `lib/accountDelete.ts` handles their wine rows today (the build re-reads it) | Per the existing split rule | The user's own cascade | Retained on tombstoned rows | The user's own uploads reclaimed via explicit `reclaimImage`; a surviving moment's occurrence photos kept (D8/D9) |
+| **Occurrence delete** (host removes the bottle) | Gone | Cascade | Cravings first made there keep their wine and lose "craved it here" (source `SET NULL`); one whose source is still hidden for its owner is deleted in the same transaction (§ 5) | Gone | Capture → commit → reclaim after |
 
 ⚠️ **The purge row is why snapshots exist** on both occurrences (§ 5a) and bookmarks
 (§ 5a). Every other row survives on its catalog link; the purge row has none.
@@ -816,19 +1401,22 @@ untouched.
 
 #### Error handling
 
-⚠️ **`pgUpsertWine` is called inside a silent `catch {}`** at every call site
-(`wines/route.ts:145`, `rate/route.ts:166`, `wines/[wineId]/route.ts:156`,
-`bookmark/route.ts`). Acceptable for a best-effort archive; **not** acceptable for
-authoritative state — a swallowed failure becomes a bottle that is on the table but not in
-the database. Every write path needs its error handling revisited as part of step 2 above.
+✅ **`pgUpsertWine` and its silent `catch {}` are gone** (the rehydration replaced them with
+`mirrorLineup` inside the contract). What remains is the deliberate best-effort form:
+`bestEffortMirror` (a SAVEPOINT, logged) around the line-up content in the wine add /
+edit / delete / reorder / reveal routes. In a promoted session this change removes it for
+occurrence content: the Postgres write is the decision and a failure fails the request.
+Two routes also mirror the line-up today only to make the FK row exist before their own
+insert (the rate POST and the bookmark POST, both strictly, not best-effort); under
+record-first the row exists from the create, and those calls go.
 
 This is the first real slice of the "durable sessions" direction already recorded as a
 future goal. Worth framing that way rather than as a local fix.
 
-**It also fixes two existing gaps for free:** reveal state gets a guaranteed row, and pour
-order gets a durable home. Order currently lives only as the array order in Redis —
-`lib/sessionFeedWines.ts:118` documents the resulting divergence as a known deviation, and
-`POST /wines` accepts a `position` argument that is resolved transiently and never stored.
+**Two gaps it was to fix are already closed** (✅ by the rehydration): reveal state has a
+guaranteed row, and pour order is stored (`wines.position`, written by every mirror,
+`lib/session.ts:753`; `POST /wines`'s one-shot `position` lands in it through the array).
+What remains is the stale comment in `lib/sessionFeedWines.ts` (§ 9).
 
 ### 8b. Merge resolution is on every read path
 
@@ -978,35 +1566,101 @@ Prisma calls.
 ⚠️ Raw SQL is invisible to `tsc` and to the build. Per the standing rule, verify any change
 by driving the **actual** query string through Prisma — never a hand-typed reconstruction.
 
+**2026-11-18:** with the table kept and ids inherited (§ 1, § 6), the conflict key
+`(user_id, wine_id, session_id)` and its partial unique stay as they are; what changes in
+this route is the strict `mirrorLineup` it runs first (`rate/route.ts:157`) to make the FK
+row exist, which goes (§ 8a Error handling), and the flavour gate keyed on `wine.type`
+(`:123`), which reads the occurrence's colour / sparkling instead. Raw `ratings.wine_id`
+SQL sits in 14 runtime files; none needs a rewrite for the key, all of them for any
+catalogue field they display.
+
 ---
 
 ## 9. Owed work
 
-Carried from phase 2, both now due:
+Carried from phase 2, both now due, because this change OPENS the fence:
 
-- **Interleaved concurrent-PATCH test** — gates opening the catalog fence, which this
-  phase now does.
-- **1M-row load test** — gates the first catalog fill. Run against staging; sandbox
-  absolutes do not transfer, and it is where the pool env vars get chosen.
+- **Interleaved concurrent-PATCH test** — gates `CATALOG_PUBLIC_ENABLED`. Two real
+  overlapping requests editing one wine, forced at a real synchronisation point (the
+  contract's `mutationHooks` exist for this), never a `sleep`.
+- **Search capacity (was "the 1M-row load test"; moved by Simon on 2026-11-15 from "before
+  the fill" to "before the public switch")**. Measured on staging (`bevtest`, Nine, the
+  same plan as prod, the real catalogue; read-only from the sandbox):
+  - 2026-11-15: 13 searches/s with one at a time, about 23/s with 10 at once, flat at
+    about 25/s from 25 to 100 at once while waits grow (p95 1 s at 10, 7 s at 100);
+    0 errors.
+  - ⚠️ **Correction (Codex r1, verified): these numbers are NOT the public workload.** The
+    public route requires a producer for a product search (`app/api/catalog/search/route.ts:71`,
+    "Choose a producer first"); the unscoped product search, 118 of the 200 searches in
+    the measured mix and the expensive one, is reachable by staff only (the phase-3
+    queue). The public flow is a producer search (≈16 ms server time) then a scoped
+    product search (≈2 ms), plus the vintage lookup. The ceiling below is an INTERNAL
+    workload; step 1 re-measures with the public producer-first mix and the guest route,
+    and the release decision rests on that.
+  - 2026-11-18 (`.local/catalog-model-change/load-probe.mts`): **our client was not the
+    limit** (one process at 10–11% CPU reached the same ≈27/s). Per search, server-side:
+    product search 104 ms mean / ~4,500 blocks over 3 statements (max 191 ms; a short
+    typo, "Piont Noir", read 17,765 blocks); producer 16 ms; exact and scoped ≈2 ms;
+    mix mean 67 ms. 27/s × 67 ms ≈ 1.8 s of server time per second, so the server runs
+    about two searches at a time; which resource binds is not measured.
+  - 🔒 **Ruled (Simon, 2026-11-18): no bigger plan.** Before the switch: find whether the
+    queries can be made cheaper (the product search's three statements, the GiST
+    trigram signature length — `gist_trgm_ops` is at its default, the broad-typo
+    block counts), re-measure, then decide. An index change on a catalogue table is on
+    the data side's announce list. Prod is taken to behave as staging (same plan;
+    Simon).
+  - 🔒 **Two independent consultations first (Simon, 2026-11-18)**: a Fable agent at
+    high effort and Codex, separately, each given the raw measurements and the code
+    rather than our hypotheses, on optimising performance and efficiency: search, and
+    the runtime costs this change adds (the revision read on every line-up poll,
+    record-first writes, projecting the line-up from the record). Their answers and our
+    hypotheses are then measured together (§ 12 step 1).
+  - ⚠️ **Connections**: staging's database login allows **20 connections**
+    (`rolconnlimit`); the app's pool is physical cores × 2 + 1 per instance when
+    `DATABASE_CONNECTION_LIMIT` is unset (`lib/prisma.ts`; the probe's 19-connection
+    processes hit `53300 too many connections` once three ran at once). Prod is the same
+    plan, so the same limit is assumed (Simon), and `DATABASE_CONNECTION_LIMIT` is sized so every instance during a rolling
+    deploy, the migrate job and the scheduled jobs fit under it. This is a standing
+    risk today, not only a catalogue one.
 
 ### 🔒 Release conditions — deploy is blocked until all hold
 
-1. **Version gate covers the changed endpoints** (§ 7) — verified firing for an
-   already-signed-in native client, or extended beyond `auth/native/*`. Hard cutover makes
-   this a correctness condition, not a courtesy.
-2. **Min-version floor raised** past the last pre-cutover build.
-3. **Attributions surface live** (§ 7) — licence obligation, gates the catalog fill.
+1. ✅ **Version gate covers the changed endpoints** (§ 7) — the proxy gates every
+   `/api/*` call. Re-checked on the release build (an old build polling a moment sees the
+   update screen) because it is cheap.
+2. **`CODE_FLOOR_IOS` raised in code** to the build that carries both this change and
+   Moment Visibility (§ 7), in the same deploy as MV step 1a and this cutover.
+3. ✅ **Attributions surface live** (PR #93). Standing: a source added later ships its
+   entry before its data.
+3a. 🔒 **Announced to the catalogue-maintenance side BEFORE the push** (Deplo.io applies
+   migrations on deploy): this change adds FKs into the catalogue (§ 5a), adds three
+   columns to `wine_products` (`country` of origin, `description`, `vinification`, § 1;
+   they also enter the pull scope as wine facts), possibly a search index (§ 9), and
+   makes the first real link, which closes the undo window. The agreed announce list: any change
+   to the five catalogue tables or their constraints / indexes / triggers / functions, to
+   `catalog_fold_v1` / `f_unaccent` / the unaccent extension, a Postgres major upgrade, an
+   encoding / locale change, ownership or grants on the five tables.
+3b. 🔒 **FK pin green** (§ 5a): every FK into the five tables `NO ACTION` except
+   `product_producers.product_id`.
+3c. **Rehearsal passed on prod's schema** (§ 6a), and the warm-cache reconciliation dry run
+   (§ 8a.0) reports what it will copy.
 4. 🔒 **Any `catalog_fold_*` version change has been ANNOUNCED to the catalog-maintenance side before deploy** — never after. A bump desynchronises exact-match agreement between the two sides, and search MAY not reveal it (it did not for the whitespace defects observed; a transliteration change would). The version appears nowhere in the contract today. See the implementation plan § Phase 4.
 5. **Promotion protocol tested under concurrency** (§ 8a) — an add racing a promotion must
    land in Postgres, never vanish. This is the T1 race; it cannot be verified by
-   inspection.
+   inspection. The rehydration's cutover suite drives such races through
+   `mutationHooks`; extend it rather than write a second harness.
+6. **Interleaved concurrent-PATCH test run, and search capacity decided** (above), before
+   release day: the fence opens with the code (§ 7), because a closed fence means only
+   staff can add a bottle.
 
 ### Owed work — new from this phase
 
-- Revisit error handling on every `pgUpsertWine` call site (§ 8a).
+- ✅ ~~Revisit error handling on every `pgUpsertWine` call site~~ — the calls are gone;
+  what replaces this item is removing `bestEffortMirror` from occurrence content in
+  promoted sessions (§ 8a).
 - Decide whether the merge resolver warrants a CI gate (§ 8b).
-- Make `tx` required on the three mint helpers — raised in phase 2, deferred, and cheaper
-  to do while touching this code than later.
+- ✅ ~~Make `tx` required on the three mint helpers~~ — already so (`lib/catalogWrite.ts`
+  `createProducer` / `createProduct` / `createVintage` take a required `tx`; Codex r1).
 - **Cache-revision reconstruction must be a tested code path**, not a claimed property
   (§ 8a) — including the stale-cache case, which is the one the first revision got wrong.
 - **Purge extension needs its own test**, covering both the bookmark collision and the
@@ -1015,6 +1669,15 @@ Carried from phase 2, both now due:
   from a retry is indistinguishable from a legitimate duplicate bottle, so this cannot be
   verified by inspection.
 - **Measure the cache-revision read cost** before assuming it is acceptable (§ 8a).
+- **The warm-cache reconciliation at cutover** (§ 8a.0) — a dry run that lists every
+  promoted session whose cached line-up differs from its record, then the strict copy.
+- **Tolerant reading of pre-deploy Redis line-ups** (legacy `type`, no revision, no
+  catalogue key) — tested with a captured old-shape blob, not a hand-written one.
+- **The FK pin** (§ 5a) and the **review item on every user mint** (§ 7).
+- **Had a sip** (`app/api/checkins/route.ts`, web only): a copy is never catalogue-linked
+  today; under "every new bottle links" it copies the source's link server-side.
+- Stale comment: `lib/sessionFeedWines.ts:66-75` says the line-up order "has no PG
+  mirror"; `wines.position` exists. Fix while touching it.
 
 ### Owed from the colour / sparkling / style split (2026-11-09)
 
@@ -1023,15 +1686,20 @@ left on the old `style` tokens on purpose, because this phase replaces it. Every
 below lands here:
 
 - **User-side split.** Bubbles from `sparkling` instead of `style === 'spark'` across the
-  ~25 `resolveAxes` / `fillFlavourZeros` call sites (server, `@verre/core`, web, mobile).
-  Keep emitting a derived legacy `type` and accepting legacy writes for shipped TestFlight
-  builds; Redis cached lineups carry `type` (and `upsertLineup` writes `style = w.type`
-  back, where `bestEffortMirror` would swallow a CHECK failure and promotion would fail);
-  badges (`type_spark_*`, `type_nonalc_5`, `type_all`; `unique_styles_8` is already
-  unearnable, 5 styles against a threshold of 8).
-- **Snapshot gap.** The occurrence keeps only a name / producer / vintage snapshot (§ 1,
-  § 5a). An unlinked or purged occurrence would lose the Bubbles axis on its ratings
-  unless the snapshot also carries `sparkling`.
+  axis helpers (40 call sites, measured 2026-11-18: `resolveAxes` 15,
+  `resolveAxesColoured` 9, `fillFlavourZeros` 12, `gateAndFillFlavors` 4; plus one
+  `=== 'spark'`, one SQL `style = 'spark'` in `lib/badgeService.ts`, three hard-coded
+  `'spark'` constants and three hard-coded five-token allow-lists). ✅ **No derived
+  legacy `type` on the wire and no legacy writes**: the floor blocks every shipped build
+  (§ 7). Still owed for DATA: Redis line-ups cached before the deploy carry `type`
+  (read tolerantly: `type` → the snapshot's colour / sparkling), and `upsertLineup`'s
+  `style = w.type` goes with the record-first write. Badges: `type_spark_*`,
+  `type_nonalc_5`, `type_all` (needs a `nonalc` rating), `tannic_titan` (`redCount`),
+  `mineral_hunter` (`uniqueStyles >= 5`); `unique_styles_8` stays unearnable (5 styles
+  against 8). Count from the occurrence's snapshot (it is always set), so a badge does
+  not move when a curator fills a colour later; lifetime counters never decrement.
+- ✅ **Snapshot gap closed** (§ 1): the occurrence's snapshot carries `colour` and
+  `sparkling`.
 - **Conversion rulings** — link first, else mint, and nothing before the first delivery:
   § 6.
 - **`nonalc` → `abv = 0`** for existing user wines, filled only where no ABV is recorded
@@ -1042,20 +1710,23 @@ below lands here:
   `wine/red | white | rose | spark | nonalc` from `category_styles` (an announced
   vocabulary change). `wine_products_style_check` then duplicates the FK and may be
   dropped, which only loosens.
-- **Minting requirements** after the split (§ 2, reopened).
+- ✅ **Minting requirements** after the split: ruled 2026-11-18 (§ 2).
 - **`colour` may be NULL; never assume it.** The catalog-maintenance side expects it
   absent on part of the catalog, mostly sparkling and dessert/fortified wines. So the
-  derived legacy `type` maps a non-sparkling wine with no colour to NULL (shipped builds
-  already handle a NULL type), never to a guessed colour, and sparkling maps to `spark`
-  whatever the colour; badges that count by type or colour, and any colour filter or
+  legacy `type` the Redis line-up keeps for the rollout (§ 8a, not on the wire) maps a
+  non-sparkling wine with no colour to empty, never to a guessed colour, and sparkling
+  maps to `spark` whatever the colour; badges that count by type or colour, and any colour filter or
   label, need an "unknown" state.
 
 ## 10. Open
 
-- **Terms of Service** for promoting user photos to catalog entries (§ 4). Not scheduled.
-- **Naming.** "Occurrence" is the working name for the entity throughout this document.
-  The table name and the user-facing vocabulary are separate decisions — "occurrence" is
-  precise but not a word the UI should use.
+✅ **Neither blocks this phase** (Simon, 2026-11-18).
+
+- **Terms of Service** for promoting user photos to catalog entries (§ 4). Not scheduled;
+  nothing in this phase promotes a photo.
+- **Naming.** "Occurrence" is the working name in code and docs only. The app keeps its
+  words: an *impression* in a moment, a *check-in* on its own. The table keeps its name
+  for now (§ 1).
 
 ---
 
@@ -1107,3 +1778,133 @@ wanted rather than one that was verified — the same defect class the phase-1 a
 notes flag as recurring: *a guard that looks correct because nothing tested the case where
 it fails.* Both were caught by review, not by drafting. For the implementation phase this
 argues for the tests listed in § 9 being written **before** the code they cover.
+
+**Refresh review, round one (2026-11-18)** — three blockers, seven majors, verified
+against the code; two needed rulings (Simon: guests search inside the moment; blind
+saves are held per bottle and stay out of Cravings until the reveal).
+
+| # | Finding | Answered in |
+|---|---|---|
+| B1 | `origin NOT NULL` in the expand step breaks the previous release's writers | § 1 (nullable + insert trigger, NOT NULL in step 9), § 6a (old suites on the new schema) |
+| B2 | Guests can pick only through a search they are refused | § 2 (moment-scoped search) |
+| B3 | The cutover hazard depended on deploy order | § 8a (NULL revision = not reconciled) |
+| M1 | Product-grain saved state is a blind-identity oracle | § 5 (blind saves per bottle) |
+| M2 | The record-first matrix missed writers | § 8a (every writer bumps; census gate) |
+| M3 | Old guest tabs are not bounced | § 7 (one 4xx for old-shape writes) |
+| M4 | The kept `(user, wine_id)` unique can swallow a save after a re-link | § 5 (re-link moves saves; explicit conflict) |
+| M5 | Web changes scheduled after the server steps that break them | § 12 (web per step) |
+| M6 | Moment Visibility's `look_rev` could double the counter | § 7 (one counter per event) |
+| M7 | The rehearsal's people-stripped users can't satisfy prod's NOT NULLs | § 6a |
+| minors | blob vs sibling key, fence gap, `bigint` in JSON, colour / sparkling on blind rows, origin guess, stale lines, step inconsistencies | § 8a, § 7, § 0.3, § 1, § 12 |
+
+**Refresh review, round two (2026-11-18)** — no blockers; three majors, each left open by
+a round-one fix, verified against the code.
+
+| # | Finding | Answered in |
+|---|---|---|
+| 1 | Reconciling cache → record only would bring deleted bottles back (`mirrorLineup` leaves failed-DELETE rows) | § 8a (two-way: record-only rows orphaned) |
+| 2 | An old instance's whole-array mirror would null every link if the cached shape changed | § 8a.0 (the Redis line-up stays a superset until step 9; `entry` on the wire only) |
+| 3 | A blind save never becomes a wine save (duplicates, re-link oracle, backfill, toggle source) | § 5 (`held_for_reveal`, effective-wine grouping, per-viewer `saved`) |
+| minors | old-tab message never shown, gate pin, scrub scheduling, rehearsal triggers and names, writer list, guest budget, consultation independence, contradictions | § 7, § 2, § 6a, § 9, § 12; the build plan |
+
+**Refresh review, round three (2026-11-18)** — no blockers; two majors, both left open by
+round-two fixes, verified against the code.
+
+| # | Finding | Answered in |
+|---|---|---|
+| 1 | A held blind save still leaked through wine-level operations (a sibling bottle's flag, removing the craving, un-saving "Wine N") | § 5 (one rule: invisible to every wine-level operation while redacted; NULL wines group by id; badges stay raw; existing saves marked) |
+| 2 | The Redis superset left `style` undefined: `nonalc` and old-instance type edits would be lost | § 8a.0 (`style` written until step 9, wins on disagreement; full fixture) |
+| minors | the orphaning ran before a human saw the list (failover case), rollout residual, rehearsal FK checks, consultation bundle outside the repo, the spec's writer list | § 8a, § 7, § 6a; the build plan |
+
+**Refresh review, round four (2026-11-18)** — no blockers; two majors in round-three
+wording, verified against the code (`lib/outsideView.ts` bypasses only the strict host and
+the adder; the live rule bypasses cohosts too).
+
+| # | Finding | Answered in |
+|---|---|---|
+| 1 | "Redacted for the owner" was two predicates; a taster made cohost got a stuck save | § 5 (classification live, visibility outside-view, per-bottle addressing unconditional) |
+| 2 | The `style` rule was circular; a re-link's colour could be undone | § 8a.0 (every colour write sets `style`; one-direction re-run) |
+| minors | non-held saves of a re-hidden bottle, Q5f scope, reference rows in the rehearsal, precheck scope | § 5, § 6a, § 8a; the survey |
+
+**Refresh review, round five (2026-11-18)** — no blockers, one major (functional, not a
+leak): a cohost's save of a blind bottle was classified normal, occupied the dedup unique
+while hidden, and a later save of the same wine went nowhere. Answered in § 5 (held when
+either rule hides it; convert on conflict); minors (`outsideViewSql` not `redactedSql`,
+owner AND viewer, the helper's shape and its read cost, `nonalc` on a link, load order,
+three more tests) in § 5, § 8a.0, § 6a and the build plan.
+
+**Refresh review, round six (2026-11-18)** — no blockers, one major of round five's class
+through two other writers (the re-link move and the purge merged collisions without
+saying which row survives). Answered in § 5 (one collision rule for every writer) and
+§ 5a; minors (un-save and grouping after a reveal, stale wording, `nonalc` on a link and
+its badge, the helper scoped to the line-up, concurrency pinned, § 6a order, docs to
+update) in § 5, § 8a.0, § 6a and the build plan.
+
+**Saved-wine model replaced (Simon, 2026-11-18, after round six).** Rounds two to six
+each found one more path the held-save design had to follow. Simon's model replaces it
+(§ 5): one craving per wine with its first source, hidden while that source is hidden,
+a neutral crave button on a bottle hidden for you. The held-save rows in the tables
+above are superseded by it; round seven reviews the replacement.
+
+**Refresh review, round seven (2026-11-18), on the replacement model** — no blockers; two
+majors in its written rules (a re-pointed craving kept its old date and id; orphaning
+un-hid a still-hidden craving), answered in § 5; minors (`craved` on redacted feed rows,
+the crave-from-post path, the old by-wine DELETE routes, badges named, wording, four
+named residuals, the ban row) in § 5, § 6, § 8a and § 12.
+
+**Refresh review, round eight (2026-11-18)** — CONVERGED (no blocker or major). Six minors
+applied: the § 8a orphaning sentence, the orphan rule for rated bottles too, the source
+FK's `SET NULL` moved to the code push (step 5), the crave POST's order, LEFT JOINs for
+source-less cravings, stale § 5 wording. Next: Codex.
+
+**Codex, round one (2026-11-18)** — two blockers, nine majors, one minor, verified
+against the code; one ruling (Simon: description, vinification and country of origin
+become catalogue columns).
+
+| # | Finding | Answered in |
+|---|---|---|
+| 1 | A `SET NULL` source FK is unsafe while the old release still serves after the migration | § 5 (the FK keeps CASCADE; the new DELETE detaches visible cravings first) |
+| 2 | A retry returning the existing occurrence leaks a re-link through the plain echo | § 8a (existing-row replies through `buildWineEcho`) |
+| 3 | Orphaned sources and last-rating deletions un-hide cravings | § 5 (`bookmarks.source_session_id`) |
+| 4 | `description`, `vinification`, `country` have no catalogue destination | § 1 (new catalogue columns, announced; history kept) |
+| 5 | No read path for an existing vintage | § 2 (vintage lookup on both search routes) |
+| 6 | The build could reach an old instance | § 7 (every instance verified before the build goes out) |
+| 7 | A partial unique cannot be a Prisma `@@unique` | build plan step 2 |
+| 8 | The chain CHECK gates cannot pass on prod's schema | § 6a (an explicit before/after constraint diff) |
+| 9 | A check-in retry could duplicate the rating and post | § 8a (whole check-in replay; one rating per standalone occurrence) |
+| 10 | The export kept check-in locations | § 6a |
+| 11 | The capacity numbers measured a staff-only query | § 9 (correction; re-measure the public flow) |
+| 12 | Stale lines (position, reorder, `tx`) | § 1, § 8a, § 9 |
+
+**Codex, round two (2026-11-18)** — no blockers; three majors, verified: the
+existing-row reply went through `buildWineEcho`, which skips the hidden-line-up gate
+(now an identity-free acknowledgement); detaching a visible craving left its moment
+pointer (both pointers now cleared together); two pre-orphaning deletion sentences
+contradicted the stored moment (removed). Minor: the Prisma `@@unique` line and the
+pour-order paragraph. All in § 5, § 8a and the build plan.
+
+**Codex, round three (2026-11-18)** — CONVERGED, no findings. The refresh is review-complete
+(Fable rounds one to eight, Codex rounds one to three); build prompts per step are written.
+
+---
+
+## 12. Build order (2026-11-18)
+
+Ten steps. The detailed plan (scope per step, tests, what is irreversible, release
+conditions carried) is kept locally with the planning notes; this list is the order of
+record. Every step leaves the branch green (build, lint, every `check-schema.yml` suite,
+mobile `tsc`); the web adapts in the same step where its wire changes; the app follows
+in step 7 and its build is cut once.
+
+| Step | What | Ships |
+|---|---|---|
+| 0 | Prep: prod re-survey, prod facts (connection limit), anonymised export, rehearsal database, draft verdict list | nothing (operator + `.local/`) |
+| 1 | Search capacity and runtime efficiency: two independent consultations (Fable high, Codex) first, then find whether the queries can be made cheaper, change them (and an index, announced, if that is the answer), re-measure on staging, size the connection pool | independent of the other steps; shipping it before release day is Simon's push decision |
+| 2 | Expand migration: `origin` (nullable + insert trigger), snapshot colour / sparkling, `sessions.lineup_revision`, bookmark product / vintage / snapshot / nullable source, review items; CHECK snapshots; the FK pin; the previous release's suites pass on it | additive, before the code |
+| 3 | Occurrence persistence: record-first writes in promoted sessions (every writer, census-gated), revision-checked reads with NULL = not reconciled, client ids, insert-only create, image attach on its own, no images in Redis-only sessions, tolerant old blobs, the old-tab write refusal, the warm-up script; the web sends ids and attaches images in this step | release day |
+| 4 | The catalogue on every write: pick or create (registered only), the moment-scoped search for guests, required fields, the review item, snapshot, colour / sparkling axes and badges, the line-up's catalogue key and its redaction, the merge resolver, the gate's default flipped open, the interleaved-PATCH test; the web's plain picker lands in this step, and the suites get catalogue fixtures | release day |
+| 5 | Reads and cravings: one craving per wine with its first source, the blind rules of § 5 (hidden while the source is hidden, neutral button, re-point, delete / orphan / re-link rules), Cravings keyed on the bookmark id, Saved, profile lists and tiles, feed, outside view, D8, purge, account deletion; the web's Saved and crave button in this step | release day |
+| 6 | Web closing pass: the NV checkbox in both modals, a headless browser pass over add / save / blind (the wire changes landed with their server steps; `WEB_WIRE_GENERATION` is bumped in step 3) | release day |
+| 7 | App: design first (ADRs), then the picker, check-in create / edit, NV checkbox, saves and Cravings, client ids, image attach | the build |
+| 8 | Release, shared with Moment Visibility: rehearsal, announcement, build, deploy order, floor, reconciliation, conversion, data side told (the fence opens with the code) | operator |
+| 9 | Contract migration, a later release: `origin` NOT NULL, drop `style` and `category` (the content columns stay as history), the old `(user, wine_id)` unique, retire the old `category_styles` pairs (announced) | later |
