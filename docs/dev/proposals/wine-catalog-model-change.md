@@ -691,6 +691,19 @@ re-checked 2026-11-18, not written in until now):
   not as change proposals (that table is phase 3). The occurrence's snapshot keeps our
   string either way. A LONG list is itself a finding (systematic disagreement).
 
+🔒 **Ruled 2026-11-18 (Simon), from researching the conversion's rows:**
+- **Corrections to a DELIVERED entry go on that list, never into the row.** Missing
+  grapes or region, a wrong colour, a name variant: we send them; the conversion writes
+  nothing into an entry the catalogue-maintenance side delivered (two writers over one row
+  before review and locking exist would let their next delivery and ours disagree).
+- **The conversion may mint entries no row of ours references**, when a person sourced
+  them (first case: a producer's own press kit, which also showed a missing wine). They go
+  on the mint list like every other mint.
+- **What a mint copies from such a source is facts in our own words** (grapes, region, how
+  the wine is made), never the source's prose, and nothing vintage-specific on the
+  product. The source is kept in our records and on the lists, never on the entry
+  (attribution is per collection, never per record).
+
 **This is a hand-curated conversion, not an algorithm.** At this volume every row can be
 read by a human, which is both cheaper and more accurate than any matching rule. It also
 means the catalog gets a clean seed rather than junk that curators inherit.
