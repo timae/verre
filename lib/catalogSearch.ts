@@ -117,13 +117,40 @@ export function trgmOrderWith(queryLiteral: string, column: string): string {
   return trgmOrderSql(column).replace('$1', queryLiteral)
 }
 
-// 🔒 The threshold is now a POST-FILTER, applied to the ≤20 rows a KNN scan
-// returned rather than to the whole catalog. KNN always returns the n nearest
-// rows however far away they are, so without this a query matching nothing
-// would still return its 20 least-bad rows — the "no bad matches" guarantee
+// 🔒 The threshold is now a POST-FILTER, applied to the rows a KNN scan
+// returned (`limit * 3`, ≤60, plus any exact matches) rather than to the whole catalog. KNN always
+// returns the n nearest rows however far away they are, so without this a query
+// matching nothing would still return its least-bad rows — the "no bad matches" guarantee
 // the `<%` threshold used to provide.
 function withinThreshold<T extends { score: number }>(rows: T[]): T[] {
   return rows.filter(r => r.score >= WORD_SIMILARITY_THRESHOLD)
+}
+
+// 🔒 RE-RANK AMONG TIES, never in the ORDER BY. `<->>` scores every name that
+// CONTAINS the query as a full match, so "Robert Weil" and "Robert Weil Junior"
+// tie at distance 0 and their order was the index's. The ORDER BY must stay a
+// bare distance (the index scan), so the rows it returned are sorted here: an
+// exact folded match first, then the score, then two-way `similarity()` (the
+// closer of two containing names). Measured on a copy of the real catalogue
+// (rehearsal, model change step 1): the typed-out producer name came first in
+// 149 of 150 flows instead of 138,
+// at ~0.2 ms per search. The two columns are computed in an OUTER select over
+// the limited rows (inside, a scoped search would evaluate them on every product
+// of the producer before its sort), and never leave this module (`dropRankFields`).
+function rankSql(column: string): string {
+  return `${column} = catalog_fold_v1($1) AS exact, similarity(${column}, catalog_fold_v1($1)) AS sim`
+}
+type RankFields = { exact: boolean; sim: number }
+function byRank(a: { name: string; score: number } & RankFields, b: { name: string; score: number } & RankFields): number {
+  return Number(b.exact) - Number(a.exact) || b.score - a.score || b.sim - a.sim || a.name.localeCompare(b.name)
+}
+function uniqueById<T extends { id: string }>(rows: T[]): T[] {
+  const seen = new Set<string>()
+  return rows.filter(r => !seen.has(r.id) && !!seen.add(r.id))
+}
+function dropRankFields<T extends RankFields>(rows: T[]): Omit<T, keyof RankFields>[] {
+  for (const r of rows) { delete (r as Partial<RankFields>).exact; delete (r as Partial<RankFields>).sim }
+  return rows
 }
 
 // Hard cap on rows returned to any caller. Suggestions are for a human to read;
@@ -285,17 +312,10 @@ function clampLimit(limit: number | undefined): number {
 
 // ── The searches ───────────────────────────────────────────────────────────
 //
-// 🔒 Each runs inside its own transaction, and that is NOT incidental: the
-// threshold must be set with `SET LOCAL`, which only exists inside one. A bare
-// `SET` would persist on the pooled connection and leak 0.3 into every later
-// query that borrows it — verified above: SET LOCAL reverted to 0.6 at COMMIT.
-// That leak is exactly why the moments-search migration inlined
-// word_similarity() instead of using the operator; SET LOCAL is what buys the
-// index back without reintroducing the hazard.
-//
-// `word_similarity()` in ORDER BY is correct and wanted: the OPERATOR does the
-// indexed filtering, the FUNCTION scores the survivors. The function is only a
-// trap in the WHERE clause.
+// Each is a plain autocommit statement (the `SET LOCAL` transaction of the old
+// `<%` form is gone, see `searchProducers`). The ORDER BY is the bare KNN
+// distance (the index scan); the score, the threshold and the tie re-rank are
+// computed on the rows it returned.
 
 export async function searchProducers(
   rawQuery: string,
@@ -325,19 +345,35 @@ export async function searchProducers(
   // Over-fetching guards against a run of excluded rows starving the result:
   // `linked`/`rejected` are a small minority, so 3x the limit is ample, and the
   // post-filter + resolution below trims back to `limit`.
-  const rows = await prisma.$queryRawUnsafe<ProducerMatch[]>(
-    `SELECT p.id, p.name, p.country, p.region, p.status,
-            ${trgmScoreSql('p.name_folded')} AS score
-       FROM producers p
-      WHERE p.status = ANY($2)
-      ORDER BY ${trgmOrderSql('p.name_folded')}
-      LIMIT ${limit * 3}`,
+  //
+  // 🔒 TWO ARMS, ONE STATEMENT. More than `limit * 3` names can tie at distance 0
+  // (184 producers contain "tenuta", 1,885 "chateau"), and KNN returns ties in index order, so
+  // the producer named exactly "Tenuta" was never offered (model change step 1:
+  // 13 of 15,772 one-word names). The first arm fetches the exact folded matches
+  // through the covering B-tree. ⚠️ Spelled as a RANGE (`>= f AND <= f`, equal
+  // to `=` under the deterministic collation), because for `=` the planner
+  // prices GiST below the B-tree as soon as part of the table is not
+  // all-visible (an index-only estimate charges a whole heap page), and the
+  // GiST `=` read 338–429 buffers where the B-tree reads 4. Duplicates of the
+  // second arm are dropped by id below.
+  const cols = `p.id, p.name, p.country, p.region, p.status, p.name_folded, ${trgmScoreSql('p.name_folded')} AS score`
+  const rows = await prisma.$queryRawUnsafe<(ProducerMatch & RankFields)[]>(
+    `SELECT x.id, x.name, x.country, x.region, x.status, x.score, ${rankSql('x.name_folded')}
+       FROM ((SELECT ${cols} FROM producers p
+               WHERE p.name_folded >= catalog_fold_v1($1) AND p.name_folded <= catalog_fold_v1($1)
+                 AND p.status = ANY($2)
+               LIMIT ${limit * 3})
+             UNION ALL
+             (SELECT ${cols} FROM producers p
+               WHERE p.status = ANY($2)
+               ORDER BY ${trgmOrderSql('p.name_folded')}
+               LIMIT ${limit * 3})) x`,
     q,
     matchStatuses,
   )
-  const near = withinThreshold(rows)
-  const resolved = await resolveMatchesToSurvivors(near, statuses)
-  return stripAddTimeFields(resolved.slice(0, limit), scope)
+  const near = withinThreshold(uniqueById(rows))
+  const resolved = (await resolveMatchesToSurvivors(near, statuses)).sort(byRank)
+  return stripAddTimeFields(dropRankFields(resolved.slice(0, limit)), scope)
 }
 
 // Replace every tombstone hit with the row it was merged into, de-duplicating
@@ -347,9 +383,9 @@ export async function searchProducers(
 // it). A survivor that is itself not surfaceable (e.g. `rejected`, or
 // `archived` on the add path) drops out rather than being offered.
 async function resolveMatchesToSurvivors(
-  rows: ProducerMatch[],
+  rows: (ProducerMatch & RankFields)[],
   surfaceable: readonly string[],
-): Promise<ProducerMatch[]> {
+): Promise<(ProducerMatch & RankFields)[]> {
   const tombstones = rows.filter(r => r.status === 'linked')
   if (!tombstones.length) return rows
   const effective = await resolveEffectiveIds('producers', tombstones.map(r => r.id))
@@ -359,16 +395,18 @@ async function resolveMatchesToSurvivors(
     targetIds,
   )
   const byId = new Map(survivors.map(s => [s.id, s]))
-  const out = new Map<string, ProducerMatch>()
+  const out = new Map<string, ProducerMatch & RankFields>()
   for (const r of rows) {
     const resolved = r.status === 'linked' ? byId.get(effective.get(r.id)!) : r
     if (!resolved || !surfaceable.includes(resolved.status!)) continue
     const prev = out.get(resolved.id)
-    // Keep the better score — the alias that matched the query is the reason
-    // this row is here at all.
-    if (!prev || r.score > prev.score) out.set(resolved.id, { ...resolved, score: r.score })
+    // Keep the better-ranked match (the same order as the sort, so an exact
+    // alias is not lost to its survivor's earlier index position) — the alias
+    // that matched the query is the reason this row is here at all.
+    const cand = { ...resolved, score: r.score, exact: r.exact, sim: r.sim }
+    if (!prev || byRank(cand, prev) < 0) out.set(resolved.id, cand)
   }
-  return [...out.values()].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+  return [...out.values()]
 }
 
 // Products, joined to their LEAD producer.
@@ -463,9 +501,10 @@ export async function searchProducts(
     // which also records the merge-proposal contract question this depends on.
     const scopeFilter = groupIds ? `AND pp.producer_id = ANY($3)` : ''
     const sql =
-      `SELECT wp.id, wp.name, wp.style, wp.colour, wp.sparkling, wp.region, wp.status, wp.links_to AS "linksTo",
-              ${trgmScoreSql('wp.name_folded')} AS score,
-              pr.id AS "producerId", pr.name AS "producerName"
+      `SELECT x.*, ${rankSql('x.name_folded')} FROM (
+       SELECT wp.id, wp.name, wp.style, wp.colour, wp.sparkling, wp.region, wp.status, wp.links_to AS "linksTo",
+              wp.name_folded, ${trgmScoreSql('wp.name_folded')} AS score,
+              pr.id AS "producerId", pr.name AS "producerName", pr.status AS "producerStatus"
          FROM wine_products wp
          JOIN product_producers pp
            ON pp.product_id = wp.id AND pp.role = 'lead'
@@ -474,15 +513,17 @@ export async function searchProducts(
           AND wp.scope = 'shared'
           ${scopeFilter}
         ORDER BY ${trgmOrderSql('wp.name_folded')}
-        LIMIT ${limit * 3}`
+        LIMIT ${limit * 3}) x`
     const args: unknown[] = [q, [...statuses, 'linked']]
     if (groupIds) args.push(groupIds)
-    return prisma.$queryRawUnsafe<(ProductMatch & { linksTo: string | null })[]>(sql, ...args)
+    return prisma.$queryRawUnsafe<MatchedProduct[]>(sql, ...args)
   })()
   const near = withinThreshold(rows)
-  const resolved = await resolveProductMatches(near, statuses)
-  return stripAddTimeFields(resolved.slice(0, limit), scope)
+  const resolved = (await resolveProductMatches(near, statuses)).sort(byRank)
+  return stripAddTimeFields(dropRankFields(resolved.slice(0, limit)), scope)
 }
+
+type MatchedProduct = ProductMatch & RankFields & { linksTo: string | null; producerStatus: string }
 
 // Resolve matched product tombstones to their survivor, and report the
 // EFFECTIVE producer rather than the stored one.
@@ -497,9 +538,9 @@ export async function searchProducts(
 // never from a catalog-wide scan — that distinction is what keeps this off the
 // hot path. Two small `= ANY` lookups against primary keys.
 async function resolveProductMatches(
-  rows: (ProductMatch & { linksTo: string | null })[],
+  rows: MatchedProduct[],
   surfaceable: readonly string[],
-): Promise<ProductMatch[]> {
+): Promise<(ProductMatch & RankFields)[]> {
   if (!rows.length) return []
 
   // 1. Product tombstones → their survivors, fetched with the survivor's own
@@ -510,9 +551,9 @@ async function resolveProductMatches(
     : new Map<string, string>()
   const survivorIds = [...new Set(toSurvivor.values())]
   const survivors = survivorIds.length
-    ? await prisma.$queryRawUnsafe<(ProductMatch & { linksTo: string | null })[]>(
+    ? await prisma.$queryRawUnsafe<Omit<MatchedProduct, 'score' | keyof RankFields>[]>(
         `SELECT wp.id, wp.name, wp.style, wp.colour, wp.sparkling, wp.region, wp.status, wp.links_to AS "linksTo",
-                pr.id AS "producerId", pr.name AS "producerName"
+                pr.id AS "producerId", pr.name AS "producerName", pr.status AS "producerStatus"
            FROM wine_products wp
            JOIN product_producers pp ON pp.product_id = wp.id AND pp.role = 'lead'
            JOIN producers pr ON pr.id = pp.producer_id
@@ -523,27 +564,40 @@ async function resolveProductMatches(
 
   // 2. Whatever rows SURVIVE step 1, resolve their producers through their own
   //    alias chains and fetch the effective names — one bounded lookup each.
+  //    ⚠️ Only when one of those producers IS a tombstone: by the
+  //    `(status = 'linked') = (links_to IS NOT NULL)` CHECK every other producer
+  //    resolves to itself, and its name is the one the search already joined.
+  //    Skipping is exact, and it took the scoped search from 5 statements to 2
+  //    and the unscoped one from 3 to 1 (model change step 1, § 2c pins it).
   const kept = rows
-    .map(r => ({ score: r.score, row: r.status === 'linked' ? bySurvivor.get(toSurvivor.get(r.id)!) : r }))
-    .filter((x): x is { score: number; row: ProductMatch & { linksTo: string | null } } =>
+    .map(r => ({ r, row: r.status === 'linked' ? bySurvivor.get(toSurvivor.get(r.id)!) : r }))
+    .filter((x): x is { r: MatchedProduct; row: Omit<MatchedProduct, 'score' | keyof RankFields> } =>
       !!x.row && surfaceable.includes(x.row.status!))
   if (!kept.length) return []
-  const effProducer = await resolveEffectiveIds('producers', kept.map(x => x.row.producerId))
-  const names = await prisma.$queryRawUnsafe<{ id: string; name: string }[]>(
-    `SELECT id, name FROM producers WHERE id = ANY($1)`, [...new Set(effProducer.values())])
-  const nameById = new Map(names.map(p => [p.id, p.name]))
+  const merged = [...new Set(kept.filter(x => x.row.producerStatus === 'linked').map(x => x.row.producerId))]
+  const effProducer = merged.length ? await resolveEffectiveIds('producers', merged) : new Map<string, string>()
+  const nameById = new Map<string, string>()
+  if (merged.length) {
+    const names = await prisma.$queryRawUnsafe<{ id: string; name: string }[]>(
+      `SELECT id, name FROM producers WHERE id = ANY($1)`, [...new Set(effProducer.values())])
+    for (const n of names) nameById.set(n.id, n.name)
+  }
 
   // 3. De-duplicate (an alias and its survivor can both match), keeping the
-  //    better score — the alias that matched the query is why the row is here.
-  const out = new Map<string, ProductMatch>()
-  for (const { score, row } of kept) {
-    const prev = out.get(row.id)
-    if (prev && prev.score >= score) continue
+  //    better-ranked match (`byRank`, the caller's sort order) — the alias that
+  //    matched the query is why the row is here, and its rank fields come with it.
+  const out = new Map<string, ProductMatch & RankFields>()
+  for (const { r, row } of kept) {
     const effId = effProducer.get(row.producerId) ?? row.producerId
-    const { linksTo: _drop, ...rest } = row
-    out.set(row.id, { ...rest, score, producerId: effId, producerName: nameById.get(effId) ?? row.producerName })
+    const cand = {
+      id: row.id, name: row.name, style: row.style, colour: row.colour, sparkling: row.sparkling, region: row.region,
+      status: row.status, score: r.score, exact: r.exact, sim: r.sim,
+      producerId: effId, producerName: nameById.get(effId) ?? row.producerName,
+    }
+    const prev = out.get(row.id)
+    if (!prev || byRank(cand, prev) < 0) out.set(row.id, cand)
   }
-  return [...out.values()].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+  return [...out.values()]
 }
 
 // The alias GROUP of one producer: its effective survivor plus every tombstone
@@ -553,19 +607,33 @@ async function resolveProductMatches(
 // Returns every id a caller-supplied producerId is equivalent to, which is what
 // makes "scoped by the alias" and "scoped by the survivor" return the same
 // products.
+//
+// ONE statement (it was two: the walk up through `resolveEffectiveIds`, then
+// the walk down): `up` follows `links_to` from the chosen producer with the
+// same depth cap and the same stop-on-a-revisit as `resolveEffectiveIds`, the
+// deepest row is the survivor, `grp` walks down from it. Both walks start from
+// ONE id and move by primary key / `producers_links_to_idx`: never the
+// catalogue-wide CTE (lib/CLAUDE.md). An unknown id yields nothing, and the id
+// itself is appended below, as before.
 async function producerAliasGroup(producerId: string): Promise<string[]> {
-  const effective = (await resolveEffectiveIds('producers', [producerId])).get(producerId)
-  if (!effective) return [producerId]
   const rows = await prisma.$queryRawUnsafe<{ id: string }[]>(
-    `WITH RECURSIVE grp(id, depth) AS (
-       SELECT id, 0 FROM producers WHERE id = $1
+    `WITH RECURSIVE up(id, links_to, depth, path) AS (
+       SELECT id, links_to, 0, ARRAY[id::text] FROM producers WHERE id = $1
+       UNION ALL
+       SELECT p.id, p.links_to, u.depth + 1, u.path || p.id::text
+         FROM producers p JOIN up u ON p.id = u.links_to
+        WHERE u.depth < ${MERGE_DEPTH_CAP} AND p.id::text <> ALL(u.path)
+     ),
+     survivor AS (SELECT id FROM up ORDER BY depth DESC LIMIT 1),
+     grp(id, depth) AS (
+       SELECT id, 0 FROM survivor
        UNION ALL
        SELECT p.id, g.depth + 1
          FROM producers p JOIN grp g ON p.links_to = g.id
         WHERE g.depth < ${MERGE_DEPTH_CAP}
      )
      SELECT DISTINCT id FROM grp`,
-    effective,
+    producerId,
   )
   const ids = rows.map(r => r.id)
   return ids.includes(producerId) ? ids : [...ids, producerId]

@@ -930,6 +930,126 @@ async function main() {
     `UPDATE producers SET status = 'provisional', links_to = NULL WHERE id IN ('${mLoser.id}','${mSurv.id}')`)
 
   // ══════════════════════════════════════════════════════════════════════
+  console.log('\n§ 2c — ranking among ties, and statements per search')
+  // 🔒 `<->>` is 1 - word_similarity, which scores every name that CONTAINS the
+  // query as a full match: "Robert Weil" ties at distance 0 with "Robert Weil
+  // Junior", and the order among ties was the index's (measured on the real
+  // catalogue, step 1 of the model change: the full producer name came first in
+  // 138 of 150 flows). The KNN ORDER BY must stay a bare distance (that is the
+  // index scan, § 1), so the rows it returns are re-ranked: exact folded match,
+  // then the score, then two-way similarity. A fixed list, so a cheaper or
+  // reshaped query cannot silently rank worse. The exact row is created LAST so
+  // index order does not hand it first place by accident.
+  const weilVariants = ['Junior', 'Estate Kiedrich', 'Kiedricher Grafenberg Erste Lage', 'Tradition',
+    'Rheingau Selection', 'Weingut Kellerei', 'Family Reserve', 'Klosterberg', 'Turmberg', 'Hallgarten']
+  for (const v of weilVariants) await createProducer({ name: `P2TEST Robert Weil ${v}` }, TEST_USER)
+  const weilExact = await createProducer({ name: 'P2TEST Robert Weil' }, TEST_USER)
+  const tieHouse = await createProducer({ name: 'P2TEST Ranking House' }, TEST_USER)
+  for (const n of ['Ancienne Cuvee', 'Belle Cuvee', 'Cuvee Prestige du Domaine', 'Cuvee'])
+    await createProduct({ name: `P2TEST ${n}`, producerId: tieHouse.id }, TEST_USER)
+  await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
+  await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
+  const weil = await searchProducers('P2TEST Robert Weil')
+  eq(weil[0]?.id, weilExact.id, 'an EXACT name ranks first among the names that contain it')
+  ok(weil.every(r => !('exact' in r) && !('sim' in r)), 'the ranking columns never reach the result shape')
+  const weilNoExact = await searchProducers('Robert Weil')
+  eq(weilNoExact[0]?.id, weilExact.id, 'with no exact match, the closest of the containing names ranks first')
+  const iJunior = weilNoExact.findIndex(r => r.name === 'P2TEST Robert Weil Junior')
+  const iLong = weilNoExact.findIndex(r => r.name === 'P2TEST Robert Weil Kiedricher Grafenberg Erste Lage')
+  ok(iJunior >= 0 && iLong > iJunior, `a short containing name ranks above a long one (Junior ${iJunior}, long ${iLong})`)
+  const cuvee = await searchProducts('Cuvee', { producerId: tieHouse.id })
+  eq(cuvee[0]?.name, 'P2TEST Cuvee', 'scoped: the closest containing name ranks first, not the alphabetically first')
+
+  // 🔒 STATEMENTS PER SEARCH. Each statement is a round trip and ~0.3 ms of app
+  // CPU (more on a fractional-core instance), and the scoped search sent five
+  // for a result one statement already holds (step 1 of the model change). The
+  // merge machinery still runs, but only when a row or its producer is `linked`
+  // (§ 2b covers those results). Counted on the app's own client.
+  const { prisma: appPrisma } = await import('../../lib/prisma.ts')
+  const statements = async fn => {
+    let n = 0
+    const unsafe = appPrisma.$queryRawUnsafe, tagged = appPrisma.$queryRaw
+    appPrisma.$queryRawUnsafe = (...a) => { n++; return unsafe.apply(appPrisma, a) }
+    appPrisma.$queryRaw = (...a) => { n++; return tagged.apply(appPrisma, a) }
+    try { await fn() } finally { appPrisma.$queryRawUnsafe = unsafe; appPrisma.$queryRaw = tagged }
+    return n
+  }
+  const nProducer = await statements(() => searchProducers('Robert Weil'))
+  const nScoped = await statements(() => searchProducts('Cuvee', { producerId: tieHouse.id }))
+  const nUnscoped = await statements(() => searchProducts('P2TEST Cuvee'))
+  ok(nProducer >= 1, `the statement counter sees the search (producer sent ${nProducer})`)
+  eq(nProducer, 1, 'a producer search with no merged row is ONE statement')
+  ok(nScoped <= 2, `a scoped product search with no merged row is at most TWO statements (sent ${nScoped})`)
+  eq(nUnscoped, 1, 'an unscoped product search with no merged row is ONE statement')
+
+  // 🔒 THE EXACT ROW IS OFFERED EVEN OUTSIDE THE KNN WINDOW. More names can tie
+  // at distance 0 than the scan returns (limit × 3 = 60), in index order: on the
+  // real catalogue the producer named exactly "Tenuta" was never offered (184
+  // names contain it). 200 names here contain the query; one IS it.
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO producers (id, name, status, curator_locked, created_at, updated_at)
+    SELECT 'p2tie' || lpad(g::text, 6, '0'), 'P2TEST Tenutaq Cellar ' || g, 'confirmed', '{}', now(), now()
+      FROM generate_series(1, 200) g`)
+  const tenutaExact = await createProducer({ name: 'P2TEST Tenutaq' }, TEST_USER)
+  // 🔒 A MERGED ALIAS LENDS ITS RANK TO ITS SURVIVOR, whichever of the two the
+  // index returns first. Per pair: the alias is the CLOSEST name (not exact), a
+  // competitor comes next, the survivor is far longer; all three contain the
+  // query (a tie at score 1). Only a de-dup that keeps the better-RANKED match
+  // (`byRank`) puts the survivor above the competitor: a score-only de-dup
+  // keeps whichever came first. Six pairs so index order cannot hide that, for
+  // producers and (scoped) for products.
+  const mergePairs = []
+  for (const k of ['a', 'b', 'c', 'd', 'e', 'f']) {
+    const surv = await createProducer({ name: `P2TEST Quillard${k} Domaine Wines and Spirits Estate` }, TEST_USER)
+    const alias = await createProducer({ name: `P2TEST Quillard${k} Domaine` }, TEST_USER)
+    await createProducer({ name: `P2TEST Quillard${k} Domaine X` }, TEST_USER)
+    await prisma.$executeRawUnsafe(`UPDATE producers SET status = 'linked', links_to = '${surv.id}' WHERE id = '${alias.id}'`)
+    mergePairs.push({ k, surv, alias })
+  }
+  const prodHouse = await createProducer({ name: 'P2TEST Brunell House' }, TEST_USER)
+  const prodPairs = []
+  for (const k of ['a', 'b', 'c', 'd', 'e', 'f']) {
+    const surv = await createProduct({ name: `P2TEST Brunell${k} Riserva Speciale del Fondatore`, producerId: prodHouse.id }, TEST_USER)
+    const alias = await createProduct({ name: `P2TEST Brunell${k} Riserva`, producerId: prodHouse.id }, TEST_USER)
+    await createProduct({ name: `P2TEST Brunell${k} Riserva X`, producerId: prodHouse.id }, TEST_USER)
+    await prisma.$executeRawUnsafe(`UPDATE wine_products SET status = 'linked', links_to = '${surv.id}' WHERE id = '${alias.id}'`)
+    prodPairs.push({ k, surv, alias })
+  }
+  await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
+  await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
+  const tenuta = await searchProducers('P2TEST Tenutaq')
+  eq(tenuta[0]?.id, tenutaExact.id, 'an exact name is offered first even when more than 60 names contain it')
+  const pairTops = []
+  for (const { k, surv } of mergePairs) pairTops.push((await searchProducers(`P2TEST Quillard${k}`))[0]?.id === surv.id)
+  ok(pairTops.every(Boolean), `producers: a merged alias's rank carries to its survivor, above a closer competitor (${pairTops.filter(Boolean).length}/6)`)
+  const prodTops = []
+  for (const { k, surv } of prodPairs) prodTops.push((await searchProducts(`P2TEST Brunell${k}`, { producerId: prodHouse.id }))[0]?.id === surv.id)
+  ok(prodTops.every(Boolean), `products: a merged alias's rank carries to its survivor, above a closer competitor (${prodTops.filter(Boolean).length}/6)`)
+  const quill = await searchProducers('P2TEST Quillarda')
+  const keys = o => (o ? Object.keys(o).sort().join(',') : '(no result)')
+  eq(keys(weil[0]), 'country,id,name,region,score', 'a producer result carries exactly its public fields')
+  eq(keys(quill[0]), 'country,id,name,region,score', 'so does a producer resolved through a merge')
+  eq(keys(cuvee[0]), 'colour,id,name,producerId,producerName,region,score,sparkling,style',
+    'a product result carries exactly its public fields (no rank, link or producer-status columns)')
+  for (const { alias } of mergePairs)
+    await prisma.$executeRawUnsafe(`UPDATE producers SET status = 'provisional', links_to = NULL WHERE id = '${alias.id}'`)
+  for (const { alias } of prodPairs)
+    await prisma.$executeRawUnsafe(`UPDATE wine_products SET status = 'provisional', links_to = NULL WHERE id = '${alias.id}'`)
+
+  // The REAL producer statement, EXPLAINed (§ 1 explains a literal of the form):
+  // the exact arm on the covering B-tree, the KNN arm on GiST, no seq scan.
+  let captured = null
+  const unsafe0 = appPrisma.$queryRawUnsafe
+  appPrisma.$queryRawUnsafe = (sql, ...args) => { captured ??= { sql, args }; return unsafe0.call(appPrisma, sql, ...args) }
+  try { await searchProducers('P2TEST Robert Weil') } finally { appPrisma.$queryRawUnsafe = unsafe0 }
+  const realPlan = captured
+    ? JSON.stringify((await appPrisma.$queryRawUnsafe(`EXPLAIN (FORMAT JSON) ${captured.sql}`, ...captured.args))[0]['QUERY PLAN'])
+    : ''
+  ok(realPlan.includes('producers_name_folded_gist_idx'), 'the real producer statement orders through the GiST KNN index')
+  ok(realPlan.includes('"producers_name_folded_idx"'), 'its exact arm uses the covering B-tree (the range spelling)')
+  ok(realPlan !== '' && !seqScansTable(realPlan, 'producers'), 'and it does not sequentially scan producers')
+
+  // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 3 — a product cannot be created without its lead producer')
   // 🔒 The deferred trigger raises at COMMIT, so a bare create ALWAYS fails.
   // This is the invariant working, and phase-2 authors meet it as a confusing

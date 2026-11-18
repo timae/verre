@@ -1304,6 +1304,20 @@ participant); measure on staging before assuming it is acceptable (§ 9). What i
 acceptable is the current shape, where a stale cache is indistinguishable from a fresh
 one.
 
+🔒 **Keep it off the poll's round trips (step 1, 2026-11-18; both consultations agree).** The
+read itself is negligible (≈ 0.02–0.1 ms on staging); its cost is one round trip plus app CPU
+per statement (≈ 0.3–0.85 ms in the sandbox, about twice that throttled to ⅛ core), on an app
+that one ⅛-core instance caps near 20–26 requests a second (§ 9). So: for a signed-in caller of
+a promoted moment add `s.lineup_revision` to `readGrant` (`lib/sessionGrant.ts`), which already
+reads the `sessions` row by code on every request (`lib/identity.ts:228`), and fetch `wrev` in
+`openSession`'s existing `MGET`: zero extra statements. A guest of a promoted moment has no
+database read on a poll today, so the guest pays one; whether to memo it per code for a second
+or two is open (Fable: yes, writers re-read under their lock; Codex: a cross-request memo weakens
+stale detection), decided in step 3. Writers: the bump is the contract's row-lock statement
+(`UPDATE … RETURNING` in place of `SELECT … FOR UPDATE`), not a statement of its own; reorder is
+one `UPDATE … FROM unnest()` touching only moved rows; `lineup_revision`, `position` and
+`revealed_at` stay out of every index (HOT updates).
+
 #### 🔒 Occurrence ids are client-generated
 
 **RULED** (was left as two options; now decided). The client mints the occurrence id — a
@@ -1688,6 +1702,41 @@ Carried from phase 2, both now due, because this change OPENS the fence:
     lists the host's CPUs, not the ⅛-core quota (not measured on Deplo.io): one instance's
     pool can exceed the limit on its own. And ⅛ core bounds the app tier itself, which the
     probe (database only) did not measure.
+  - ✅ **Step 1 (2026-11-18): measured, changed, decided.** Two independent consultations (a
+    Fable agent at high effort, then Codex at xhigh, each from a copied bundle without our
+    hypotheses) and our hypotheses, measured together; reports and logs in the local planning
+    notes. **The public flow on staging** (read-only from the sandbox, pool 6; 150 flows of
+    3 producer searches as the name is typed, 2 scoped product searches, 1 vintage lookup):
+    producer 12.7–14.9 ms / 587 buffers (it reads nearly the whole producer GiST, so it grows
+    with the catalogue, not the LIMIT), scoped 1.4 ms, vintage lookup (planned query, the
+    existing `(product_id, year)` index) 0.2 ms warm / 5 ms cold; **about 240 calls (40 flows)
+    a second at 6 in flight**, p95 52 ms, 0 errors. **The app tier binds first:** the real route
+    in a container capped at ⅛ core / 256 MiB (this branch's standalone build, rehearsal
+    database) saturates at 15–23 requests a second for ANY route, an empty-answer request
+    included: ≈ 5–6 ms of CPU per authenticated request (auth, user, rate limit, Next; ≈ 20–26
+    a second by that CPU), about double the unthrottled cost; measured on the sandbox's CPU, not Deplo.io's, and Nine's
+    docs do not say whether micro can burst. **Changed:** ties re-ranked among the rows the
+    KNN scan returns (exact folded match, score, two-way similarity; on staging the right
+    producer first from two words 116 → 127 of 150, from a typo 98 → 112), plus an exact-name
+    arm in the same statement (on the B-tree), so an exact name is offered even when more than
+    60 names contain it ("Tenuta" was never offered); merge resolution only when a row or its
+    producer is `linked`, the alias group in one statement (scoped search 5 → 2 statements,
+    unscoped 3 → 1; one at a time 46 → 66 calls a second); idle pool connections kept 5 minutes
+    with TCP keepalive (a reconnect from ⅛ core costs ≈ 100 ms and 20 ms of CPU); ONE pool per
+    process (the production build had made one per chunk: 12 connections for a limit of 6). **Measured and not changed:**
+    a longer GiST signature (producers no gain; products −13–16 % buffers on the staff-only
+    path), a query-length cap (the slow public calls are short typos), the exact-name plan
+    (staging plans GiST because a not-all-visible fraction of `producers` costs a whole heap
+    page in the index-only estimate; nothing calls it at runtime; a range spelling fixes it if
+    phase 5 needs it). No index change, so nothing to announce. Typing debounce and coalescing
+    belong to the picker (step 4 / 7). **Decided (Simon, 2026-11-18): open on micro and watch
+    Deplo.io's CPU, move to mini when it sits near the limit; `DATABASE_CONNECTION_LIMIT=6`**
+    (`docs/dev/deployment.md`). **A Redis cache of search results: measured, not planned**
+    (Simon): a hit costs 0.04–0.07 ms of app CPU against 0.4–0.65 ms for the Postgres search,
+    but after the statement cut a search request costs the same app CPU as one that runs no
+    search (≈ 6 ms on ⅛ core), so it would save database time the database has to spare, and
+    every catalogue change (imports and merges included) would have to invalidate it. The
+    fixed ≈ 6 ms per signed-in request is the real lever: its own proposal, later (Simon).
 
 ### 🔒 Release conditions — deploy is blocked until all hold
 
@@ -1715,7 +1764,8 @@ Carried from phase 2, both now due, because this change OPENS the fence:
    land in Postgres, never vanish. This is the T1 race; it cannot be verified by
    inspection. The rehydration's cutover suite drives such races through
    `mutationHooks`; extend it rather than write a second harness.
-6. **Interleaved concurrent-PATCH test run, and search capacity decided** (above), before
+6. **Interleaved concurrent-PATCH test run, and search capacity decided** (✅ capacity decided
+   2026-11-18, above; the PATCH test is step 4), before
    release day: the fence opens with the code (§ 7), because a closed fence means only
    staff can add a bottle.
 
