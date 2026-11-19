@@ -81,14 +81,16 @@ below are edited in place to match; where a ruling stands unchanged it is not re
 
 ### 0.2 Rulings taken 2026-11-18 (Simon)
 
-- **New entry fields:** producer + name + today's type picker (red / white / rosé →
-  `colour`; sparkling → `sparkling`, colour unknown; alcohol-free → `abv = 0`). 🔒 **The abv
-  is the fact; "non-alcoholic" is derived from it** (Simon, 2026-11-19): `abv ≤ 0.5` reads
-  as non-alcoholic (the EU / Swiss / US class of de-alcoholised wine), and the value is
-  still shown ("0.5 %"), so a delivered 0.5 is never rounded to 0. Later the person types
-  the abv and never picks "non-alcoholic"; until that input exists, the picker's
-  alcohol-free stores 0. Catalogue data never writes 0 to mean "alcohol-free, value
-  unknown" (the step 1b feedback asks for the label value or empty). The flow
+- **New entry fields:** producer + name + the type picker (red / white / rosé →
+  `colour`; sparkling → `sparkling`, colour unknown) + an **optional abv**. 🔒 **The abv is
+  the fact; "non-alcoholic" is derived from it** (Simon, 2026-11-19, superseding the
+  picker's alcohol-free → `abv = 0`): `abv ≤ 0.5` reads as non-alcoholic (the EU / Swiss /
+  US class of de-alcoholised wine), and the value is still shown ("0.5 %"), so a delivered
+  0.5 is never rounded to 0. The person types the abv and never picks "non-alcoholic":
+  the alcohol-free choice leaves the picker **in this change** (steps 4 and 7). Legacy
+  alcohol-free bottles (`style = 'nonalc'`) read as abv 0 (what the picker meant). The
+  bottle's snapshot keeps the abv (§ 1). Catalogue data never writes 0 to mean
+  "alcohol-free, value unknown" (the step 1b feedback asks for the label value or empty). The flow
   lets someone **find the producer first** and create only the wine under it, and **add
   a missing vintage to an existing wine**. Both are existing add-flow branches
   (`lib/catalogAddFlow.ts` branch 3 and branch 2); they need screens, not server work.
@@ -226,6 +228,7 @@ occurrence is the unit, not the catalog link.
 |---|---|---|
 | `name`, `producer`, `vintage` | Catalog entry **+ snapshot on the occurrence** | Identity lives in the catalog; the occurrence keeps a display snapshot so an unlinked or purged row still renders (§ 5a) |
 | *(new)* `colour`, `sparkling` | **Snapshot on the occurrence** (+ catalog entry) | Closes § 9's snapshot gap: an unlinked or purged occurrence keeps its Bubbles axis and its colour mark. Copied from the entry at link time; legacy rows derived from `style` in the migration (`spark` → sparkling, `red`/`white`/`rose` → colour, `nonalc` → neither) |
+| *(new)* `abv` | **Snapshot on the occurrence** (+ catalog entry: the vintage's abv, else the product's) | Ruled 2026-11-19 (Simon): an unlinked or purged occurrence keeps its abv and so its derived non-alcoholic mark (§ 0.2); without it the legacy alcohol-free rows would lose the mark when step 9 drops `style`. `DECIMAL(4,2)` NULL, 0 to 25 like the catalogue. Copied from the entry at link time; the migration backfills `nonalc` → 0 and leaves every other legacy row NULL |
 | `grape` | Catalog entry | What the wine is |
 | `category`, `style` | Catalog entry | Same. `style` stays on the row until the contract migration (§ 12 step 9) as the legacy source of the snapshot |
 | *(new)* `origin` | Occurrence | `session` / `standalone`; `session_id IS NULL` is ambiguous (orphaning, above) |
