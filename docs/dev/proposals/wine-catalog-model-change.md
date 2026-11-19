@@ -249,14 +249,14 @@ Step 2 implements exactly this. Measured basis: the step 1b data-health assessme
 
 | Column | Type | Rule |
 |---|---|---|
-| origin country (name open, below) | `VARCHAR(2)`, NULL = unknown | ISO 3166-1 alpha-2, uppercase, CHECK against the full list |
+| `wine_products.country` (origin) | `VARCHAR(2)`, NULL = unknown | ISO 3166-1 alpha-2, uppercase, CHECK against the full list |
 | `producers.country` (existing) | `VARCHAR(2)` | the same CHECK, added in the same version |
 | `description` | `VARCHAR(1000)`, NULL or not blank | plain English text |
 | `vinification` | `VARCHAR(1000)`, NULL or not blank | plain English text |
 
-- **Name: open.** The catalogue-maintenance side is asked first whether it already carries
-  a product-level origin and under what name; we take theirs if so, otherwise
-  `wine_products.country`. Step 2 needs the answer before its migration is written.
+- **Name: `wine_products.country`** (the catalogue-maintenance side's answer, 2026-11-19:
+  it carries no product-level origin today, so our default stands). It derives the origin
+  per product from its own evidence; where it can't, the value is NULL.
 - 🔒 **The origin is where the wine is from, never the producer's home**: never filled from
   `producers.country` and never a read-time fallback to it (estimated: about 778 products
   sit under a producer of another country, by a heuristic that infers a region's country
@@ -277,7 +277,10 @@ Step 2 implements exactly this. Measured basis: the step 1b data-health assessme
   set, newlines only between paragraphs, NFC, trimmed); **English only** (another language
   stays NULL for now); product grain (a vintage-level override would be a later additive
   column). Language and the no-URL rule are not database-enforced: our post-delivery check
-  lists violations before a prod load.
+  lists violations before a prod load. **They ship empty** (2026-11-19): the
+  catalogue-maintenance side holds no such text, so its columns file carries the origin
+  only; Simon kept both columns in v3 anyway, to be filled later through review or a
+  future licensed source.
 - **Licence**: both texts come only from sources the attributions surface covers, or are
   written by the catalogue-maintenance side; never copied producer or retailer copy. A new
   source ships its attribution entry first (§ 7). Attribution stays corpus-level.
@@ -990,13 +993,27 @@ attributions page ✅ → first catalog fill ✅ → model change → review que
   carry a `productId`) are invisible to that check: before the prod load we scan the live
   line-ups for catalogue ids in the removed / merged lists. Ids stay stable for every entity that persists; removed and merged ids
   come as lists and are never reused. The three new columns' values come as a second file,
-  loaded after migrate by a guarded one-off update (ours). **Timing (Simon, 2026-11-19):**
-  the replacement is TARGETED for Fri 2026-12-04, the columns file may follow, and the
-  final rehearsal is the only hard stop: if the replacement misses it, the release ships on
-  today's catalogue and corrections wait for review; if the columns file does, they ship
-  empty and the same update fills them later. Build step 2 starts on the
-  catalogue-maintenance side's answer about the origin column's name (no date set); step
-  1b stays open alongside until both files are in and checked.
+  loaded after migrate by a guarded one-off update (ours). **Their replace mode adds three
+  things** (accepted 2026-11-19): it refuses unless prod still holds exactly the first
+  delivery (its content digest, inside the load's transaction); it LOCKS, for the whole
+  load, every table that holds catalogue ids without a foreign key (today `catalog_audit`;
+  step 2 adds `catalog_review_items`, and we tell them of any new one); and it runs
+  `VACUUM (FULL, ANALYZE)` after the commit. A guest bottle's `vintageId` without a
+  `productId`, which the composite key's MATCH SIMPLE would let through, is already refused
+  by `wines_catalog_link_check`. **Timing (Simon, 2026-11-19):** the replacement is
+  TARGETED for Fri 2026-12-04 and the columns file may follow. No rehearsal date is set
+  (Simon runs both sides). 🔒 **The fallback ends when the catalogue-maintenance side marks
+  the first delivery superseded** (agreed 2026-11-19): until then a missed replacement
+  means the release ships on today's catalogue and corrections wait for review; after it,
+  the release WAITS until the corrected catalogue is on prod, as the replacement or as a
+  fresh load into an emptied catalogue, both before release day (from the release on every
+  new bottle links or mints, so an empty catalogue would block adding bottles and our first
+  mint would block the fresh load). If the columns file misses the rehearsal, the columns
+  ship empty and the same update fills them later. The columns file loads only on top of
+  the replacement (its ids are the replacement's). It carries the origin only: the
+  catalogue-maintenance side holds no description or vinification text. Build step 2 starts now: the origin
+  column is `wine_products.country` (answered 2026-11-19); step 1b stays open alongside
+  until both files are in and checked.
 - **Model change** — this document.
 - **Review queue** — the curator screens (phase 3).
 
