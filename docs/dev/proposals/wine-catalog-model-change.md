@@ -82,7 +82,13 @@ below are edited in place to match; where a ruling stands unchanged it is not re
 ### 0.2 Rulings taken 2026-11-18 (Simon)
 
 - **New entry fields:** producer + name + today's type picker (red / white / rosé →
-  `colour`; sparkling → `sparkling`, colour unknown; alcohol-free → `abv = 0`). The flow
+  `colour`; sparkling → `sparkling`, colour unknown; alcohol-free → `abv = 0`). 🔒 **The abv
+  is the fact; "non-alcoholic" is derived from it** (Simon, 2026-11-19): `abv ≤ 0.5` reads
+  as non-alcoholic (the EU / Swiss / US class of de-alcoholised wine), and the value is
+  still shown ("0.5 %"), so a delivered 0.5 is never rounded to 0. Later the person types
+  the abv and never picks "non-alcoholic"; until that input exists, the picker's
+  alcohol-free stores 0. Catalogue data never writes 0 to mean "alcohol-free, value
+  unknown" (the step 1b feedback asks for the label value or empty). The flow
   lets someone **find the producer first** and create only the wine under it, and **add
   a missing vintage to an existing wine**. Both are existing add-flow branches
   (`lib/catalogAddFlow.ts` branch 3 and branch 2); they need screens, not server work.
@@ -224,7 +230,7 @@ occurrence is the unit, not the catalog link.
 | `category`, `style` | Catalog entry | Same. `style` stays on the row until the contract migration (§ 12 step 9) as the legacy source of the snapshot |
 | *(new)* `origin` | Occurrence | `session` / `standalone`; `session_id IS NULL` is ambiguous (orphaning, above) |
 | `region` | Catalog entry (`wine_products.region`) | Same. The occurrence keeps its stored value as history |
-| `country` (of origin), `description`, `vinification` | **New catalogue columns on `wine_products`** (Simon, 2026-11-18: the catalogue had no place for them; `producers.country` is the company's home, never the wine's origin) | A contract change, announced to the catalogue-maintenance side before the push (§ 9 condition 3a). The occurrence keeps its stored values as history; nothing is dropped in step 9 |
+| `country` (of origin), `description`, `vinification` | **New catalogue columns on `wine_products`** (Simon, 2026-11-18: the catalogue had no place for them; `producers.country` is the company's home, never the wine's origin). Contract below | A contract change, announced to the catalogue-maintenance side before the push (§ 9 condition 3a). The occurrence keeps its stored values as history; nothing is dropped in step 9 |
 | `session_id` | Occurrence | Per-event; null for standalone |
 | `added_by_identity_id`, `added_by_display_name` | Occurrence | Who brought this bottle, this time |
 | `revealed_at` | Occurrence | Per-tasting blind state |
@@ -232,6 +238,50 @@ occurrence is the unit, not the catalog link.
 | `purchase_url` | Occurrence | Per-event — covers standalone too |
 | `product_id`, `vintage_id` | Occurrence | The link *is* the row's purpose |
 | *(position)* | Occurrence | ✅ Shipped with the rehydration (`wines.position`, renormalized on every mirror) |
+
+### The new catalogue columns: contract v3 (ruled 2026-11-19, Simon)
+
+Step 2 implements exactly this. Measured basis: the step 1b data-health assessment
+(rehearsal = prod's catalogue, cross-checked on staging, 2026-11-19).
+
+| Column | Type | Rule |
+|---|---|---|
+| origin country (name open, below) | `VARCHAR(2)`, NULL = unknown | ISO 3166-1 alpha-2, uppercase, CHECK against the full list |
+| `producers.country` (existing) | `VARCHAR(2)` | the same CHECK, added in the same version |
+| `description` | `VARCHAR(1000)`, NULL or not blank | plain English text |
+| `vinification` | `VARCHAR(1000)`, NULL or not blank | plain English text |
+
+- **Name: open.** The catalogue-maintenance side is asked first whether it already carries
+  a product-level origin and under what name; we take theirs if so, otherwise
+  `wine_products.country`. Step 2 needs the answer before its migration is written.
+- 🔒 **The origin is where the wine is from, never the producer's home**: never filled from
+  `producers.country` and never a read-time fallback to it (estimated: about 778 products
+  sit under a producer of another country, by a heuristic that infers a region's country
+  from its producers). A blend across countries is NULL.
+- 🔒 **The country CHECK is the FULL code list** (the 249 codes of `COUNTRY_CODES`,
+  `packages/core/src/countries.ts`), inline in the CHECK, not a format test. From the
+  release on, a code outside it refuses the whole delivery (an import batch is
+  all-or-nothing): the catalogue-maintenance side cleans its codes before it builds, and the
+  feedback says so. The flush's replacement loads BEFORE the CHECK exists, so a bad code in
+  it would instead fail step 2's migration on prod: we check the replacement against the
+  list before loading it there.
+  Adding a code is a migration and a contract event. A parity test pins the CHECK's list to
+  `COUNTRY_CODES` both ways (as the username format CHECK is pinned). On `producers.country`
+  it is a stricter predicate on an existing column, so a contract event too; measured on the
+  loaded catalogue: 68 codes in use, all valid, 13 producers NULL.
+- **`description` / `vinification`**: not blank through the fold (`catalog_fold_v1(x) <> ''`,
+  the `region` pattern); plain sentences (no links or URLs, no markup, the `scrub` character
+  set, newlines only between paragraphs, NFC, trimmed); **English only** (another language
+  stays NULL for now); product grain (a vintage-level override would be a later additive
+  column). Language and the no-URL rule are not database-enforced: our post-delivery check
+  lists violations before a prod load.
+- **Licence**: both texts come only from sources the attributions surface covers, or are
+  written by the catalogue-maintenance side; never copied producer or retailer copy. A new
+  source ships its attribution entry first (§ 7). Attribution stays corpus-level.
+- All three are enrichable scalars (fill NULL only) and may be named in `curator_locked`.
+  All three are label identity on a blind row (stripped like `wines.country` today).
+- **Delivery**: the columns don't exist on prod until the release, so their values come as a
+  separate file loaded after migrate by a guarded one-off update (§ 7, catalogue flush).
 
 **Purchase link stays per-event** (Simon's ruling). A Swiss shop is not a property of a
 wine; it is where *this person* bought *this bottle*. The catalog reserves the field but
@@ -922,8 +972,28 @@ attributions page ✅ → first catalog fill ✅ → model change → review que
   corpus later must have its entry shipped before its data does.
   Hard gate on the fill. Corpus-level, never per-record.
 - **First catalog fill** — ✅ **DONE on prod, committed 2026-11-18 10:17:39 UTC**, then
-  `VACUUM ANALYZE` (§ 0.1). The one direct load; every later delivery goes through the
-  phase-4 import path, and none comes before it exists.
+  `VACUUM ANALYZE` (§ 0.1). Every later delivery goes through the phase-4 import path,
+  and none comes before it exists, with ONE exception: the flush below.
+- **Catalogue flush** (Simon, 2026-11-18; mechanics ruled 2026-11-19) — one full replacement
+  with the catalogue-maintenance side's fixes applied (the step 1b feedback), while nothing
+  links to the catalogue. **Before release day, on prod's current schema**: the handover's
+  load guard refuses any migration list but the one it was built for (measured), so a
+  delivery built now cannot load after the release's migrate. The load gets a replace mode
+  inside its one transaction (refuse if any row outside the five tables points into them,
+  if any such foreign key is not NO ACTION / RESTRICT on delete, or if the catalogue has
+  audit rows or rows added on our side; delete; load; the existing asserts), then
+  `VACUUM (FULL, ANALYZE)` (rehearsed 2026-11-19 by reloading the same content: without it
+  the tables stay at double size). Links held only in Redis (a guest moment's bottle can
+  carry a `productId`) are invisible to that check: before the prod load we scan the live
+  line-ups for catalogue ids in the removed / merged lists. Ids stay stable for every entity that persists; removed and merged ids
+  come as lists and are never reused. The three new columns' values come as a second file,
+  loaded after migrate by a guarded one-off update (ours). **Timing (Simon, 2026-11-19):**
+  the replacement is TARGETED for Fri 2026-12-04, the columns file may follow, and the
+  final rehearsal is the only hard stop: if the replacement misses it, the release ships on
+  today's catalogue and corrections wait for review; if the columns file does, they ship
+  empty and the same update fills them later. Build step 2 starts on the
+  catalogue-maintenance side's answer about the origin column's name (no date set); step
+  1b stays open alongside until both files are in and checked.
 - **Model change** — this document.
 - **Review queue** — the curator screens (phase 3).
 
@@ -1749,8 +1819,9 @@ Carried from phase 2, both now due, because this change OPENS the fence:
    entry before its data.
 3a. 🔒 **Announced to the catalogue-maintenance side BEFORE the push** (Deplo.io applies
    migrations on deploy): this change adds FKs into the catalogue (§ 5a), adds three
-   columns to `wine_products` (`country` of origin, `description`, `vinification`, § 1;
-   they also enter the pull scope as wine facts), possibly a search index (§ 9), and
+   columns to `wine_products` (origin country, `description`, `vinification`, § 1 contract
+   v3; they also enter the pull scope as wine facts), adds the full-code-list CHECK to
+   `producers.country` (§ 1), possibly a search index (§ 9), and
    makes the first real link, which closes the undo window. The agreed announce list: any change
    to the five catalogue tables or their constraints / indexes / triggers / functions, to
    `catalog_fold_v1` / `f_unaccent` / the unaccent extension, a Postgres major upgrade, an
@@ -2006,7 +2077,7 @@ pour-order paragraph. All in § 5, § 8a and the build plan.
 
 ## 12. Build order (2026-11-18)
 
-Ten steps. The detailed plan (scope per step, tests, what is irreversible, release
+Ten steps plus 1b (slid in 2026-11-18). The detailed plan (scope per step, tests, what is irreversible, release
 conditions carried) is kept locally with the planning notes; this list is the order of
 record. Every step leaves the branch green (build, lint, every `check-schema.yml` suite,
 mobile `tsc`); the web adapts in the same step where its wire changes; the app follows
@@ -2016,6 +2087,7 @@ in step 7 and its build is cut once.
 |---|---|---|
 | 0 | Prep: prod re-survey, prod facts (connection limit), anonymised export, rehearsal database, draft verdict list | nothing (operator + `.local/`) |
 | 1 | Search capacity and runtime efficiency: two independent consultations (Fable high, Codex) first, then find whether the queries can be made cheaper, change them (and an index, announced, if that is the answer), re-measure on staging, size the connection pool | independent of the other steps; shipping it before release day is Simon's push decision |
+| 1b | Data health (Simon, 2026-11-18): assess the loaded catalogue and write the feedback for ONE full replace with the fixes applied (the flush, while nothing links to it), the new columns' contract (§ 1, ruled 2026-11-19), the flush mechanics (§ 7: before release day); the step closes when both delivered files are in and checked | no code; the replacement loads on prod before release day (Simon runs it; it refuses if anything links) |
 | 2 | Expand migration: `origin` (nullable + insert trigger), snapshot colour / sparkling, `sessions.lineup_revision`, bookmark product / vintage / snapshot / nullable source, review items; CHECK snapshots; the FK pin; the previous release's suites pass on it | additive, before the code |
 | 3 | Occurrence persistence: record-first writes in promoted sessions (every writer, census-gated), revision-checked reads with NULL = not reconciled, client ids, insert-only create, image attach on its own, no images in Redis-only sessions, tolerant old blobs, the old-tab write refusal, the warm-up script; the web sends ids and attaches images in this step | release day |
 | 4 | The catalogue on every write: pick or create (registered only), the moment-scoped search for guests, required fields, the review item, snapshot, colour / sparkling axes and badges, the line-up's catalogue key and its redaction, the merge resolver, the gate's default flipped open, the interleaved-PATCH test; the web's plain picker lands in this step, and the suites get catalogue fixtures | release day |
