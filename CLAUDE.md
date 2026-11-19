@@ -135,7 +135,7 @@ Glossary used in code and PRs throughout. Implementation lives in `app/api/CLAUD
 
 When adding a table that references `users.id`, pick one:
 
-- **Cascade hard-delete** (FK `onDelete: Cascade`) — data is purely the user's own with no other-user references. Examples: `feed_items`, `feed_item_likes`, `feed_item_tags`, `follows`, `bookmarks`, `user_badges`, `session_members`. **Downstream**: `rating_images` cascades via `ratings.id` (not directly via user); a standalone rating's deletion takes its rating_images with it.
+- **Cascade hard-delete** (FK `onDelete: Cascade`) — data is purely the user's own with no other-user references. Examples: `feed_items`, `feed_item_likes`, `feed_item_tags`, `follows`, `bookmarks`, `user_badges`, `session_members`. 🔒 A bookmark also cascades with its SOURCE bottle (`wine_id`, nullable since the catalogue model change; the key stays CASCADE, so a craving outlives its bottle only where the delete path detaches it first, spec § 5), while its catalogue keys are NO ACTION like every key into the catalogue (`scripts/check-catalog-inbound-fks.mjs`, CI). **Downstream**: `rating_images` cascades via `ratings.id` (not directly via user); a standalone rating's deletion takes its rating_images with it.
 - **Tombstone** (FK `SetNull` + `UPDATE … SET rater_name='[deleted]'` in the delete path) — another user's view references the row. Examples: `ratings` where `session_id IS NOT NULL`, `sessions.host_user_id`. One deliberate survivor of its own kind: `username_holds` keeps a deleted account's name as a hash (no user, no clear text) for 14 days, written by a `BEFORE DELETE` trigger, so nobody takes it over at once.
 - **Split rule on `ratings`** — standalone ratings (`session_id IS NULL`) hard-cascade in the account-delete path (their feed_items go with them via downstream cascade); session ratings tombstone (other tasters' compare views need them). See `lib/accountDelete.ts` for the implementation.
 
@@ -154,7 +154,7 @@ Any route serving user-scoped content (`/api/users/<id>/*`, `/u/<id>` reads, fee
 
 Bulk variants for feed / search: `batchLoadVisibilities` + `resolveProfileViewerBulk` + `viewerFofAuthorSet`. The block-pair check runs BEFORE the tier check.
 
-🔒 **A moment's bottle OUTSIDE the moment** (the feed, the profile tile lists AND their counts, `/api/me/ratings` + `/bookmarks`, tile photos) follows ONE SQL rule, `lib/outsideView.ts`: an unrevealed blind bottle → a blind row, a hidden line-up → left out (on your own lists too), on the DB clock, NULL-safe toward closed. Never a predicate of its own; detail in `docs/dev/social-feed.md`.
+🔒 **A moment's bottle OUTSIDE the moment** (the feed, the profile tile lists AND their counts, `/api/me/ratings` + `/bookmarks`, tile photos) follows ONE SQL rule, `lib/outsideView.ts`: an unrevealed blind bottle → a blind row, a hidden line-up → left out (on your own lists too), on the DB clock, NULL-safe toward closed. Never a predicate of its own; detail in `docs/dev/social-feed.md`. A craving CARRIES its source bottle's label since the catalogue model change (`bookmarks.name` / `producer` / `vintage` / `product_id` / `vintage_id`): label identity while that source is hidden for its owner, so every reader of them goes through the same rule.
 
 Tier semantics, audit log, compare exception: see `docs/dev/profile-visibility.md` and `docs/dev/block.md`.
 

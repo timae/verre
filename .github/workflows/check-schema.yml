@@ -100,6 +100,18 @@ jobs:
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
 
+      # The FK pin (wine-catalog-model-change.md § 5a): every foreign key INTO the
+      # five catalogue tables is ON DELETE NO ACTION, except the ruled CASCADE on
+      # product_producers.product_id. Found from pg_constraint by target, so a
+      # table that links into the catalogue later is covered the day it lands.
+      # A purge or the catalogue's replace mode then FAILS on a reference it
+      # forgot instead of deleting or clearing user history. Negative control:
+      # catalog-schema-integration.mjs § 22.
+      - name: Catalog inbound foreign keys are NO ACTION
+        run: node scripts/check-catalog-inbound-fks.mjs
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+
       # The session record's CHECK predicates (redis-rehydration § 4.3:
       # `ratings_session_rater_known` — account deletion is structured around
       # it). Same blind spot as above, same remedy: a committed snapshot.

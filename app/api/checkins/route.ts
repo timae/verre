@@ -330,10 +330,11 @@ export async function POST(req: NextRequest) {
         vintageId: catalogLink.vintageId,
       },
     })
-    // 2. Mint the rating. origin='standalone', sessionId=NULL (per the
-    //    partial-unique-on-(user,wine,session) contract: standalone
-    //    ratings are unconstrained, multiple standalone tastings of the
-    //    same wine are legal — the aging-bottle case).
+    // 2. Mint the rating. origin='standalone', sessionId=NULL. One rating
+    //    per standalone occurrence (the raw partial unique
+    //    ratings_standalone_wine_id_key, catalogue model change step 2):
+    //    tasting the same wine again is a new check-in, so a new wine row
+    //    (step 1) with its own rating — the aging-bottle case.
     const r = await tx.rating.create({
       data: {
         wineId,

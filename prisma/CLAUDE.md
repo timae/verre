@@ -212,13 +212,37 @@ fact that *this* producer made *this* product — worthless once the product is 
 
 ⚠️ For the record, our catalog FK shape is **9 forward FKs, 8 `NoAction`, 1 `Cascade`**
 — the single `Cascade` is this one. An earlier claim that "every catalog-referencing
-FK is NoAction" was false and is corrected in `e2b9247`.
+FK is NoAction" was false and is corrected in `e2b9247`. Since the catalogue model change
+(step 2) `bookmarks` adds two more, both `NoAction`: **11 keys into the catalogue, 10
+`NoAction`, 1 `Cascade`**.
+
+🔒 **The FK pin** (`scripts/check-catalog-inbound-fks.mjs`, in `check-schema.yml`): every
+FK whose TARGET is one of the five catalogue tables must be `ON DELETE NO ACTION`, except
+this one, which must stay `CASCADE`. It finds the keys from `pg_constraint` by target,
+never from a list, so a table that links into the catalogue later is covered the day it
+lands (negative control: `catalog-schema-integration.mjs` § 22 commits a CASCADE and a
+SET NULL key and requires the pin to fail). Why: a hard purge clears or redirects every
+reference itself and never deletes user history, and the catalogue-maintenance side's
+replace mode needs a link committed during its load to make the delete FAIL; CASCADE
+would delete a craving, SET NULL would clear it silently. Changing a key into the
+catalogue is a ruling, announced, with the pin updated in the same change.
+
+## Catalogue model change: the expand migrations (`20261119160000`, `20261119160100`)
+
+Additive (`docs/dev/proposals/wine-catalog-model-change.md` § 12 step 2): the previous release runs on it during the rolling deploy. What `migrate diff` cannot see, all pinned by `catalog-schema-integration.mjs` § 22 (`scripts/tests/model-change-expand-section.mjs`):
+
+- 🔒 **Two partial uniques are deliberately NOT in the datamodel**: `bookmarks_user_product_vintage_key` (`(user_id, product_id, vintage_id) NULLS NOT DISTINCT WHERE product_id IS NOT NULL`, one craving per wine, a purged bookmark exempt) and `ratings_standalone_wine_id_key` (`(wine_id) WHERE session_id IS NULL`, one rating per standalone occurrence; strictly one SESSION-LESS rating per bottle, since prod also holds 4 legacy session ratings written before ratings carried a session). An `@@unique` cannot carry a `WHERE`, so declaring either would make the drift gate ask for a different index; § 22 compares their `pg_indexes` definitions byte for byte. Same treatment as the older `(user_id, wine_id, session_id)` partial unique on ratings.
+- **`wines.origin` is nullable until the contract step** and filled on INSERT by the trigger `wines_origin_default` (from `session_id`, NULL only), because the previous release writes wines without it. Never infer standalone from `session_id IS NULL` (orphaning).
+- **`bookmarks.wine_id` is nullable but its key stays `ON DELETE CASCADE`**, and `bookmarks_user_id_wine_id_key` (a CONSTRAINT on prod, an INDEX in the chain) is untouched until the contract step, which drops it with `DROP CONSTRAINT IF EXISTS` + `DROP INDEX IF EXISTS`.
+- **The backfill lives in the migration** between `-- @recipe:model-change-backfill` and `-- @endrecipe`, one statement per `-- @step`, fill-only except `snapshot`, which re-derives colour / sparkling where they no longer derive to `style` (one direction, ruled in the spec § 8a.0: the previous release's PATCH mirrors `style` only). `scripts/backfill-model-change.mjs` reads and re-runs it on release day (dry run by default) once the old instances are gone, and refuses unless the file's sha256 is the checksum the database recorded; never retype it elsewhere. The § 0 refusal is a second recipe (`model-change-refusal`), driven by § 22.
+- **Contract v3** (`contractVersion` 3 in `catalog-contract-checks.json`): `wine_products.country` (origin) / `description` / `vinification`, the inline 249-code CHECK on it and on `producers.country` (§ 22 compares both lists with `COUNTRY_CODES` both ways; adding a code is a migration and a contract event), the two texts not blank through the fold. `catalog_review_items` (its own migration, `20261119160100`, so the expand migration never locks `users`) holds catalogue ids with NO key (polymorphic): the catalogue-maintenance side's replace mode locks it, and any new such table is told to them.
+- `bookmarks` is in the contract gate's `KNOWN_NON_CATALOG` (its keys into the catalogue are in the FK snapshot) and in the session-record CHECK snapshot (its link CHECK).
 
 ## Schema check (build-time)
 
 `.github/workflows/check-schema.yml` runs `prisma migrate diff` and fails the build if `schema.prisma` and the migrations directory disagree. Don't bypass — either generate the migration via `prisma migrate dev` or roll back the schema change.
 
-The same workflow then applies the real migration chain to a disposable database and runs the **contract-shape gate** (`check-catalog-contract-checks.mjs` — diffs every CHECK on the five catalog tables against the committed snapshot; runs first because it reads schema only and should fail fast) plus three suites covering what `migrate diff` cannot see (it ignores objects it can't model): `catalog-schema-integration.mjs` (CHECK bodies, deferred lead triggers, `NULLS NOT DISTINCT`, audit immutability, the bootstrap recipes in this file), `staff-role-concurrency.mjs` (the last-admin race across the app and DB paths), and `catalog-addflow-integration.mjs` (the phase-2 add-flow, plus a **query-plan** assertion — the trigram predicate's wrong spellings return correct rows and merely lose the index, so nothing else can catch them).
+The same workflow then applies the real migration chain to a disposable database and runs the **contract-shape gate** (`check-catalog-contract-checks.mjs` — diffs every CHECK on the five catalog tables against the committed snapshot; runs first because it reads schema only and should fail fast), the **FK pin** (`check-catalog-inbound-fks.mjs`, above) plus three suites covering what `migrate diff` cannot see (it ignores objects it can't model): `catalog-schema-integration.mjs` (CHECK bodies, deferred lead triggers, `NULLS NOT DISTINCT`, audit immutability, the bootstrap recipes in this file), `staff-role-concurrency.mjs` (the last-admin race across the app and DB paths), and `catalog-addflow-integration.mjs` (the phase-2 add-flow, plus a **query-plan** assertion — the trigram predicate's wrong spellings return correct rows and merely lose the index, so nothing else can catch them).
 
 ## `prisma/maintenance/` — recurring SQL (NOT migrations)
 

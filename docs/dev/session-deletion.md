@@ -106,7 +106,8 @@ DELETE FROM sessions
  WHERE deleted_at IS NOT NULL
    AND deleted_at < NOW() - INTERVAL '1 year'
    AND id NOT IN (SELECT session_id FROM ratings WHERE session_id IS NOT NULL)
-   AND id NOT IN (SELECT session_id FROM feed_items WHERE session_id IS NOT NULL);
+   AND id NOT IN (SELECT session_id FROM feed_items WHERE session_id IS NOT NULL)
+   AND id NOT IN (SELECT source_session_id FROM bookmarks WHERE source_session_id IS NOT NULL);
 
 -- 3. Re-enable the trigger before committing. If anything went wrong above,
 --    ROLLBACK leaves both the trigger state AND the table state untouched.
@@ -118,16 +119,17 @@ COMMIT;
 **Operator notes:**
 - Always run inside a transaction so `DISABLE TRIGGER` + the DELETE + `ENABLE TRIGGER` are atomic. A crash mid-script leaves the trigger disabled otherwise.
 - Take a `pg_dump` first. Per `prisma/CLAUDE.md`, this is destructive work.
-- The `NOT IN (SELECT session_id FROM ratings WHERE session_id IS NOT NULL)` guard prevents accidentally deleting a session that still has child rows (which would orphan ratings via the `Restrict` FK and roll back the txn — but verifying first is cheaper than waiting for the error).
+- The `NOT IN (SELECT session_id FROM ratings WHERE session_id IS NOT NULL)` guard prevents accidentally deleting a session that still has child rows (which would orphan ratings via the `Restrict` FK and roll back the txn — but verifying first is cheaper than waiting for the error). The `bookmarks.source_session_id` guard is the same for cravings first made in that moment (`NO ACTION`, since the catalogue model change's expand migration).
 - This is operator work, not Claude work — don't automate or schedule. Periodic, manual, audited.
 
 ## Future hard-delete (GDPR purge) — same escape hatch
 
-A future GDPR / retention-window purge job follows the same `DISABLE TRIGGER` pattern. The plan ([proposals/rewire.md](proposals/rewire.md), §4 "Out of scope" item #12) captures this as future work. The FK contract requires explicit cleanup of children before `DELETE FROM sessions`, because the three child FKs behave differently on delete:
+A future GDPR / retention-window purge job follows the same `DISABLE TRIGGER` pattern. The plan ([proposals/rewire.md](proposals/rewire.md), §4 "Out of scope" item #12) captures this as future work. The FK contract requires explicit cleanup of children before `DELETE FROM sessions`, because the four child FKs behave differently on delete:
 
 1. `UPDATE feed_items SET session_id = NULL WHERE session_id = $sid` (FK is `ON DELETE RESTRICT` — a bare `DELETE FROM sessions` would be rejected).
-2. `UPDATE ratings SET session_id = NULL WHERE session_id = $sid` (same — `ON DELETE RESTRICT`).
-3. `DELETE FROM sessions WHERE id = $sid` (wines orphan automatically: `wines.session_id` is `ON DELETE SET NULL`).
+2. `UPDATE ratings SET session_id = NULL WHERE session_id = $sid` (same — `ON DELETE RESTRICT`). ⚠️ **Redesign before use** (catalogue model change, step 2): the partial unique `ratings_standalone_wine_id_key` allows ONE session-less rating per bottle, so this statement now fails for any bottle two people rated, and for one rating it turns a session rating into a standalone-shaped row. A purge must delete those ratings or keep their moment; decide it with the purge's own design.
+3. `UPDATE bookmarks SET source_session_id = NULL WHERE source_session_id = $sid` (`NO ACTION`): the craving keeps its wine and its source bottle (which survives, orphaned) and loses only its moment.
+4. `DELETE FROM sessions WHERE id = $sid` (wines orphan automatically: `wines.session_id` is `ON DELETE SET NULL`).
 
 Restrict was chosen over SetNull on the new FKs deliberately (see [proposals/rewire.md](proposals/rewire.md), §2 `feed_items` reasoning) — to force this cleanup to be explicit rather than silent. `wines.session_id` keeps its pre-existing `SET NULL` so bookmarked wines stay reachable after a session is gone.
 

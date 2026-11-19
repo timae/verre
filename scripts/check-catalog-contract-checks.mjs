@@ -95,7 +95,14 @@ const TABLES = ['producers', 'wine_products', 'wine_vintages', 'product_producer
 // stays — it encodes a judgement the database cannot make — and the check below
 // makes an ADDITION to that surface loud instead of silent. The list is still
 // authored; it is no longer trusted.
-const KNOWN_NON_CATALOG = ['wines']
+//
+// `bookmarks` joined it with the catalogue model change (step 2, 2026-11-19): a
+// craving points at a product + optional vintage like an occurrence does. It is
+// user data, not catalogue shape, so like `wines` its keys are watched here (the
+// FK snapshot below) and its CHECK by the session-record snapshot; the FK pin
+// (scripts/check-catalog-inbound-fks.mjs) holds every key into the catalogue to
+// NO ACTION whatever table it comes from.
+const KNOWN_NON_CATALOG = ['wines', 'bookmarks']
 const CANDIDATE_QUERY = `
   SELECT DISTINCT c.conrelid::regclass::text AS "table"
   FROM pg_constraint c
@@ -266,15 +273,17 @@ const GENCOL_QUERY = `
 //
 // `pg_get_constraintdef` carries the referenced table AND the delete action, so
 // this also pins the Cascade-vs-NoAction split the RFC treats as load-bearing:
-// eight NoAction/Restrict FKs and exactly one deliberate Cascade
+// every key into the catalogue NoAction and exactly one deliberate Cascade
 // (`product_producers.product_id`). Flipping one silently changes what a delete
-// destroys.
+// destroys. (scripts/check-catalog-inbound-fks.mjs pins the same split by rule,
+// found by target, for tables this list does not name.)
 //
 // ⚠️ `wines` IS INCLUDED HERE despite not being a catalog table. It is excluded
 // from the CHECK queries because its rules live in the integration suite — but
 // `wines_category_fkey` is one of the two FKs this finding is about, and
 // scoping this query to TABLES alone would leave it unwatched, which is the
-// exact gap being closed.
+// exact gap being closed. Every KNOWN_NON_CATALOG table is included for the same
+// reason (`bookmarks` since the model change: its two keys into the catalogue).
 const FK_QUERY = `
   SELECT c.conrelid::regclass::text     AS "table",
          c.conname                      AS "name",
@@ -379,7 +388,7 @@ async function main() {
     colTypes = await prisma.$queryRawUnsafe(COLTYPE_QUERY, TABLES)
     candidates = await prisma.$queryRawUnsafe(
       CANDIDATE_QUERY, [...TABLES, 'categories'], [...TABLES, ...KNOWN_NON_CATALOG])
-    fks = await prisma.$queryRawUnsafe(FK_QUERY, [...TABLES, 'wines'])
+    fks = await prisma.$queryRawUnsafe(FK_QUERY, [...TABLES, ...KNOWN_NON_CATALOG])
     styleVocab = (await prisma.$queryRawUnsafe(STYLE_VOCAB_QUERY))
       .map(r => `${r.category}/${r.style}`)
   } finally {

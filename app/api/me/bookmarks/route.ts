@@ -67,7 +67,11 @@ export async function GET(req: NextRequest) {
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead })
   const blind = new Set(flagRows.filter(f => f.redacted !== false).map(f => f.id))
 
-  return NextResponse.json(bookmarks.map(b => {
+  // Every id came through the inner join on wines above, so each row has its
+  // bottle; the narrowing only satisfies the nullable source pointer (catalogue
+  // model change step 2). Step 5 rewrites this list onto the craving itself.
+  const withWine = bookmarks.flatMap(b => b.wine ? [{ ...b, wine: b.wine }] : [])
+  return NextResponse.json(withWine.map(b => {
     const latestRating = b.wine.ratings[0]
     const session = latestRating?.session ?? null
     const sessionDeleted = !!session?.deletedAt

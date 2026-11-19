@@ -933,7 +933,7 @@ prod fails the deploy; `ratings_score_check` exists only on prod). So:
    reference users), then the rest of item 4 (review r5, r6). Deleted after the rehearsal.
 5. **Pass criteria**: `migrate deploy` exits 0; the deploy-time backfills match the counts
    the re-survey predicts; **the PREVIOUS release's suites pass on the expanded database**
-   (the rolling-deploy test: old code against the new schema); the backfills re-run after
+   (the rolling-deploy test: old code against the new schema; read as § 9 condition 3c rules it); the backfills re-run after
    that pass and change only what the old code wrote meanwhile (they are idempotent, and
    on release day they re-run once the old instances are gone: an old writer leaves
    `sparkling = false` on a `spark` row and a bookmark with no snapshot); the conversion
@@ -993,7 +993,10 @@ attributions page ✅ → first catalog fill ✅ → model change → review que
   carry a `productId`) are invisible to that check: before the prod load we scan the live
   line-ups for catalogue ids in the removed / merged lists. Ids stay stable for every entity that persists; removed and merged ids
   come as lists and are never reused. The three new columns' values come as a second file,
-  loaded after migrate by a guarded one-off update (ours). **Their replace mode adds three
+  loaded after migrate by a guarded one-off update (ours, `scripts/catalog-columns-update.mjs`).
+  🔒 Its manifest names the catalogue it was built on (`builtOn`: file 1's own cd1 digest of
+  `wine_products`); the update recomputes that digest live and refuses any other catalogue
+  (ruled 2026-11-19; measured on the rehearsal: the live digest equals the handover's). **Their replace mode adds three
   things** (accepted 2026-11-19): it refuses unless prod still holds exactly the first
   delivery (its content digest, inside the load's transaction); it LOCKS, for the whole
   load, every table that holds catalogue ids without a foreign key (today `catalog_audit`;
@@ -1787,11 +1790,12 @@ Carried from phase 2, both now due, because this change OPENS the fence:
     deploy, the migrate job and the scheduled jobs fit under it. This is a standing
     risk today, not only a catalogue one. **Prod facts (2026-11-18):** the re-survey
     measured the role limit (20) and `max_connections` (256) on prod; the app is one
-    replica of size `micro` (⅛ core, 256 MiB), and `DATABASE_CONNECTION_LIMIT` is NOT set
-    (Simon). So the pool is sized from `/proc/cpuinfo`, which in a container normally
-    lists the host's CPUs, not the ⅛-core quota (not measured on Deplo.io): one instance's
-    pool can exceed the limit on its own. And ⅛ core bounds the app tier itself, which the
-    probe (database only) did not measure.
+    replica of size `micro` (⅛ core, 256 MiB). `DATABASE_CONNECTION_LIMIT` was not set when
+    the re-survey ran, so the pool was sized from `/proc/cpuinfo`, which in a container
+    normally lists the host's CPUs, not the ⅛-core quota (not measured on Deplo.io): one
+    instance's pool could exceed the limit on its own. **Simon set it to 6 on Deplo.io on
+    2026-11-18** (the step 1 decision below). And ⅛ core bounds the app tier itself, which
+    the probe (database only) did not measure.
   - ✅ **Step 1 (2026-11-18): measured, changed, decided.** Two independent consultations (a
     Fable agent at high effort, then Codex at xhigh, each from a copied bundle without our
     hypotheses) and our hypotheses, measured together; reports and logs in the local planning
@@ -1849,7 +1853,11 @@ Carried from phase 2, both now due, because this change OPENS the fence:
 3b. 🔒 **FK pin green** (§ 5a): every FK into the five tables `NO ACTION` except
    `product_producers.product_id`.
 3c. **Rehearsal passed on prod's schema** (§ 6a), and the warm-cache reconciliation dry run
-   (§ 8a.0) reports what it will copy.
+   (§ 8a.0) reports what it will copy. 🔒 **"The previous release's suites pass"** reads (ruled
+   2026-11-19): ALL of them pass on a chain-built database carrying the release's migrations,
+   and on the rehearsal they give the SAME result with and without those migrations (two
+   catalogue add-flow checks assume CI's small catalogue and fail on the real one either way;
+   measured in step 2).
 4. 🔒 **Any `catalog_fold_*` version change has been ANNOUNCED to the catalog-maintenance side before deploy** — never after. A bump desynchronises exact-match agreement between the two sides, and search MAY not reveal it (it did not for the whitespace defects observed; a transliteration change would). The version appears nowhere in the contract today. See the implementation plan § Phase 4.
 5. **Promotion protocol tested under concurrency** (§ 8a) — an add racing a promotion must
    land in Postgres, never vanish. This is the T1 race; it cannot be verified by
