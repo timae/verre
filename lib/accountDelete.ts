@@ -8,6 +8,7 @@ import { deleteAllNativeSessions } from '@/lib/identityStore'
 import { withSessionLocks, scopedInvalidate, type LockedSession } from '@/lib/sessionMutation'
 import { acquireSessionLock, releaseSessionLock, renewSessionLock, sessionLockHeld, sessionLockKey, fencedDel, lockTiming } from '@/lib/sessionLock'
 import type { SessionMeta, WineMeta } from '@/lib/session'
+import { bumpLineupRevision } from '@/lib/occurrences'
 import { isOwnTile } from '@/lib/profileTiles'
 
 export const TOMBSTONE_NAME = '[deleted]'
@@ -395,9 +396,14 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
           }
           // Provenance moves with the identity (R3-5): wineToWire falls back to
           // the stored snapshot, so the real name must not survive here.
-          await tx.$executeRaw`
+          const moved = await tx.$executeRaw`
             UPDATE wines SET added_by_identity_id = ${key}, added_by_display_name = ${TOMBSTONE_NAME}
              WHERE session_id = ${row.id} AND added_by_identity_id = ${uid}`
+          // A line-up writer bumps (model change § 8a); a NULL revision stays
+          // NULL (this path cannot reconcile; the moment's first contract does).
+          // The cached copy is rewritten by the d: migration after COMMIT and
+          // re-projected from the record by the next read.
+          if (moved > 0) await bumpLineupRevision(tx, row.id)
           if (hosted) {
             await tx.$executeRaw`UPDATE sessions SET host_user_id = NULL, host_name = ${TOMBSTONE_NAME} WHERE id = ${row.id}`
           }
@@ -547,7 +553,8 @@ async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession
           lifespan = NULL,
           hide_lineup = NULL,
           hide_lineup_minutes_before = NULL,
-          show_provenance = NULL
+          show_provenance = NULL,
+          lineup_revision = NULL
      WHERE id = ${row.id}`
   await durable.step(`wipe ${row.code}`, async (c) => {
     const keys = await scanAll(c, `s:${row.code}:*`)

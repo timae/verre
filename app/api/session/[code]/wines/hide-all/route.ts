@@ -22,13 +22,14 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'only the host can hide all wines' }, { status: 403 })
   }
 
-  // The wine-list mirror projects revealed_at (and positions) for the whole
-  // lineup from the committed array; a Redis-only session has no row → no-op.
-  const out = await hostLineupWrite(c, identity, { label: 'hide-all', forbidden: 'only the host can hide all wines' }, (wines) => wines.map(w => {
-    const copy = { ...w }
-    delete (copy as Partial<typeof copy>).revealedAt
-    return copy
-  }))
+  const out = await hostLineupWrite(c, identity, { label: 'hide-all', forbidden: 'only the host can hide all wines' }, {
+    redisOnly: (wines) => wines.map(w => {
+      const copy = { ...w }
+      delete (copy as Partial<typeof copy>).revealedAt
+      return copy
+    }),
+    record: async (tx, sessionId) => { await tx.$executeRaw`UPDATE wines SET revealed_at = NULL WHERE session_id = ${sessionId} AND revealed_at IS NOT NULL` },
+  })
   if (out instanceof NextResponse) return out
   await touchWithMeta(c)
 

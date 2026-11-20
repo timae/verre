@@ -16,6 +16,7 @@
 // Worker-kill schedules run the deletion in a child process (this file with
 // --worker) and SIGKILL it at a hook; assertions run here, in a separate
 // process, so no cleanup of the dead worker can help it.
+import { nanoid } from 'nanoid'
 import { toWire, fromWire, wireParams } from './lib/wireIds.mts'
 import { fixtureUsername } from './lib/fixtureUsername.mjs'
 import { spawn } from 'node:child_process'
@@ -159,7 +160,7 @@ async function join(code: string, actor: Actor, displayName = 'Joiner') {
 }
 const visit = (code: string, actor: Actor) => call(visitRoute.POST, 'POST', `/api/session/${code}/visit`, actor, {}, { code })
 async function addWine(code: string, actor: Actor, name: string, position?: number) {
-  const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, actor, { name, type: 'red', ...(position ? { position } : {}) }, { code })
+  const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, actor, { id: nanoid(), name, type: 'red', ...(position ? { position } : {}) }, { code })
   if (r.status !== 200) throw new Error(`add wine failed ${r.status} ${JSON.stringify(r.json)}`)
   return r.json.id as string
 }
@@ -317,19 +318,23 @@ async function mirrors() {
   const at2 = JSON.parse((await redis.get(k.rating(s.code, `u:${R.id}`, w1)))!).at
   check('check-in PATCH: one statement, mirror_at equals the Redis `at` token', pr.status === 200 && ratingRow2.ms === at2 && Number(ratingRow2.score) === 3 && at2 > at, { pr: pr.status, ratingRow2, at2 })
 
-  // § 1b2 a wine DELETE whose Postgres mirror failed, then another list write:
-  // positions stay unique and all set; the stale row is not removed (owner
-  // ruling — see mirrorLineup)
+  // § 1b2 a wine DELETE whose Postgres mirror failed (before the catalogue model
+  // change, step 3), then another list write. Re-cast for record-first bottles:
+  // the moment is UNRECONCILED (revision NULL, the deploy-time state), so the
+  // next write reconciles: the row the cache no longer lists is ORPHANED
+  // (ratings kept), and positions are unique, all set, in the cached order.
   const wd1 = await addWine(s.code, { cookie: H.cookie }, 'Doomed by a failed mirror')
   await redis.set(k.wines(s.code), JSON.stringify((await redisWines(s.code)).filter(w => w.id !== wd1)), { XX: true, KEEPTTL: true })   // Redis delete; its mirror "failed"
+  await prisma.$executeRaw`UPDATE sessions SET lineup_revision = NULL WHERE code = ${s.code} AND deleted_at IS NULL`
+  await redis.del(k.wrev(s.code))
   const wd2 = await addWine(s.code, { cookie: H.cookie }, 'Added after')
   const sid = (await liveRow(s.code)).id
   const pos = await prisma.$queryRaw<{ id: string; position: number | null }[]>`SELECT id, position FROM wines WHERE session_id = ${sid} ORDER BY position`
   const arr = await redisWines(s.code)
-  check('after a failed delete mirror, the next list write keeps positions unique, all set, array order first',
+  check('after a failed delete mirror, the next list write orphans that row and keeps positions unique, all set, array order',
     pos.every(p => p.position !== null) && new Set(pos.map(p => p.position)).size === pos.length
     && arr.every((w, i) => pos.find(p => p.id === w.id)?.position === i)
-    && pos.find(p => p.id === wd1)?.position === arr.length && arr.some(w => w.id === wd2), { pos, arr: arr.map(w => w.id) })
+    && !pos.some(p => p.id === wd1) && arr.some(w => w.id === wd2), { pos, arr: arr.map(w => w.id) })
   await call(wineRoute.DELETE, 'DELETE', `/api/session/${s.code}/wines/${wd2}`, { cookie: H.cookie }, undefined, { code: s.code, wineId: wd2 })
   await prisma.$executeRaw`DELETE FROM wines WHERE id = ${wd1}`
 
@@ -501,15 +506,14 @@ async function accountDeletion() {
   const wg = await call(winesRoute.GET, 'GET', `/api/session/${SA.code}/wines`, { cookie: Hx.cookie }, undefined, { code: SA.code })
   const wire = (wg.json as unknown as { wines?: { id: string; addedByDisplayName: string | null }[] })?.wines ?? (wg.json as unknown as { id: string; addedByDisplayName: string | null }[])
   check('brought-by reads "[deleted]" on the wire (R3-5)', Array.isArray(wire) && wire.find(w => w.id === wx)?.addedByDisplayName === '[deleted]', wg.status)
-  const reassign = (wine: Record<string, unknown>) => prisma.$transaction(async (tx) => {
-    const ws = await redisWines(SA.code) as unknown as Parameters<typeof reassignProvenance>[2]
-    await reassignProvenance(tx, sa.id, ws, wine as unknown as Parameters<typeof reassignProvenance>[3])
+  const reassign = (wine: { id: string; addedByIdentityId: string; addedByDisplayName: string }) => prisma.$transaction(async (tx) => {
+    await reassignProvenance(tx, sa.id, wine.id, wine.addedByIdentityId, wine.addedByDisplayName)
   }).then(() => false, () => true)
   await prisma.$executeRaw`UPDATE wines SET session_id = NULL WHERE id = ${wa}`
   check('a reassignment of a wine whose row was orphaned (ban-wipe cleanup failed) is refused, not a silent 200',
-    await reassign({ id: wa, name: 'SA wine', producer: '', vintage: '', grape: '', type: 'red', image: '', imageUrl: '', addedByIdentityId: `u:${Hx.id}`, addedByDisplayName: 'Other host' }))
+    await reassign({ id: wa, addedByIdentityId: `u:${Hx.id}`, addedByDisplayName: 'Other host' }))
   await prisma.$executeRaw`UPDATE wines SET session_id = ${sa.id} WHERE id = ${wa}`
-  check('a reassignment to the deleted user is refused (R1 finding 1)', await reassign({ id: wx, name: 'Brought by X', producer: '', vintage: '', grape: '', type: 'red', image: '', imageUrl: '', addedByIdentityId: `u:${X.id}`, addedByDisplayName: 'X' }))
+  check('a reassignment to the deleted user is refused (R1 finding 1)', await reassign({ id: wx, addedByIdentityId: `u:${X.id}`, addedByDisplayName: 'X' }))
 
   // (c) d: is a kick-delete target only — release B (G4): POST /bans mode 'kick'
   // on a d: runs kick-DELETE; mode 'ban' stays 400; a direct kick-keep throws.
@@ -900,11 +904,14 @@ async function schedules() {
   const X2 = await mkUser('Delayed adder')
   const SM = await createSession({ cookie: Hm.cookie })
   await join(SM.code, { cookie: X2.cookie }, 'Real Adder'); await visit(SM.code, { cookie: X2.cookie })
-  // the add's Redis write landed; its Postgres mirror has not run yet
+  // the add's Redis write landed; its Postgres mirror has not run yet (the
+  // pre-step-3 state: the moment is unreconciled, revision NULL)
+  await prisma.$executeRaw`UPDATE sessions SET lineup_revision = NULL WHERE code = ${SM.code} AND deleted_at IS NULL`
+  await redis.del(k.wrev(SM.code))
   await redis.set(k.wines(SM.code), JSON.stringify([...(await redisWines(SM.code)), { id: `late${Date.now()}`.slice(0, 21), name: 'Late wine', producer: '', vintage: '', grape: '', type: 'red', image: '', imageUrl: '', addedByIdentityId: `u:${X2.id}`, addedByDisplayName: 'Real Adder' }]), { XX: true, KEEPTTL: true })
   const lateId = (await redisWines(SM.code)).find(w => w.addedByIdentityId === `u:${X2.id}`)!.id
   await deleteAccountDurable(X2.id, { hooks: { failProjection: true, failInvalidation: true } })
-  await addWine(SM.code, { cookie: Hm.cookie }, 'next list write')   // its mirror projects the whole array
+  await addWine(SM.code, { cookie: Hm.cookie }, 'next list write')   // it reconciles: the cached bottle is copied in
   const late = await prisma.wine.findUnique({ where: { id: lateId }, select: { addedByIdentityId: true, addedByDisplayName: true } })
   check('…the delayed first mirror writes no adder and "[deleted]"', late?.addedByIdentityId === null && late?.addedByDisplayName === '[deleted]', late)
 }

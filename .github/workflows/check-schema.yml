@@ -228,6 +228,24 @@ jobs:
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-redis-rehydration-suite-secret-0123456789
 
+      # Catalogue model change step 3 (docs/dev/proposals/wine-catalog-model-change.md
+      # § 8a): record-first bottle writes in a Postgres-backed moment, the line-up
+      # revision (bump, stamp, compare on read: behind / ahead / unstamped), NULL
+      # = not reconciled (cache-only bottles copied in, record-only rows
+      # orphaned), client ids + insert-only create + the identity-free answer,
+      # the image call (Redis-only refused, a failed write reclaims its upload),
+      # check-in replay, a failed write / rollback / lost projection / kill
+      # between COMMIT and projection, every writer bumps, the scrubs, the
+      # promotion race, the old-tab 409, the build id, the census gate, and the
+      # PREVIOUS release's mirror (copied from main) over a new-projected line-up.
+      - name: Occurrence persistence (catalogue model change step 3)
+        run: npx tsx scripts/tests/occurrence-persistence.mts
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-occurrence-persistence-secret-0123456789
+
       # You profile step 2 (.local plan § Verification): bio normalisation +
       # PATCH /api/me/profile, the tile pools and pins (D3 re-hide, D7, the
       # dead-pin clear vs a same-URL re-pick on the locked row), the D8 / D9

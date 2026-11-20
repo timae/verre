@@ -23,9 +23,12 @@ export const CODE_FLOOR_IOS = '0.1.5'
 
 // The web's wire generation, sent as `X-Verre-Web` on every /api/session call
 // (lib/sessionFetch.ts webApiFetch). proxy.ts bounces a signed-in moment call
-// without it (an old tab); a future breaking wire change bumps it. Lives here
-// because this module is the one both the proxy and the client may import.
-export const WEB_WIRE_GENERATION = '2'
+// without it (an old tab), and refuses every moment WRITE without it (409); a
+// future breaking wire change bumps it. Lives here because this module is the
+// one both the proxy and the client may import.
+// 3: client occurrence ids + the separate image call (catalogue model change
+// step 3).
+export const WEB_WIRE_GENERATION = '3'
 
 const HEADER = /^(ios|android)\/(\d+(?:\.\d+){0,2})\/\S+$/
 

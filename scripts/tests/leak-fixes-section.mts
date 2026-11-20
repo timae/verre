@@ -16,6 +16,7 @@
 //          replies under Blind for All, tags of a viewer's block pair (feed +
 //          profile), the grape badge through the outside-a-moment rule
 //   § 20 c scripts/rekey-session-images.mts (F3 + F4) on the fake S3
+import { nanoid } from 'nanoid'
 import { readdirSync, statSync } from 'node:fs'
 import { dirname, join as pjoin, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -644,7 +645,7 @@ export async function leakFixes(h: Harness) {
   const checkinsRoute = await import('../../app/api/checkins/route.ts')
   const feedRoute = await import('../../app/api/feed/route.ts')
   const usersRoute = await import('../../app/api/users/[id]/route.ts')
-  const ci = await call(checkinsRoute.POST, 'POST', '/api/checkins', Pt, { wineName: `${TAG} Tagged Bottle`, score: 4, taggedUserIds: [Tt.pid] })
+  const ci = await call(checkinsRoute.POST, 'POST', '/api/checkins', Pt, { occurrenceId: nanoid(), wineName: `${TAG} Tagged Bottle`, score: 4, taggedUserIds: [Tt.pid] })
   check('fixture: a check-in tagging a mutual follow', (ci.status === 200 || ci.status === 201) && (await prisma.feedItemTag.count({ where: { userId: Tt.id } })) === 1, ci.wire)
   const tagsSeen = async () => {
     await resetLimits()
@@ -771,7 +772,7 @@ async function rekeySection(h: Harness) {
   const anonM = await call((await import('../../app/api/session/route.ts')).POST, 'POST', '/api/session', {}, { hostDisplayName: 'Anon', sessionName: `${TAG} guest-only`, dateFrom: new Date(Date.now() + 3600_000).toISOString() })
   const gcode = anonM.wire.code as string
   await resetLimits()
-  const gw1 = await call((await import('../../app/api/session/[code]/wines/route.ts')).POST, 'POST', `/api/session/${gcode}/wines`, { anon: anonM.wire.anonToken }, { name: 'Guest bottle', type: 'red' }, { code: gcode })
+  const gw1 = await call((await import('../../app/api/session/[code]/wines/route.ts')).POST, 'POST', `/api/session/${gcode}/wines`, { anon: anonM.wire.anonToken }, { id: nanoid(), name: 'Guest bottle', type: 'red' }, { code: gcode })
   const Lg = legacyUrl(`wines/${String(gw1.wire.id)}.png`)
   await setLineupUrl(gcode, gw1.wire.id, Lg)
   // Legacy orphans: one older than the cutoff (D3 deletes it), one newer (kept).
@@ -794,10 +795,11 @@ async function rekeySection(h: Harness) {
   await prisma.$executeRaw`UPDATE wines SET image_url = ${Lr} WHERE id = ${rw.id}`
   await setLineupUrl(race, rw.id, Lr)
   const wineRoute = await import('../../app/api/session/[code]/wines/[wineId]/route.ts')
+  const imageRoute = await import('../../app/api/session/[code]/wines/[wineId]/image/route.ts')
   await resetLimits()
   const [ap, replaced] = await Promise.all([
     runRk('apply'),
-    call(wineRoute.PATCH, 'PATCH', `/api/session/${race}/wines/${rw.id}`, Hr, { name: `${TAG} rk race`, type: 'red', image: PNG }, { code: race, wineId: rw.id }),
+    call(imageRoute.PUT, 'PUT', `/api/session/${race}/wines/${rw.id}/image`, Hr, { image: PNG }, { code: race, wineId: rw.id }),
   ])
   const rowUrl = async (id: string) => (await prisma.wine.findUniqueOrThrow({ where: { id }, select: { imageUrl: true } })).imageUrl
   const lineupUrl = async (code: string, id: string) => (JSON.parse(await redis.get(k.wines(code))) as J[]).find(w => w.id === id)?.imageUrl
@@ -816,7 +818,7 @@ async function rekeySection(h: Harness) {
   check('an id of an unexpected length still gets a CURRENT-shape key (never a legacy-shaped one)', isCurrent(await rowUrl(shortId), 'current-wine'), await rowUrl(shortId))
   check('the guest-only moment is skipped and listed, its line-up untouched', (ap.skippedRedisOnlyKeys as string[]).includes(keyOf(Lg)) && (await lineupUrl(gcode, gw1.wire.id)) === Lg, ap.skippedRedisOnlyKeys)
   const raceFinal = await rowUrl(rw.id)
-  check('🔒 a concurrent wine-photo replace wins (whichever ran first, the edit\'s fresh photo is what row + line-up serve)', replaced.status === 200 && raceFinal === replaced.wire.imageUrl && (await lineupUrl(race, rw.id)) === raceFinal && raceFinal !== Lr, { raceFinal, echo: replaced.wire.imageUrl })
+  check('🔒 a concurrent wine-photo replace wins (whichever ran first, the edit\'s fresh photo is what row + line-up serve)', replaced.status === 200 && raceFinal === replaced.wire.wine.imageUrl && (await lineupUrl(race, rw.id)) === raceFinal && raceFinal !== Lr, { raceFinal, echo: replaced.wire.wine?.imageUrl })
   await resetLimits()
   const ed = await call(wineRoute.PATCH, 'PATCH', `/api/session/${warm}/wines/${w1.id}`, Hr, { name: `${TAG} rk one renamed`, type: 'red' }, { code: warm, wineId: w1.id })
   check('🔒 a wine edit AFTER the apply keeps the new URL (the cache was swapped, not only the row)', ed.status === 200 && isCurrent(await rowUrl(w1.id), 'current-wine'), await rowUrl(w1.id))

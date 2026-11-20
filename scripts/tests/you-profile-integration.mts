@@ -81,6 +81,7 @@
 //
 //   DATABASE_URL=postgres://…/<throwaway> REDIS_URL=redis://…:<throwaway> \
 //   AUTH_SECRET=… npx tsx scripts/tests/you-profile-integration.mts
+import { nanoid } from 'nanoid'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { registerHooks } from 'node:module'
@@ -340,9 +341,12 @@ async function join(code: string, u: User) {
 }
 async function addWine(code: string, u: User, name: string) {
   await resetLimits()
-  const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, u, { name, type: 'red', image: PNG }, { code })
+  const id = nanoid()
+  const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, u, { id, name, type: 'red' }, { code })
   if (r.status !== 200) throw new Error(`add wine failed ${r.status} ${JSON.stringify(r.json)}`)
-  const id = r.json.id as string
+  // The photo has its own call since the catalogue model change (step 3).
+  const img = await call((await import('../../app/api/session/[code]/wines/[wineId]/image/route.ts')).PUT, 'PUT', `/api/session/${code}/wines/${id}/image`, u, { image: PNG }, { code, wineId: id })
+  if (img.status !== 200) throw new Error(`wine photo failed ${img.status} ${JSON.stringify(img.json)}`)
   const [w] = await prisma.$queryRaw<{ image_url: string | null }[]>`SELECT image_url FROM wines WHERE id = ${id}`
   if (!w?.image_url) throw new Error(`wine ${id} has no mirrored image_url`)
   return { id, url: w.image_url }
@@ -840,12 +844,16 @@ try {
   const setVis = (data: Vis) => prisma.user.update({ where: { id: O.id }, data })
   const VENUE = { venueName: 'Bar Olga', city: 'Basel', country: 'CH' }
   await resetLimits()
-  const ci = await call(checkinsRoute.POST, 'POST', '/api/checkins', O, {
-    wineName: `${TAG} Standalone`, score: 4, flavors: {}, imageData: PNG, ...VENUE, lat: 47.5, lng: 7.6,
+  const ci0 = await call(checkinsRoute.POST, 'POST', '/api/checkins', O, {
+    occurrenceId: nanoid(), wineName: `${TAG} Standalone`, score: 4, flavors: {}, ...VENUE, lat: 47.5, lng: 7.6,
     wineRegion: 'Douro', wineCountry: 'PT',
   })
-  if (ci.status !== 201) throw new Error(`check-in POST ${ci.status} ${JSON.stringify(ci.json)}`)
-  const postId = ci.json.id as number
+  if (ci0.status !== 201) throw new Error(`check-in POST ${ci0.status} ${JSON.stringify(ci0.json)}`)
+  const postId = ci0.json.id as number
+  // The photo attaches through the check-in's own PATCH (catalogue model change step 3).
+  await resetLimits()
+  const ci = await call((await import('../../app/api/checkins/[id]/route.ts')).PATCH, 'PATCH', `/api/checkins/${postId}`, O, { imageData: PNG }, { id: String(postId) })
+  if (ci.status !== 200) throw new Error(`check-in photo PATCH ${ci.status} ${JSON.stringify(ci.json)}`)
   check('D12 + D2: the check-in photo key is random, with nothing that points to the person', /^wines\/ci_[0-9a-f]{32}\.png$/.test(keyOf(ci.json.imageUrl)), keyOf(ci.json.imageUrl))
   const OM = await createSession(O, 'Olga Owner')
   const ow = await addWine(OM, O, 'Moment Bottle')
@@ -859,7 +867,7 @@ try {
   const oCheckin = (f: { json: Record<string, any> }) => (oItems(f) as unknown as { type: string; checkin?: Record<string, unknown> }[]).find(i => i.type === 'checkin')?.checkin // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON
   const webProfile = async (id: number, v: User | Actor) => { await resetLimits(); const pid = await pidOf(id); return call(usersRoute.GET, 'GET', `/api/users/${pid}`, v, undefined, { id: pid }) }
   const like = async (v: User, method: 'POST' | 'DELETE') => { await resetLimits(); return call(method === 'POST' ? likeRoute.POST : likeRoute.DELETE, method, `/api/feed-items/${postId}/like`, v, undefined, { id: String(postId) }) }
-  const sip = async (v: User) => { await resetLimits(); return call(checkinsRoute.POST, 'POST', '/api/checkins', v, { wineName: `${TAG} sip`, score: 3, flavors: {}, copyFromCheckinId: postId }) }
+  const sip = async (v: User) => { await resetLimits(); return call(checkinsRoute.POST, 'POST', '/api/checkins', v, { occurrenceId: nanoid(), wineName: `${TAG} sip`, score: 3, flavors: {}, copyFromCheckinId: postId }) }
 
   // Baseline: Same as Profile on a Verre Users profile.
   check('baseline: the friend and the follower see both posts in the network feed', oItems(await feedOf(Rf)).length === 2 && oItems(await feedOf(Fl)).length === 2)
@@ -1175,7 +1183,7 @@ try {
   const [W1, W3] = [await mkUser('Walt Fof'), await mkUser('Wim NoA2')]
   await prisma.follow.createMany({ data: [e(W1, Ow), e(W1, Xf), e(Xf, W1), e(W3, Ow), e(W3, Xf)] })
   await resetLimits()
-  const owPost = await call(checkinsRoute.POST, 'POST', '/api/checkins', Ow, { wineName: `${TAG} circle`, score: 4, flavors: {} })
+  const owPost = await call(checkinsRoute.POST, 'POST', '/api/checkins', Ow, { occurrenceId: nanoid(), wineName: `${TAG} circle`, score: 4, flavors: {} })
   if (owPost.status !== 201) throw new Error(`owner check-in ${owPost.status}`)
   const owIn = async (v: User) => ((await feedOf(v)).json.items as { author: { id: number } }[]).some(i => i.author.id === Ow.id)
   await setOw({ profileVisibility: 'public-mutual', visibilityFof: true })
@@ -1427,7 +1435,7 @@ try {
   w = await call(friendsRoute.GET, 'GET', '/api/me/friends', Ap)
   check('friends (the tag picker): public ids', Array.isArray(w.wire) && w.wire.some((f: { id: unknown }) => f.id === Bp.pid))
   await resetLimits()
-  const ci1 = await call(checkinsRoute.POST, 'POST', '/api/checkins', Bp, { wineName: 'Public Bottle', score: 4, taggedUserIds: [Ap.pid, UNKNOWN] })
+  const ci1 = await call(checkinsRoute.POST, 'POST', '/api/checkins', Bp, { occurrenceId: nanoid(), wineName: 'Public Bottle', score: 4, taggedUserIds: [Ap.pid, UNKNOWN] })
   check('check-in POST: tags by public id (an unknown one dropped), echo userId public', ci1.status === 201 && ci1.wire.userId === Bp.pid, { status: ci1.status, userId: ci1.wire.userId, want: Bp.pid })
   const ciId = ci1.wire.id as number
   const tagRows = await prisma.feedItemTag.findMany({ where: { feedItemId: ciId }, select: { userId: true } })
@@ -1447,7 +1455,7 @@ try {
   check('…and the stored tags are intact (never wiped to [])', (await prisma.feedItemTag.count({ where: { feedItemId: ciId } })) === 1)
   const postsBefore = await prisma.feedItem.count({ where: { userId: Bp.id } })
   await resetLimits()
-  pr = await call(checkinsRoute.POST, 'POST', '/api/checkins', Bp, { wineName: 'Old Tab Bottle', score: 3, taggedUserIds: [Ap.id] })
+  pr = await call(checkinsRoute.POST, 'POST', '/api/checkins', Bp, { occurrenceId: nanoid(), wineName: 'Old Tab Bottle', score: 3, taggedUserIds: [Ap.id] })
   check('🔒 check-in POST with an integer tag → 400 and no post created', pr.status === 400 && (await prisma.feedItem.count({ where: { userId: Bp.id } })) === postsBefore, pr.wire)
   await resetLimits()
   pr = await call(checkinRoute.PATCH, 'PATCH', `/api/checkins/${ciId}`, Bp, { taggedUserIds: [Ap.pid] }, { id: String(ciId) })
@@ -1468,9 +1476,9 @@ try {
   const sr = await call(codeRoute.PATCH, 'PATCH', `/api/session/${Pm}`, Ap, { action: 'set-role', targetId: `u:${Bp.pid}`, role: 'provider' }, { code: Pm })
   check('set-role by u:<publicId>: echo meta providerIds wire', sr.status === 200 && (sr.wire.meta.providerIds as string[]).includes(`u:${Bp.pid}`) && sr.wire.meta.hostUserId === Ap.pid, sr.wire)
   await resetLimits()
-  const wb = await call(winesRoute.POST, 'POST', `/api/session/${Pm}/wines`, Bp, { name: 'Ben Brought', type: 'red' }, { code: Pm })
+  const wb = await call(winesRoute.POST, 'POST', `/api/session/${Pm}/wines`, Bp, { id: nanoid(), name: 'Ben Brought', type: 'red' }, { code: Pm })
   check('wine POST echo: addedByUserId public', wb.status === 200 && wb.wire.addedByUserId === Bp.pid, wb.wire)
-  const wa = await call(winesRoute.POST, 'POST', `/api/session/${Pm}/wines`, Ap, { name: 'Ada Brought', type: 'white' }, { code: Pm })
+  const wa = await call(winesRoute.POST, 'POST', `/api/session/${Pm}/wines`, Ap, { id: nanoid(), name: 'Ada Brought', type: 'white' }, { code: Pm })
   await rate(Pm, Bp, wb.wire.id)
   await resetLimits()
   const st = await call(stateRoute.GET, 'GET', `/api/session/${Pm}/state`, Bp, undefined, { code: Pm })
@@ -1866,7 +1874,7 @@ try {
   }
   const addW = async (code: string, u: User | Actor, name: string) => {
     await resetLimits()
-    const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, u, { name, type: 'red' }, { code })
+    const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, u, { id: nanoid(), name, type: 'red' }, { code })
     if (r.status !== 200) throw new Error(`add wine failed ${r.status} ${JSON.stringify(r.json)}`)
     return r.json.id as string
   }
@@ -1900,7 +1908,7 @@ try {
 
   // ── fixture: Odile's impressions ──
   await resetLimits()
-  const ci0 = await call(checkinsRoute.POST, 'POST', '/api/checkins', Oo, { wineName: `${TAG} Solo`, score: 3, flavors: {} })
+  const ci0 = await call(checkinsRoute.POST, 'POST', '/api/checkins', Oo, { occurrenceId: nanoid(), wineName: `${TAG} Solo`, score: 3, flavors: {} })
   if (ci0.status !== 201) throw new Error(`check-in ${ci0.status}`)
   const soloPost = ci0.json.id as number
   const soloWine = (await prisma.$queryRaw<{ wine_id: string }[]>`SELECT r.wine_id FROM ratings r JOIN feed_items fi ON fi.rating_id = r.id WHERE fi.id = ${soloPost}`)[0].wine_id
@@ -2269,7 +2277,7 @@ try {
   const Vw = await mkUser('Viktor Viewer')
   const checkin = async (name: string, body: Record<string, unknown>) => {
     await resetLimits()
-    const c = await call(checkinsRoute.POST, 'POST', '/api/checkins', Pp, { wineName: `${TAG} ${name}`, type: 'red', score: 3, ...body })
+    const c = await call(checkinsRoute.POST, 'POST', '/api/checkins', Pp, { occurrenceId: nanoid(), wineName: `${TAG} ${name}`, type: 'red', score: 3, ...body })
     if (c.status !== 201) throw new Error(`check-in ${name} ${c.status} ${JSON.stringify(c.json)}`)
     const w = (await prisma.$queryRaw<{ wine_id: string }[]>`SELECT r.wine_id FROM ratings r JOIN feed_items fi ON fi.rating_id = r.id WHERE fi.id = ${c.json.id as number}`)[0].wine_id
     return { post: c.json.id as number, wine: w }
@@ -2356,7 +2364,7 @@ try {
   // the Bubbles filter must stop matching it (Codex review, 2026-11-14).
   const MS = await createSession(Hb)
   await resetLimits()
-  const ws = await call(winesRoute.POST, 'POST', `/api/session/${MS}/wines`, Hb, { name: `${TAG} Fizz`, type: 'spark' }, { code: MS })
+  const ws = await call(winesRoute.POST, 'POST', `/api/session/${MS}/wines`, Hb, { id: nanoid(), name: `${TAG} Fizz`, type: 'spark' }, { code: MS })
   await join(MS, Pp)
   await resetLimits()
   const rs = await call(rateRoute.POST, 'POST', `/api/session/${MS}/rate`, Pp, { wineId: ws.json.id, score: 4, flavors: { bubbles: 4 }, notes: 'n' }, { code: MS })

@@ -1623,10 +1623,11 @@ async function main() {
   // would violate the composite FK at runtime) passed green. The right fix was
   // to give CI a Redis service — it is one workflow block — rather than accept
   // a weaker assertion. Both writers are now driven for real.
-  const { reassignProvenance, mirrorLineup } = await import('../../lib/session.ts')
-  // Release B: both writers run INSIDE the session mutation contract's
-  // transaction and project the lineup the contract read under its locks
-  // (passed in), so the fixture drives them in a transaction directly.
+  const { reassignProvenance, normalizeWine } = await import('../../lib/session.ts')
+  const { copyLineup, insertOccurrence, updateOccurrence } = await import('../../lib/occurrences.ts')
+  // The record-first writers (catalogue model change step 3) run INSIDE the
+  // session mutation contract's transaction, so the fixture drives them in a
+  // transaction directly.
   const [{ id: p2sid }] = await prisma.$queryRawUnsafe(`
     INSERT INTO sessions (code, host_name, created_at)
     VALUES ('P2TESTSS', 'P2 Host', now())
@@ -1641,65 +1642,66 @@ async function main() {
     addedByIdentityId: 'a:00000000-0000-4000-8000-000000000002', addedByDisplayName: 'Someone',
     productId: prod.id, vintageId: vintage.id,
   }
-  // The CREATE arm — no wines row exists yet, which is the exact case this
-  // upsert exists for, and the arm that was found omitting the link.
+  // The create (INSERT-only) must store the link, and a brought-by reassign
+  // must leave it alone.
   await prisma.$executeRawUnsafe(`DELETE FROM wines WHERE id = '${linkedWine.id}'`)
-  await prisma.$transaction(tx => reassignProvenance(tx, p2sid, [linkedWine], linkedWine))
+  const ins = await prisma.$transaction(tx => insertOccurrence(tx, p2sid, linkedWine, null))
+  eq(ins, 'inserted', 'insertOccurrence creates the row')
+  await prisma.$transaction(tx => reassignProvenance(tx, p2sid, linkedWine.id, 'a:00000000-0000-4000-8000-000000000003', 'Someone else'))
   const reassigned = await prisma.$queryRawUnsafe(
-    `SELECT product_id, vintage_id FROM wines WHERE id = '${linkedWine.id}'`)
+    `SELECT product_id, vintage_id, added_by_identity_id FROM wines WHERE id = '${linkedWine.id}'`)
   // 🔒 Asserts the VALUES, not merely that the columns are non-null — that is
   // what catches a transposition (vintageId written from wine.productId).
-  eq(reassigned[0]?.product_id, prod.id, 'a reassign that CREATES the row stores the right productId')
-  eq(reassigned[0]?.vintage_id, vintage.id, 'a reassign that CREATES the row stores the right vintageId')
+  eq(reassigned[0]?.product_id, prod.id, 'the create stores the right productId, a reassign keeps it')
+  eq(reassigned[0]?.vintage_id, vintage.id, 'the create stores the right vintageId, a reassign keeps it')
+  eq(reassigned[0]?.added_by_identity_id, 'a:00000000-0000-4000-8000-000000000003', 'the reassign moved the owner')
 
-  // The lineup mirror (every list write projects the whole array), both arms.
+  // The strict whole-array copy (reconciliation, promotion), both arms.
   const archiveId = 'p2test_wine_archive'
   await prisma.$executeRawUnsafe(`DELETE FROM wines WHERE id = '${archiveId}'`)
-  await prisma.$transaction(tx => mirrorLineup(tx, p2sid, [linkedWine, { ...linkedWine, id: archiveId }]))
+  await prisma.$transaction(tx => copyLineup(tx, p2sid, [linkedWine, { ...linkedWine, id: archiveId }]))
   const created = await prisma.$queryRawUnsafe(
     `SELECT product_id, vintage_id FROM wines WHERE id = '${archiveId}'`)
-  eq(created[0]?.product_id, prod.id, 'mirrorLineup CREATE stores the right productId')
-  eq(created[0]?.vintage_id, vintage.id, 'mirrorLineup CREATE stores the right vintageId')
+  eq(created[0]?.product_id, prod.id, 'copyLineup CREATE stores the right productId')
+  eq(created[0]?.vintage_id, vintage.id, 'copyLineup CREATE stores the right vintageId')
   // The UPDATE arm must carry it too — unlike provenance (frozen on purpose),
   // the link is deliberately MUTABLE, so a re-link or an identity-edit CLEAR
   // has to reach Postgres.
-  await prisma.$transaction(tx => mirrorLineup(tx, p2sid, [linkedWine, { ...linkedWine, id: archiveId, productId: null, vintageId: null }]))
+  await prisma.$transaction(tx => copyLineup(tx, p2sid, [linkedWine, { ...linkedWine, id: archiveId, productId: null, vintageId: null }]))
   const clearedRow = await prisma.$queryRawUnsafe(
     `SELECT product_id, vintage_id FROM wines WHERE id = '${archiveId}'`)
   eq(clearedRow[0]?.product_id, null,
-    'mirrorLineup UPDATE propagates a CLEARED link (the link is mutable, unlike provenance)')
+    'copyLineup UPDATE propagates a CLEARED link (the link is mutable, unlike provenance)')
+  // …and so must the edit.
+  await prisma.$transaction(tx => updateOccurrence(tx, p2sid, { ...linkedWine, id: archiveId }))
+  eq((await prisma.$queryRawUnsafe(`SELECT product_id FROM wines WHERE id = '${archiveId}'`))[0]?.product_id, prod.id, 'updateOccurrence writes the link')
 
-  // ── D1: addWineToSession's round-trip, the trap its own comment names ─────
+  // ── D1: normalizeWine's round-trip, the trap its own comment names ────────
   //
-  // 🔒 THIS FUNCTION IS THE ONLY SOURCE OF THE LINK THAT REACHES REDIS. The
-  // PATCH route replaces the wine object wholesale and re-asserts only
-  // provenance from the current list, so whatever this returns IS the stored
-  // link. It had NO coverage: a reviewer mutated it to return `productId: null`
+  // 🔒 THIS FUNCTION IS THE ONLY SOURCE OF THE LINK A WRITE STORES. The edit
+  // merges onto its result, so whatever this returns IS the stored link. It
+  // had NO coverage once: a reviewer mutated it to return `productId: null`
   // unconditionally — dropping every session-wine link on every create and
   // edit, i.e. the feature silently not working — and the suite stayed green.
-  const { addWineToSession } = await import('../../lib/session.ts')
-  const base = { name: 'RT Wine', type: 'red', producer: 'RT Producer', vintage: '2019' }
-  const createdWine = await addWineToSession('P2TESTSS', { ...base, productId: prod.id, vintageId: vintage.id })
+  const base = { id: 'p2test_wine_rt000000', name: 'RT Wine', type: 'red', producer: 'RT Producer', vintage: '2019' }
+  const createdWine = normalizeWine({ ...base, productId: prod.id, vintageId: vintage.id })
   eq(createdWine.productId, prod.id, 'create: the supplied productId round-trips')
   eq(createdWine.vintageId, vintage.id, 'create: the supplied vintageId round-trips')
-  // A create with no link must store null, not undefined — the value is
-  // mirrored straight into Postgres.
-  const bare = await addWineToSession('P2TESTSS', base)
+  // A create with no link must store null, not undefined.
+  const bare = normalizeWine(base)
   eq(bare.productId, null, 'create without a link stores null')
   // 🔒 OMITTED means KEEP. This is the spelling the function's comment warns
   // about: `body.productId ?? existing?.productId` would behave identically
   // HERE but swallow a deliberate null below — so both cases are needed to pin
   // the semantics, and testing only one leaves the trap open.
-  const kept = await addWineToSession('P2TESTSS', { ...base, description: 'x' }, createdWine)
+  const kept = normalizeWine({ ...base, description: 'x' }, createdWine)
   eq(kept.productId, prod.id, 'edit omitting the link KEEPS the stored productId')
   eq(kept.vintageId, vintage.id, 'edit omitting the link KEEPS the stored vintageId')
   // 🔒 EXPLICIT NULL means CLEAR — the case `??` would silently swallow.
-  const clearedEdit = await addWineToSession(
-    'P2TESTSS', { ...base, productId: null, vintageId: null }, createdWine)
+  const clearedEdit = normalizeWine({ ...base, productId: null, vintageId: null }, createdWine)
   eq(clearedEdit.productId, null, 'edit with an explicit null CLEARS the link')
   // Re-link to a different product.
-  const relinked = await addWineToSession(
-    'P2TESTSS', { ...base, productId: otherProduct.id, vintageId: null }, createdWine)
+  const relinked = normalizeWine({ ...base, productId: otherProduct.id, vintageId: null }, createdWine)
   eq(relinked.productId, otherProduct.id, 'edit can RE-LINK to a different product')
 
   // ══════════════════════════════════════════════════════════════════════

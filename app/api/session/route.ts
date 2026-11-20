@@ -199,7 +199,9 @@ export async function POST(req: NextRequest) {
           await publish(ctx, candidate, meta, identityId, hostName, sessionTTL, anonToken)
           return candidate
         }
-        await tx.session.create({ data: { code: candidate, ...sessionMetaToColumns(meta) } })
+        // Reconciled from birth (model change § 8a): revision 1, the empty
+        // line-up stamped with it in the projection.
+        await tx.session.create({ data: { code: candidate, ...sessionMetaToColumns(meta), lineupRevision: 1 } })
         await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${candidate}`
         await tx.$executeRaw`INSERT INTO session_members (user_id, session_code, role) VALUES (${userId}, ${candidate}, 'host')`
         await tx.$executeRaw`
@@ -208,7 +210,7 @@ export async function POST(req: NextRequest) {
            WHERE id = ${userId}`
         return candidate
       }, async (ctx, claimed) => {
-        if (claimed && userId !== null) await publish(ctx, claimed, meta, identityId, hostName, sessionTTL, null)
+        if (claimed && userId !== null) await publish(ctx, claimed, meta, identityId, hostName, sessionTTL, null, 1)
       })
       if (!code) console.warn(`[session] code candidate taken (attempt ${attempt})`)
     } catch (err) {
@@ -241,9 +243,10 @@ export async function POST(req: NextRequest) {
 // The new session's keys, fenced: wines NX, the host's roster entry (and the
 // anonymous host's token), then meta NX LAST — the existence signal every
 // reader keys on.
-async function publish(ctx: MutationCtx, code: string, meta: SessionMeta, identityId: string, hostName: string, ttl: number, anonToken: string | null): Promise<void> {
+async function publish(ctx: MutationCtx, code: string, meta: SessionMeta, identityId: string, hostName: string, ttl: number, anonToken: string | null, lineupRevision: number | null = null): Promise<void> {
   await ctx.fence!.exec(m => {
     m.set(k.wines(code), '[]', { NX: true, EX: ttl })
+    if (lineupRevision !== null) m.set(k.wrev(code), String(lineupRevision), { NX: true, EX: ttl })
     m.hSet(k.identities(code), identityId, hostName)
     m.expire(k.identities(code), ttl)
     if (anonToken) { m.hSet(k.tokens(code), anonToken, identityId); m.expire(k.tokens(code), ttl) }

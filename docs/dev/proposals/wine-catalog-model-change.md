@@ -1209,12 +1209,12 @@ failure with Redis compensation is the authoritative-write matrix of the model c
 | Reveal state always has a row in a promoted session | ✅ shipped | the mirror runs on every list write, keyed on `ctx.row` (the reveal-route bug below is closed) |
 | `pgUpsertWine` in silent `catch {}` | ✅ gone | replaced by `mirrorLineup` inside the contract; what remains best-effort is `bestEffortMirror` (a SAVEPOINT) around the line-up content |
 | NX to create, XX + `KEEPTTL` to update, lint-gated | ✅ shipped | the revision REPLACE below is an `XX` write |
-| **Content authority in a promoted session** | ❌ owed | today Redis-first: `mutateWines` decides on the cached array, `mirrorLineup` projects it under a SAVEPOINT, a failed mirror is logged and repaired by the next list write. This change makes it record-first (matrices below) |
-| **Revision-stamped line-up** | ❌ owed, and `s:{C}:gen` does not replace it | below |
-| Client-generated ids, insert-only create, 409 | ❌ owed | ids are minted server-side (`lib/session.ts:519` `existing?.id \|\| nanoid()`) |
-| Redis-only sessions cannot attach images | ❌ owed | `addWineToSession` uploads for any caller today |
-| Image attach separate from create, S3→DB reclaim | ❌ owed | today the image rides the POST / PATCH body; `reclaimIfUnreferenced` covers a refused add |
-| Reorder / reveal / hide-all decided by Postgres in a promoted session | ❌ owed | today `mutateWines` + mirror, as everything else |
+| **Content authority in a promoted session** | ✅ built (step 3, `lib/occurrences.ts`) — was ❌ owed | today Redis-first: `mutateWines` decides on the cached array, `mirrorLineup` projects it under a SAVEPOINT, a failed mirror is logged and repaired by the next list write. This change makes it record-first (matrices below) |
+| **Revision-stamped line-up** | ✅ built (step 3); `s:{C}:gen` stays beside it | below |
+| Client-generated ids, insert-only create, 409 | ✅ built (step 3) | ids are minted server-side (`lib/session.ts:519` `existing?.id \|\| nanoid()`) |
+| Redis-only sessions cannot attach images | ✅ built (step 3) | `addWineToSession` uploads for any caller today |
+| Image attach separate from create, S3→DB reclaim | ✅ built (step 3) | today the image rides the POST / PATCH body; `reclaimIfUnreferenced` covers a refused add |
+| Reorder / reveal / hide-all decided by Postgres in a promoted session | ✅ built (step 3) | today `mutateWines` + mirror, as everything else |
 
 🔒 **A cutover hazard this creates** (not in the July text): before the deploy, a promoted
 session's cache can hold a bottle whose best-effort mirror failed, so the record lacks
@@ -1256,7 +1256,12 @@ NULL and `nonalc` or any unknown token ≡ "neither" — never the reverse, whic
 the colour of a sparkling rosé (`spark` derives no colour). A test
 drives the OLD `upsertLineup` over a new-projected blob and asserts no row changes, with
 a fixture that fills all fifteen compared columns, a `nonalc` row, and a `revealed_at`
-written by new code (millisecond vs microsecond precision).
+written by new code (millisecond vs microsecond precision). ✅ Built in step 3 (no row changes).
+🔒 **The non-bumping writer, settled by step 3:** the cached line-up carries NO colour,
+sparkling, abv or origin (the old `WineMeta` shape exactly; `type` is the stored `style`), so
+the backfill re-run, which rewrites those columns without bumping the revision, can never leave
+a cache that disagrees with the record at an equal revision. Step 4 keeps it so: the wire
+derives colour / sparkling (from the entry, else from `type`), the blob never stores them.
 
 🔒 **A session is in exactly one of two persistence modes, and the transition is one-way.**
 
@@ -1404,9 +1409,12 @@ that one ⅛-core instance caps near 20–26 requests a second (§ 9). So: for a
 a promoted moment add `s.lineup_revision` to `readGrant` (`lib/sessionGrant.ts`), which already
 reads the `sessions` row by code on every request (`lib/identity.ts:228`), and fetch `wrev` in
 `openSession`'s existing `MGET`: zero extra statements. A guest of a promoted moment has no
-database read on a poll today, so the guest pays one; whether to memo it per code for a second
-or two is open (Fable: yes, writers re-read under their lock; Codex: a cross-request memo weakens
-stale detection), decided in step 3. Writers: the bump is the contract's row-lock statement
+database read on a poll today, so the guest pays one. ✅ **Decided in step 3: no memo.** Measured
+(the sandbox app process against a local Docker copy of the rehearsal database, CPU not
+throttled, 3,000 runs): the signed-in poll's grant read costs nothing measurable with the column
+(p50 0.202 ms vs 0.205-0.220 ms without), the guest's read p50 0.123 ms against 0.093 ms for a
+bare `SELECT 1` (server-side 0.014 ms: the cost is the round trip); a memo would weaken stale
+detection for that. Writers: the bump is the contract's row-lock statement
 (`UPDATE … RETURNING` in place of `SELECT … FOR UPDATE`), not a statement of its own; reorder is
 one `UPDATE … FROM unnest()` touching only moved rows; `lineup_revision`, `position` and
 `revealed_at` stay out of every index (HOT updates).
@@ -1423,7 +1431,9 @@ creates a **second** occurrence — and since two identical bottles in one lineu
 modes: in a Redis-only session the add's pure transform finds the id in the cached array
 and returns it unchanged when session and adder match, else rejects with 409. Standalone
 check-ins mint their occurrence the same way (`app/api/checkins/route.ts:313` mints a
-server id today), keyed on the client id.
+server id today), keyed on the client id. ✅ Step 3 adds: a Redis-only create also refuses an id
+the record already holds anywhere (409), or a guest could take another moment's id and lose the
+bottle at promotion.
 
 Chosen over an idempotency-key column because it adds no schema, and because it makes the
 S3 key known *before* the row exists, which the image protocol below depends on.
@@ -1510,9 +1520,28 @@ bytes, size cap), so an invalid payload is a 400 before anything is written.
 | **Delete** | Delete occurrence + bump | Rewrite, stamped | Capture URLs before txn, reclaim **after** commit | 4xx/5xx, no change | 200; next read rebuilds | Idempotent (already gone → 200) |
 | **Reorder** | Update `position` for all + bump, one txn | Rewrite, stamped | — | 4xx/5xx, no change | 200; next read rebuilds | Idempotent (absolute order) |
 | **Reveal / hide-all / reveal-all** | Update `revealed_at` + bump | Rewrite, stamped | — | 4xx/5xx, no change | 200; next read rebuilds | Idempotent (absolute state) |
-| **Image attach** | Upload to S3 → write URL to occurrence + bump | Rewrite, stamped | 🔒 **Reclaim the new object if the Postgres write fails** | Object reclaimed; occurrence unchanged | 200; next read rebuilds | Same key → overwrite in place |
+| **Image attach** | Upload to S3 → write URL to occurrence + bump | Rewrite, stamped | 🔒 **Reclaim the new object if the Postgres write fails** | Object reclaimed; occurrence unchanged | 200; next read rebuilds | A fresh key per upload (as built: a refused write never overwrites the live bytes); the replaced object reclaimed after COMMIT |
 
-🔒 **Image attach is a separate operation from create.** Creating an occurrence succeeds or
+🔒 **In a reconciled moment the record decides which bottles exist** (step 3): a bottle only the
+cache lists (an old instance's failed mirror during the rollout) does not exist, so the rate and
+bookmark POSTs answer 404 for it; they no longer mirror the line-up.
+
+⚠️ **Rollout residuals named in step 3's review** (the quiet window is what makes them
+acceptable): (1) the converse of the named one: a NEW instance's projection fails after COMMIT
+(a stale cache), then an OLD instance's rate or bookmark mirrors that stale array over the record
+without a bump, reverting a committed edit or re-inserting a deleted bottle without its ratings;
+(2) a legacy bottle whose S3 upload failed carried its photo inline in Redis (`image`, never in
+the record): every projection from the record drops it, as the rebuild always did (the warm-up
+dry run counts them, `inlinePhotos`); (3) an OLD instance's moment delete leaves
+`lineup_revision` on the tombstone (the warm-up `--apply` NULLs it). `GET /api/build` answers
+for whichever instance serves the request: "every instance" means sampling until the old commit
+stops appearing, or the platform's own release view.
+
+🔒 **Image attach is a separate operation from create.** A check-in's photo goes through its
+own edit call (`PATCH /api/checkins/<id>` with `{imageData}`, step 3); ruled 2026-11-20 (Simon):
+that first photo, sent alone within 10 minutes of posting, costs no second slot of the shared
+`rl:checkin` budget (`app/api/rate-limits.md`). The bottle photo call has no rate limit, as the
+edit it replaces had none (ruled the same day). Creating an occurrence succeeds or
 fails on its own; the image is applied afterwards against the known id, and its failure
 never rolls back or duplicates the occurrence. The client may retry the image alone.
 

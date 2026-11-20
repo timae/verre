@@ -88,7 +88,7 @@ Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy
 
 **Lifetime counter snapshots on `users`**: rate/visit/create endpoints atomically increment monotonic counters (lifetime_ratings, five_star, sessions_joined, etc.). Never decrement — protects badge progression and gives O(1) reads on the badge hot path.
 
-**NX to create, XX + `KEEPTTL` to update** on `s:{CODE}:meta` and `s:{CODE}:wines` (lint-gated, `eslint.config.mjs`): a wiped or evicted key can never be recreated by a stale writer, and a hardcoded `{ EX: … }` would downgrade an unlimited lifespan. Wine-list writes go through `mutateWines(fence, …)` (`lib/session.ts`) inside the contract — it rejects on an absent lineup.
+**NX to create, XX + `KEEPTTL` to update** on `s:{CODE}:meta` and `s:{CODE}:wines` (lint-gated, `eslint.config.mjs`): a wiped or evicted key can never be recreated by a stale writer, and a hardcoded `{ EX: … }` would downgrade an unlimited lifespan. 🔒 A Postgres-backed moment's bottles are RECORD-FIRST (`lib/occurrences.ts`): decided on rows, `sessions.lineup_revision` bumped, the line-up projected after COMMIT stamped `s:{C}:wrev`; NULL = not reconciled. A Redis-only moment's go through `mutateWines(fence, …)`. Census: `scripts/check-wine-writes.mjs`.
 
 Redis key namespace, SCAN helpers (`scanKeys`, `hasKey`, preferred over `redis.keys` which blocks the event loop): see `lib/CLAUDE.md`.
 

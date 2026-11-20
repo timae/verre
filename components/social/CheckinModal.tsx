@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
+import { nanoid } from 'nanoid'
 import { normalizeVintageText } from '@verre/core'
 import { FlavorChips } from '@/components/rate/FlavorChips'
 import { IntensityHelp } from '@/components/rate/IntensityHelp'
@@ -46,6 +47,12 @@ interface Props {
 
 export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, onDelete }: Props) {
   const isEdit = !!editCheckin
+  // Minted once per open sheet: a Post retried after a lost answer replays the
+  // same check-in.
+  const occurrenceId = useRef(nanoid())
+  // Posted, but its photo failed: the next Post edits that check-in (fields +
+  // photo) instead of replaying the create, and closing refreshes the feed.
+  const postedId = useRef<number | null>(null)
   const isCopy = !isEdit && !!copyFromCheckin
   const prefill = editCheckin || (isCopy ? copyFromCheckin : null)
   const [wineName, setWineName] = useState(prefill?.wineName || '')
@@ -130,39 +137,69 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
   async function submit() {
     if (!wineName.trim()) { setError('Wine name required'); return }
     setSaving(true); setError('')
-    const url = isEdit ? `/api/checkins/${editCheckin!.id}` : '/api/checkins'
-    const method = isEdit ? 'PATCH' : 'POST'
+    const editing = isEdit || postedId.current !== null
+    const url = isEdit ? `/api/checkins/${editCheckin!.id}` : postedId.current !== null ? `/api/checkins/${postedId.current}` : '/api/checkins'
+    const method = editing ? 'PATCH' : 'POST'
     // Send the source id when the user kept the source image — server resolves
     // and authorizes the row, then CopyObjects the bytes. Replacement/remove
     // paths fall through to the normal imageData branch.
     const copyFromCheckinId = isCopy && !imageData && existingImageUrl ? copyFromCheckin!.id : undefined
-    const res = await fetch(url, {
-      method, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        wineName, producer, vintage: normalizeVintageText(vintage), grape, type,
-        // Normalise flavours (structure-wheel §5 zero rule): any axis rated →
-        // every axis of this style stored (untouched = explicit 0); all-None →
-        // {}. Also the edit-path transform (§6g) — only registry keys survive, so
-        // a stale descriptor row can't 400 the write gate. One shape web+native.
-        score: score || null, flavors: fillFlavourZeros(flavors, 'wine', type), notes,
-        imageData: imageData === '__remove__' ? null : (imageData || undefined),
-        copyFromCheckinId,
-        ...location,
-        taggedUserIds: taggedIds,
-      }),
-    })
+    // A new check-in carries its client occurrence id (a retried Post replays
+    // the same check-in, the server answers the existing one) and never the
+    // photo: that attaches afterwards through the check-in's own PATCH.
+    const photo = imageData === '__remove__' ? null : (imageData || undefined)
+    const fail = (msg: string) => { setSaving(false); setError(msg) }
+    try {
+      const res = await fetch(url, {
+        method, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          wineName, producer, vintage: normalizeVintageText(vintage), grape, type,
+          // Normalise flavours (structure-wheel §5 zero rule): any axis rated →
+          // every axis of this style stored (untouched = explicit 0); all-None →
+          // {}. Also the edit-path transform (§6g) — only registry keys survive, so
+          // a stale descriptor row can't 400 the write gate. One shape web+native.
+          score: score || null, flavors: fillFlavourZeros(flavors, 'wine', type), notes,
+          ...(editing ? { imageData: photo } : { occurrenceId: occurrenceId.current }),
+          ...(editing ? {} : { copyFromCheckinId }),
+          ...location,
+          taggedUserIds: taggedIds,
+        }),
+      })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); return fail(d.error || 'Failed') }
+      if (!editing) {
+        const posted = await res.json().catch(() => null) as { id?: number } | null
+        if (posted?.id) postedId.current = posted.id
+        // 200 = the server replayed a check-in whose first answer was lost
+        // (Codex r1): the sheet's fields may have changed since, so they go
+        // through the edit, with the photo; 201 = fresh, only the photo follows.
+        const replayed = res.status === 200
+        if (posted?.id && (replayed || photo)) {
+          const img = await fetch(`/api/checkins/${posted.id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(replayed
+              ? { wineName, producer, vintage: normalizeVintageText(vintage), grape, type, score: score || null, flavors: fillFlavourZeros(flavors, 'wine', type), notes, ...location, taggedUserIds: taggedIds, ...(photo !== undefined ? { imageData: photo } : {}) }
+              : { imageData: photo }),
+          })
+          if (!img.ok) return fail(replayed ? 'Posted, but your latest changes could not be saved. Try again.' : 'Posted, but the photo could not be added. Try again.')
+        }
+      }
+    } catch {
+      // A lost answer: Post again replays the same check-in (or edits it once posted).
+      return fail(postedId.current !== null ? 'Posted, but the photo could not be added. Try again.' : 'Could not post. Try again.')
+    }
     setSaving(false)
-    if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.error || 'Failed'); return }
     onPosted()
   }
+  // A check-in posted without its photo is still posted: the feed refreshes.
+  const close = () => (postedId.current !== null ? onPosted() : onClose())
 
   return (
-    <Modal onClose={onClose} maxWidth={560} minHeight="min(70vh, 600px)" maxHeight="90vh">
+    <Modal onClose={close} maxWidth={560} minHeight="min(70vh, 600px)" maxHeight="90vh">
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
           <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em' }}>
             {isEdit ? 'Edit check-in' : isCopy ? 'Had a sip' : 'Check in a wine'}
           </div>
-          <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
+          <button className="btn-s" onClick={close} style={{fontSize:9}}>close</button>
         </div>
         {isCopy && copyFromCheckin && (
           <p style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: -10, marginBottom: 14 }}>
@@ -286,7 +323,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
 
         {error && <p style={{ color: 'var(--danger)', fontSize: 11, marginTop: 8 }}>{error}</p>}
         <button className="btn-p" onClick={submit} disabled={saving} style={{ marginTop: 14 }}>{saving ? (isEdit ? 'saving…' : 'posting…') : (isEdit ? '→ save changes' : '→ post check-in')}</button>
-        <button className="btn-g" onClick={onClose}>cancel</button>
+        <button className="btn-g" onClick={close}>cancel</button>
         {isEdit && onDelete && (
           <ConfirmDeleteButton
             label="⌫ delete check-in"

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta, bumpLastSeen, unhideCarousel, lifespanTTL } from '@/lib/redis'
-import { ensurePromoted, mirrorLineup, type WineMeta } from '@/lib/session'
+import { ensurePromoted, type WineMeta } from '@/lib/session'
+import { reconcileLineup, lockOccurrence, readOccurrence } from '@/lib/occurrences'
 import { ensureMemberRow } from '@/lib/sessionMember'
 import { normalizeCode } from '@verre/core'
 import { validateFlavors } from '@/lib/checkinValidation'
@@ -65,7 +66,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // a rate landing after a wine DELETE must not write an orphan rating.
   // …and the same 404 for a line-up hidden from the caller (an early reject:
   // the decision is re-made under the locks below).
-  if (!op.wines.some(w => w.id === wineId) || lineupHiddenFor(op.meta, identity)) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
+  // (A cache behind the record must not 404 a bottle the record has.)
+  if (lineupHiddenFor(op.meta, identity) || (!op.wines.some(w => w.id === wineId) && !(await readOccurrence(c, wineId)))) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
 
   const ratingScore = sc.value ?? 0
   const validFlavors = fl.value
@@ -110,10 +112,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
       // re-run (r3 P1 — the cold / lease / superseded retries).
       reclaim = []
       const caller = admitted(ctx)
-      const raw = await redis.get(k.wines(c))
-      if (raw === null) throw new ContractCold(c)
-      const wines = JSON.parse(raw) as WineMeta[]
-      const wine = wines.find(w => w.id === wineId)
+      // The bottle from its authority: the RECORD in a Postgres-backed moment
+      // (model change § 8a; a NULL revision reconciled first, so a cache-only
+      // bottle of an old failed mirror gets its row), the cached line-up in a
+      // Redis-only one. The rate no longer mirrors the line-up: the row exists.
+      let wine: WineMeta | null
+      if (ctx.row) {
+        await reconcileLineup(tx, ctx)
+        wine = await lockOccurrence(tx, ctx.row.id, wineId)
+      } else {
+        const raw = await redis.get(k.wines(c))
+        if (raw === null) throw new ContractCold(c)
+        wine = (JSON.parse(raw) as WineMeta[]).find(w => w.id === wineId) ?? null
+      }
       // 🔒 A hidden line-up (the live rule, decided here from the fresh grant +
       // meta) is the same 404: the read hides the bottle, so must the write.
       if (!wine || !ctx.meta || lineupHiddenFor(ctx.meta, caller)) throw refuse(404, 'wine not found')
@@ -154,7 +165,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
       }
       const sessionId = ctx.row.id
       await ensureMemberRow(tx, ctx.row, userId)
-      await mirrorLineup(tx, sessionId, wines)
       // The prior row, for the counter transitions (counters never decrement).
       const priorRows = await tx.$queryRaw<{ score: unknown; notes: string | null }[]>`
         SELECT score, notes FROM ratings WHERE wine_id = ${wineId} AND user_id = ${userId} AND session_id = ${sessionId} LIMIT 1`

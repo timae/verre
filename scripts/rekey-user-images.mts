@@ -224,6 +224,17 @@ async function runModes(opts: RunOpts) {
     } catch { failed++; continue }
     let n = 0
     await prisma.$transaction(async (tx) => {
+      // The contract's lock order FIRST (Codex r1): the advisory lock of every
+      // live moment whose bottles carry one of these URLs, in sorted code order
+      // (account deletion's form, lib/sessionMutation.ts withSessionLocks:
+      // hashtext('session:' || code)), then their rows FOR UPDATE, then the
+      // user. A bottle edit holds its moment's locks before its wine row; taking
+      // the wine rows first would deadlock with it.
+      const codes = (await tx.$queryRaw<{ code: string }[]>`
+        SELECT DISTINCT s.code FROM wines w JOIN sessions s ON s.id = w.session_id
+         WHERE w.image_url = ANY(${urls}::text[]) AND s.deleted_at IS NULL AND s.code IS NOT NULL ORDER BY s.code`).map(r => r.code)
+      for (const code of codes) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`session:${code}`}))`
+      if (codes.length) await tx.$queryRaw`SELECT id FROM sessions WHERE code = ANY(${codes}::text[]) AND deleted_at IS NULL ORDER BY code FOR UPDATE`
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${p.owner} FOR UPDATE`
       for (const oldUrl of urls) {
         const newUrl = prefixOf(oldUrl) + newKey
@@ -239,7 +250,24 @@ async function runModes(opts: RunOpts) {
             WHERE ${url} = $2`, newUrl, oldUrl)
           n += await tx.$executeRawUnsafe(`UPDATE users SET ${own} = $1 WHERE ${own} = $2`, newUrl, oldUrl)
         }
-        n += await tx.$executeRaw`UPDATE wines SET image_url = ${newUrl} WHERE image_url = ${oldUrl}`
+        // Bottle rows of moments are line-up content (catalogue model change
+        // § 8a): an UNRECONCILED moment's rows are skipped (its first
+        // reconciliation lets the cache win and would write the old URL back;
+        // run scripts/warm-lineups.mts --apply first, then this again: the old
+        // object stays, the reclaim re-checks every URL column); every moment
+        // whose bottles moved bumps its revision, so its cached line-up is
+        // replaced on the next read.
+        const moved = await tx.$executeRaw`
+          UPDATE wines SET image_url = ${newUrl}
+           WHERE image_url = ${oldUrl}
+             AND (session_id IS NULL OR session_id NOT IN (SELECT id FROM sessions WHERE deleted_at IS NULL AND lineup_revision IS NULL))`
+        n += moved
+        if (moved > 0) {
+          await tx.$executeRaw`
+            UPDATE sessions SET lineup_revision = lineup_revision + 1
+             WHERE id IN (SELECT DISTINCT session_id FROM wines WHERE image_url = ${newUrl} AND session_id IS NOT NULL)
+               AND lineup_revision IS NOT NULL`
+        }
         n += await tx.$executeRaw`UPDATE rating_images SET image_url = ${newUrl} WHERE image_url = ${oldUrl}`
       }
     })

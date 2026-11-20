@@ -16,9 +16,9 @@ import { engagementCascadeIn, reclaimImages } from '@/lib/engagementCascade'
 import { withSessionMutation, ContractRefused, ContractBusy, ContractNeedsLease, LockLost, ratingKeyWrite, type MutationCtx } from '@/lib/sessionMutation'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
-import type { WineMeta } from '@/lib/session'
 import { scrub, cleanCountry, cleanUrl } from '@/lib/textSafe'
 import { resolveCatalogLink, applyIdentityEditRule, CatalogValidationError } from '@/lib/catalogWrite'
+import { syncSnapshot } from '@/lib/occurrences'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
@@ -60,18 +60,28 @@ type Ctx = { params: Promise<{ id: string }> }
 // feed_items.id = source.checkins.id, so cached client URLs continue to
 // resolve.
 
+// How long after posting a check-in's first photo is free of the shared budget.
+const FIRST_PHOTO_WINDOW_MS = 10 * 60 * 1000
+
 export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
 
-  // Share the create budget — edits and creates count toward the same hourly cap.
-  const rl = await checkRate(`rl:checkin:${userId}:1h`, 100, 3600)
-  if (!rl.allowed) return NextResponse.json({ error: `Too many check-in writes. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
+  // Share the create budget — edits and creates count toward the same hourly
+  // cap. Charged before every answer (a probe of someone else's id pays like an
+  // edit), with ONE exception decided below: the first photo of the caller's
+  // own check-in, sent alone right after posting (the photo has its own call
+  // since the catalogue model change step 3; ruled 2026-11-20: it does not cost
+  // a second slot).
+  const limited = async () => {
+    const rl = await checkRate(`rl:checkin:${userId}:1h`, 100, 3600)
+    return rl.allowed ? null : NextResponse.json({ error: `Too many check-in writes. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
+  }
 
   const feedItemId = parsePathId((await params).id)
-  if (feedItemId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  if (feedItemId === null) return (await limited()) ?? NextResponse.json({ error: 'invalid id' }, { status: 400 })
 
   // Walk the new model: feed_item → rating → wine → optional rating_image.
   // We need ALL of these to apply edits: the wine carries name/producer/etc.,
@@ -91,7 +101,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       },
     },
   })
-  if (!feedItem) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (!feedItem) return (await limited()) ?? NextResponse.json({ error: 'not found' }, { status: 404 })
   // Kind branch BEFORE the owner check (mirrors DELETE below): a wrong-owner
   // 403 on every kind would let any logged-in user distinguish "exists" from
   // "doesn't" across the whole serial id space (app/api/CLAUDE.md status-code
@@ -102,12 +112,14 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // is caller-scoped), and the echoed foreign id would splice their values
   // into the other post in the client cache.
   if (feedItem.kind === 'session') {
+    const l = await limited()
+    if (l) return l
     if (feedItem.userId !== userId) return NextResponse.json({ error: 'not found' }, { status: 404 })
     return patchSessionRating(req, feedItem.id, feedItem.sessionId, userId)
   }
   // Wrong owner = 404, like a missing id (no post-id existence oracle).
   if (feedItem.kind !== 'standalone' || !feedItem.rating || feedItem.userId !== userId) {
-    return NextResponse.json({ error: 'not found' }, { status: 404 })
+    return (await limited()) ?? NextResponse.json({ error: 'not found' }, { status: 404 })
   }
 
   const rating = feedItem.rating
@@ -115,6 +127,20 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const currentImage = rating.images[0] ?? null
 
   const body = await req.json().catch(() => null)
+  // The uncharged case: ONLY `imageData` (a data URL), the check-in has no photo
+  // yet, and it was posted in the last 10 minutes. Removing a photo, a second
+  // photo or any other field is charged, so a remove-and-re-add loop still pays.
+  const firstPhoto = !!body && typeof body === 'object' && !Array.isArray(body)
+    && Object.keys(body).length === 1 && typeof (body as { imageData?: unknown }).imageData === 'string'
+    && ((body as { imageData: string }).imageData).startsWith('data:image/')
+    && !currentImage && feedItem.createdAt.getTime() > Date.now() - FIRST_PHOTO_WINDOW_MS
+    // One free attempt per check-in, atomically (security review r1: a parallel
+    // burst read "no photo yet" on every request).
+    && (await redis.set(`rl:checkin-photo:${feedItem.id}`, '1', { NX: true, EX: Math.ceil(FIRST_PHOTO_WINDOW_MS / 1000) }).catch(() => null)) === 'OK'
+  if (!firstPhoto) {
+    const l = await limited()
+    if (l) return l
+  }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { wineName, producer, vintage, grape, type, score, flavors, aromas, notes,
     imageData, venueName, city, country, lat, lng, taggedUserIds,
@@ -143,6 +169,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // Run validators and capture the parsed values.
   let validScore: number | null | undefined = undefined
   let validFlavorsValue: Record<string, number> | undefined = undefined
+  let rawFlavors: Record<string, number> | undefined = undefined
   if (score !== undefined) {
     const c = validateScore(score)
     if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
@@ -158,6 +185,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (flavors !== undefined) {
     const c = validateFlavors(flavors)
     if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    rawFlavors = c.value ?? {}
     // Server-side flavour normalisation (§6g gate + §5 zero-fill — see
     // gateAndFillFlavors). category is 'wine'. Non-zero descriptor key → 400;
     // zero-valued off-style keys are stripped (stale-type fill artifacts);
@@ -281,25 +309,46 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   let txResult: { updatedWine: Awaited<ReturnType<typeof prisma.wine.update>>; updatedRating: Awaited<ReturnType<typeof prisma.rating.update>>; updatedFeedItem: Awaited<ReturnType<typeof prisma.feedItem.update>>; updatedImageUrl: string | null }
   try {
     txResult = await prisma.$transaction(async (tx) => {
+    // 🔒 The rating and its bottle as they stand NOW, locked (Codex r1, r2):
+    // every value this edit derives (the flavour shape for the style) comes
+    // from these rows, never from the request's pre-read.
+    const locked = (await tx.$queryRaw<{ style: string | null; flavors: unknown }[]>`
+      SELECT w.style, r.flavors FROM ratings r JOIN wines w ON w.id = r.wine_id WHERE r.id = ${rating.id} FOR UPDATE OF r, w`)[0]
+    if (!locked) throw Object.assign(new Error('gone'), { code: 'P2025' })
+    const nextStyle = type !== undefined ? effStyle : locked.style
+    // Sent flavours were gated against the pre-read style; the bottle's style
+    // changed meanwhile (another edit) → re-gate, and refuse rather than store
+    // a shape for the wrong style.
+    let sentFlavors = validFlavorsValue
+    if (rawFlavors !== undefined && type === undefined && locked.style !== wine.style) {
+      const again = gateAndFillFlavors(rawFlavors, 'wine', locked.style)
+      if (again.error) throw Object.assign(new Error('style changed'), { code: 'STYLE_CHANGED' })
+      sentFlavors = again.value
+    }
     // Wine-side fields (name, producer, vintage, grape, style).
     const updatedWine = await tx.wine.update({
       where: { id: wine.id },
+      // 🔒 Only the fields this request sent are written (Codex r1): a field
+      // left out keeps whatever is stored NOW, never this request's pre-read
+      // (a concurrent edit of another field, or a photo-only PATCH paused in its
+      // upload, would otherwise write the stale value back).
       data: {
-        name:     wineName !== undefined ? (scrub(wineName) || wine.name) : wine.name,
-        producer: producer !== undefined ? scrub(producer)                 : wine.producer,
+        ...(wineName !== undefined && scrub(wineName) ? { name: scrub(wineName)! } : {}),
+        ...(producer !== undefined ? { producer: scrub(producer) } : {}),
         // Canonicalize, don't truncate — see lib/session.ts.
-        vintage:  vintage  !== undefined ? (normalizeVintageText(scrub(vintage) ?? '') || null) : wine.vintage,
-        grape:    grape    !== undefined ? scrub(grape)                    : wine.grape,
+        ...(vintage !== undefined ? { vintage: normalizeVintageText(scrub(vintage) ?? '') || null } : {}),
+        ...(grape !== undefined ? { grape: scrub(grape) } : {}),
         // Validate `type` against the seeded category_styles. Unknown
-        // values coerce to NULL — see POST handler for the rationale.
-        style:    effStyle,
+        // values coerce to NULL — see POST handler for the rationale. Its
+        // snapshot follows in SQL against the locked row (syncSnapshot below).
+        ...(type !== undefined ? { style: effStyle } : {}),
         // Origin + metadata (POST parity: scrub, ISO-2 cleanCountry, cleanUrl
         // http(s)-only) — partial semantics like every other field here.
-        region:       wineRegion   !== undefined ? (scrub(wineRegion) || null)          : wine.region,
-        country:      wineCountry  !== undefined ? (cleanCountry(wineCountry) || null)  : wine.country,
-        vinification: vinification !== undefined ? (scrub(vinification) || null)        : wine.vinification,
-        description:  description  !== undefined ? (scrub(description) || null)         : wine.description,
-        purchaseUrl:  purchaseUrl  !== undefined ? (cleanUrl(purchaseUrl).slice(0, 1000) || null) : wine.purchaseUrl,
+        ...(wineRegion !== undefined ? { region: scrub(wineRegion) || null } : {}),
+        ...(wineCountry !== undefined ? { country: cleanCountry(wineCountry) || null } : {}),
+        ...(vinification !== undefined ? { vinification: scrub(vinification) || null } : {}),
+        ...(description !== undefined ? { description: scrub(description) || null } : {}),
+        ...(purchaseUrl !== undefined ? { purchaseUrl: cleanUrl(purchaseUrl).slice(0, 1000) || null } : {}),
         // wine.imageUrl is the catalog bottle shot, not the user's tasting
         // photo. Tasting photos live on rating_images. Don't touch wine
         // imageUrl from this surface — it stays whatever it was at create
@@ -322,60 +371,68 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
           : {}),
       },
     })
+    // 🔒 The snapshot moves with `style` in the same transaction, decided on
+    // the row as it now stands (model change § 8a.0: rewritten only when the
+    // stored pair no longer derives to the token, so the release-day backfill
+    // re-run never touches a row this edit wrote).
+    if (type !== undefined) await syncSnapshot(tx, wine.id)
 
     // Rating-side fields (score, flavors, notes).
+    // Rating-side fields: only the ones sent (Codex r2: an omitted field keeps
+    // what is stored NOW, never this request's pre-read).
     const updatedRating = await tx.rating.update({
       where: { id: rating.id },
       data: {
-        score:   score   !== undefined ? (validScore ?? null) : rating.score,
+        ...(score !== undefined ? { score: validScore ?? null } : {}),
         // No flavours in the body but the style CHANGED → re-normalise the
-        // STORED map against the new style (fillFlavourZeros drops off-set
-        // keys — a spark row's bubbles doesn't survive a switch to red — and
-        // re-fills; all-off-set collapses to {}). Otherwise a type-only PATCH
-        // from a raw/partial client would leave rating.flavors keyed to the
-        // OLD style, breaking the registry-keyed-for-effective-style invariant
-        // the write boundary now guarantees.
-        flavors: flavors !== undefined
-          ? (validFlavorsValue ?? {})
-          : effStyle !== wine.style
-            ? fillFlavourZeros(rating.flavors as Record<string, number>, 'wine', effStyle)
-            : (rating.flavors as object),
-        aromas:  aromasProvided ? validAromas : (rating.aromas as object),
-        notes:   notes   !== undefined ? scrub(notes)         : rating.notes,
+        // STORED map (as locked) against the new style (fillFlavourZeros drops
+        // off-set keys — a spark row's bubbles doesn't survive a switch to red
+        // — and re-fills; all-off-set collapses to {}). Otherwise a type-only
+        // PATCH from a raw/partial client would leave rating.flavors keyed to
+        // the OLD style, breaking the registry-keyed-for-effective-style
+        // invariant the write boundary guarantees.
+        ...(flavors !== undefined
+          ? { flavors: sentFlavors ?? {} }
+          : nextStyle !== locked.style
+            ? { flavors: fillFlavourZeros((locked.flavors ?? {}) as Record<string, number>, 'wine', nextStyle) }
+            : {}),
+        ...(aromasProvided ? { aromas: validAromas } : {}),
+        ...(notes !== undefined ? { notes: scrub(notes) } : {}),
       },
     })
 
     // Feed-item-side fields (venue + location, locationPublic).
-    const updatedFeedItem = await tx.feedItem.update({
+    // Only the fields sent; locationPublic recomputed from the row as stored
+    // (the POST default: true iff any location field is set, a 0 coordinate
+    // reading as unset like the JavaScript truthiness it replaced).
+    const locationSent = venueName !== undefined || city !== undefined || country !== undefined || lat !== undefined || lng !== undefined
+    let updatedFeedItem = await tx.feedItem.update({
       where: { id: feedItem.id },
       data: {
-        venueName: venueName !== undefined ? scrub(venueName) : feedItem.venueName,
-        city:      city      !== undefined ? scrub(city)      : feedItem.city,
-        country:   country   !== undefined ? (scrub(country)?.slice(0,2).toUpperCase() || null) : feedItem.country,
-        lat:       lat       !== undefined ? (lat ?? null)    : feedItem.lat,
-        lng:       lng       !== undefined ? (lng ?? null)    : feedItem.lng,
-        // Recompute locationPublic only if a location-related field changed.
-        // Match the POST default: true iff any location field is non-null.
-        ...(venueName !== undefined || city !== undefined || country !== undefined ||
-            lat !== undefined || lng !== undefined
-          ? {
-              locationPublic: !!(
-                (venueName !== undefined ? scrub(venueName) : feedItem.venueName) ||
-                (city !== undefined ? scrub(city) : feedItem.city) ||
-                (country !== undefined ? scrub(country)?.slice(0,2).toUpperCase() : feedItem.country) ||
-                (lat !== undefined ? lat : feedItem.lat) ||
-                (lng !== undefined ? lng : feedItem.lng)
-              ),
-            }
-          : {}),
+        ...(venueName !== undefined ? { venueName: scrub(venueName) } : {}),
+        ...(city !== undefined ? { city: scrub(city) } : {}),
+        ...(country !== undefined ? { country: scrub(country)?.slice(0,2).toUpperCase() || null } : {}),
+        ...(lat !== undefined ? { lat: lat ?? null } : {}),
+        ...(lng !== undefined ? { lng: lng ?? null } : {}),
       },
     })
+    if (locationSent) {
+      await tx.$executeRaw`
+        UPDATE feed_items SET location_public = (COALESCE(venue_name, '') <> '' OR COALESCE(city, '') <> '' OR COALESCE(country, '') <> ''
+                                                 OR COALESCE(lat, 0) <> 0 OR COALESCE(lng, 0) <> 0)
+         WHERE id = ${feedItem.id}`
+      updatedFeedItem = await tx.feedItem.findUniqueOrThrow({ where: { id: feedItem.id } })
+    }
 
     // Image: create / replace / delete the single rating_images row.
     let resolvedImageUrl: string | null = currentImage?.imageUrl ?? null
     if (nextImageUrl !== undefined) {
-      // Wipe any existing rows for this rating (1 today; defensive).
-      await tx.ratingImage.deleteMany({ where: { ratingId: rating.id } })
+      // Wipe any existing rows for this rating (1 today; defensive), and
+      // reclaim exactly what this transaction removed (security review r1: a
+      // concurrent edit's photo, committed after our pre-read, would otherwise
+      // be left in the bucket with no row).
+      const removed = await tx.$queryRaw<{ image_url: string }[]>`DELETE FROM rating_images WHERE rating_id = ${rating.id} RETURNING image_url`
+      for (const r of removed) if (r.image_url && r.image_url !== nextImageUrl && !urlsToReclaim.includes(r.image_url)) urlsToReclaim.push(r.image_url)
       if (nextImageUrl !== null) {
         await tx.ratingImage.create({
           data: { ratingId: rating.id, imageUrl: nextImageUrl, sortOrder: 0 },
@@ -411,6 +468,9 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     const errCode = (err as { code?: string })?.code
     if (errCode === 'P2025') {
       return NextResponse.json({ error: 'not found' }, { status: 404 })
+    }
+    if (errCode === 'STYLE_CHANGED') {
+      return NextResponse.json({ error: 'The wine type changed meanwhile. Reload and try again.' }, { status: 409 })
     }
     throw err
   }
@@ -521,14 +581,13 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
        WHERE r.user_id = ${userId} AND r.session_id = ${sessionId} AND r.wine_id = ${wineId} FOR UPDATE OF r`
     const rating = rows[0]
     if (!rating) return NextResponse.json({ error: 'not found' }, { status: 404 })
-    // Liveness and the wine's CURRENT style, decided under the lock. Redis
-    // trouble degrades to a PG-only edit — it must never fail the edit.
+    // Liveness under the lock (Redis trouble degrades to a PG-only edit — it
+    // must never fail the edit). The bottle's style is the RECORD's (model
+    // change § 8a: a session-kind feed item is a Postgres-backed moment's).
     let live = false
-    let liveStyle: string | null = null
     if (liveCode) {
       try {
         live = await existsKey(k.meta(liveCode))
-        if (live) liveStyle = (JSON.parse((await redis.get(k.wines(liveCode))) ?? '[]') as WineMeta[]).find(w => w.id === wineId)?.type ?? null
       } catch (err) {
         console.warn('[checkins] live-session lookup failed — PG-only edit:', err)
         live = false
@@ -540,7 +599,7 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
     const sets: Prisma.Sql[] = []
     if (score !== undefined) sets.push(Prisma.sql`score = ${validScore}::numeric`)
     if (checkedFlavors !== undefined) {
-      const norm = gateAndFillFlavors(checkedFlavors, 'wine', liveStyle ?? rating.style)
+      const norm = gateAndFillFlavors(checkedFlavors, 'wine', rating.style)
       if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
       sets.push(Prisma.sql`flavors = ${JSON.stringify(norm.value ?? {})}::jsonb`)
     }

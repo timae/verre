@@ -2,11 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { imageKey } from '@/lib/imageKeys'
 import { parseTagList, resolveTagList, publicIdFor } from '@/lib/publicIds'
 import { S3Client, CopyObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import { nanoid } from 'nanoid'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
+import type { Prisma } from '@prisma/client'
 import { checkRate, formatWait } from '@/lib/rateLimit'
-import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors } from '@/lib/flavours'
 import { gateAromas } from '@/lib/aromas'
@@ -18,6 +17,7 @@ import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
 import { viewerCanSeePosts } from '@/lib/profileVisibility'
 import { resolveCatalogLink, CatalogValidationError } from '@/lib/catalogWrite'
+import { isClientOccurrenceId, snapshotOf } from '@/lib/occurrences'
 
 // Inlined S3 copy — adding a third named export to lib/s3.ts trips a Next
 // 15.5 / webpack 5.98 bundling bug (see lib/accountDelete.ts for the same
@@ -98,7 +98,15 @@ export async function POST(req: NextRequest) {
   // makes). vinification/description/purchaseUrl land on the minted wine row,
   // giving a standalone check-in the same About-block metadata as a session
   // wine (the feed read path already surfaces them from the wine columns).
-  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, aromas, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds: rawTags, wineRegion, wineCountry, vinification, description, purchaseUrl, productId, vintageId } = body
+  const { occurrenceId, wineName: rawWineName, producer, vintage, grape, type, score, flavors, aromas, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds: rawTags, wineRegion, wineCountry, vinification, description, purchaseUrl, productId, vintageId } = body
+  // 🔒 The client mints the occurrence id (model change § 8a): a check-in
+  // retried after a lost response replays the WHOLE check-in (occurrence,
+  // rating, feed item) instead of adding a second one. The photo is not part of
+  // a create: it attaches through PATCH /api/checkins/<id> with `imageData`.
+  if (!isClientOccurrenceId(occurrenceId)) return NextResponse.json({ error: 'occurrenceId required' }, { status: 400 })
+  if (imageData !== undefined && imageData !== null && imageData !== '') {
+    return NextResponse.json({ error: 'add the photo with its own call, after the check-in' }, { status: 400 })
+  }
   // 🔒 Public ids, resolved BEFORE the transaction (lib/publicIds.ts parseTagList).
   const tagPublicIds = parseTagList(rawTags)
   if (tagPublicIds === null) return NextResponse.json({ error: 'invalid taggedUserIds' }, { status: 400 })
@@ -138,17 +146,18 @@ export async function POST(req: NextRequest) {
   const aromasCheck = gateAromas(aromas); if (aromasCheck.error) return NextResponse.json({ error: aromasCheck.error }, { status: 400 })
   const ratingAromas = aromasCheck.value ?? []
 
+  // A retry of a check-in that already committed is answered BEFORE any
+  // source-dependent work (Codex r1: a "had a sip" retry whose source was
+  // deleted meanwhile would otherwise fail its copy check); the conflict path
+  // in the transaction still decides a concurrent fresh create.
+  if ((await prisma.$queryRaw<{ x: number }[]>`SELECT 1 AS x FROM wines WHERE id = ${occurrenceId}`)[0]) {
+    const replay = await existingCheckin(occurrenceId, userId)
+    if (!replay) return NextResponse.json({ error: 'that id belongs to another check-in' }, { status: 409 })
+    return NextResponse.json(replay.body, { status: 200 })
+  }
+
   let imageUrl: string | null = null
-  if (imageData?.startsWith('data:image/')) {
-    // Reject the data URL up front if it's bigger than ~3MB encoded
-    // (~2MB decoded, which uploadImage caps to). Avoids spending bcrypt-
-    // grade CPU base64-decoding a 50MB blob just to throw it away.
-    if (typeof imageData !== 'string' || imageData.length > MAX_IMAGE_DATA_URL_BYTES) {
-      return NextResponse.json({ error: 'image too large' }, { status: 400 })
-    }
-    // 🔒 lib/imageKeys.ts: random, nothing that points to the person (D2).
-    imageUrl = await uploadImage(imageKey('checkin'), imageData).catch(() => null)
-  } else if (Number.isInteger(copyFromCheckinId) && copyFromCheckinId > 0 && copyFromCheckinId <= 2_147_483_647) {
+  if (Number.isInteger(copyFromCheckinId) && copyFromCheckinId > 0 && copyFromCheckinId <= 2_147_483_647) {
     // "had a sip" flow: resolve the source server-side, verify the caller
     // is allowed to copy it, then clone the bytes. The client never gets
     // to point at an arbitrary S3 URL.
@@ -222,7 +231,7 @@ export async function POST(req: NextRequest) {
   //     "had a sip" copyFromCheckinId id-equality story is preserved.
   //     New rows just get the next sequence value (no special handling).
   //   - ratings.id: autoincrement.
-  const wineId = nanoid()
+  const wineId = occurrenceId
   // Canonicalize rather than truncate — see lib/session.ts. A direct client
   // could otherwise persist 'N.V.', a partial year, or 'NV S'.
   const scrubVintage = normalizeVintageText(scrub(vintage) ?? '') || null
@@ -251,7 +260,7 @@ export async function POST(req: NextRequest) {
   const scrubCity = scrub(city) || null
   const scrubCountry = scrub(country)?.slice(0, 2).toUpperCase() || null
   // Wine-origin metadata — same write-boundary rules as the session wine
-  // create (lib/session.ts addWineToSession): cleanCountry allow-lists the
+  // create (lib/session.ts normalizeWine): cleanCountry allow-lists the
   // ISO-2 code, cleanUrl defangs to http(s)-only (and can EXPAND its input
   // via the https:// auto-prefix, so re-bound to the column width after).
   const scrubWineRegion = scrub(wineRegion) || null
@@ -289,7 +298,10 @@ export async function POST(req: NextRequest) {
   // bubbling as a generic 500. Caught by the awaiting code below.
   const USER_MISSING = Symbol('user-missing')
 
-  let txResult: { feedItem: Awaited<ReturnType<typeof prisma.feedItem.create>>; rating: Awaited<ReturnType<typeof prisma.rating.create>> }
+  // The existing check-in behind this occurrence id: the caller's → replayed
+  // (its stored envelope, 200); anyone else's, or a session bottle → 409.
+  const EXISTS = Symbol('exists')
+  let txResult: { feedItem: Awaited<ReturnType<typeof prisma.feedItem.create>>; rating: Awaited<ReturnType<typeof prisma.rating.create>> } | typeof EXISTS
   try {
     txResult = await prisma.$transaction(async (tx) => {
     // Pull the user's display name INSIDE the txn so a concurrent account-
@@ -310,26 +322,19 @@ export async function POST(req: NextRequest) {
     //    the wine's imageUrl null so a cascade-delete of the rating later
     //    doesn't leave a dangling S3 pointer on a surviving (bookmarked)
     //    wine row.
-    await tx.wine.create({
-      data: {
-        id: wineId,
-        sessionId: null,
-        name: wineName,
-        producer: scrubProducer,
-        vintage: scrubVintage,
-        grape: scrubGrape,
-        style: wineStyle,
-        category: 'wine',
-        imageUrl: null,
-        region: scrubWineRegion,
-        country: cleanWineCountry,
-        vinification: scrubVinification,
-        description: scrubDescription,
-        purchaseUrl: cleanPurchaseUrl,
-        productId: catalogLink.productId,
-        vintageId: catalogLink.vintageId,
-      },
-    })
+    //    INSERT-only on the client id: a concurrent duplicate waits on the
+    //    unique index for this one's COMMIT, then finds the row (below).
+    const snap = snapshotOf(wineStyle)
+    const minted = await tx.$queryRaw<{ id: string }[]>`
+      INSERT INTO wines (id, session_id, origin, name, producer, vintage, grape, style, colour, sparkling, abv, category, image_url,
+                         region, country, vinification, description, purchase_url, product_id, vintage_id)
+      VALUES (${wineId}, NULL, 'standalone', ${wineName}, ${scrubProducer}, ${scrubVintage}, ${scrubGrape}, ${wineStyle},
+              ${snap.colour}, ${snap.sparkling}, ${wineStyle === 'nonalc' ? 0 : null}::numeric, 'wine', NULL,
+              ${scrubWineRegion}, ${cleanWineCountry}, ${scrubVinification}, ${scrubDescription}, ${cleanPurchaseUrl},
+              ${catalogLink.productId}, ${catalogLink.vintageId})
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id`
+    if (!minted[0]) return EXISTS
     // 2. Mint the rating. origin='standalone', sessionId=NULL. One rating
     //    per standalone occurrence (the raw partial unique
     //    ratings_standalone_wine_id_key, catalogue model change step 2):
@@ -374,10 +379,14 @@ export async function POST(req: NextRequest) {
         data: { ratingId: r.id, imageUrl, sortOrder: 0 },
       })
     }
+    // 5. The tags, in the same transaction: a replayed check-in answers what
+    //    was stored and never writes them again (review r1: a late duplicate
+    //    would re-add tags the owner removed since).
+    await writeTags(tx, fi.id, userId, taggedUserIds)
     return { feedItem: fi, rating: r }
     })
   } catch (err) {
-    // Reclaim the orphan S3 upload that landed before the txn opened
+    // Reclaim the orphan S3 copy that landed before the txn opened
     // (the upload is the only "external" side-effect; everything inside
     // the txn rolls back). Fire on every catch path — not just
     // USER_MISSING — because any txn failure (FK violation on
@@ -389,32 +398,13 @@ export async function POST(req: NextRequest) {
     }
     throw err
   }
-  const { feedItem, rating } = txResult
-
-  // Save tags as feed_item_tags — only mutual follows (verify server-side).
-  // Block-pair members are excluded from the write: tagging a user the
-  // author block-pairs with shouldn't persist a row that the render-time
-  // filter would then hide globally anyway.
-  if (taggedUserIds.length > 0) {
-    const mutuals = await prisma.$queryRaw<{ id: number }[]>`
-      SELECT f1.following_id AS id
-      FROM follows f1
-      JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
-      WHERE f1.follower_id = ${userId} AND f1.following_id = ANY(${taggedUserIds}::integer[])
-        AND NOT EXISTS (
-          SELECT 1 FROM user_blocks b
-          WHERE (b.blocker_id = ${userId} AND b.blocked_id = f1.following_id)
-             OR (b.blocker_id = f1.following_id AND b.blocked_id = ${userId})
-        )
-    `
-    const validIds = mutuals.map(m => m.id)
-    if (validIds.length > 0) {
-      await prisma.feedItemTag.createMany({
-        data: validIds.map(uid => ({ feedItemId: feedItem.id, userId: uid })),
-        skipDuplicates: true,
-      })
-    }
+  if (txResult === EXISTS) {
+    if (imageUrl) reclaimImage(imageUrl)
+    const replay = await existingCheckin(wineId, userId)
+    if (!replay) return NextResponse.json({ error: 'that id belongs to another check-in' }, { status: 409 })
+    return NextResponse.json(replay.body, { status: 200 })
   }
+  const { feedItem, rating } = txResult
 
   // Client-compatible response shape: surface the new model in the legacy
   // `{...checkin, score}` envelope so existing consumers (mobile clients,
@@ -446,4 +436,81 @@ export async function POST(req: NextRequest) {
     purchaseUrl: cleanPurchaseUrl,
     createdAt: feedItem.createdAt.toISOString(),
   }, { status: 201 })
+}
+
+// Tags as feed_item_tags — only mutual follows (verify server-side). Block-pair
+// members are excluded from the write: tagging a user the author block-pairs
+// with shouldn't persist a row that the render-time filter would then hide
+// globally anyway. Inside the create's transaction.
+async function writeTags(tx: Prisma.TransactionClient, feedItemId: number, userId: number, taggedUserIds: number[]) {
+  if (taggedUserIds.length === 0) return
+  const mutuals = await tx.$queryRaw<{ id: number }[]>`
+    SELECT f1.following_id AS id
+    FROM follows f1
+    JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
+    WHERE f1.follower_id = ${userId} AND f1.following_id = ANY(${taggedUserIds}::integer[])
+      AND NOT EXISTS (
+        SELECT 1 FROM user_blocks b
+        WHERE (b.blocker_id = ${userId} AND b.blocked_id = f1.following_id)
+           OR (b.blocker_id = f1.following_id AND b.blocked_id = ${userId})
+      )
+  `
+  const validIds = mutuals.map(m => m.id)
+  if (validIds.length > 0) {
+    await tx.feedItemTag.createMany({
+      data: validIds.map(uid => ({ feedItemId, userId: uid })),
+      skipDuplicates: true,
+    })
+  }
+}
+
+// The stored check-in of a standalone occurrence when it is the caller's: the
+// same envelope as a create (replay, model change § 8a). null = not theirs, or
+// not a check-in (a session bottle, an orphan).
+async function existingCheckin(wineId: string, userId: number): Promise<{ feedItemId: number; body: Record<string, unknown> } | null> {
+  const rows = await prisma.$queryRaw<{
+    feed_id: number; created_at: Date; venue_name: string | null; city: string | null; country: string | null; lat: unknown; lng: unknown
+    name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null
+    region: string | null; wine_country: string | null; vinification: string | null; description: string | null; purchase_url: string | null
+    score: unknown; flavors: unknown; aromas: unknown; notes: string | null; image_url: string | null
+  }[]>`
+    SELECT fi.id AS feed_id, fi.created_at, fi.venue_name, fi.city, fi.country, fi.lat, fi.lng,
+           w.name, w.producer, w.vintage, w.grape, w.style, w.region, w.country AS wine_country, w.vinification,
+           w.description, w.purchase_url, r.score, r.flavors, r.aromas, r.notes,
+           (SELECT ri.image_url FROM rating_images ri WHERE ri.rating_id = r.id ORDER BY ri.sort_order LIMIT 1) AS image_url
+      FROM wines w
+      JOIN ratings r ON r.wine_id = w.id AND r.session_id IS NULL AND r.user_id = ${userId}
+      JOIN feed_items fi ON fi.rating_id = r.id AND fi.kind = 'standalone' AND fi.user_id = ${userId}
+     WHERE w.id = ${wineId} AND w.session_id IS NULL AND w.origin = 'standalone'`
+  const x = rows[0]
+  if (!x) return null
+  return {
+    feedItemId: x.feed_id,
+    body: {
+      id: x.feed_id,
+      userId: (await publicIdFor(userId)) ?? null,
+      wineName: x.name,
+      producer: x.producer,
+      vintage: x.vintage?.trim() || null,
+      grape: x.grape,
+      type: x.style,
+      score: decimalToNumber(x.score as never),
+      flavors: x.flavors ?? {},
+      aromas: Array.isArray(x.aromas) ? x.aromas : [],
+      notes: x.notes,
+      imageUrl: x.image_url,
+      venueName: x.venue_name,
+      city: x.city,
+      country: x.country,
+      // Decimal(9,6) → a JSON string unless coerced (the Decimal trap).
+      lat: x.lat === null ? null : Number(x.lat),
+      lng: x.lng === null ? null : Number(x.lng),
+      wineRegion: x.region,
+      wineCountry: x.wine_country,
+      vinification: x.vinification,
+      description: x.description,
+      purchaseUrl: x.purchase_url,
+      createdAt: x.created_at.toISOString(),
+    },
+  }
 }

@@ -19,8 +19,10 @@ import type { SessionMeta } from '@/lib/session'
 //   3. entry checks INSIDE both locks: the lease is still ours; meta read
 //      (incarnation); the live row FOR UPDATE; the caller re-resolved with a
 //      FRESH grant read (§ 4.7) — every gating decision is made from these
-//   4. work(tx, ctx): every Postgres decision + write; content and
-//      deny-direction Redis writes (fenced) — plan § 1.4
+//   4. work(tx, ctx): every Postgres decision + write; deny-direction Redis
+//      writes and a Redis-only moment's content (fenced) — plan § 1.4. A
+//      Postgres-backed moment's bottles are record-first (lib/occurrences.ts):
+//      written here, projected in step 6
 //   5. COMMIT — the only atomic point. A throw in 3–4 → ROLLBACK
 //   6. projection(ctx, result): grant-direction Redis writes of the COMMITTED
 //      state, fenced. A failure → scoped invalidation of a Postgres-backed
@@ -28,8 +30,9 @@ import type { SessionMeta } from '@/lib/session'
 //   7. release (compare-and-delete)
 //
 // 🔒 There is no cross-store transaction (§ 3): a Redis EXEC before COMMIT
-// survives a rollback or a process death. That is why only content (repaired by
-// the next list write) and denials (fail closed) may be written before COMMIT,
+// survives a rollback or a process death. That is why only rating keys
+// (repaired from the record by the rebuild), a Redis-only moment's content and
+// denials (fail closed) may be written before COMMIT,
 // and why nothing is ever GRANTED from the cache for a `u:` caller of a
 // Postgres-backed session — the grant read is the authority.
 //
@@ -72,26 +75,6 @@ export function admitted(ctx: MutationCtx): AuthorizedIdentity {
   throw new ContractRefused(authInvalid())
 }
 
-// A best-effort CONTENT mirror inside the contract (§ 3 "best-effort
-// mirrors"): its Postgres statements run under a SAVEPOINT, so a failure rolls
-// back only the mirror — logged with the code and object kind — and the rest of
-// the transaction still commits. The next successful write of the same list
-// projects the whole array again and repairs it.
-// Returns whether the mirror landed — a caller whose after-COMMIT effect
-// depends on the record having changed (an S3 reclaim) must check it (r4 P1-1).
-export async function bestEffortMirror(tx: Prisma.TransactionClient, code: string, kind: string, fn: () => Promise<unknown>): Promise<boolean> {
-  await tx.$executeRawUnsafe('SAVEPOINT best_effort_mirror')
-  try {
-    await fn()
-    await tx.$executeRawUnsafe('RELEASE SAVEPOINT best_effort_mirror')
-    return true
-  } catch (err) {
-    await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT best_effort_mirror')
-    console.error('[mirror] best-effort content mirror failed — the next list write repairs it', { code, kind, err })
-    return false
-  }
-}
-
 export type Fence = {
   code: string
   token: string
@@ -115,6 +98,12 @@ export type MutationCtx = {
   // rating-key writes (ratingKeyWrite). null when it set none (or the
   // best-effort bump failed).
   gen: string | null
+  // Work that follows COMMIT, collected during `work` (lib/occurrences.ts
+  // reconcileLineup) and run by the contract: the old rating keys of re-minted
+  // bottle ids deleted (their copies were made before COMMIT; fenced, before the
+  // projection), photos reclaimed (after it). Fresh per attempt, so a
+  // rolled-back attempt's captures never run.
+  after: { reclaim: string[]; dropKeys: string[] }
 }
 
 export type MutationOpts = {
@@ -131,6 +120,10 @@ export type MutationOpts = {
   // s:{C}:gen before their first durable statement, so a rebuild whose backend
   // died but whose lease lives cannot publish over their change (plan § 3).
   bumpGen?: boolean | 'best-effort'
+  // A line-up writer (lib/occurrences.ts): the row lock also bumps
+  // sessions.lineup_revision, in the same statement. A NULL revision stays
+  // NULL; the work reconciles (reconcileLineup) before it writes.
+  bumpLineup?: boolean
   timeoutMs?: number
 }
 
@@ -200,7 +193,7 @@ async function attemptMutation<T>(
     const result = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${advisoryLockKey(code)}))`
       if (token && !(await sessionLockHeld(code, token))) throw new LockLost(code)
-      const row = await readLiveRow(tx, code, 'update')
+      const row = await readLiveRow(tx, code, opts.bumpLineup ? 'bump' : 'update')
       const expectedCreatedAt = opts.expectedCreatedAt ?? incarnationOf(opts.caller)
       let meta: SessionMeta | null = null
       if (readMeta) {
@@ -216,7 +209,7 @@ async function attemptMutation<T>(
         throw new ContractGone(code)
       }
       const { caller, status } = await resolveCaller(tx, code, row, opts.caller ?? null, !!readMeta)
-      ctx = { code, meta, row, caller, callerStatus: status, fence, gen: null }
+      ctx = { code, meta, row, caller, callerStatus: status, fence, gen: null, after: { reclaim: [], dropKeys: [] } }
       if (opts.bumpGen) {
         await mutationHooks.at('beforeGen', code, opts.label)
         ctx.gen = await bumpGeneration(code, row, opts.bumpGen === 'best-effort')
@@ -233,6 +226,10 @@ async function attemptMutation<T>(
       return out
     }, { timeout: opts.timeoutMs ?? 10_000, maxWait: 5_000 })
     await mutationHooks.at('afterCommit', code, opts.label)
+    if (ctx.after.dropKeys.length && ctx.fence) {
+      const keys = ctx.after.dropKeys
+      await ctx.fence.exec(m => { m.del(keys) }).catch(err => console.error('[contract] old rating keys of re-minted bottles not deleted (under a bottle id the line-up lacks)', { code, label: opts.label, err }))
+    }
     if (projection) {
       await mutationHooks.at('beforeProjection', code, opts.label)
       try {
@@ -242,6 +239,7 @@ async function attemptMutation<T>(
         if (ctx.row?.createdAt) await scopedInvalidate(code, ctx.row.createdAt.getTime()).catch(e => console.error('[contract] invalidation failed', { code, e }))
       }
     }
+    if (ctx.after.reclaim.length) void import('@/lib/engagementCascade').then(m => m.reclaimImages(ctx.after.reclaim))
     return result
   } finally {
     if (token) await releaseSessionLock(code, token).catch(() => {})

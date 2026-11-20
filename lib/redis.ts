@@ -79,6 +79,12 @@ export const k = {
   // holding lock:session:{CODE}, and by every scoped invalidation. Lives and
   // dies with the session (re-EXPIREd by touchWithMeta, SCAN-wiped).
   gen:        (c: string) => `s:${c}:gen`,
+  // The line-up revision the cached `s:{C}:wines` was projected from (catalogue
+  // model change § 8a): `sessions.lineup_revision` of a Postgres-backed moment,
+  // written in the SAME fenced step as the line-up and never inside it (the
+  // previous release and the raw readers parse `wines` as WineMeta[]). A
+  // Redis-only moment has none. Lives and dies with the session.
+  wrev:       (c: string) => `s:${c}:wrev`,
   // USER-scoped (NOT s:{CODE}: — the first user-scoped session-related key):
   // the set of session codes this user dismissed from the Moments-home
   // highlight carousel. Must outlive any single session, so it can't ride a

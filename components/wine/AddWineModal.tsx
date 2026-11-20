@@ -1,6 +1,7 @@
 'use client'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useState, useEffect, useRef } from 'react'
+import { nanoid } from 'nanoid'
 import type { WireWine } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { Modal } from '@/components/ui/Modal'
@@ -51,6 +52,16 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
   const [scanStatus, setScanStatus] = useState('')
 
   const maxPosition = winesCount + 1
+  // The bottle's id, minted once per open sheet: a Save retried after a lost
+  // answer finds the same bottle instead of adding a second one (the server
+  // answers `alreadyAdded`). The photo follows with its own call.
+  const newId = useRef(nanoid())
+  // Once the bottle is saved but its photo is not (a failed photo call), the
+  // sheet stays open: the next Save edits that bottle (PATCH) and retries only
+  // the photo, and closing refreshes the list. `savedFields` is the dirty
+  // baseline from then on.
+  const savedId = useRef<string | null>(null)
+  const [savedFields, setSavedFields] = useState<Record<string, string> | null>(null)
 
 
   async function handlePhoto(e: React.ChangeEvent<HTMLInputElement>) {
@@ -151,25 +162,57 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
       }
     }
     setSaving(true); setError('')
-    const body: Record<string, unknown> = {
+    const fields = {
       // Canonicalize on the way out so the official client sends the same form
-      // the server stores (the server normalizes too — this is for UX parity,
-      // not correctness).
+      // the server stores (the server normalizes too, for UX parity, not
+      // correctness).
       name, producer, vintage: normalizeVintageText(vintage), grape, type,
       description, region, country, vinification, purchaseUrl,
     }
-    if (photoDataUrl) body.image = photoDataUrl
-    if (!isEdit && parsedPos != null) body.position = parsedPos
-    const url = isEdit
-      ? `/api/session/${code}/wines/${editWine!.id}`
-      : `/api/session/${code}/wines`
-    const res = await sessionFetch(code, url, {
-      method: isEdit ? 'PATCH' : 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
+    const creating = !isEdit && !savedId.current
+    const body: Record<string, unknown> = { ...fields }
+    if (creating) body.id = newId.current
+    if (creating && parsedPos != null) body.position = parsedPos
+    let wineId = isEdit ? editWine!.id : (savedId.current ?? newId.current)
+    const fail = (msg: string) => { setSaving(false); setError(msg); return false }
+    try {
+      const res = await sessionFetch(code, creating ? `/api/session/${code}/wines` : `/api/session/${code}/wines/${wineId}`, {
+        method: creating ? 'POST' : 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) return fail(isEdit ? 'Could not update wine' : 'Could not save wine')
+      // The id the server stored (an older server mints its own).
+      const answer = creating ? await res.json().catch(() => null) as { id?: string; alreadyAdded?: boolean } | null : null
+      if (creating) wineId = answer?.id ?? wineId
+      if (!isEdit) savedId.current = wineId
+      // A retry whose first answer was lost: the bottle exists already; this
+      // Save's fields may have changed since, so they go through the edit.
+      if (answer?.alreadyAdded) {
+        const upd = await sessionFetch(code, `/api/session/${code}/wines/${wineId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(fields),
+        })
+        if (!upd.ok) return fail('Could not save wine')
+      }
+      if (photoDataUrl) {
+        setSavedFields({ ...fields, vintage })
+        const img = await sessionFetch(code, `/api/session/${code}/wines/${wineId}/image`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: photoDataUrl }),
+        })
+        if (!img.ok) {
+          const msg = await img.json().then((j: { error?: string }) => j.error).catch(() => null)
+          return fail((img.status === 400 || img.status === 403) && msg ? msg : 'Saved, but the photo could not be added. Try again.')
+        }
+      }
+    } catch {
+      // A lost answer: Save again reuses the same id, so nothing is added twice.
+      return fail(savedId.current ? 'Saved, but the photo could not be added. Try again.' : (isEdit ? 'Could not update wine' : 'Could not save wine'))
+    }
     setSaving(false)
-    if (!res.ok) { setError(isEdit ? 'Could not update wine' : 'Could not save wine'); return false }
     onSaved()
     return true
   }
@@ -196,7 +239,7 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
   // replaced) prevents the "forget to add the new field to one branch"
   // hazard.
   const dirty = (() => {
-    const baseline = editWine || {}
+    const baseline = savedFields || editWine || {}
     const current: Record<string, string> = {
       name, producer, vintage, grape, type,
       description, region, country, vinification, purchaseUrl,
@@ -245,7 +288,12 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
       setPendingClose(true)
       return
     }
-    onClose()
+    finish()
+  }
+  // A bottle saved without its photo is still a saved bottle: the list refreshes.
+  function finish() {
+    if (savedId.current) onSaved()
+    else onClose()
   }
 
   return (
@@ -459,7 +507,7 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
             const nav = pendingNavRef.current
             pendingNavRef.current = null
             setPendingClose(false)
-            onClose()
+            finish()
             if (nav) nav()
           }}
           onSave={async () => {

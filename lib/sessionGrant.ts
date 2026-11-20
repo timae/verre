@@ -29,6 +29,10 @@ export type Grant = {
   banned: boolean
   // Has a committed rating in this session (a historical rater with no member row).
   author: boolean
+  // sessions.lineup_revision, read in the same statement (model change § 8a,
+  // step 1 ruling: the poll's line-up check costs a signed-in caller nothing).
+  // Not an authorization input.
+  lineupRevision: number | null
 }
 
 export type GrantStatus = 'ok' | 'banned' | 'kicked' | 'invalid'
@@ -39,9 +43,9 @@ type Db = Prisma.TransactionClient | typeof prisma
 export async function readGrant(db: Db, code: string, userId: number): Promise<Grant | null> {
   const rows = await db.$queryRaw<{
     id: number; created_at: Date | null; host_user_id: number | null; role: string | null
-    member: boolean; removed_state: string | null; banned: boolean; author: boolean
+    member: boolean; removed_state: string | null; banned: boolean; author: boolean; lineup_revision: number | null
   }[]>`
-    SELECT s.id, s.created_at, s.host_user_id, m.role, (m.user_id IS NOT NULL) AS member, m.removed_state,
+    SELECT s.id, s.created_at, s.host_user_id, m.role, (m.user_id IS NOT NULL) AS member, m.removed_state, s.lineup_revision,
            EXISTS (SELECT 1 FROM session_bans b WHERE b.session_code = s.code AND b.identity_id = ${`u:${userId}`}) AS banned,
            EXISTS (SELECT 1 FROM ratings r WHERE r.user_id = ${userId} AND r.session_id = s.id) AS author
       FROM sessions s
@@ -59,6 +63,7 @@ export async function readGrant(db: Db, code: string, userId: number): Promise<G
     kicked: r.removed_state === 'kicked',
     banned: r.banned,
     author: r.author,
+    lineupRevision: r.lineup_revision,
   }
 }
 
@@ -71,7 +76,7 @@ export async function readGrant(db: Db, code: string, userId: number): Promise<G
 // caller) runs the same statement and matches nothing. null = no live row.
 export function gateGrantSql(code: string, userId: number | null): Prisma.Sql {
   return Prisma.sql`
-    SELECT s.id, s.created_at, s.host_user_id, m.role, (m.user_id IS NOT NULL) AS member, m.removed_state,
+    SELECT s.id, s.created_at, s.host_user_id, m.role, (m.user_id IS NOT NULL) AS member, m.removed_state, s.lineup_revision,
            EXISTS (SELECT 1 FROM session_bans b WHERE b.session_code = s.code AND b.identity_id = q.ident) AS banned,
            EXISTS (SELECT 1 FROM ratings r WHERE r.user_id = q.uid AND r.session_id = s.id) AS author
       FROM (VALUES (${code}::text, ${userId}::int, ${userId === null ? null : `u:${userId}`}::text)) AS q(code, uid, ident)
@@ -82,7 +87,7 @@ export function gateGrantSql(code: string, userId: number | null): Prisma.Sql {
 export async function readGateGrant(db: Db, code: string, userId: number | null): Promise<Grant | null> {
   const rows = await db.$queryRaw<{
     id: number | null; created_at: Date | null; host_user_id: number | null; role: string | null
-    member: boolean; removed_state: string | null; banned: boolean; author: boolean
+    member: boolean; removed_state: string | null; banned: boolean; author: boolean; lineup_revision: number | null
   }[]>(gateGrantSql(code, userId))
   const r = rows[0]
   if (!r || r.id === null) return null
@@ -96,6 +101,7 @@ export async function readGateGrant(db: Db, code: string, userId: number | null)
     kicked: r.removed_state === 'kicked',
     banned: r.banned,
     author: r.author,
+    lineupRevision: r.lineup_revision,
   }
 }
 

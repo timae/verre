@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k } from '@/lib/redis'
-import { ensurePromoted, mirrorLineup, type WineMeta } from '@/lib/session'
+import { ensurePromoted } from '@/lib/session'
+import { reconcileLineup, lockOccurrence, readOccurrence } from '@/lib/occurrences'
 import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { participantOrBanned, authUnavailable } from '@/lib/identity'
-import { withSessionMutation, refuse, ContractCold } from '@/lib/sessionMutation'
+import { withSessionMutation, refuse } from '@/lib/sessionMutation'
 import { lineupHiddenFor } from '@/lib/sessionState'
 import { contractFailure } from '@/lib/sessionRehydrate'
 import { openSessionFor } from '@/lib/sessionRoute'
@@ -30,13 +30,14 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if (p.status !== 'ok') return NextResponse.json({ error: 'not a participant' }, { status: 403 })
   // A line-up hidden from the caller is the same 404 (an early reject; decided
   // again under the locks).
-  if (!opened.wines.some(w => w.id === wineId) || lineupHiddenFor(opened.meta, p.identity)) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
+  // (A cache behind the record must not 404 a bottle the record has.)
+  if (lineupHiddenFor(opened.meta, p.identity) || (!opened.wines.some(w => w.id === wineId) && !(await readOccurrence(c, wineId)))) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
 
   // Bookmarking is a logged-in act: promote first (before this route's own
   // contract), then — inside the contract (advisory lock + the publication
-  // generation, plan § 3) — re-check admission, mirror the lineup so the
-  // wine's FK row exists, and write the bookmark. Same transaction: no durable
-  // write outside the one that owns it.
+  // generation, plan § 3) — re-check admission, find the bottle in the RECORD
+  // (model change § 8a; a NULL revision reconciled first), and write the
+  // bookmark. Same transaction: no durable write outside the one that owns it.
   try { await ensurePromoted(c, opened.meta) }
   catch (err) { console.error('[bookmark] promotion failed', { code: c, err }) }
   const userId = Number(session.user.id)
@@ -44,13 +45,10 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     await withSessionMutation(c, { label: 'bookmark', caller: p.identity, bumpGen: true, expectedCreatedAt: opened.meta.createdAt }, async (tx, ctx) => {
       if (ctx.callerStatus !== 'ok') throw refuse(403, 'not a participant')
       if (!ctx.row) throw refuse(503, 'try again', { 'Retry-After': '1' })
-      const raw = await redis.get(k.wines(c))
-      if (raw === null) throw new ContractCold(c)
-      const wines = JSON.parse(raw) as WineMeta[]
+      await reconcileLineup(tx, ctx)
       // 🔒 A hidden line-up (the live rule, decided here from the fresh grant +
       // meta) is the same 404: the read hides the bottle, so must the write.
-      if (!wines.some(w => w.id === wineId) || !ctx.meta || !ctx.caller || lineupHiddenFor(ctx.meta, ctx.caller)) throw refuse(404, 'wine not found')
-      await mirrorLineup(tx, ctx.row.id, wines)
+      if (!(await lockOccurrence(tx, ctx.row.id, wineId)) || !ctx.meta || !ctx.caller || lineupHiddenFor(ctx.meta, ctx.caller)) throw refuse(404, 'wine not found')
       await tx.$executeRaw`INSERT INTO bookmarks (user_id, wine_id) VALUES (${userId}, ${wineId}) ON CONFLICT DO NOTHING`
     })
   } catch (err) {

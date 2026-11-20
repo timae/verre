@@ -508,7 +508,7 @@ function productStyle(raw: unknown, category: string): string | null {
 // had the PRODUCT link destroyed too, silently, with a 200: an omitted
 // `productId` read as "no link" rather than "unchanged". With `existing`,
 // omitted means KEEP and null means CLEAR, per field, matching the semantics
-// `addWineToSession` already implements one layer down. Callers that have no
+// `normalizeWine` (lib/session.ts) already implements one layer down. Callers that have no
 // stored link (creates) simply omit it.
 export async function resolveCatalogLink(
   productId: unknown,

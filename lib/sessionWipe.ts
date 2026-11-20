@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { redis, k, scanKeys } from '@/lib/redis'
-import { mutateWines, mirrorLineup, isMutateReject, type SessionMeta, type WineMeta } from '@/lib/session'
+import { mutateWines, type SessionMeta, type WineMeta } from '@/lib/session'
+import { reconcileLineup, bumpLineupRevision, renumber, recordLineup, projectLineup } from '@/lib/occurrences'
 import { withSessionMutation, type MutationCtx } from '@/lib/sessionMutation'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 import type { Identity } from '@/lib/identity'
@@ -158,21 +159,30 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
       await fence.exec(m => { m.set(k.meta(code), JSON.stringify(stripRoles(meta, identityId)), { XX: true, KEEPTTL: true }) })
     }
 
-    // ── Wines the target brought: the ids come from the RECORD's orphan UPDATE
-    // (r3-5 — cached provenance can lag a committed reassign); in a Redis-only
-    // session the cached provenance is the authority.
+    // ── Wines the target brought. Postgres-backed: RECORD-FIRST (model change
+    // § 8a) — a NULL revision reconciled, the ids from the record's orphan
+    // UPDATE (r3-5: cached provenance can lag a committed reassign), positions
+    // renumbered, the revision bumped, the line-up projected after COMMIT.
+    // Redis-only: the cached provenance is the authority.
+    let lineup: { wines: WineMeta[]; revision: number } | null = null
     if (deleteAddedWines) {
-      const ids = row
-        ? (await tx.$queryRaw<{ id: string }[]>`
-            UPDATE wines SET session_id = NULL WHERE session_id = ${row.id} AND added_by_identity_id = ${identityId} RETURNING id`).map(r => r.id)
-        : (ctx.meta ? (JSON.parse((await redis.get(k.wines(code))) ?? '[]') as WineMeta[]) : []).filter(w => w.addedByIdentityId === identityId).map(w => w.id)
-      if (ids.length) {
-        const drop = new Set(ids)
-        const next = await mutateWines(fence, wines => wines.filter(w => !drop.has(w.id)))
-        if (!isMutateReject(next)) await mirrorLineup(tx, row?.id ?? null, next)
+      if (row) {
+        await reconcileLineup(tx, ctx)
+        const ids = await tx.$queryRaw<{ id: string }[]>`
+          UPDATE wines SET session_id = NULL WHERE session_id = ${row.id} AND added_by_identity_id = ${identityId} RETURNING id`
+        if (ids.length) {
+          await renumber(tx, row.id)
+          const revision = await bumpLineupRevision(tx, row.id)
+          if (revision !== null) lineup = { wines: await recordLineup(tx, row.id), revision }
+        }
+      } else if (ctx.meta) {
+        const drop = new Set((JSON.parse((await redis.get(k.wines(code))) ?? '[]') as WineMeta[]).filter(w => w.addedByIdentityId === identityId).map(w => w.id))
+        if (drop.size) await mutateWines(fence, wines => wines.filter(w => !drop.has(w.id)))
       }
     }
-  }, async (ctx) => {
+    return lineup
+  }, async (ctx, lineup) => {
+    if (lineup) await projectLineup(ctx.fence!, lineup.wines, lineup.revision)
     // ── After COMMIT: the rating keys of a removed rater (the record no longer
     // has those ratings). Kick-keep keeps them (the roster guard hides them).
     if (scope !== 'kick-keep') {

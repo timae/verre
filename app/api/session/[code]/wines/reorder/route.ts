@@ -28,13 +28,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // checks (length + id-set match) run inside the transform against the
   // watched value — a wine added/removed by a concurrent request would
   // otherwise pass a stale check and then clobber that change.
-  const out = await hostLineupWrite(c, identity, { label: 'reorder', forbidden: 'only the host can reorder wines', rejectStatus: 400 }, (wines) => {
-    if (orderedIds.length !== wines.length) return { reject: 'orderedIds length mismatch' }
-    const byId = new Map(wines.map(w => [w.id, w]))
-    if (orderedIds.some(id => !byId.has(id)) || new Set(orderedIds).size !== wines.length) {
-      return { reject: 'invalid orderedIds' }
-    }
-    return orderedIds.map(id => byId.get(id)!)
+  const invalid = (ids: string[]) => orderedIds.length !== ids.length ? { reject: 'orderedIds length mismatch' }
+    : orderedIds.some(id => !ids.includes(id)) || new Set(orderedIds).size !== ids.length ? { reject: 'invalid orderedIds' } : null
+  const out = await hostLineupWrite(c, identity, { label: 'reorder', forbidden: 'only the host can reorder wines', rejectStatus: 400 }, {
+    redisOnly: (wines) => {
+      const bad = invalid(wines.map(w => w.id))
+      if (bad) return bad
+      const byId = new Map(wines.map(w => [w.id, w]))
+      return orderedIds.map(id => byId.get(id)!)
+    },
+    // The permutation decided on the locked rows; only the moved rows written.
+    record: async (tx, sessionId) => {
+      const ids = (await tx.$queryRaw<{ id: string }[]>`SELECT id FROM wines WHERE session_id = ${sessionId} FOR UPDATE`).map(r => r.id)
+      const bad = invalid(ids)
+      if (bad) return bad
+      await tx.$executeRaw`
+        UPDATE wines AS w SET position = (v.ord - 1)::int
+          FROM unnest(${orderedIds}::text[]) WITH ORDINALITY AS v(id, ord)
+         WHERE w.id = v.id AND w.session_id = ${sessionId} AND w.position IS DISTINCT FROM (v.ord - 1)::int`
+    },
   })
   if (out instanceof NextResponse) return out
   await touchWithMeta(c)

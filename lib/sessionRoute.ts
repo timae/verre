@@ -1,13 +1,15 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import type { Session } from 'next-auth'
 import { participantOrBanned, resolveIdentity, authInvalid, authRemoved, authUnavailable } from '@/lib/identity'
-import { isHostByIdentity, mutateWines, isMutateReject, mirrorLineup, type SessionMeta, type WineMeta, type MutateReject } from '@/lib/session'
-import { withSessionMutation, admitted, refuse, bestEffortMirror } from '@/lib/sessionMutation'
-import { openSession, unavailable, sessionRestoring, contractFailure, type OpenedSession } from '@/lib/sessionRehydrate'
-import { readGateGrant, grantStatus, cacheAdmission, type AuthorizedIdentity } from '@/lib/sessionGrant'
+import type { Prisma } from '@prisma/client'
+import { isHostByIdentity, mutateWines, isMutateReject, type SessionMeta, type WineMeta, type MutateReject } from '@/lib/session'
+import { withSessionMutation, admitted, refuse } from '@/lib/sessionMutation'
+import { openSession, unavailable, sessionRestoring, contractFailure, refreshLineup, type OpenedSession } from '@/lib/sessionRehydrate'
+import { reconcileLineup, recordLineup, projectLineup, readLineupState } from '@/lib/occurrences'
+import { readGateGrant, readGrant, grantStatus, cacheAdmission, authorized, type AuthorizedIdentity } from '@/lib/sessionGrant'
 import { reserveMiss, settleMiss, chargeMissOnce, getClientIp, formatWait } from '@/lib/rateLimit'
 import { prisma } from '@/lib/prisma'
-import { redis } from '@/lib/redis'
+import { redis, k } from '@/lib/redis'
 
 // ── The entrance gate (leak-fixes F2) ────────────────────────────────────────
 //
@@ -34,7 +36,7 @@ const ipMissKey = (code: string, ip: string) => code.length === 4 ? `rl:code-mis
 const NO_IDENTITY = '-'
 
 export type ChargedOpen =
-  | { status: 'live'; meta: SessionMeta; wines: WineMeta[] }
+  | { status: 'live'; meta: SessionMeta; wines: WineMeta[]; wrev: string | null }
   | { status: 'absent' | 'restoring' }
   | { status: 'limited'; retryAfter: number }
 
@@ -145,24 +147,113 @@ export async function openAsParticipant(
   return { meta: opened.meta, wines: opened.wines, identity: p.identity }
 }
 
-// A host-tier lineup write (reveal/hide, reveal-all/hide-all, reorder) inside
+// The line-up a READ serves (model change § 8a "the line-up read compares it
+// with the record"): the cached one when it is stamped with the record's
+// revision, else the record's, re-projected under the contract (a NULL revision
+// reconciled first). The record's state comes from the caller's grant read (a
+// signed-in caller of a Postgres-backed moment: no extra statement, and bound to
+// the request's incarnation by participantOrBanned); a signed-in caller with NO
+// grant is in a Redis-only moment (readGrant found no row); a guest pays one
+// read, checked against the incarnation the request opened (Codex r1).
+// 🔒 A KNOWN mismatch never falls back to the cache (Codex r1: a hide whose
+// projection died would still show the bottle revealed): when the refresh
+// cannot run (another holder has the lock, or it fails), the record's line-up
+// is read directly and served without projecting; if that fails too, 503. The
+// cache is the fallback only where nothing says it is behind: an unreconciled
+// moment (NULL: today's cache is what was served before this release) or a
+// failed state read (Postgres unreachable). Lists and enrichment never call this.
+export type Served = { wines: WineMeta[]; meta: SessionMeta; identity: AuthorizedIdentity }
+// A caller no longer admitted: the removed bounce (banned / kicked) or invalid.
+const refused = (status: string): NextResponse =>
+  status === 'banned' || status === 'kicked' ? authRemoved('removed from session') : authInvalid()
+export async function servedLineup(code: string, opened: OpenedLive, identity: AuthorizedIdentity): Promise<Served | NextResponse> {
+  const cached: Served = { wines: opened.wines, meta: opened.meta, identity }
+  let state: { sessionId: number; revision: number | null } | undefined
+  try {
+    if (identity.grant) state = { sessionId: identity.grant.sessionId, revision: identity.grant.lineupRevision }
+    else if (identity.kind !== 'user') {
+      const r = await readLineupState(code)
+      if (r && r.createdAt !== opened.meta.createdAt) return unavailable('absent')
+      state = r
+    }
+  } catch (err) {
+    console.error('[lineup] the revision read failed, serving the cached line-up', { code, err })
+    return cached
+  }
+  if (!state) return cached
+  if (state.revision !== null && opened.wrev === String(state.revision)) return cached
+  try {
+    const r = await refreshLineup(code, opened.meta.createdAt, identity)
+    if (r === 'absent') return unavailable('absent')
+    // 🔒 The view of the newer line-up uses the settings and the caller read
+    // with it under the locks (Codex r2), never the request's earlier ones, and
+    // a caller no longer admitted gets the answer a fresh request would (r4).
+    if (r !== 'busy') {
+      if (r.callerStatus && r.callerStatus !== 'ok') return refused(r.callerStatus)
+      return { wines: r.lineup, meta: r.meta, identity: r.caller ?? identity }
+    }
+  } catch (err) {
+    console.error('[lineup] the refresh failed', { code, err })
+  }
+  if (state.revision === null) return cached
+  try {
+    // The line-up FIRST, then the settings and the caller's grant: a settings
+    // tightening lands in the cache before its COMMIT, so settings read after
+    // the bottles are never older than them.
+    const wines = await recordLineup(prisma, state.sessionId)
+    const raw = await redis.get(k.meta(code))
+    const meta = raw ? JSON.parse(raw) as SessionMeta : null
+    if (!meta || meta.createdAt !== opened.meta.createdAt) return sessionRestoring()
+    // The fresh grant must be the SAME session (Codex r3: a code recycled
+    // between the reads would attach its successor's grant), else 503.
+    const fresh = identity.kind === 'user' ? await readGrant(prisma, code, Number(identity.id.slice(2))) : null
+    if (identity.kind === 'user' && (!fresh || fresh.sessionId !== state.sessionId || fresh.createdAt !== opened.meta.createdAt)) return sessionRestoring()
+    // Admission again, as the record and the cache say NOW (Codex r4): a Redis
+    // ban first, then the grant (a signed-in caller) or the cache's roster (a
+    // guest).
+    if (await redis.sIsMember(k.bans(code), identity.id)) return refused('banned')
+    const status = fresh ? grantStatus(fresh) : await cacheAdmission(code, identity.id, opened.meta.createdAt)
+    if (status === 'mismatch') return sessionRestoring()
+    // Exactly participantOrBanned's read rule: only 'ok' (a meta-proven host
+    // missing from the roster is no participant for a read).
+    if (status !== 'ok') return refused(status)
+    return { wines, meta, identity: fresh ? authorized(identity, fresh, identity.incarnation, identity.denied) : identity }
+  } catch (err) {
+    console.error('[lineup] the record read failed', { code, err })
+    return sessionRestoring()
+  }
+}
+
+// A host-tier line-up write (reveal/hide, reveal-all/hide-all, reorder) inside
 // the session mutation contract: the power re-decided from the caller's fresh
-// grant, the fenced mutateWines (content, Redis-first), the whole-array mirror
-// with positions (§ 4.6) — best-effort, repaired by the next list write.
+// grant. A Postgres-backed moment is RECORD-FIRST (model change § 8a): a NULL
+// revision reconciled, `record(tx, sessionId)` decides and writes on the rows
+// (the contract's row lock bumped the revision), the line-up read back and, after
+// COMMIT, projected stamped. A Redis-only moment keeps the fenced `mutateWines`
+// transform as its authority. A reject (either form) → `rejectStatus`.
 export async function hostLineupWrite(
   code: string,
   caller: AuthorizedIdentity,
   { label, forbidden, rejectStatus = 404 }: { label: string; forbidden: string; rejectStatus?: number },
-  transform: (wines: WineMeta[]) => WineMeta[] | MutateReject,
+  ops: {
+    redisOnly: (wines: WineMeta[]) => WineMeta[] | MutateReject
+    record: (tx: Prisma.TransactionClient, sessionId: number) => Promise<void | MutateReject>
+  },
 ): Promise<WineMeta[] | NextResponse> {
   try {
-    return await withSessionMutation(code, { label, redisLock: { waitMs: 3000 }, caller }, async (tx, ctx) => {
+    const out = await withSessionMutation(code, { label, redisLock: { waitMs: 3000 }, caller, bumpLineup: true }, async (tx, ctx) => {
       if (!isHostByIdentity(ctx.meta!, admitted(ctx))) throw refuse(403, forbidden)
-      const out = await mutateWines(ctx.fence!, transform)
-      if (isMutateReject(out)) throw refuse(rejectStatus, out.reject)
-      await bestEffortMirror(tx, code, 'wine-list', () => mirrorLineup(tx, ctx.row?.id ?? null, out))
-      return out
-    })
+      if (!ctx.row) {
+        const next = await mutateWines(ctx.fence!, ops.redisOnly)
+        if (isMutateReject(next)) throw refuse(rejectStatus, next.reject)
+        return { lineup: next, revision: null }
+      }
+      const revision = (await reconcileLineup(tx, ctx))!
+      const r = await ops.record(tx, ctx.row.id)
+      if (isMutateReject(r)) throw refuse(rejectStatus, r.reject)
+      return { lineup: await recordLineup(tx, ctx.row.id), revision }
+    }, async (ctx, r) => { if (r.revision !== null) await projectLineup(ctx.fence!, r.lineup, r.revision) })
+    return out.lineup
   } catch (err) {
     return contractFailure(err, code, { label })
   }

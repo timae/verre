@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k } from '@/lib/redis'
 import { participantOrBanned, authInvalid, authRemoved, authUnavailable } from '@/lib/identity'
-import { openSessionFor } from '@/lib/sessionRoute'
+import { openSessionFor, servedLineup } from '@/lib/sessionRoute'
 import { normalizeCode } from '@verre/core'
 import {
   buildMetaView,
@@ -39,12 +39,17 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const session = await resolveUser(req)
   const opened = await openSessionFor(c, req, session)
   if (opened instanceof NextResponse) return opened
-  const { meta, wines } = opened
   const p = await participantOrBanned(c, req, session, opened.meta)
   if (p.status === 'unavailable') return authUnavailable()
   if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
   if (p.status === 'invalid') return authInvalid('not a participant')
-  const caller = p.identity
+  // The cached line-up when it is stamped with the record's revision, else the
+  // record's (model change § 8a).
+  const served = await servedLineup(c, opened, p.identity)
+  if (served instanceof NextResponse) return served
+  // The settings and the caller the line-up was read with (a refreshed
+  // line-up comes with newer ones: lib/sessionRoute.ts servedLineup).
+  const { wines, meta, identity: caller } = served
 
   const identities = await redis.hGetAll(k.identities(c))
 

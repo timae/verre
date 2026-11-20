@@ -49,7 +49,22 @@ async function apiGates(req: NextRequest, path: string): Promise<Response | unde
   // new web).
   if (req.headers.get('x-verre-client')) return undefined
   if (req.headers.get('x-verre-web') === WEB_WIRE_GENERATION) return undefined
-  if (!(await signedInWebCaller(req))) return undefined
+  if (!(await signedInWebCaller(req))) {
+    // 🔒 A GUEST tab open across the deploy (catalogue model change spec § 7,
+    // review r1 M3): bouncing it with X-Vr-Auth: invalid would make the old
+    // sessionFetch drop its guest token, so it is not bounced; its moment
+    // WRITES (no client id, the photo in the body) get one 409 with no
+    // X-Vr-Auth (not 403 / 429, which the old tab maps to other messages). The
+    // old tab shows its own generic error until it reloads: accepted residual.
+    // Its reads keep working.
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return Response.json(
+        { error: 'Verre was updated. Reload the page.' },
+        { status: 409, headers: { 'Cache-Control': 'private, no-store' } },
+      )
+    }
+    return undefined
+  }
   return Response.json(
     { error: 'Verre was updated. Reload the page.' },
     { status: 401, headers: { 'X-Vr-Auth': 'invalid', 'Cache-Control': 'private, no-store' } },

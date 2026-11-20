@@ -138,3 +138,9 @@ export async function engagementCascadeIn(
 export function reclaimImages(urls: string[]): void {
   for (const url of urls) reclaimImage(url)
 }
+
+// The same, awaited: a write that failed after its upload reclaims the new
+// object BEFORE it answers (model change § 8a, the S3→DB failure rule).
+export async function reclaimImagesNow(urls: string[]): Promise<void> {
+  await Promise.all(urls.map(reclaimImage))
+}

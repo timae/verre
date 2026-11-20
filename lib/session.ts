@@ -1,35 +1,15 @@
-import { nanoid } from 'nanoid'
 import { WatchError } from 'redis'
 import { redis, k, lifespanTTL, scanKeys } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { Prisma } from '@prisma/client'
 import { sessionLockKey, LockLost } from '@/lib/sessionLock'
 import { withSessionMutation, scopedInvalidate, ContractCold, ContractGone, type Fence } from '@/lib/sessionMutation'
+import { prepareCachedLineup, copyCachedLineup, renumber, recordLineup, projectLineup } from '@/lib/occurrences'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 import { normalizeVintageText } from '@verre/core'
-import { uploadImage } from '@/lib/s3'
 import { cleanCountry, cleanUrl, scrub } from '@/lib/textSafe'
 import { grantStatus, type AuthorizedIdentity } from '@/lib/sessionGrant'
 import { userIdentityId } from '@/lib/identity'
-
-// After a FAILED wine write: reclaim this request's own upload only if the live
-// lineup does not reference it — a content write that landed in Redis before
-// the failure keeps its bytes (a leak at worst, never a dead reference). The
-// URL is unique to this request, so "unreferenced now" means never. A Redis
-// error keeps the bytes.
-export async function reclaimIfUnreferenced(code: string, url: string): Promise<void> {
-  // Both stores must PROVE they do not reference it (r5): a lineup key that is
-  // absent proves nothing (evicted after another writer mirrored it), and a
-  // later list write may have mirrored the published array into Postgres.
-  try {
-    const raw = await redis.get(k.wines(code))
-    if (!raw || (JSON.parse(raw) as WineMeta[]).some(w => w.imageUrl === url)) return
-    const { prisma } = await import('@/lib/prisma')
-    if ((await prisma.$queryRaw<{ x: number }[]>`SELECT 1 AS x FROM wines WHERE image_url = ${url} LIMIT 1`).length) return
-  } catch { return }
-  const { reclaimImages } = await import('@/lib/engagementCascade')
-  reclaimImages([url])
-}
 
 export type WineMeta = {
   id: string
@@ -87,9 +67,8 @@ export type WineMeta = {
   // identifying field added here is exposed BY DEFAULT unless it is
   // explicitly overwritten there. See lib/wineRedaction.ts.
   //
-  // Mirrored to Postgres by mirrorLineup (every list write); every wine-edit path
-  // must round-trip them (the PATCH route replaces the Redis object
-  // wholesale, so omitting them silently drops the link).
+  // Stored on the occurrence row (record-first, lib/occurrences.ts); every
+  // edit path must round-trip them (normalizeWine keeps an omitted link).
   productId?: string | null
   vintageId?: string | null
 }
@@ -419,12 +398,9 @@ export function isHostless(meta: SessionMeta, identity: AuthorizedIdentity | nul
   return !meta.hostIdentityId && !meta.hostUserId
 }
 
-export function sanitizeImage(value: unknown): string {
-  if (!value || typeof value !== 'string') return ''
-  if (!value.startsWith('data:image/')) return ''
-  if (value.length > 1_500_000) return ''
-  return value
-}
+// The largest occurrence photo the image call accepts, as a base64 data URL
+// (the app's MAX_WINE_IMAGE_BYTES mirrors it).
+export const MAX_WINE_IMAGE_DATA_URL = 1_500_000
 
 // `scrub()` handles control chars + bidi/zero-width spoofing. It
 // returns null for empty input; we coerce back to '' here so the
@@ -436,7 +412,7 @@ function clean(v: unknown): string {
 // cleanUrl/cleanCountry moved to lib/textSafe.ts (pure, no Redis side effect
 // — /api/checkins uses them without touching this module). Re-exported so
 // existing `@/lib/session` importers (sessionFields, settings route) stay
-// unchanged; addWineToSession below keeps using them.
+// unchanged; normalizeWine below keeps using them.
 export { cleanCountry, cleanUrl }
 
 // Sentinel values in the name lookup: this `u:` adder's account is gone; or
@@ -495,63 +471,23 @@ export async function buildAdderLookup(
   return out
 }
 
-export async function addWineToSession(
-  code: string,
-  body: Partial<WineMeta> & { image?: string | null },
+// The shared validation + normalisation of a bottle's fields (create and edit;
+// model change step 3: the upload left, photos have their own call). Pure: the
+// caller decides where the result is written (the record in a Postgres-backed
+// moment, the cached array in a Redis-only one). `existing` = the bottle as
+// stored (an edit): reveal state, provenance and the photo are kept from it.
+export function normalizeWine(
+  body: Partial<WineMeta>,
   existing?: WineMeta,
   addedByIdentityId?: string,
   addedByDisplayName?: string,
-): Promise<WineMeta | { error: string }> {
+): WineMeta | { error: string } {
   const name = clean(body.name)
   const type = String(body.type || '').trim()
   if (!name) return { error: 'name required' }
   if (!['red', 'white', 'spark', 'rose', 'nonalc'].includes(type)) return { error: 'valid type required' }
-
-  // Mint the wine id once and reuse it for both the S3 upload key and
-  // the returned WineMeta. With nanoid the two strings would otherwise
-  // be completely uncorrelated, so a single mint is load-bearing.
-  // (The previous code had a latent bug: the two `Date.now().toString()`
-  // calls were separated by `await uploadImage(...)` — an S3 PUT that
-  // takes 50–500ms — so the image got keyed by one timestamp and the
-  // wine row stored a different one, leaking the S3 object whenever the
-  // wine was later deleted by id; scripts/rekey-session-images.mts matches
-  // such photos by reference, never by id.)
-  const id = existing?.id || nanoid()
-
-  let imageUrl = existing?.imageUrl || ''
-  let image = body.image === undefined
-    ? (existing?.image || '')
-    : sanitizeImage(body.image)
-  // 🔒 No S3 delete here (r3 P1): this runs BEFORE the route's contract, which
-  // may still refuse the edit (a provider editing a wine it does not own). The
-  // route reclaims the replaced bytes only after an AUTHORIZED commit, and
-  // reclaims this call's own upload when the write is refused.
-  if (existing && body.image === null) {
-    imageUrl = ''
-    image = ''
-  }
-
-  // Upload to S3 if new base64 image provided. uploadImage keys by wine id,
-  // so a same-extension replace overwrites in place. If the new image has
-  // a different extension the old key would be orphaned — handle that by
-  // deleting the previous URL only after the new upload succeeds. This
-  // upload-first-then-cleanup ordering is failure-safe: if the new upload
-  // throws or returns empty, the old image stays referenced and accessible.
-  // A UNIQUE key per upload — never the live object's key, so an upload whose
-  // write is then refused cannot overwrite the bytes the wine references.
-  // Only an EXPLICIT image input uploads (r5): a metadata-only edit must not
-  // upload inline image data its stale snapshot carries (a failed earlier
-  // upload) and so replace a photo committed meanwhile.
-  if (body.image !== undefined && image && image.startsWith('data:image/')) {
-    try {
-      const url = await uploadImage(`wines/${id}_${nanoid(8)}`, image)
-      if (url) {
-        imageUrl = url
-        image = ''
-      }
-    } catch {}
-  }
-
+  const id = existing?.id ?? body.id
+  if (!id) return { error: 'id required' }
   return {
     id,
     name,
@@ -566,8 +502,8 @@ export async function addWineToSession(
     vintage: normalizeVintageText(clean(body.vintage)),
     grape: clean(body.grape),
     type,
-    image,
-    imageUrl,
+    image: '',
+    imageUrl: existing?.imageUrl ?? '',
     description: clean(body.description).slice(0, 1000),
     region: clean(body.region).slice(0, 255),
     // ISO 3166-1 alpha-2 allow-listed via `cleanCountry`. Invalid codes
@@ -575,29 +511,19 @@ export async function addWineToSession(
     country: cleanCountry(body.country),
     vinification: clean(body.vinification).slice(0, 1000),
     purchaseUrl: cleanUrl(body.purchaseUrl).slice(0, 1000),
-    // Preserve reveal state on edit. The PATCH route replaces the Redis wine
-    // object wholesale, so omitting this would silently re-hide revealed wines.
+    // Preserve reveal state on edit (an edit never re-hides a revealed bottle).
     revealedAt: existing?.revealedAt ?? null,
     // Preserve on edit; populate on create. Edits never overwrite the
     // original adder — `existing.addedByIdentityId` wins.
     addedByIdentityId: existing?.addedByIdentityId ?? addedByIdentityId,
     // Frozen snapshot, same rule as the id above. Set once at create
-    // time from the live identities map by the caller. Existing rows
-    // from before this field landed have `addedByDisplayName=undefined`;
-    // the wire-time resolver handles that by falling through to null.
+    // time from the live identities map by the caller.
     addedByDisplayName: existing?.addedByDisplayName ?? addedByDisplayName,
     // Catalog link. The caller (route) has already validated these through
-    // `resolveCatalogLink` and applied the identity-changing-edit rule, so
-    // whatever arrives in `body` here is authoritative for this write.
-    //
-    // ⚠️ THE ROUND-TRIP IS THE TRAP. The PATCH route replaces the Redis
-    // wine object WHOLESALE with this return value, so a field that is not
-    // named here is DROPPED — silently, on every edit. `body.productId
-    // === undefined` therefore means "the caller didn't mention it, keep
-    // what's stored", which is why this is an explicit undefined check and
-    // not `body.productId ?? existing?.productId` (that spelling would
-    // also swallow a deliberate null, making the link impossible to
-    // clear).
+    // `resolveCatalogLink` and applied the identity-changing-edit rule.
+    // `body.productId === undefined` means "the caller didn't mention it, keep
+    // what's stored" (an explicit undefined check: `??` would also swallow a
+    // deliberate null, making the link impossible to clear).
     productId: body.productId === undefined ? (existing?.productId ?? null) : body.productId,
     vintageId: body.vintageId === undefined ? (existing?.vintageId ?? null) : body.vintageId,
   }
@@ -646,7 +572,16 @@ export async function ensurePromoted(code: string, meta: SessionMeta): Promise<n
       const row = await tx.session.create({ data: { code, ...sessionMetaToColumns(fresh), lifespan: 'unlimited' }, select: { id: true } })
       // Belt: member rows are only ever for codes with a live row (r1-2).
       await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${code}`
-      await upsertLineup(tx, row.id, JSON.parse(winesRaw) as WineMeta[])
+      // The cached line-up through the shared record insert (lib/occurrences.ts
+      // copyLineup: ids, order, reveal state, the snapshot), stamped 1 in this
+      // transaction (spec § 8a "Promotion stamps 1").
+      // A cached id another row of the record holds (a squat) gets a fresh id,
+      // its rating keys copied now and the old ones deleted after COMMIT
+      // (review r1, r2): never a silent drop.
+      const prep = await prepareCachedLineup(tx, row.id, winesRaw)
+      if (prep) await copyCachedLineup(tx, ctx, row.id, prep)
+      await renumber(tx, row.id)
+      await tx.$executeRaw`UPDATE sessions SET lineup_revision = 1 WHERE id = ${row.id}`
       if (bans.length > 0) {
         await tx.$executeRaw`
           INSERT INTO session_bans (session_code, identity_id) SELECT ${code}, unnest(${bans}::text[]) ON CONFLICT DO NOTHING`
@@ -679,6 +614,8 @@ export async function ensurePromoted(code: string, meta: SessionMeta): Promise<n
       try {
         const meta = await projectMetaFromRecord(ctx.fence!, ctx.meta)
         if (meta) await expireSessionKeys(ctx.fence!, code, meta.lifespan)
+        const live = await prisma.session.findFirst({ where: { code, deletedAt: null }, select: { id: true, lineupRevision: true } })
+        if (live?.lineupRevision != null) await projectLineup(ctx.fence!, await recordLineup(prisma, live.id), live.lineupRevision)
       } catch (err) {
         await scopedInvalidate(code, ctx.meta!.createdAt).catch(e => console.error('[promote] invalidation failed', { code, e }))
         throw err
@@ -707,112 +644,22 @@ export async function projectMetaFromRecord(fence: Fence, cache: SessionMeta | n
   return meta
 }
 
-// Writes the given wines of a session, in array order (position = index), in
-// ONE statement. Content, reveal state, catalog link and position follow the
-// array; provenance is set on INSERT only (the original adder is the anchor —
-// only the reassignment path moves it). The update arm skips a row whose
-// session_id differs (an orphaned wine is never re-attached or re-positioned
-// from a stale array) and a row that would not change (no dead tuples on the
-// hot rate path).
-//
-// 🔒 A `u:` adder whose users row is gone is written as no adder + '[deleted]'
-// (on INSERT — the only arm that writes provenance). A wine added just before
-// its adder's account deletion can get its FIRST mirror after that deletion
-// committed (it waited on the session row lock), and its Redis copy still
-// names the person; written verbatim it would restore the deleted identity and
-// name, and every later mirror would freeze them. The adders are read FOR KEY
-// SHARE, which conflicts with account deletion's FOR UPDATE on the users row,
-// so a mirror either commits before the deletion (whose in-transaction re-read
-// then rewrites the row) or sees the user gone.
-async function upsertLineup(tx: Prisma.TransactionClient, sessionId: number, wines: WineMeta[]) {
-  if (wines.length === 0) return
-  const adderIds = [...new Set(wines.map(w => w.addedByIdentityId).filter((id): id is string => !!id && /^u:\d{1,18}$/.test(id)).map(id => Number(id.slice(2))))]
-  const liveAdders = new Set<string>()
-  if (adderIds.length > 0) {
-    const live = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM users WHERE id = ANY(${adderIds}::bigint[]) FOR KEY SHARE`
-    for (const r of live) liveAdders.add(`u:${r.id}`)
-  }
-  const provenance = (w: WineMeta): [string | null, string | null] =>
-    w.addedByIdentityId?.startsWith('u:') && !liveAdders.has(w.addedByIdentityId)
-      ? [null, '[deleted]']
-      : [w.addedByIdentityId ?? null, w.addedByDisplayName?.slice(0, 64) ?? null]
-  // Clamped to the column widths: one statement writes the whole lineup, so a
-  // single over-long field (the add path does not cap name / producer / grape)
-  // must not fail the mirror for every wine of the session.
-  const cut = (v: string | undefined, n: number) => (v ? v.slice(0, n) : null)
-  const rows = wines.map((w, i) => Prisma.sql`(
-    ${w.id}, ${sessionId}, ${w.name.slice(0, 255)}, ${cut(w.producer, 255)}, ${cut(w.vintage, 4)}, ${cut(w.grape, 255)},
-    ${cut(w.type, 64)}, ${w.imageUrl || null}, ${cut(w.description, 1000)}, ${cut(w.region, 255)},
-    ${cut(w.country, 2)}, ${cut(w.vinification, 1000)}, ${cut(w.purchaseUrl, 1000)},
-    ${w.revealedAt ? new Date(w.revealedAt) : null}::timestamptz,
-    ${provenance(w)[0]}, ${provenance(w)[1]},
-    ${w.productId || null}, ${w.vintageId || null}, ${i}::int)`)
-  await tx.$executeRaw`
-    INSERT INTO wines (id, session_id, name, producer, vintage, grape, style, image_url, description, region,
-                       country, vinification, purchase_url, revealed_at, added_by_identity_id,
-                       added_by_display_name, product_id, vintage_id, position)
-    VALUES ${Prisma.join(rows)}
-    ON CONFLICT (id) DO UPDATE SET
-      name = EXCLUDED.name, producer = EXCLUDED.producer, vintage = EXCLUDED.vintage,
-      grape = EXCLUDED.grape, style = EXCLUDED.style, image_url = EXCLUDED.image_url,
-      description = EXCLUDED.description, region = EXCLUDED.region, country = EXCLUDED.country,
-      vinification = EXCLUDED.vinification, purchase_url = EXCLUDED.purchase_url,
-      revealed_at = EXCLUDED.revealed_at, product_id = EXCLUDED.product_id,
-      vintage_id = EXCLUDED.vintage_id, position = EXCLUDED.position
-    WHERE wines.session_id = EXCLUDED.session_id
-      AND (wines.name, wines.producer, wines.vintage, wines.grape, wines.style, wines.image_url,
-           wines.description, wines.region, wines.country, wines.vinification, wines.purchase_url,
-           wines.revealed_at, wines.product_id, wines.vintage_id, wines.position)
-          IS DISTINCT FROM
-          (EXCLUDED.name, EXCLUDED.producer, EXCLUDED.vintage, EXCLUDED.grape, EXCLUDED.style,
-           EXCLUDED.image_url, EXCLUDED.description, EXCLUDED.region, EXCLUDED.country,
-           EXCLUDED.vinification, EXCLUDED.purchase_url, EXCLUDED.revealed_at, EXCLUDED.product_id,
-           EXCLUDED.vintage_id, EXCLUDED.position)`
-}
-
-// The wine-list mirror, run INSIDE the caller's contract after EVERY wine-list
-// mutation (add, edit, delete, reorder, reveal/hide, ban-wipe) by EVERY caller —
-// anonymous adds included — with `wines` = the array the fenced mutateWines just
-// committed to Redis (content is Redis-first by design, § 3) and `sessionId` =
-// ctx.row.id (null for a Redis-only session: nothing to mirror). Projects the
-// WHOLE array (content + positions renormalized); the advisory lock orders the
-// mirrors, so the last committer projected the newest array. `deletedId` removes
-// that wine's row in the same transaction (the wine DELETE route).
-//
-// Rows of this session the array no longer lists (a wine DELETE whose mirror
-// failed before release B) are positioned AFTER the array, so positions stay
-// unique and all set. They are deliberately not removed (owner ruling: the
-// catalog model change reshapes per-event wines).
-export async function mirrorLineup(tx: Prisma.TransactionClient, sessionId: number | null, wines: WineMeta[], opts: { deletedId?: string } = {}): Promise<void> {
-  if (sessionId === null) return
-  if (opts.deletedId) await tx.$executeRaw`DELETE FROM wines WHERE id = ${opts.deletedId} AND session_id = ${sessionId}`
-  await upsertLineup(tx, sessionId, wines)
-  await tx.$executeRaw`
-    UPDATE wines w SET position = ${wines.length}::int + o.rank - 1
-      FROM (SELECT id, row_number() OVER (ORDER BY position NULLS LAST, created_at, id) AS rank
-              FROM wines WHERE session_id = ${sessionId} AND NOT (id = ANY(${wines.map(x => x.id)}::text[]))) o
-     WHERE w.id = o.id AND w.position IS DISTINCT FROM ${wines.length}::int + o.rank - 1`
-}
-
-// A "Brought by" REASSIGNMENT, RECORD-FIRST (plan D2): inside the reassign's
-// contract, the lineup is projected from the current array (inserting the row
-// if it was missing), then provenance is FORCED on the row (the list mirror
-// freezes it on update). The Redis provenance is the projection after COMMIT —
-// ownership decides provider edit rights, so the cache must never name an owner
+// A "Brought by" REASSIGNMENT, RECORD-FIRST (plan D2), inside the reassign's
+// contract: provenance is written on the row (it is never written by an
+// ordinary edit); the cache follows as the line-up projection after COMMIT.
+// Ownership decides provider edit rights, so the cache must never name an owner
 // the record does not. A `u:` target must still have a users row (FOR KEY
 // SHARE — account deletion holds it FOR UPDATE). Throws on any refusal; nothing
 // commits.
-export async function reassignProvenance(tx: Prisma.TransactionClient, sessionId: number, wines: WineMeta[], wine: WineMeta): Promise<void> {
-  const owner = wine.addedByIdentityId ?? null
-  if (owner?.startsWith('u:')) {
+export async function reassignProvenance(tx: Prisma.TransactionClient, sessionId: number, wineId: string, owner: string, ownerName: string): Promise<void> {
+  if (owner.startsWith('u:')) {
     const users = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM users WHERE id = ${Number(owner.slice(2))} FOR KEY SHARE`
     if (!users[0]) throw new Error('reassign: target user is gone')
   }
-  await mirrorLineup(tx, sessionId, wines)
   // Zero rows = the wine's row is not this session's (orphaned by a ban-wipe):
   // the owner change would not persist — refuse.
   const n = await tx.$executeRaw`
-    UPDATE wines SET added_by_identity_id = ${owner}, added_by_display_name = ${wine.addedByDisplayName ?? null}
-     WHERE id = ${wine.id} AND session_id = ${sessionId}`
+    UPDATE wines SET added_by_identity_id = ${owner}, added_by_display_name = ${ownerName.slice(0, 64)}
+     WHERE id = ${wineId} AND session_id = ${sessionId}`
   if (n !== 1) throw new Error('reassign: the wine row is not part of this session')
 }
