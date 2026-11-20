@@ -13,10 +13,14 @@
 //
 // Reports every cached bottle that carries a catalogue id (expected: none, the
 // same rule as the Postgres side) and flags the ones whose id is in the removed
-// or merged lists: those would point at nothing after the replacement. A list
-// file holds one id per line, or CSV whose FIRST column is the id (for a merge,
-// the merged-away id); lines whose first field is not id-shaped are skipped and
-// counted (a header word that happens to be id-shaped matches no real id).
+// or merged lists: those would point at nothing after the replacement. The
+// lists are the catalogue-maintenance side's (confirmed 2026-11-20): CSV with a
+// header, read BY HEADER NAME: `removed.csv` is `entity,id`, `merged.csv` is
+// `entity,loser_id,survivor_id` (the loser is the id that goes; the survivor
+// stays and is not flagged); `entity` is producer, product or vintage. Any id
+// of any entity is matched against both fields (fail-safe: a mislabelled row
+// still flags). 🔒 A malformed list REFUSES (exit 2, the line named): a
+// skipped line could hide a link that dangles after the replacement.
 // Every line-up key is read, Redis-only and record-backed moments alike (a
 // record-backed moment's links are in Postgres too, where the report counts
 // them). Moment codes are printed, as in warm-lineups.mts, so the operator can
@@ -46,22 +50,32 @@ let where: string
 try { const u = new URL(url); where = `${u.protocol}//${u.host}${u.pathname}` }
 catch { console.error('scan-redis-catalogue-links: REDIS_URL does not parse'); process.exit(2) }
 
-type List = { file: string; ids: number; skipped: number }
-const listed = new Map<string, Set<'removed' | 'merged'>>()
+const ENTITIES = new Set(['producer', 'product', 'vintage'])
+const COLUMN = { removed: 'id', merged: 'loser_id' } as const
+type List = { file: string; rows: number; byEntity: Record<string, number> }
+const listed = new Map<string, Set<string>>()   // id → "removed product", "merged vintage", …
 const lists: Record<string, List> = {}
+const refuse = (msg: string): never => { console.error(`scan-redis-catalogue-links: ${msg}`); process.exit(2) }
+const fields = (line: string) => line.split(',').map(f => f.trim().replace(/^"(.*)"$/, '$1'))
 for (const kind of ['removed', 'merged'] as const) {
   const file = files[kind]
   if (!file) continue
-  let text: string
-  try { text = readFileSync(file, 'utf8') } catch (e) { console.error(`scan-redis-catalogue-links: cannot read ${file} (${(e as Error).message})`); process.exit(2) }
-  const entry: List = { file, ids: 0, skipped: 0 }
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim()) continue
-    const first = line.split(',')[0].trim().replace(/^"(.*)"$/, '$1')
-    if (!ID.test(first)) { entry.skipped++; continue }
-    if (!listed.has(first)) listed.set(first, new Set())
-    if (!listed.get(first)!.has(kind)) { listed.get(first)!.add(kind); entry.ids++ }
-  }
+  let text = ''
+  try { text = readFileSync(file, 'utf8') } catch (e) { refuse(`cannot read ${file} (${(e as Error).message})`) }
+  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/)
+  const header = fields(lines[0] ?? '')
+  const ei = header.indexOf('entity'), ii = header.indexOf(COLUMN[kind])
+  if (ei < 0 || ii < 0) refuse(`${file}: the header must name \`entity\` and \`${COLUMN[kind]}\` (found: ${header.join(',') || 'nothing'})`)
+  const entry: List = { file, rows: 0, byEntity: {} }
+  lines.slice(1).forEach((line, n) => {
+    if (!line.trim()) return
+    const f = fields(line), entity = f[ei], id = f[ii]
+    if (f.length !== header.length || !ENTITIES.has(entity) || !ID.test(id ?? '')) refuse(`${file} line ${n + 2}: not \`${header.join(',')}\` with entity producer / product / vintage and an id`)
+    entry.rows++
+    entry.byEntity[entity] = (entry.byEntity[entity] ?? 0) + 1
+    if (!listed.has(id)) listed.set(id, new Set())
+    listed.get(id)!.add(`${kind} ${entity}`)
+  })
   lists[kind] = entry
 }
 
