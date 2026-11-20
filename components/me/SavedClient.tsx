@@ -9,10 +9,11 @@ import { WineIdentity } from '@/components/wine/WineIdentity'
 import { formatCode } from '@verre/core'
 import { StarRating } from '@/components/ui/StarRating'
 import { ICO } from '@/lib/wineTypeColors'
+import { kindToken } from '@verre/core'
 
 type Bookmark = {
   wine_id: string; name: string; producer: string | null; vintage: string | null
-  grape: string | null; style: string | null; image_url: string | null
+  grape: string | null; style: string | null; colour?: string | null; sparkling?: boolean; abv?: number | null; image_url: string | null
   session_code: string | null
   // session_deleted: true when the source session has been soft-deleted
   // (the §8 contract scrubs the session row). Renderer shows
@@ -70,7 +71,7 @@ export function SavedClient() {
                 <img src={b.image_url} alt={b.name} onClick={e=>{e.stopPropagation();openLightbox(b.image_url!,b.name)}} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
               ) : (
                 <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>
-                  {ICO[b.style||'']||'🍷'}
+                  {ICO[kindToken(b)]||'🍷'}
                 </div>
               )}
               <div style={{flex:1,minWidth:0}}>

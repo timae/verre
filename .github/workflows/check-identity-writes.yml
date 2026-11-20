@@ -46,3 +46,13 @@ jobs:
       # the username one.
       - name: Check bottle writes bump the line-up revision
         run: node scripts/check-wine-writes.mjs
+
+      # Every READ of the catalogue (wine_products, wine_vintages, producers,
+      # product_producers, product_eans) goes through the one merge resolver
+      # (lib/catalogEntries.ts) or the one matcher (lib/catalogSearch.ts):
+      # merges never rewrite, so a read that skips the resolver shows a name
+      # already merged away (catalogue model change § 8b). A census of the raw
+      # reads elsewhere, each listed with its reason, with its own negative
+      # control.
+      - name: Check catalogue reads go through the merge resolver
+        run: node scripts/check-catalog-reads.mjs

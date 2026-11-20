@@ -5,6 +5,7 @@ import { sessionLockKey, LockLost } from '@/lib/sessionLock'
 import { nanoid } from 'nanoid'
 import { ContractNeedsLease, type Fence, type MutationCtx } from '@/lib/sessionMutation'
 import type { WineMeta } from '@/lib/session'
+import { loadEntries, entryKey, type EntrySnapshot } from '@/lib/catalogEntries'
 
 // Occurrence persistence (docs/dev/proposals/wine-catalog-model-change.md § 8a;
 // build step 3). In a Postgres-backed moment the RECORD decides every bottle
@@ -65,12 +66,6 @@ function snapshotSets(style: Prisma.Sql): Prisma.Sql {
     abv = CASE WHEN w.abv IS NULL AND ${style} IS NOT DISTINCT FROM 'nonalc' THEN 0 ELSE w.abv END`
 }
 
-// The pair re-derived on a row from its own stored `style` (a writer that sets
-// `style` through another path, the standalone check-in edit).
-export async function syncSnapshot(tx: Prisma.TransactionClient, wineId: string): Promise<void> {
-  await tx.$executeRaw`UPDATE wines w SET ${snapshotSets(Prisma.sql`w.style`)} WHERE w.id = ${wineId}`
-}
-
 const cut = (v: string | undefined | null, n: number) => (v ? v.slice(0, n) : null)
 const revealedDate = (v: string | null | undefined) => (v ? new Date(v) : null)
 
@@ -117,6 +112,41 @@ export async function lockOccurrence(tx: Prisma.TransactionClient, sessionId: nu
   const rows = await tx.$queryRaw<WineRow[]>`
     SELECT ${WINE_COLUMNS} FROM wines WHERE id = ${id} AND session_id = ${sessionId} FOR UPDATE`
   return rows[0] ? toMeta(rows[0]) : null
+}
+
+// The record's SNAPSHOT kind and abv of these bottles of a live moment (the
+// line-up wire, Codex r1): the cached line-up never carries them (its old shape,
+// § 8a.0), and its `type` cannot say a sparkling rosé or an abv, so a bottle
+// whose entry is gone (purged) would lose its alcohol-free mark. One primary-
+// key read; an empty map for a Redis-only moment (no record: the token decides).
+// 🔒 Read AFTER the line-up it decorates, so it carries the row's LINK and its
+// REVEAL STATE too: the caller uses a snapshot only while both equal the served
+// row's (Codex r2, r3). A host hiding a bottle between the line-up read and
+// this one (and re-linking it, or re-picking the same wine, which refreshes its
+// snapshot from the entry) would otherwise decorate a row served as revealed
+// with what is now hidden. The snapshot CAN change under an unchanged link (a
+// re-pick refreshes it; copyLineup and the backfill re-derive the pair), but
+// then it still describes the wine the served row names; a changed reveal
+// state is what would turn it into hidden information, and that drops it.
+export type BottleSnapshot = { colour: string | null; sparkling: boolean; abv: number | null; productId: string | null; vintageId: string | null; revealedAt: string | null }
+export async function readSnapshots(code: string, ids: string[]): Promise<Map<string, BottleSnapshot>> {
+  if (ids.length === 0) return new Map()
+  const rows = await prisma.$queryRaw<{ id: string; colour: string | null; sparkling: boolean; abv: Prisma.Decimal | null; product_id: string | null; vintage_id: string | null; revealed_at: Date | null }[]>`
+    SELECT w.id, w.colour, w.sparkling, w.abv, w.product_id, w.vintage_id, w.revealed_at FROM wines w
+      JOIN sessions s ON s.id = w.session_id AND s.code = ${code} AND s.deleted_at IS NULL
+     WHERE w.id = ANY(${ids}::text[])`
+  return new Map(rows.map(r => [r.id, {
+    colour: r.colour, sparkling: r.sparkling, abv: r.abv === null ? null : Number(r.abv),
+    productId: r.product_id, vintageId: r.vintage_id, revealedAt: r.revealed_at ? r.revealed_at.toISOString() : null,
+  }]))
+}
+
+// The snapshot of THIS served bottle, or undefined (no record, or the record's
+// link or reveal state moved since the served line-up was read: the row then
+// falls back to its cached token and its entry, as it was served).
+export function snapshotFor(w: WineMeta, snapshots: Map<string, BottleSnapshot>): BottleSnapshot | undefined {
+  const s = snapshots.get(w.id)
+  return s && s.productId === (w.productId ?? null) && s.vintageId === (w.vintageId ?? null) && s.revealedAt === (w.revealedAt ?? null) ? s : undefined
 }
 
 // One bottle of a live moment by code, unlocked (a route's early check when its
@@ -315,12 +345,24 @@ export async function copyLineup(tx: Prisma.TransactionClient, sessionId: number
     w.addedByIdentityId?.startsWith('u:') && !liveAdders.has(w.addedByIdentityId)
       ? [null, '[deleted]']
       : [w.addedByIdentityId ?? null, w.addedByDisplayName?.slice(0, 64) ?? null]
+  // A linked bottle's pair and abv come from its entry (a guest moment's picks
+  // reach the record here, at promotion): the cached `type` cannot say a
+  // sparkling rosé or an abv. 🔒 The entry's pair is taken only while it still
+  // DERIVES to the cached token (race review r1: an entry changed between the
+  // pick and the promotion must not leave `style` white beside sparkling true;
+  // every statement that sets `style` keeps the pair derived from it). Written
+  // on INSERT only; an existing row keeps its pair unless the token no longer
+  // derives to it (snapshotSets).
+  const entries = await loadEntries(wines, tx)
   const rows = wines.map((w, i) => {
     const style = cut(w.type, 64)
-    const snap = snapshotOf(style)
+    const e = w.productId ? entries.get(entryKey(w.productId, w.vintageId)) : undefined
+    const derives = (c: string | null, sp: boolean) => (sp ? 'spark' : c) === (style === 'red' || style === 'white' || style === 'rose' || style === 'spark' ? style : null)
+    const snap = e && derives(e.colour, e.sparkling) ? { colour: e.colour, sparkling: e.sparkling } : snapshotOf(style)
+    const abv = e ? e.abv : style === 'nonalc' ? 0 : null
     return Prisma.sql`(
       ${w.id}, ${sessionId}, 'session', ${w.name.slice(0, 255)}, ${cut(w.producer, 255)}, ${cut(w.vintage, 4)}, ${cut(w.grape, 255)},
-      ${style}, ${snap.colour}, ${snap.sparkling}, ${style === 'nonalc' ? 0 : null}::numeric,
+      ${style}, ${snap.colour}, ${snap.sparkling}, ${abv}::numeric,
       ${w.imageUrl || null}, ${cut(w.description, 1000)}, ${cut(w.region, 255)},
       ${cut(w.country, 2)}, ${cut(w.vinification, 1000)}, ${cut(w.purchaseUrl, 1000)},
       ${revealedDate(w.revealedAt)}::timestamptz, ${provenance(w)[0]}, ${provenance(w)[1]},
@@ -378,7 +420,7 @@ export async function bumpLineupRevision(tx: Prisma.TransactionClient, sessionId
 // else appended. Provenance: a `u:` adder whose users row is gone (an account
 // deletion committed meanwhile) is written as no adder + '[deleted]'.
 export async function insertOccurrence(
-  tx: Prisma.TransactionClient, sessionId: number, w: WineMeta, at: number | null,
+  tx: Prisma.TransactionClient, sessionId: number, w: WineMeta, at: number | null, entry?: EntrySnapshot,
 ): Promise<'inserted' | 'mine' | 'conflict'> {
   let adder = w.addedByIdentityId ?? null, adderName = w.addedByDisplayName?.slice(0, 64) ?? null
   if (adder && /^u:\d{1,18}$/.test(adder)) {
@@ -386,13 +428,16 @@ export async function insertOccurrence(
     if (!live[0]) { adder = null; adderName = '[deleted]' }
   }
   const style = cut(w.type, 64)
-  const snap = snapshotOf(style)
+  // A link's snapshot carries the entry's own pair and abv (a sparkling rosé,
+  // 13.5 %); without one (legacy shapes) they derive from the token.
+  const snap = entry ? { colour: entry.colour, sparkling: entry.sparkling } : snapshotOf(style)
+  const abv = entry ? entry.abv : style === 'nonalc' ? 0 : null
   const inserted = await tx.$queryRaw<{ id: string }[]>`
     INSERT INTO wines (id, session_id, origin, name, producer, vintage, grape, style, colour, sparkling, abv, image_url, description,
                        region, country, vinification, purchase_url, revealed_at, added_by_identity_id,
                        added_by_display_name, product_id, vintage_id, position)
     VALUES (${w.id}, ${sessionId}, 'session', ${w.name.slice(0, 255)}, ${cut(w.producer, 255)}, ${cut(w.vintage, 4)}, ${cut(w.grape, 255)},
-            ${style}, ${snap.colour}, ${snap.sparkling}, ${style === 'nonalc' ? 0 : null}::numeric,
+            ${style}, ${snap.colour}, ${snap.sparkling}, ${abv}::numeric,
             ${w.imageUrl || null}, ${cut(w.description, 1000)}, ${cut(w.region, 255)},
             ${cut(w.country, 2)}, ${cut(w.vinification, 1000)}, ${cut(w.purchaseUrl, 1000)},
             ${revealedDate(w.revealedAt)}::timestamptz, ${adder}, ${adderName}, ${w.productId || null}, ${w.vintageId || null}, NULL)
@@ -414,18 +459,44 @@ export async function insertOccurrence(
   return 'inserted'
 }
 
-// Edit: the content columns from `next`, decided by the caller against the
-// locked row. Provenance, reveal state and the photo are never written here
-// (their own writers); `style` and its snapshot move together.
-export async function updateOccurrence(tx: Prisma.TransactionClient, sessionId: number, next: WineMeta): Promise<void> {
-  const style = cut(next.type, 64)
+// A RE-LINK (catalogue model change step 4): the link and the WHOLE snapshot
+// from the new entry in one statement (spec § 8a.0: a link always rewrites
+// `style` from the entry's pair; the pair and the abv are the entry's own).
+// Provenance, reveal state, the photo and the bottle's own notes are never
+// written here.
+export async function relinkOccurrence(
+  tx: Prisma.TransactionClient, sessionId: number | null, id: string,
+  link: { productId: string; vintageId: string | null }, s: EntrySnapshot,
+): Promise<void> {
   await tx.$executeRaw`
-    UPDATE wines w SET name = ${next.name.slice(0, 255)}, producer = ${cut(next.producer, 255)}, vintage = ${cut(next.vintage, 4)},
-      grape = ${cut(next.grape, 255)}, style = ${style}, ${snapshotSets(Prisma.sql`${style}::varchar`)},
-      description = ${cut(next.description, 1000)}, region = ${cut(next.region, 255)}, country = ${cut(next.country, 2)},
-      vinification = ${cut(next.vinification, 1000)}, purchase_url = ${cut(next.purchaseUrl, 1000)},
-      product_id = ${next.productId || null}, vintage_id = ${next.vintageId || null}
-     WHERE w.id = ${next.id} AND w.session_id = ${sessionId}`
+    UPDATE wines SET name = ${s.name.slice(0, 255)}, producer = ${cut(s.producer, 255)}, vintage = ${cut(s.vintage, 4)},
+      grape = ${cut(s.grape, 255)}, style = ${cut(s.type, 64)}, colour = ${s.colour}, sparkling = ${s.sparkling}, abv = ${s.abv}::numeric,
+      region = ${cut(s.region, 255)}, country = ${cut(s.country, 2)}, product_id = ${link.productId}, vintage_id = ${link.vintageId}
+     WHERE id = ${id} AND session_id IS NOT DISTINCT FROM ${sessionId}`
+}
+
+// The bottle's OWN fields (ruled 2026-11-20: "About" and vinification stay on
+// the bottle, like the purchase link): only those this request sent, written
+// against the row as it stands (an omitted field keeps what is stored NOW,
+// never a pre-read: the interleaved-PATCH rule).
+export type BottleNotes = { description?: string; vinification?: string; purchaseUrl?: string }
+export async function editOccurrenceNotes(tx: Prisma.TransactionClient, sessionId: number | null, id: string, n: BottleNotes): Promise<void> {
+  const sets: Prisma.Sql[] = []
+  if (n.description !== undefined) sets.push(Prisma.sql`description = ${cut(n.description, 1000)}`)
+  if (n.vinification !== undefined) sets.push(Prisma.sql`vinification = ${cut(n.vinification, 1000)}`)
+  if (n.purchaseUrl !== undefined) sets.push(Prisma.sql`purchase_url = ${cut(n.purchaseUrl, 1000)}`)
+  if (!sets.length) return
+  await tx.$executeRaw`UPDATE wines SET ${Prisma.join(sets, ', ')} WHERE id = ${id} AND session_id IS NOT DISTINCT FROM ${sessionId}`
+}
+
+// The cached (old-shape) bottle carrying a link's snapshot: the Redis-only
+// moment's write, and the POST echo.
+export function withSnapshot(w: WineMeta, link: { productId: string; vintageId: string | null }, s: EntrySnapshot): WineMeta {
+  return {
+    ...w, name: s.name, producer: s.producer, vintage: s.vintage, grape: s.grape, type: s.type,
+    region: s.region || undefined, country: s.country || undefined,
+    productId: link.productId, vintageId: link.vintageId,
+  }
 }
 
 // ── The projection ──────────────────────────────────────────────────────────

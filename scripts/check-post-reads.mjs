@@ -40,8 +40,8 @@ const ALLOWED = {
   'app/api/feed/route.ts': [4, 'the feed: networkAuthors (canViewPosts) / ?user= gate.sees.posts; likes of the gated page'],
   'lib/profileLoad.ts': [4, 'the web profile posts: only when gate.sees.posts; likes of those posts'],
   'app/api/feed-items/[id]/like/route.ts': [4, 'like POST viewerCanSeePosts / DELETE the D11 rule; the count only after the gate'],
-  'app/api/checkins/route.ts': [1, 'had a sip source: viewerCanSeePosts'],
-  'app/api/checkins/[id]/route.ts': [3, 'owner-only edit / delete lookups (wrong owner = 404)'],
+  'app/api/checkins/route.ts': [2, 'had a sip source: viewerCanSeePosts; the replayed / created envelope: own only (fi.user_id = caller)'],
+  'app/api/checkins/[id]/route.ts': [4, 'owner-only edit / delete lookups (wrong owner = 404), the edit\'s own re-read inside its transaction'],
   'lib/outsideView.ts': [1, 'hiddenSessionIds: moment ids only (no post content), for the gated feed / profile authors'],
   'lib/profileLists.ts': [3, 'the post ids of the list rows: impressions only when gate.sees.posts; a craving\'s only with gate.sees.posts (or your own)'],
 }

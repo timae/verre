@@ -52,22 +52,20 @@ const CALL_SITES = [
   { file: 'apps/mobile/src/lib/impressionPayload.ts', label: 'payload builder: vintage canonicalization', must: /normalizeVintageText\(fields\.vintage\)/ },
   { file: 'apps/mobile/src/app/(tabs)/feed/check-in/rate.tsx', label: 'check-in create: submit canonicalization', must: /normalizeVintageText\(draft\.vintage\)/ },
   { file: 'apps/mobile/src/app/(tabs)/feed/edit/details.tsx', label: 'check-in edit: store canonicalization', must: /vintage:\s*normalizeVintageText\(vintage\)/ },
-  { file: 'components/wine/AddWineModal.tsx', label: 'web session add/edit: submit canonicalization', must: /vintage:\s*normalizeVintageText\(vintage\)/ },
-  { file: 'components/social/CheckinModal.tsx', label: 'web check-in: submit canonicalization', must: /vintage:\s*normalizeVintageText\(vintage\)/ },
-  // The label scanner is a SEPARATE boundary in the same file — it must not be
-  // able to satisfy the submit assertion above (that masking is what let a
-  // dropped submit call pass review's mutation).
-  { file: 'components/wine/AddWineModal.tsx', label: 'web label scanner: canonicalize extracted value', must: /setVintage\(normalizeVintageText\(gotVintage\)\)/ },
+  // The web (catalogue model change step 4): a bottle's year is the catalogue
+  // entry's, chosen from the vintage lookup or typed in the picker for a new
+  // wine / a missing year, where it is canonicalized before it becomes the
+  // add flow's `year` (NV → null, four digits → the year).
+  { file: 'components/wine/CatalogPicker.tsx', label: 'web picker: the typed year canonicalized', must: /const v = normalizeVintageText\(raw\.trim\(\)\)/ },
+  // The label scanner seeds the picker's search; its year is canonicalized
+  // where it enters the prefill.
+  { file: 'components/wine/AddWineModal.tsx', label: 'web label scanner: canonicalize extracted value', must: /year: gotVintage \? normalizeVintageText\(gotVintage\)/ },
 
-  // Server persistence boundaries — the authority. A direct client can post
-  // anything, so these carry correctness rather than UX.
-  { file: 'lib/session.ts', label: 'session wine write', must: /vintage:\s*normalizeVintageText\(/ },
-  { file: 'app/api/checkins/route.ts', label: 'standalone check-in POST', must: /normalizeVintageText\(scrub\(vintage\)/ },
-  { file: 'app/api/checkins/[id]/route.ts', label: 'standalone check-in PATCH', must: /normalizeVintageText\(scrub\(vintage\)/ },
-
-  // The catalog-link comparator must model the write EXACTLY, including its
-  // type handling — see the numeric-2019 defect in lib/catalogWrite.ts.
-  { file: 'lib/catalogWrite.ts', label: 'catalog-link comparator', must: /field === 'vintage'\)\s*s = normalizeVintageText\(s\)/ },
+  // Server persistence boundary — the authority. Since step 4 the bottle's
+  // vintage text is never a body value: it is the snapshot of the linked
+  // entry's year ('NV' for the non-vintage row, '' at product grain), and
+  // the catalogue's own year is range-checked by validateYear at the mint.
+  { file: 'lib/catalogEntries.ts', label: 'the snapshot\'s year text from the entry', must: /e\.year === null \? 'NV' : String\(e\.year\)/ },
 ]
 
 for (const { file, label, must } of CALL_SITES) {
@@ -78,15 +76,9 @@ for (const { file, label, must } of CALL_SITES) {
   }
 }
 
-// 🔒 The comparator must NOT stringify. `scrub` rejects non-strings, so a
-// String(v) coercion makes the comparator more permissive than the write and
-// re-opens the numeric-2019 blank-vintage-with-retained-link defect.
-{
-  const src = read('lib/catalogWrite.ts')
-  if (src && /scrub\(\s*typeof v === 'string'[^)]*String\(v\)/.test(src)) {
-    problems.push(`lib/catalogWrite.ts: comparator stringifies non-string values — the write path uses scrub(v), which rejects them. This re-opens the numeric-vintage defect (comparator keeps the link, write stores '').`)
-  }
-}
+// (The catalog-link comparator and its no-stringify pin are RETIRED with the
+// identity-edit rule, catalogue model change step 4: typed text never becomes
+// the snapshot, so there is nothing to compare.)
 
 // ── 1b. The mode-aware edit payload ───────────────────────────────────────
 // The mobile session form serves BOTH add and edit. On ADD, omitting an empty
@@ -142,9 +134,9 @@ for (const { file, label, must } of CALL_SITES) {
     // three of the four text fields go uncoerced.
     const SCAN_FIELDS = [
       ['vintage', /const gotVintage = scanVintage\(result\.vintage\)/, 'scanVintage'],
-      ['name', /const gotName = scanText\(result\.name\)/, 'scanText'],
-      ['producer', /const gotProducer = scanText\(result\.producer\)/, 'scanText'],
-      ['grape', /const gotGrape = scanText\(result\.grape\)/, 'scanText'],
+      ['name', /name: scanText\(result\.name\)/, 'scanText'],
+      ['producer', /producer: scanText\(result\.producer\)/, 'scanText'],
+      ['grape', /grape: scanText\(result\.grape\)/, 'scanText'],
       ['type', /const gotType = scanText\(result\.type\)/, 'scanText'],
     ]
     for (const [field, re, helper] of SCAN_FIELDS) {
@@ -152,9 +144,9 @@ for (const { file, label, must } of CALL_SITES) {
         problems.push(`${f}: scanner field '${field}' is not ASSIGNED from ${helper}() (expected ${re}). A helper call whose result is discarded leaves local coercion live while the helper's own tests still pass.`)
       }
     }
-    // The value that reaches state must be the coerced one.
-    if (!/setVintage\(normalizeVintageText\(gotVintage\)\)/.test(src)) {
-      problems.push(`${f}: the scanned vintage written to state must be normalizeVintageText(gotVintage) — i.e. the value that came from scanVintage.`)
+    // The value that reaches the prefill must be the coerced one.
+    if (!/year: gotVintage \? normalizeVintageText\(gotVintage\)/.test(src)) {
+      problems.push(`${f}: the scanned vintage put into the prefill must be normalizeVintageText(gotVintage) — i.e. the value that came from scanVintage.`)
     }
     // A re-inlined local coercion helper is the regression.
     if (/const asText\s*=|const toText\s*=/.test(src)) {

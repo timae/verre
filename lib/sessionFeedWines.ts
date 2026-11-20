@@ -54,7 +54,7 @@ export async function loadSessionFeedWines(
       wine: {
         select: {
           id: true, name: true, producer: true, vintage: true,
-          grape: true, style: true, imageUrl: true,
+          grape: true, style: true, colour: true, sparkling: true, abv: true, imageUrl: true,
           // Catalog metadata for the feed's full impression detail page.
           // Blanked on a redacted wine (below) so blind identity can't leak.
           region: true, country: true, vinification: true,
@@ -110,7 +110,12 @@ export async function loadSessionFeedWines(
           // sparkling from the glass. Expose it so the structure wheel offers the
           // right axes (e.g. Bubbles on a blind sparkling wine); the mystery slot
           // keys on `_blind`, not type. Consistent with lib/wineRedaction.ts.
-          type: w.style,
+          // A legacy alcohol-free token is the alcohol-free mark: hidden on a
+          // blind row (ruled 2026-11-20), like the abv.
+          type: w.style === 'nonalc' ? null : w.style,
+          colour: w.colour,
+          sparkling: w.sparkling,
+          abv: null,
           // Hide rating photo on a redacted wine — a label-bearing pour
           // photo would leak the identity. Per rewire.md §3 line 429.
           imageUrl: null,
@@ -136,6 +141,9 @@ export async function loadSessionFeedWines(
           vintage: w.vintage,
           grape: w.grape,
           type: w.style,
+          colour: w.colour,
+          sparkling: w.sparkling,
+          abv: w.abv === null ? null : Number(w.abv),
           imageUrl: ratingImage ?? w.imageUrl,
           score: decimalToNumber(r.score),
           flavors: (r.flavors as Record<string, number>) ?? {},

@@ -6,7 +6,9 @@ import { sessionLockKey, LockLost } from '@/lib/sessionLock'
 import { withSessionMutation, scopedInvalidate, ContractCold, ContractGone, type Fence } from '@/lib/sessionMutation'
 import { prepareCachedLineup, copyCachedLineup, renumber, recordLineup, projectLineup } from '@/lib/occurrences'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
-import { normalizeVintageText } from '@verre/core'
+import { kindOfStyle } from '@verre/core'
+import { entryKey, type CatalogEntry } from '@/lib/catalogEntries'
+import { snapshotFor, type BottleSnapshot } from '@/lib/occurrences'
 import { cleanCountry, cleanUrl, scrub } from '@/lib/textSafe'
 import { grantStatus, type AuthorizedIdentity } from '@/lib/sessionGrant'
 import { userIdentityId } from '@/lib/identity'
@@ -63,9 +65,9 @@ export type WineMeta = {
   //
   // 🔒 BLIND REDACTION MUST STRIP BOTH. A catalog id in a blind payload is
   // a lookup oracle for the label — it identifies the wine as precisely as
-  // the name does. `redactWine` spreads `...rest` from this type, so a new
-  // identifying field added here is exposed BY DEFAULT unless it is
-  // explicitly overwritten there. See lib/wineRedaction.ts.
+  // the name does. `redactWine` builds a blind row as an ALLOW-LIST (since
+  // the catalogue model change step 4), so a field added here stays OFF a
+  // blind row until it is listed there. See lib/wineRedaction.ts.
   //
   // Stored on the occurrence row (record-first, lib/occurrences.ts); every
   // edit path must round-trip them (normalizeWine keeps an omitted link).
@@ -84,7 +86,21 @@ export type WineMeta = {
 // they're never stored in Redis or Postgres, only emitted on the
 // wire, so keeping them off the storage type prevents accidental
 // reads that would always be undefined.
-export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName'> & {
+// 🔒 The catalogue model change (step 4): the line-up item is the OCCURRENCE's
+// fields plus ONE `entry` key carrying the catalogue identity (merges
+// followed, lib/catalogEntries.ts), which a blind row replaces wholesale
+// (lib/wineRedaction.ts). No legacy `type` and no flat `productId` /
+// `vintageId` on the wire (the version floor blocks every build that read
+// them, spec § 7): `colour` / `sparkling` are the bottle's kind (its snapshot,
+// the axes' input; they stay on a blind row), `abv` the alcohol (the entry's,
+// a legacy alcohol-free bottle 0; null on a blind row, ruled 2026-11-20).
+// `grape` / `region` / `country` / `description` / `vinification` /
+// `purchaseUrl` are the bottle's own stored values (history, and its notes).
+export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName' | 'type' | 'productId' | 'vintageId'> & {
+  colour: string | null
+  sparkling: boolean
+  abv: number | null
+  entry: CatalogEntry | null
   isMine: boolean
   addedByDisplayName: string | null
   // PUBLIC user id (lib/publicIds.ts) of a logged-in adder ONLY (null for
@@ -122,14 +138,21 @@ export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName'
 // here (not post-hoc in one reader) was a review fix — a strip that lived only
 // in buildWinesView leaked provenance through the add/edit/reorder/reveal
 // responses to the host/cohost/provider caller.
+// `entries`: the catalogue entries of these bottles (lib/catalogEntries.ts
+// loadEntries, keyed by the STORED link); a link the catalogue no longer has
+// (purged) reads as no entry, the snapshot stands. `snapshots`: the record's
+// colour / sparkling / abv of these bottles (lib/occurrences.ts readSnapshots;
+// none for a Redis-only moment, whose cached token decides).
 export function wineToWire(
   w: WineMeta,
   callerId: string,
   identities: Record<string, string> = {},
   lookup: AdderLookup = emptyAdderLookup(),
   showProvenance = true,
+  entries: Map<string, CatalogEntry> = new Map(),
+  snapshots: Map<string, BottleSnapshot> = new Map(),
 ): WireWine {
-  const { addedByIdentityId: provenance, addedByDisplayName: snapshot, ...rest } = w
+  const { addedByIdentityId: provenance, addedByDisplayName: snapshot, type, productId, vintageId, ...rest } = w
   const userNameLookup = lookup.names
   let resolvedName: string | null = null
   let userId: string | null = null
@@ -154,8 +177,17 @@ export function wineToWire(
       if (Number.isInteger(n) && n > 0) userId = lookup.publicIds.get(n) ?? null
     }
   }
+  const entry = productId ? entries.get(entryKey(productId, vintageId)) ?? null : null
+  const snap = snapshotFor(w, snapshots)
+  const kind = snap ?? kindOfStyle(type)
   return {
     ...rest,
+    colour: kind.colour,
+    sparkling: kind.sparkling,
+    // The bottle's own abv (its snapshot, what the badges count: Codex r2),
+    // else the entry's (a Redis-only moment), else a legacy alcohol-free 0.
+    abv: snap ? snap.abv : entry ? entry.abv : type === 'nonalc' ? 0 : null,
+    entry,
     // isMine keys on the raw provenance, independent of showProvenance — the
     // caller's own edit affordance must survive attribution being hidden.
     isMine: !!provenance && provenance === callerId,
@@ -471,62 +503,17 @@ export async function buildAdderLookup(
   return out
 }
 
-// The shared validation + normalisation of a bottle's fields (create and edit;
-// model change step 3: the upload left, photos have their own call). Pure: the
-// caller decides where the result is written (the record in a Postgres-backed
-// moment, the cached array in a Redis-only one). `existing` = the bottle as
-// stored (an edit): reveal state, provenance and the photo are kept from it.
-export function normalizeWine(
-  body: Partial<WineMeta>,
-  existing?: WineMeta,
-  addedByIdentityId?: string,
-  addedByDisplayName?: string,
-): WineMeta | { error: string } {
-  const name = clean(body.name)
-  const type = String(body.type || '').trim()
-  if (!name) return { error: 'name required' }
-  if (!['red', 'white', 'spark', 'rose', 'nonalc'].includes(type)) return { error: 'valid type required' }
-  const id = existing?.id ?? body.id
-  if (!id) return { error: 'id required' }
-  return {
-    id,
-    name,
-    producer: clean(body.producer),
-    // 🔒 Canonicalize, don't truncate. A direct client can send 'N.V.',
-    // 'non-vintage', a partial year or 'NV Selection'; `.slice(0,4)` would have
-    // stored 'N.V.', '2' or 'NV S' verbatim. The server is the authority — the
-    // clients normalize for UX, not for correctness.
-    // 🔒 `applyIdentityEditRule` (lib/catalogWrite.ts) MIRRORS this rule so its
-    // "compare what will actually be stored" comparison stays honest. Change
-    // one, change the other.
-    vintage: normalizeVintageText(clean(body.vintage)),
-    grape: clean(body.grape),
-    type,
-    image: '',
-    imageUrl: existing?.imageUrl ?? '',
-    description: clean(body.description).slice(0, 1000),
-    region: clean(body.region).slice(0, 255),
-    // ISO 3166-1 alpha-2 allow-listed via `cleanCountry`. Invalid codes
-    // (typos, garbage) collapse to `''`.
-    country: cleanCountry(body.country),
-    vinification: clean(body.vinification).slice(0, 1000),
-    purchaseUrl: cleanUrl(body.purchaseUrl).slice(0, 1000),
-    // Preserve reveal state on edit (an edit never re-hides a revealed bottle).
-    revealedAt: existing?.revealedAt ?? null,
-    // Preserve on edit; populate on create. Edits never overwrite the
-    // original adder — `existing.addedByIdentityId` wins.
-    addedByIdentityId: existing?.addedByIdentityId ?? addedByIdentityId,
-    // Frozen snapshot, same rule as the id above. Set once at create
-    // time from the live identities map by the caller.
-    addedByDisplayName: existing?.addedByDisplayName ?? addedByDisplayName,
-    // Catalog link. The caller (route) has already validated these through
-    // `resolveCatalogLink` and applied the identity-changing-edit rule.
-    // `body.productId === undefined` means "the caller didn't mention it, keep
-    // what's stored" (an explicit undefined check: `??` would also swallow a
-    // deliberate null, making the link impossible to clear).
-    productId: body.productId === undefined ? (existing?.productId ?? null) : body.productId,
-    vintageId: body.vintageId === undefined ? (existing?.vintageId ?? null) : body.vintageId,
-  }
+// The bottle's OWN fields from a body (catalogue model change step 4; ruled
+// 2026-11-20: "About" and vinification stay on the bottle, like the purchase
+// link): only those present, cleaned as the columns take them. Its identity
+// (name, producer, year, kind, grape, region, origin) is the entry's snapshot
+// (lib/catalogLink.ts), never read from a body.
+export function cleanBottleNotes(body: Record<string, unknown>): { description?: string; vinification?: string; purchaseUrl?: string } {
+  const out: { description?: string; vinification?: string; purchaseUrl?: string } = {}
+  if (body.description !== undefined) out.description = clean(body.description).slice(0, 1000)
+  if (body.vinification !== undefined) out.vinification = clean(body.vinification).slice(0, 1000)
+  if (body.purchaseUrl !== undefined) out.purchaseUrl = cleanUrl(body.purchaseUrl).slice(0, 1000)
+  return out
 }
 
 // ── Postgres side of a session (redis-rehydration § 4.4 / § 4.6) ─────────────

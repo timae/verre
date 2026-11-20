@@ -32,6 +32,7 @@ import { openWheelLightbox } from '@/components/charts/wheelLightbox'
 import { getLevel } from '@/lib/badges'
 import { timeAgo } from '@/lib/timeAgo'
 import { ICO } from '@/lib/wineTypeColors'
+import { kindToken } from '@verre/core'
 import type { SessionFeedPayload, SessionFeedWine } from '@/lib/feedTypes'
 
 interface Props {
@@ -124,7 +125,7 @@ function WineRow({ wine, index }: { wine: SessionFeedWine; index: number }) {
   const hasFlavors = wine.flavors && Object.values(wine.flavors).some(v => v > 0)
   // Read surface (§6d): per-present-key array (registry order). Only used when
   // hasFlavors is true.
-  const fl = perRatingAxes(wine.flavors, resolveAxesColoured('wine', wine.type || 'white'))
+  const fl = perRatingAxes(wine.flavors, resolveAxesColoured('wine', wine))
 
   if (wine._blind) {
     // Mystery slot — wine identity hidden; user's score / chips / notes still
@@ -181,7 +182,7 @@ function WineRow({ wine, index }: { wine: SessionFeedWine; index: number }) {
           <img src={wine.imageUrl!} alt={wine.name} onError={() => setImgFailed(true)}
             style={{ width:'100%', maxHeight:160, objectFit:'contain', display:'block' }} />
         ) : (
-          <span style={{ fontSize:36, opacity:0.25 }}>{ICO[wine.type||'']||'🍷'}</span>
+          <span style={{ fontSize:36, opacity:0.25 }}>{ICO[kindToken(wine)]||'🍷'}</span>
         )}
       </div>
 

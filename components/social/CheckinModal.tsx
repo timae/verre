@@ -1,25 +1,20 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { nanoid } from 'nanoid'
-import { normalizeVintageText } from '@verre/core'
 import { FlavorChips } from '@/components/rate/FlavorChips'
 import { IntensityHelp } from '@/components/rate/IntensityHelp'
 import { LocationPicker } from './LocationPicker'
 import { useQuery } from '@tanstack/react-query'
 import { resolveAxes, resolveAxesColoured, fillFlavourZeros } from '@/lib/flavours'
+import { CatalogPicker, type CatalogChoice } from '@/components/wine/CatalogPicker'
+import { ChosenWine } from '@/components/wine/ChosenWine'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { Modal } from '@/components/ui/Modal'
 import { ScoreSlider } from '@/components/ui/ScoreSlider'
 
-const TYPES = [
-  { k: 'red', l: 'Red', ico: '🍷' }, { k: 'white', l: 'White', ico: '🥂' },
-  { k: 'spark', l: 'Bubbles', ico: '🍾' }, { k: 'rose', l: 'Rosé', ico: '🌸' },
-  { k: 'nonalc', l: 'Non-alc', ico: '🌿' },
-]
-
 type EditCheckin = {
   id: number; wineName: string; producer?: string|null; vintage?: string|null
-  grape?: string|null; type?: string|null; score?: number|null; flavors?: Record<string,number>|null
+  grape?: string|null; sparkling?: boolean; score?: number|null; flavors?: Record<string,number>|null
   notes?: string|null; imageUrl?: string|null; venueName?: string|null; city?: string|null
   country?: string|null; lat?: number|null; lng?: number|null
   tags?: { id: string; name: string }[]
@@ -28,7 +23,7 @@ type EditCheckin = {
 export type CopySource = {
   id: number
   wineName: string; producer?: string|null; vintage?: string|null
-  grape?: string|null; type?: string|null
+  grape?: string|null; sparkling?: boolean
   imageUrl?: string|null
   venueName?: string|null; city?: string|null; country?: string|null
   author: { id: string; name: string }
@@ -55,11 +50,23 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
   const postedId = useRef<number | null>(null)
   const isCopy = !isEdit && !!copyFromCheckin
   const prefill = editCheckin || (isCopy ? copyFromCheckin : null)
-  const [wineName, setWineName] = useState(prefill?.wineName || '')
-  const [producer, setProducer] = useState(prefill?.producer || '')
-  const [vintage, setVintage] = useState(prefill?.vintage || '')
-  const [grape, setGrape] = useState(prefill?.grape || '')
-  const [type, setType] = useState(prefill?.type || '')
+  // 🔒 The wine is a catalogue entry (catalogue model change step 4): picked or
+  // created here; an edit keeps its wine unless changed; "had a sip" takes the
+  // source's wine server-side (the picker shows only if the source has nothing
+  // linkable left).
+  const [choice, setChoice] = useState<CatalogChoice | null>(null)
+  const [relinking, setRelinking] = useState(!prefill)
+  const appliedChoice = useRef<CatalogChoice | null>(null)
+  const [sentChoice, setSentChoice] = useState<CatalogChoice | null>(null)
+  const firstPosted = useRef<CatalogChoice | null>(null)
+  // "change wine" remembers what it left: the frozen choice (offered back as
+  // "keep …") and the chips, restored on "keep" (review r2: keeping the wine
+  // re-ran the kind reset and zeroed an edit's stored structure).
+  const [undo, setUndo] = useState<CatalogChoice | null>(null)
+  const stashedFlavors = useRef<Record<string, number> | null>(null)
+  // The bottle's kind drives the axes: the chosen entry's, else the stored one.
+  const sparkling = relinking ? (choice ? choice.label.sparkling : null) : !!prefill?.sparkling
+  const kindKnown = sparkling !== null
   const [score, setScore] = useState(editCheckin?.score || 0)
   const [flavors, setFlavors] = useState<Record<string, number>>(
     (editCheckin?.flavors as Record<string,number>) || {}
@@ -84,8 +91,21 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  // Input chips = the STRUCTURE axis set for this style (§6d input surface).
-  const fl = resolveAxesColoured('wine', type || 'white')
+  // Input chips = the STRUCTURE axis set for this bottle's kind (§6d input surface).
+  const kind = { sparkling: !!sparkling }
+  const fl = resolveAxesColoured('wine', kind)
+  // 🔒 Only a real change of KIND resets the chips to its axis set (Bubbles on
+  // or off), between two KNOWN kinds (review r1: "change wine" passes through
+  // "no wine yet", and that wiped an edited check-in's stored structure; so did
+  // picking another wine of the same kind).
+  const lastKnownSparkling = useRef(sparkling)
+  useEffect(() => {
+    if (sparkling === null) return
+    const was = lastKnownSparkling.current
+    lastKnownSparkling.current = sparkling
+    if (was === null || was === sparkling) return
+    setFlavors(resolveAxes('wine', { sparkling }).reduce((o, f) => ({ ...o, [f.k]: 0 }), {}))
+  }, [sparkling])
   const { data: friends = [] } = useQuery<{ id: string; name: string }[]>({ queryKey: ['friends'], queryFn: () => fetch('/api/me/friends').then(r => r.json()) })
 
   const sourceAuthorId = copyFromCheckin?.author.id
@@ -113,9 +133,6 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Type-change flavor reset lives in the chip's onClick. An effect on
-  // [type] would also fire on mount, and StrictMode's double-invoke
-  // wipes the initial flavors of an edited check-in.
 
   async function handlePhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return
@@ -135,15 +152,25 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
   }
 
   async function submit() {
-    if (!wineName.trim()) { setError('Wine name required'); return }
+    if (relinking && !choice) { setError(isEdit ? 'Choose a wine, or keep the current one' : 'Choose a wine, or add a new one'); return }
     setSaving(true); setError('')
+    const linkChange = relinking && choice && choice !== appliedChoice.current ? choice : null
+    // Frozen once it may have LANDED (a 2xx, or a lost answer), never on a
+    // definite refusal (review r2). The first post's choice is remembered: a
+    // replay's follow-up re-links only when the person changed the wine since.
+    const firstPost = !isEdit && postedId.current === null
+    if (firstPost && linkChange && !firstPosted.current) firstPosted.current = linkChange
+    const link = !linkChange ? {} : linkChange.kind === 'pick'
+      ? { productId: linkChange.productId, vintageId: linkChange.vintageId } : { create: linkChange.body }
     const editing = isEdit || postedId.current !== null
     const url = isEdit ? `/api/checkins/${editCheckin!.id}` : postedId.current !== null ? `/api/checkins/${postedId.current}` : '/api/checkins'
     const method = editing ? 'PATCH' : 'POST'
-    // Send the source id when the user kept the source image — server resolves
-    // and authorizes the row, then CopyObjects the bytes. Replacement/remove
-    // paths fall through to the normal imageData branch.
-    const copyFromCheckinId = isCopy && !imageData && existingImageUrl ? copyFromCheckin!.id : undefined
+    // "Had a sip": the source id always goes (the server copies the source's
+    // WINE from it, catalogue model change step 4); its photo is copied only
+    // when the user kept it (`copyPhoto: false` otherwise: a replaced photo
+    // follows through the PATCH, a removed one stays removed).
+    const copyFromCheckinId = isCopy ? copyFromCheckin!.id : undefined
+    const copyPhoto = isCopy ? !imageData && !!existingImageUrl : undefined
     // A new check-in carries its client occurrence id (a retried Post replays
     // the same check-in, the server answers the existing one) and never the
     // photo: that attaches afterwards through the check-in's own PATCH.
@@ -153,19 +180,31 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
       const res = await fetch(url, {
         method, headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          wineName, producer, vintage: normalizeVintageText(vintage), grape, type,
+          ...link,
           // Normalise flavours (structure-wheel §5 zero rule): any axis rated →
-          // every axis of this style stored (untouched = explicit 0); all-None →
+          // every axis of this kind stored (untouched = explicit 0); all-None →
           // {}. Also the edit-path transform (§6g) — only registry keys survive, so
           // a stale descriptor row can't 400 the write gate. One shape web+native.
-          score: score || null, flavors: fillFlavourZeros(flavors, 'wine', type), notes,
+          score: score || null, flavors: fillFlavourZeros(flavors, 'wine', kind), notes,
           ...(editing ? { imageData: photo } : { occurrenceId: occurrenceId.current }),
-          ...(editing ? {} : { copyFromCheckinId }),
+          ...(editing ? {} : { copyFromCheckinId, ...(copyPhoto === false ? { copyPhoto } : {}) }),
           ...location,
           taggedUserIds: taggedIds,
         }),
       })
-      if (!res.ok) { const d = await res.json().catch(() => ({})); return fail(d.error || 'Failed') }
+      if (!res.ok) {
+        // A 5xx may come after a COMMIT (Codex r1): frozen like a lost answer.
+        if (res.status >= 500 && linkChange) setSentChoice(linkChange)
+        const d = await res.json().catch(() => ({}))
+        // "Had a sip" of a source with nothing linkable left: choose the wine
+        // (only that refusal: any other 400 keeps the sheet as it is).
+        if (isCopy && d.code === 'link-required' && !relinking) setRelinking(true)
+        return fail(d.error || 'Failed')
+      }
+      // Applied once the request that CARRIES it succeeded (review r3: on a
+      // replay the follow-up PATCH below carries a changed wine).
+      const apply = () => { if (linkChange) { appliedChoice.current = linkChange; setSentChoice(linkChange) } }
+      if (editing || res.status !== 200) apply()
       if (!editing) {
         const posted = await res.json().catch(() => null) as { id?: number } | null
         if (posted?.id) postedId.current = posted.id
@@ -177,14 +216,20 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
           const img = await fetch(`/api/checkins/${posted.id}`, {
             method: 'PATCH', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(replayed
-              ? { wineName, producer, vintage: normalizeVintageText(vintage), grape, type, score: score || null, flavors: fillFlavourZeros(flavors, 'wine', type), notes, ...location, taggedUserIds: taggedIds, ...(photo !== undefined ? { imageData: photo } : {}) }
+              ? { ...(linkChange && linkChange !== firstPosted.current ? link : {}), score: score || null, flavors: fillFlavourZeros(flavors, 'wine', kind), notes, ...location, taggedUserIds: taggedIds, ...(photo !== undefined ? { imageData: photo } : {}) }
               : { imageData: photo }),
           })
-          if (!img.ok) return fail(replayed ? 'Posted, but your latest changes could not be saved. Try again.' : 'Posted, but the photo could not be added. Try again.')
+          if (!img.ok) {
+            if (replayed && img.status >= 500 && linkChange) setSentChoice(linkChange)
+            return fail(replayed ? 'Posted, but your latest changes could not be saved. Try again.' : 'Posted, but the photo could not be added. Try again.')
+          }
         }
+        if (replayed) apply()
       }
     } catch {
-      // A lost answer: Post again replays the same check-in (or edits it once posted).
+      // A lost answer: Post again replays the same check-in (or edits it once
+      // posted); the choice may have landed, so it is frozen.
+      if (linkChange) setSentChoice(linkChange)
       return fail(postedId.current !== null ? 'Posted, but the photo could not be added. Try again.' : 'Could not post. Try again.')
     }
     setSaving(false)
@@ -225,29 +270,43 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
           )}
         </div>
 
-        {/* Wine details */}
-        <div style={{ display: 'flex', gap: 8 }}>
-          <div className="field" style={{ flex: 1 }}><div className="fl">wine name *</div><input className="fi" value={wineName} onChange={e => setWineName(e.target.value)} placeholder="Château de Whatever" /></div>
-          <div className="field" style={{ maxWidth: 88 }}><div className="fl">vintage</div><input className="fi" value={vintage} onChange={e => setVintage(e.target.value)} maxLength={4} placeholder="20XX" /></div>
-        </div>
-        <div className="field"><div className="fl">producer</div><input className="fi" value={producer} onChange={e => setProducer(e.target.value)} placeholder="Domaine…" /></div>
-        <div className="field"><div className="fl">grape / style</div><input className="fi" value={grape} onChange={e => setGrape(e.target.value)} placeholder="Pinot Noir, Pét-Nat…" /></div>
-
-        {/* Type */}
-        <div className="field">
-          <div className="fl">type</div>
-          <div className="chips">
-            {TYPES.map(t => (
-              <div key={t.k} className="chip" data-sel={type === t.k ? t.k : undefined} onClick={() => {
-                if (t.k === type) return
-                setType(t.k)
-                setFlavors(resolveAxes('wine', t.k).reduce((o, f) => ({ ...o, [f.k]: 0 }), {}))
+        {/* The wine: its catalogue entry. 🔒 A choice once SENT is frozen into
+            its summary (review r1): Post again re-sends the same choice (the
+            server recognises the retry), never an edited create that would
+            mint a second entry; changing it is a deliberate "change wine". */}
+        {!relinking ? (
+          <ChosenWine label="wine" name={prefill?.wineName ?? ''} year={prefill?.vintage} producer={prefill?.producer}
+            action={isEdit ? 'change wine' : undefined} onAction={isEdit ? () => { stashedFlavors.current = flavors; setRelinking(true) } : undefined} />
+        ) : sentChoice && choice === sentChoice ? (
+          <ChosenWine label="wine *" name={choice.label.name} year={choice.label.year} producer={choice.label.producer}
+            note={choice.kind === 'create' ? 'new' : undefined} action="change wine" onAction={() => { stashedFlavors.current = flavors; setUndo(choice); setChoice(null); setSentChoice(null) }} />
+        ) : (
+          <>
+            <CatalogPicker
+              search={(qs) => fetch(`/api/catalog/search?${qs}`)}
+              canCreate
+              value={choice}
+              onChange={setChoice}
+            />
+            {undo ? (
+              <button type="button" className="btn-s" style={{marginBottom:12}} onClick={() => {
+                lastKnownSparkling.current = undo.label.sparkling
+                if (stashedFlavors.current) setFlavors(stashedFlavors.current)
+                setChoice(undo); setSentChoice(undo); setUndo(null)
               }}>
-                <span>{t.ico}</span>{t.l}
-              </div>
-            ))}
-          </div>
-        </div>
+                keep {undo.label.name}
+              </button>
+            ) : isEdit && (
+              <button type="button" className="btn-s" style={{marginBottom:12}} onClick={() => {
+                lastKnownSparkling.current = !!prefill?.sparkling
+                if (stashedFlavors.current) setFlavors(stashedFlavors.current)
+                setRelinking(false); setChoice(null); setSentChoice(null)
+              }}>
+                keep the current wine
+              </button>
+            )}
+          </>
+        )}
 
         {/* Score slider — drag or tap, snaps to 0.25.
             Wrapped in a panel so the visual width matches the rest of
@@ -258,8 +317,8 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
           <ScoreSlider value={score} onChange={setScore} />
         </div>
 
-        {/* Flavour chips (only if type selected) */}
-        {type && (
+        {/* Flavour chips (only once the wine, and so its kind, is known) */}
+        {kindKnown && (
           <div className="panel" style={{ marginBottom: 10 }}>
             <div className="panel-hdr">flavour profile</div>
             <IntensityHelp />

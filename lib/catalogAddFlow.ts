@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import {
   createProducer,
@@ -5,6 +6,7 @@ import {
   createVintage,
   validateYear,
   denyCatalogRef,
+  assertAbv,
   CatalogValidationError,
 } from '@/lib/catalogWrite'
 
@@ -21,7 +23,16 @@ import {
 
 type MintResult = { producerId: string; productId: string; vintageId: string | null }
 
-export async function mintEntries(body: Record<string, unknown>, userId: number): Promise<MintResult> {
+// `tx`: the caller's transaction (catalogue model change step 4: a new bottle
+// and the entry it mints commit together, so a failed or retried add never
+// leaves a stray entry behind; only staff can tidy one). Without it the mint
+// runs in its own.
+export async function mintEntries(body: Record<string, unknown>, userId: number, tx?: Prisma.TransactionClient): Promise<MintResult> {
+  if (tx) return mintIn(body, userId, tx)
+  return prisma.$transaction(t => mintIn(body, userId, t))
+}
+
+async function mintIn(body: Record<string, unknown>, userId: number, tx: Prisma.TransactionClient): Promise<MintResult> {
   // `year` is read THREE ways and the distinction is load-bearing (see header):
   //   absent  → link at product grain, no vintage row
   //   null    → the NV row
@@ -74,6 +85,17 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
   }
   const vintageGrapes = hasVintageGrapes ? (body.vintageGrapes as string[]) : undefined
 
+  // 🔒 The typed abv (the bottle's alcohol, optional) lands on the VINTAGE this
+  // request mints when it names a year or NV, else on the product (ruled
+  // 2026-11-20, Simon: never a wrong number for another year). Validated by
+  // the mint helpers (normalizeAbv → 400). Never written onto an EXISTING
+  // entry: that would be an edit of a shared entry (spec § 3), so a branch-2
+  // add that finds its vintage already there leaves it as it is.
+  const abv = body.abv === undefined || body.abv === null || body.abv === '' ? null : body.abv as number
+  // Validated whether or not a row is minted (review r1: a garbage abv answered
+  // 200 when the year already existed, 400 when it did not).
+  assertAbv(abv)
+
   // 🔒 REJECT MALFORMED IDs BEFORE BRANCH SELECTION, not by skipping them.
   //
   // The branches key on "is this a non-empty string", so a PRESENT-but-
@@ -114,7 +136,7 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
     if (!hasYear) {
       throw new CatalogValidationError('year is required when adding a vintage to a product')
     }
-    const product = await prisma.wineProduct.findUnique({
+    const product = await tx.wineProduct.findUnique({
       where: { id: body.productId },
       select: {
         id: true,
@@ -139,35 +161,25 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
     // (product_id, year) UNIQUE NULLS NOT DISTINCT means exactly one row can
     // satisfy it.
     //
-    // Wrapped in a transaction for two reasons. First, the read and the write
-    // are otherwise a check-then-act: two concurrent adds of the same year both
-    // see "absent" and the loser gets a 23505 → 500, when the correct answer is
-    // "you're both linked to the same row" (handled by the catch below).
-    // Second, 🔒 phase 4 requires every catalog mutation to append its journal
-    // event IN THE SAME TRANSACTION as the domain change — a mint that runs
-    // outside one cannot honour that, so no mint here is left transaction-less.
-    const vintage = await prisma.$transaction(async tx => {
-      const existing = await tx.wineVintage.findFirst({
-        where: { productId: product.id, year: year ?? null },
-        select: { id: true },
-      })
-      if (existing) return existing
-      // BRANCH 2 — adding a vintage under an EXISTING product. The product's
-      // grapes already exist, so anything the user typed here is about THIS
-      // YEAR'S bottle: it lands on the vintage as an override.
-      return createVintage(product.id, year ?? null, userId, null, tx, { grapes: vintageGrapes })
-    }).catch(async err => {
-      // Lost the race: the other writer committed our exact (product, year)
-      // between the read and the insert. Their row IS the right answer, so
-      // re-read it rather than surfacing a 500.
-      if (err?.code !== 'P2002') throw err
-      const row = await prisma.wineVintage.findFirst({
-        where: { productId: product.id, year: year ?? null },
-        select: { id: true },
-      })
-      if (!row) throw err
-      return row
+    // 🔒 The check-then-insert is serialised by a transaction-scoped advisory
+    // lock on (product, year): the caller's transaction may be a bottle add, so
+    // a lost race can no longer be caught and re-read (a 23505 aborts the whole
+    // transaction). The second writer waits, then sees the first's committed
+    // row (READ COMMITTED: a fresh snapshot per statement). Taken after any
+    // session lock and never before one, so it cannot invert an order.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`vintage:${product.id}:${year ?? 'nv'}`}))`
+    const existing = await tx.wineVintage.findFirst({
+      where: { productId: product.id, year: year ?? null },
+      select: { id: true, status: true },
     })
+    // An existing year merged away or rejected is not a link target.
+    if (existing && (existing.status === 'linked' || existing.status === 'rejected')) {
+      throw denyCatalogRef(`vintage is ${existing.status}`)
+    }
+    // BRANCH 2 — adding a vintage under an EXISTING product. The product's
+    // grapes already exist, so anything the user typed here is about THIS
+    // YEAR'S bottle: it lands on the vintage as an override.
+    const vintage = existing ?? await createVintage(product.id, year ?? null, userId, abv, tx, { grapes: vintageGrapes })
     return {
       producerId: product.producers[0]?.producerId ?? '',
       productId: product.id,
@@ -188,6 +200,21 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
   if (typeof productName !== 'string') {
     throw new CatalogValidationError('product name is required')
   }
+  // 🔒 A new wine needs producer + name + TYPE (spec § 2, ruled 2026-11-18):
+  // the picker's red / white / rosé set `colour`, sparkling sets `sparkling`.
+  // Either is enough (a sparkling rosé is valid when a client says both); a
+  // wrong value is still the helpers' 400. Wine only: another category's
+  // kinds are its own (none exist yet).
+  // Normalised as createProduct stores it (trimmed, '' = wine) BEFORE the type
+  // rule (Codex r2: ' wine ' skipped the rule, then was stored as 'wine').
+  const category = typeof productFields.category === 'string' ? (productFields.category.trim() || undefined) : undefined
+  if ((category ?? 'wine') === 'wine' && (productFields.colour === undefined || productFields.colour === null) && productFields.sparkling !== true) {
+    throw new CatalogValidationError('type is required: red, white, rosé or sparkling')
+  }
+  // One place for the typed abv (top level, beside `year`): see `abv` above.
+  if (productFields.abv !== undefined) {
+    throw new CatalogValidationError('abv goes at the top level, beside year')
+  }
 
   // ── Branches 3, 4 and 5 ──────────────────────────────────────────────────
   //
@@ -197,7 +224,7 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
   // means branch 4 cannot half-apply: a producer minted with no product is an
   // orphan nobody will ever review or clean up, since the review queue's unit
   // is the producer/product grain.
-  return prisma.$transaction(async tx => {
+  {
     let producerId: string
 
     if (typeof body.producerId === 'string' && body.producerId) {
@@ -255,7 +282,7 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
       {
         name: productName,
         producerId,
-        category: typeof productFields.category === 'string' ? productFields.category : undefined,
+        category,
         // 🔒 RAW, like abv below: createProduct is the single validator and
         // throws CatalogValidationError (→ 400). Narrowing here is how a
         // non-string `style` once became NULL and bypassed it with a 200, and
@@ -265,10 +292,12 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
         sparkling: productFields.sparkling,
         // Passed through unvalidated on purpose: normalizeAbv in catalogWrite
         // is the single place that decides what a valid ABV is, and it throws
-        // CatalogValidationError (→ 400) for anything else.
-        abv: productFields.abv as number | null,
+        // CatalogValidationError (→ 400) for anything else. On the product only
+        // when no vintage is minted (the year-unknown case).
+        abv: hasYear ? null : abv,
         grapes: productFields.grapes,
         region: productFields.region,
+        country: productFields.country,
       },
       userId,
       collaboratorIds,
@@ -285,8 +314,8 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
     // so the ordinary new-wine path leaves the flag false by ABSENCE, not by
     // any equality check (there is none; see the header).
     const vintage = hasYear
-      ? await createVintage(product.id, year ?? null, userId, null, tx, { grapes: vintageGrapes })
+      ? await createVintage(product.id, year ?? null, userId, abv, tx, { grapes: vintageGrapes })
       : null
     return { producerId, productId: product.id, vintageId: vintage?.id ?? null }
-  })
+  }
 }

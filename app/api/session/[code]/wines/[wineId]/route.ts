@@ -3,18 +3,18 @@ import { NextRequest, NextResponse } from 'next/server'
 import type { Prisma } from '@prisma/client'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta, scanKeys } from '@/lib/redis'
-import { isHostByIdentity, isProvider, mutateWines, isMutateReject, normalizeWine, reassignProvenance } from '@/lib/session'
+import { isHostByIdentity, isProvider, mutateWines, isMutateReject, cleanBottleNotes, reassignProvenance } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved, authUnavailable, isTombstoneIdentityId } from '@/lib/identity'
 import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { isSameOrigin } from '@/lib/csrf'
-import { checkRate, getClientIp } from '@/lib/rateLimit'
-import { resolveCatalogLink, applyIdentityEditRule, catalogLinkRateKey, CatalogValidationError } from '@/lib/catalogWrite'
+import { CatalogValidationError } from '@/lib/catalogWrite'
+import { prepareLink, applyRelink, PICK_WHOLE, CREATE_HIDDEN } from '@/lib/catalogLink'
 import { withSessionMutation, admitted, refuse, ContractCold, type MutationCtx } from '@/lib/sessionMutation'
 import { readGrant, grantStatus, type AuthorizedIdentity } from '@/lib/sessionGrant'
 import { contractFailure } from '@/lib/sessionRehydrate'
 import { openSessionFor } from '@/lib/sessionRoute'
-import { reconcileLineup, lockOccurrence, updateOccurrence, recordLineup, projectLineup, renumber, readOccurrence } from '@/lib/occurrences'
+import { reconcileLineup, lockOccurrence, relinkOccurrence, editOccurrenceNotes, withSnapshot, recordLineup, projectLineup, renumber, readOccurrence } from '@/lib/occurrences'
 import type { WineMeta, SessionMeta } from '@/lib/session'
 import { buildWineEcho } from '@/lib/sessionState'
 
@@ -79,59 +79,35 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'change the photo with its own call' }, { status: 400 })
   }
 
-  // ── Catalog link on edit ─────────────────────────────────────────────────
+  // ── What an edit may change (catalogue model change step 4) ──────────────
   //
-  // Two rules compose here, in this order:
-  //   1. If the caller sent productId/vintageId, validate them server-side (an
-  //      explicit re-link, or an explicit clear).
-  //   2. Otherwise apply the identity-changing-edit rule: an edit that changes
-  //      the instance's name, producer, or vintage CLEARS the link rather than
-  //      silently keeping a now-incompatible one. Cosmetic edits keep it.
-  const sentLink = body.productId !== undefined || body.vintageId !== undefined
-  // Shares the POST route's counter key EXACTLY (app/api/CLAUDE.md's
-  // shared-counter pattern) so add + edit can't stack N+N against the catalog.
-  if (sentLink) {
-    const rl = await checkRate(catalogLinkRateKey(identity.id, getClientIp(req)), 120, 3600)
-    if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  // 🔒 A bottle's identity is its catalogue link: an identity edit is a RE-LINK
+  // (a pick, or a create through the add flow: signed in only), and it writes
+  // the WHOLE snapshot from the new entry. Typed identity text (name, producer,
+  // year, type, grape, region, country) is ignored: it never becomes the
+  // snapshot. A cosmetic edit writes only the bottle's own fields it SENT
+  // (About, vinification, the purchase link), decided against the row as it
+  // stands under the locks: nothing prepared before the lock is written back
+  // (the interleaved-PATCH rule, spec § 9: an edit queued behind a re-link
+  // must not put the old wine's name on the new link). A linked bottle is
+  // never unlinked (400). The link limiter (`rl:catalog-link`, shared with the
+  // POST) is charged only when a link is sent.
+  const userId = session?.user ? Number(session.user.id) : null
+  const linkReq = await prepareLink(req, body, { userId, identityId: identity.id, pickRate: true, required: false })
+  if (linkReq instanceof NextResponse) return linkReq
+  const notes = cleanBottleNotes(body)
+  // 🔒 Resolved under the locks, AFTER mayEdit, against the bottle as locked
+  // (security review r1: before the locks a partial pick on someone else's
+  // bottle answered 400 vs 403 by whether the guessed vintage was its wine's).
+  const link = async (tx: Prisma.TransactionClient, current: WineMeta) => {
+    try { return await applyRelink(tx, linkReq, userId, current) }
+    catch (err) { if (err instanceof CatalogValidationError) throw refuse(400, err.message); throw err }
   }
-  let link: { productId: string | null; vintageId: string | null }
-  let linkIsDeliberate = false
-  try {
-    // The stored link is passed so a PARTIAL link edit works: sending only
-    // `{ vintageId: null }` ("drop to product grain") keeps the product rather
-    // than destroying it, because an omitted field means KEEP.
-    const explicit = sentLink ? await resolveCatalogLink(body.productId, body.vintageId, before) : null
-    link = applyIdentityEditRule(before, body, explicit)
-    // Did this request make a DELIBERATE decision about the link, or did the
-    // rule merely resolve to "leave it alone"? Only the former may overwrite
-    // what is stored at write time (below).
-    linkIsDeliberate = sentLink
-      || link.productId !== (before.productId ?? null)
-      || link.vintageId !== (before.vintageId ?? null)
-  } catch (err) {
-    if (err instanceof CatalogValidationError) {
-      return NextResponse.json({ error: err.message }, { status: 400 })
-    }
-    throw err
-  }
-  const draft = normalizeWine({ ...body, ...link }, before)
-  if ('error' in draft) return NextResponse.json(draft, { status: 400 })
-
-  // The write, inside the session mutation contract. The draft was prepared
-  // before the lock, so everything another writer may have changed since is
-  // taken from the CURRENT bottle (the locked row, or the cached entry of a
-  // Redis-only moment): provenance, reveal state, the photo, and the catalog
-  // link unless this edit set it deliberately.
-  const merge = (current: WineMeta): WineMeta => ({
-    ...draft,
-    image: '',
-    imageUrl: current.imageUrl,
-    revealedAt: current.revealedAt ?? null,
-    addedByIdentityId: current.addedByIdentityId,
-    addedByDisplayName: current.addedByDisplayName,
-    ...(linkIsDeliberate
-      ? { productId: link.productId, vintageId: link.vintageId }
-      : { productId: current.productId ?? null, vintageId: current.vintageId ?? null }),
+  const withNotes = (w: WineMeta): WineMeta => ({
+    ...w,
+    ...(notes.description !== undefined ? { description: notes.description || undefined } : {}),
+    ...(notes.vinification !== undefined ? { vinification: notes.vinification || undefined } : {}),
+    ...(notes.purchaseUrl !== undefined ? { purchaseUrl: notes.purchaseUrl || undefined } : {}),
   })
   let lineup: WineMeta[]
   try {
@@ -140,15 +116,35 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       const wine = await lockedTarget(tx, ctx, wineId)
       if (!wine) throw refuse(404, 'wine not found')
       if (!mayEdit(ctx, caller, wine)) throw refuse(403, 'only the host or the provider who added this wine can edit it')
+      // A new wine is minted only into the record (race review r1: a Redis-only
+      // moment writes its cache before COMMIT, so a rolled-back mint could stay
+      // linked there). A signed-in caller in a Redis-only moment means its
+      // promotion failed: retry.
+      if (!ctx.row && linkReq.kind === 'create') throw refuse(503, 'Try again in a moment.', { 'Retry-After': '1' })
+      // 🔒 A bottle hidden from this caller (blind, unrevealed, Blind for
+      // Everyone: the only way a caller who may edit it is masked) takes no
+      // PARTIAL pick: a missing grain would be resolved against the hidden
+      // wine (review r2: `{vintageId}` alone; r3: `{productId}` alone keeps the
+      // stored vintage). Both keys, or the one fixed refusal.
+      const blind = ctx.row ? !!ctx.row.blind : !!ctx.meta!.blind
+      const forEveryone = ctx.row ? !!ctx.row.blindForEveryone : !!ctx.meta!.blindForEveryone
+      const hidden = blind && forEveryone && !wine.revealedAt
+      if (hidden && linkReq.kind === 'pick' && (linkReq.productId === undefined || linkReq.vintageId === undefined)) throw refuse(400, PICK_WHOLE)
+      // …and no CREATE (Codex r1): its replay answer (no mint) against a miss
+      // (the mint's own validation) would tell which hidden bottle is which of
+      // the caller's wines. A whole pick still re-links it.
+      if (hidden && linkReq.kind === 'create') throw refuse(400, CREATE_HIDDEN)
+      const applied = await link(tx, wine)
       if (ctx.row) {
-        await updateOccurrence(tx, ctx.row.id, merge(wine))
+        if (applied) await relinkOccurrence(tx, ctx.row.id, wineId, applied, applied.snapshot)
+        await editOccurrenceNotes(tx, ctx.row.id, wineId, notes)
         return { lineup: await recordLineup(tx, ctx.row.id), revision: ctx.row.lineupRevision }
       }
       const out = await mutateWines(ctx.fence!, (current) => {
         const i = current.findIndex(w => w.id === wineId)
         if (i === -1) return { reject: 'wine not found' }
         const next = current.slice()
-        next[i] = merge(current[i])
+        next[i] = withNotes(applied ? withSnapshot(current[i], applied, applied.snapshot) : current[i])
         return next
       })
       if (isMutateReject(out)) throw refuse(404, out.reject)

@@ -46,7 +46,6 @@ import {
   createProduct as _createProduct,
   createVintage as _createVintage,
   resolveCatalogLink,
-  applyIdentityEditRule,
   validateYear,
   catalogLinkRateKey,
   CatalogValidationError,
@@ -1164,8 +1163,11 @@ async function main() {
     country: 'FR', productId: prod.id, vintageId: 'someVintageId',
   }
   const redacted = redactWine(wine, { revealed: false, isHost: false, ownsWine: false, index: 0 })
-  eq(redacted.productId, null, 'redactWine nulls productId')
-  eq(redacted.vintageId, null, 'redactWine nulls vintageId')
+  // Since the catalogue model change (step 4) the wire has no flat ids at all:
+  // they live in `entry`, which a blind row replaces wholesale.
+  ok(!('productId' in redacted) && !('vintageId' in redacted), 'redactWine carries no flat productId / vintageId')
+  eq(redacted.entry, null, 'redactWine replaces the catalogue entry wholesale (null)')
+  ok(!JSON.stringify(redacted).includes(wine.productId), 'the product id appears nowhere in the blind row')
   eq(redacted.name, 'Wine 1', 'redactWine still masks the name (the field it always masked)')
   // 🔒 THE PAIRED POSITIVE: the ids must survive when the wine is NOT redacted,
   // or the "strip" could be an unconditional drop that breaks the feature.
@@ -1413,101 +1415,11 @@ async function main() {
     `SELECT region, region_folded FROM producers WHERE id = '${blankRegion.id}'`)
   eq(rr[0].region, null, 'a blank region normalizes to NULL, not the empty string')
 
-  // ══════════════════════════════════════════════════════════════════════
-  console.log('\n§ 9 — the identity-changing-edit rule')
-  // 🔒 An edit that changes the instance's IDENTITY must clear the link;
-  // a cosmetic edit must KEEP it. Both directions, because a rule that always
-  // cleared, or never cleared, would pass a one-sided test.
-  const linked = { name: 'Grand Vin', producer: 'Survivor', vintage: '2019',
-                   productId: prod.id, vintageId: vintage.id }
-  eq(applyIdentityEditRule(linked, { description: 'lovely' }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a cosmetic edit (description only) KEEPS the link')
-  eq(applyIdentityEditRule(linked, { name: 'Different Wine' }, null),
-    { productId: null, vintageId: null },
-    'changing the NAME clears the link')
-  eq(applyIdentityEditRule(linked, { producer: 'Someone Else' }, null),
-    { productId: null, vintageId: null },
-    'changing the PRODUCER clears the link')
-  eq(applyIdentityEditRule(linked, { vintage: '2020' }, null),
-    { productId: null, vintageId: null },
-    'changing the VINTAGE clears the link')
-  eq(applyIdentityEditRule(linked, { name: 'grand  vin' }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a whitespace/case-only name change is NOT an identity change')
-  eq(applyIdentityEditRule(linked, { name: 'Different Wine' },
-      { productId: otherProduct.id, vintageId: null }),
-    { productId: otherProduct.id, vintageId: null },
-    'an explicit re-link WINS over the identity-change clear')
-  eq(applyIdentityEditRule(linked, {}, { productId: null, vintageId: null }),
-    { productId: null, vintageId: null },
-    'an explicit clear is honoured')
-  // 🔒 THE REAL CLIENT'S ACTUAL SHAPE. The mobile app's UpdateWineBody
-  // (apps/mobile/src/lib/api/sessions.ts) resends name + producer + vintage on
-  // EVERY edit, including a pure photo change — so the rule sees all three
-  // identity fields present, unchanged, on an edit that changes nothing about
-  // identity. If the comparison were "field present ⇒ treat as changed", every
-  // photo edit from the app would silently drop a correct catalog link. Pinned
-  // here because the failure would be invisible: the edit succeeds, the link
-  // just quietly disappears.
-  eq(applyIdentityEditRule(linked,
-      { name: 'Grand Vin', producer: 'Survivor', vintage: '2019' }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a client that resends all identity fields UNCHANGED keeps the link')
-  // The mirror case: the same client clearing the vintage IS an identity change.
-  eq(applyIdentityEditRule(linked,
-      { name: 'Grand Vin', producer: 'Survivor', vintage: '' }, null),
-    { productId: null, vintageId: null },
-    'clearing the vintage to empty IS an identity change and clears the link')
-
-  // 🔒 THE COMPARISON MUST MATCH THE WRITE'S OWN NORMALIZATION. The write path
-  // scrubs control/zero-width characters and canonicalizes `vintage` through
-  // the shared normalizer, so comparing the RAW body value reported a change
-  // where the STORED value would not actually move — silently dropping a
-  // correct link on an edit that changes nothing.
-  //
-  // ⚠️ UPDATED: the vintage rule is no longer "truncate to 4 chars". It is
-  // EXACTLY four digits or the NV token, else empty — a partial or overlong
-  // value is dropped rather than sliced, because slicing invents a year the
-  // user never typed. So '2019-2020' normalizes to EMPTY (not to '2019'), the
-  // stored value really does move, and the link MUST clear. The earlier
-  // expectation here encoded the truncating write and became wrong when the
-  // contract tightened.
-  eq(applyIdentityEditRule(linked, { vintage: '2019-2020' }, null),
-    { productId: null, vintageId: null },
-    'an overlong vintage normalizes to EMPTY, so the stored value moves and the link clears')
-  // The canonicalization case that must NOT clear: 'N.V.' and 'NV' store the
-  // same value, so an edit between them changes nothing.
-  eq(applyIdentityEditRule({ ...linked, vintage: 'N.V.' }, { vintage: 'NV' }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'canonicalizing N.V. to NV stores the same value and keeps the link')
-  // 🔒 `name` is REQUIRED, so the write does `scrub(name) || existing` (the
-  // check-in PATCH) or rejects outright (the session path). An invalid or blank
-  // name is therefore IGNORED and the stored name retained — nothing moves, so
-  // the link must survive. `vintage` is optional and stores its empty value, so
-  // it is deliberately NOT symmetric with this.
-  eq(applyIdentityEditRule(linked, { name: '' }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a blank name is ignored by the write (falls back), so the link survives')
-  eq(applyIdentityEditRule(linked, { name: 123 }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a non-string name is ignored by the write, so the link survives')
-  // But a NON-STRING VINTAGE does clear: scrub() rejects it, so the write
-  // stores empty. A String(v)-coercing comparator kept the link here while the
-  // write blanked the vintage — blank vintage, retained vintage-grain link.
-  eq(applyIdentityEditRule(linked, { vintage: 2019 }, null),
-    { productId: null, vintageId: null },
-    'a numeric vintage is rejected by scrub, so the write stores empty and the link clears')
-  // ​ is a zero-width space: invisible in the name, removed by scrub(), so
-  // the stored value is byte-identical to what's already there.
-  eq(applyIdentityEditRule(linked, { name: `Grand​ Vin` }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a zero-width character the write SCRUBS out is not an identity change')
-  // Paired negative: a vintage change that genuinely survives canonicalization DOES
-  // clear — proving the rule still bites where it should.
-  eq(applyIdentityEditRule(linked, { vintage: '2021' }, null),
-    { productId: null, vintageId: null },
-    'a real vintage change still clears the link')
+  // § 9 — the identity-changing-edit rule: RETIRED (catalogue model change
+  // step 4). A bottle's identity is its catalogue link; typed identity text
+  // never becomes the snapshot, an identity edit is a re-link. Pinned by
+  // scripts/tests/catalog-every-write.mts § 9 (the snapshot follows a re-link,
+  // a cosmetic edit never rewrites it) and § 10 (the interleaved PATCH).
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 10 — grapes: {} is unrecorded, and it is never NULL')
@@ -1623,8 +1535,8 @@ async function main() {
   // would violate the composite FK at runtime) passed green. The right fix was
   // to give CI a Redis service — it is one workflow block — rather than accept
   // a weaker assertion. Both writers are now driven for real.
-  const { reassignProvenance, normalizeWine } = await import('../../lib/session.ts')
-  const { copyLineup, insertOccurrence, updateOccurrence } = await import('../../lib/occurrences.ts')
+  const { reassignProvenance } = await import('../../lib/session.ts')
+  const { copyLineup, insertOccurrence, relinkOccurrence } = await import('../../lib/occurrences.ts')
   // The record-first writers (catalogue model change step 3) run INSIDE the
   // session mutation contract's transaction, so the fixture drives them in a
   // transaction directly.
@@ -1672,37 +1584,21 @@ async function main() {
     `SELECT product_id, vintage_id FROM wines WHERE id = '${archiveId}'`)
   eq(clearedRow[0]?.product_id, null,
     'copyLineup UPDATE propagates a CLEARED link (the link is mutable, unlike provenance)')
-  // …and so must the edit.
-  await prisma.$transaction(tx => updateOccurrence(tx, p2sid, { ...linkedWine, id: archiveId }))
-  eq((await prisma.$queryRawUnsafe(`SELECT product_id FROM wines WHERE id = '${archiveId}'`))[0]?.product_id, prod.id, 'updateOccurrence writes the link')
+  // …and so must a re-link (catalogue model change step 4: the link and the
+  // WHOLE snapshot in one statement). 🔒 VALUES, not presence: a transposition
+  // (vintage_id written from the product id) violates the composite FK.
+  await prisma.$transaction(tx => relinkOccurrence(tx, p2sid, archiveId, { productId: prod.id, vintageId: vintage.id },
+    { name: 'P2 Relinked', producer: 'P2 Producer', vintage: '2019', type: 'red', colour: 'red', sparkling: false, abv: 13.5, grape: '', region: '', country: '' }))
+  const relinkedRow = (await prisma.$queryRawUnsafe(
+    `SELECT product_id, vintage_id, name, style, colour, abv::text AS abv FROM wines WHERE id = '${archiveId}'`))[0]
+  eq([relinkedRow?.product_id, relinkedRow?.vintage_id], [prod.id, vintage.id], 'relinkOccurrence writes the right productId AND vintageId')
+  eq([relinkedRow?.name, relinkedRow?.style, relinkedRow?.colour, relinkedRow?.abv], ['P2 Relinked', 'red', 'red', '13.50'], '…and the snapshot with them')
 
-  // ── D1: normalizeWine's round-trip, the trap its own comment names ────────
-  //
-  // 🔒 THIS FUNCTION IS THE ONLY SOURCE OF THE LINK A WRITE STORES. The edit
-  // merges onto its result, so whatever this returns IS the stored link. It
-  // had NO coverage once: a reviewer mutated it to return `productId: null`
-  // unconditionally — dropping every session-wine link on every create and
-  // edit, i.e. the feature silently not working — and the suite stayed green.
-  const base = { id: 'p2test_wine_rt000000', name: 'RT Wine', type: 'red', producer: 'RT Producer', vintage: '2019' }
-  const createdWine = normalizeWine({ ...base, productId: prod.id, vintageId: vintage.id })
-  eq(createdWine.productId, prod.id, 'create: the supplied productId round-trips')
-  eq(createdWine.vintageId, vintage.id, 'create: the supplied vintageId round-trips')
-  // A create with no link must store null, not undefined.
-  const bare = normalizeWine(base)
-  eq(bare.productId, null, 'create without a link stores null')
-  // 🔒 OMITTED means KEEP. This is the spelling the function's comment warns
-  // about: `body.productId ?? existing?.productId` would behave identically
-  // HERE but swallow a deliberate null below — so both cases are needed to pin
-  // the semantics, and testing only one leaves the trap open.
-  const kept = normalizeWine({ ...base, description: 'x' }, createdWine)
-  eq(kept.productId, prod.id, 'edit omitting the link KEEPS the stored productId')
-  eq(kept.vintageId, vintage.id, 'edit omitting the link KEEPS the stored vintageId')
-  // 🔒 EXPLICIT NULL means CLEAR — the case `??` would silently swallow.
-  const clearedEdit = normalizeWine({ ...base, productId: null, vintageId: null }, createdWine)
-  eq(clearedEdit.productId, null, 'edit with an explicit null CLEARS the link')
-  // Re-link to a different product.
-  const relinked = normalizeWine({ ...base, productId: otherProduct.id, vintageId: null }, createdWine)
-  eq(relinked.productId, otherProduct.id, 'edit can RE-LINK to a different product')
+  // (D1, normalizeWine's link round-trip: RETIRED with normalizeWine in step 4.
+  // A write's link now comes only from lib/catalogLink.ts prepareLink /
+  // applyLink: a pick validated by resolveCatalogLink, whose omitted-keeps /
+  // null-clears semantics are pinned in § 4 above; a body cannot clear a
+  // link at all, catalog-every-write.mts § 9d.)
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 13c — the catalog-link rate key is not rotatable by anon callers')
@@ -1743,14 +1639,14 @@ async function main() {
 
   // Branch 4 — nothing matched: mints producer + product, both distinct.
   const b4 = await mintEntries(
-    { producer: { name: 'P2TEST B4 Maker' }, product: { name: 'P2TEST B4 Wine' } }, TEST_USER)
+    { producer: { name: 'P2TEST B4 Maker' }, product: { name: 'P2TEST B4 Wine', colour: 'red' } }, TEST_USER)
   ok(!!b4.producerId && !!b4.productId && b4.vintageId === null,
     'branch 4 mints producer + product and links at PRODUCT grain when year is absent')
   // 🔒 vintageGrapes THROUGH THE REAL DISPATCHER. § 1d drives `createVintage`
   // directly, which cannot see whether `mintEntries` actually FORWARDS the
   // field — removing both forwarding arguments left all 200 tests green.
   const vgDisp = await mintEntries(
-    { producer: { name: 'P2TEST VGD Maker' }, product: { name: 'P2TEST VGD Wine', grapes: ['Merlot'] },
+    { producer: { name: 'P2TEST VGD Maker' }, product: { name: 'P2TEST VGD Wine', colour: 'red', grapes: ['Merlot'] },
       year: 2019, vintageGrapes: ['Syrah', 'Grenache'] }, TEST_USER)
   const vgRow = await prisma.wineVintage.findUnique({
     where: { id: vgDisp.vintageId }, select: { grapes: true, grapesOverride: true } })
@@ -1785,7 +1681,7 @@ async function main() {
 
   // Branch 3 — existing producer, new product.
   const b3 = await mintEntries(
-    { producerId: dispatchProducer.id, product: { name: 'P2TEST B3 Wine' }, year: 2020 }, TEST_USER)
+    { producerId: dispatchProducer.id, product: { name: 'P2TEST B3 Wine', colour: 'white' }, year: 2020 }, TEST_USER)
   ok(b3.producerId === dispatchProducer.id && !!b3.vintageId,
     'branch 3 reuses the chosen producer and mints the vintage')
   // Branch 2 — existing product, missing vintage.
@@ -1801,7 +1697,7 @@ async function main() {
   eq(nvYear[0].year, null, 'and that row really has year NULL (the NV instance)')
   // Branch 5 — collaboration, set at creation.
   const b5 = await mintEntries(
-    { producerId: dispatchProducer.id, product: { name: 'P2TEST B5 Joint' },
+    { producerId: dispatchProducer.id, product: { name: 'P2TEST B5 Joint', sparkling: true },
       collaboratorIds: [b4.producerId] }, TEST_USER)
   const b5Roles = await prisma.$queryRawUnsafe(
     `SELECT role FROM product_producers WHERE product_id = '${b5.productId}' ORDER BY role`)
@@ -1847,8 +1743,10 @@ async function main() {
   const kindCount = () => prisma.$queryRawUnsafe(
     `SELECT (SELECT count(*)::int FROM producers WHERE name LIKE 'P2TEST Kind%') AS p,
             (SELECT count(*)::int FROM wine_products WHERE name LIKE 'P2TEST Kind%') AS w`)
+  // A type is required on a mint since step 4 (spec § 2): red by default here,
+  // so each case below tests the field it names.
   const kindMint = product => mintEntries(
-    { producer: { name: 'P2TEST Kind Maker' }, product: { name: 'P2TEST Kind Wine', ...product } }, TEST_USER)
+    { producer: { name: 'P2TEST Kind Maker' }, product: { name: 'P2TEST Kind Wine', colour: 'red', ...product } }, TEST_USER)
   const kindRow = id => prisma.$queryRawUnsafe(
     `SELECT colour, sparkling, style FROM wine_products WHERE id = $1`, id).then(r => r[0])
   const beforeKind = await kindCount()
@@ -1869,6 +1767,12 @@ async function main() {
     ['colour orange (ruled: orange wine is white)', { colour: 'orange' }, 'colour must be red, white, rose or null'],
     ['a non-boolean sparkling', { sparkling: 'true' }, 'sparkling must be true or false'],
     ['sparkling null (it has no unknown state)', { sparkling: null }, 'sparkling must be true or false'],
+    // 🔒 A new wine needs a TYPE (producer + name + type, spec § 2): a colour
+    // or sparkling: true.
+    ['no type (no colour, not sparkling)', { colour: undefined }, 'type is required'],
+    ['no type (colour null, sparkling false)', { colour: null, sparkling: false }, 'type is required'],
+    // 🔒 One place for a typed abv: the top level, beside the year.
+    ['an abv inside product', { abv: 13 }, 'abv goes at the top level'],
   ]) await rejects(`mintEntries rejects ${label}`, () => kindMint(product), expect)
   const kindErr = await kindMint({ style: 42 }).catch(e => e)
   ok(kindErr instanceof CatalogValidationError,
@@ -1876,11 +1780,16 @@ async function main() {
   eq(await kindCount(), beforeKind, 'and NOTHING was committed by any rejected mint, producer included')
   // The paired accepts.
   const kDef = await kindMint({})
-  eq(await kindRow(kDef.productId), { colour: null, sparkling: false, style: null },
-    'omitted colour / sparkling / style take their defaults (null, false, null)')
-  const kNull = await kindMint({ name: 'P2TEST Kind Nulls', colour: null, style: null, sparkling: false })
-  eq(await kindRow(kNull.productId), { colour: null, sparkling: false, style: null },
-    'explicit null colour / style and sparkling false are accepted')
+  eq(await kindRow(kDef.productId), { colour: 'red', sparkling: false, style: null },
+    'omitted sparkling / style take their defaults (false, null)')
+  const kNull = await kindMint({ name: 'P2TEST Kind Nulls', colour: null, style: null, sparkling: true })
+  eq(await kindRow(kNull.productId), { colour: null, sparkling: true, style: null },
+    'sparkling alone is a type (colour null = unknown), explicit null style accepted')
+  // The helper below the dispatcher keeps its defaults (imports, the catalogue
+  // side: colour NULL, sparkling false, style NULL stay valid entries).
+  const kHelper = await createProduct({ name: 'P2TEST Kind Helper Default', producerId: kDef.producerId }, TEST_USER)
+  eq(await kindRow(kHelper.id), { colour: null, sparkling: false, style: null },
+    'createProduct itself still takes the defaults (null, false, null): the type rule is the user add flow\'s')
   const kSweet = await kindMint({ name: 'P2TEST Kind Sweet Rose', colour: 'rose', sparkling: true, style: 'dessert' })
   eq(await kindRow(kSweet.productId), { colour: 'rose', sparkling: true, style: 'dessert' },
     'a sweet sparkling rosé persists (the shape the old single token could not express)')
@@ -1903,37 +1812,34 @@ async function main() {
   if (kOther) eq((await kindRow(kOther.productId)).style, '__test_style__', 'and the style is stored as given')
 
   // ══════════════════════════════════════════════════════════════════════
-  console.log('\n§ 13d — the release fence (lib/catalogGate.ts)')
-  // 🔒 THE PHASE-2/PHASE-3 RELEASE BOUNDARY, and it was entirely untested.
-  // Phase 2 lets users mint catalog entries; phase 3 builds the review queue
-  // that confirms/merges/rejects them. An unreviewed provisional is a valid
-  // steady state; publicly-writable content with no moderation path is not. So
-  // the switch must default CLOSED, and a regression flipping that default open
-  // would silently ship exactly the state the boundary exists to prevent.
+  console.log('\n§ 13d — the kill switch (lib/catalogGate.ts)')
+  // 🔒 OPEN BY DEFAULT since the catalogue model change (step 4, spec § 7 "The
+  // fence opens WITH the code"): every new bottle links, so a closed default
+  // would leave only staff able to add a bottle. Only the exact string 'false'
+  // closes it; staff bypass it always. (Rewritten from the phase-2 pin that
+  // asserted unset = CLOSED.)
   const { catalogPublicEnabled, canUseCatalog } = await import('../../lib/catalogGate.ts')
   const prevFlag = process.env.CATALOG_PUBLIC_ENABLED
   try {
     delete process.env.CATALOG_PUBLIC_ENABLED
-    ok(catalogPublicEnabled() === false, 'UNSET defaults to CLOSED')
-    ok((await canUseCatalog(null)) === false, 'an anonymous caller is refused while closed')
-    ok((await canUseCatalog(TEST_USER)) === false,
-      'an ordinary logged-in user is refused while closed')
-    // 🔒 Only the exact string 'true' opens it — a truthy-ish value must not.
-    for (const v of ['1', 'yes', 'TRUE', 'True', '']) {
+    ok(catalogPublicEnabled() === true, 'UNSET defaults to OPEN')
+    ok((await canUseCatalog(null)) === true, 'an anonymous caller passes while open (guests search inside their moment)')
+    ok((await canUseCatalog(TEST_USER)) === true, 'an ordinary logged-in user passes while open')
+    // 🔒 Only the exact string 'false' closes it — anything else stays open.
+    for (const v of ['1', 'yes', 'TRUE', 'True', 'true', 'FALSE', 'False', '0', '']) {
       process.env.CATALOG_PUBLIC_ENABLED = v
-      ok(catalogPublicEnabled() === false, `CATALOG_PUBLIC_ENABLED=${JSON.stringify(v)} stays CLOSED`)
+      ok(catalogPublicEnabled() === true, `CATALOG_PUBLIC_ENABLED=${JSON.stringify(v)} stays OPEN`)
     }
-    process.env.CATALOG_PUBLIC_ENABLED = 'true'
-    ok(catalogPublicEnabled() === true, "CATALOG_PUBLIC_ENABLED='true' opens it (the paired accept)")
-    ok((await canUseCatalog(null)) === true, 'and an anonymous caller then passes')
-    // The staff bypass: a curator reaches the flow while the fence is closed,
-    // which is what makes dogfooding and matcher tuning possible pre-release.
-    delete process.env.CATALOG_PUBLIC_ENABLED
+    process.env.CATALOG_PUBLIC_ENABLED = 'false'
+    ok(catalogPublicEnabled() === false, "CATALOG_PUBLIC_ENABLED='false' closes it (the kill switch)")
+    ok((await canUseCatalog(null)) === false, 'an anonymous caller is refused while closed')
+    ok((await canUseCatalog(TEST_USER)) === false, 'an ordinary logged-in user is refused while closed')
+    // The staff bypass: a curator keeps working with the switch on.
     await prisma.$executeRawUnsafe(
       `INSERT INTO staff_roles (user_id, role) VALUES (${TEST_USER}, 'curator')
        ON CONFLICT (user_id) DO UPDATE SET role = 'curator'`)
     ok((await canUseCatalog(TEST_USER)) === true,
-      'a CURATOR bypasses the closed fence (dogfooding path)')
+      'a CURATOR bypasses the kill switch')
     await prisma.$executeRawUnsafe(`DELETE FROM staff_roles WHERE user_id = ${TEST_USER}`)
     ok((await canUseCatalog(TEST_USER)) === false,
       'and loses access the moment the grant is revoked (no caching)')
@@ -1969,8 +1875,15 @@ async function main() {
   // NextRequest + session plumbing; reading its source for the guard is the
   // proportionate check, and it fails loudly if the guard is deleted or if the
   // handler is renamed.
+  // Since step 4 the query kinds live in ONE module shared by the global route
+  // and the moment's own search (lib/catalogSearchAnswer.ts); both routes must
+  // answer through it.
+  for (const route of ['app/api/catalog/search/route.ts', 'app/api/session/[code]/catalog/search/route.ts']) {
+    ok(/return answerCatalogSearch\(req\.nextUrl\.searchParams\)/.test(readFileSync(join(REPO_ROOT, route), 'utf8')),
+      `${route} answers through the shared answerCatalogSearch (the producerId guard included)`)
+  }
   const searchRouteSrc = readFileSync(
-    join(REPO_ROOT, 'app/api/catalog/search/route.ts'), 'utf8')
+    join(REPO_ROOT, 'lib/catalogSearchAnswer.ts'), 'utf8')
   const productBranch = searchRouteSrc.slice(searchRouteSrc.indexOf("kind === 'product'"))
   ok(/if \(!producerId\)/.test(productBranch)
      && /status:\s*400/.test(productBranch.slice(0, productBranch.indexOf('searchProducts('))),

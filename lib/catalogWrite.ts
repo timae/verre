@@ -2,7 +2,6 @@ import { nanoid } from 'nanoid'
 import { prisma } from '@/lib/prisma'
 import type { Prisma } from '@prisma/client'
 import { scrub, cleanUrl, cleanCountry } from '@/lib/textSafe'
-import { normalizeVintageText } from '@verre/core'
 
 // ── catalogWrite: THE catalog mutation chokepoint ──────────────────────────
 //
@@ -51,6 +50,17 @@ const PROVISIONAL = 'provisional'
 // 'shared', i.e. public. This constant exists so the value is spelled once;
 // it does not make omission safe, and the DB is still the backstop.
 const SHARED_SCOPE = 'shared'
+
+// 🔒 EVERY USER MINT IS RECORDED AS AWAITING REVIEW, in the mint's own
+// transaction (catalogue model change § 7): the fence opens before the review
+// queue exists, and `status = 'provisional'` alone is not that record (a
+// delivery may later move a user's entry to 'confirmed', and then nothing would
+// say no curator ever looked at it). A mint with no user (an import, a fixture)
+// writes none. Rolls back with the mint.
+async function recordUserMint(tx: Prisma.TransactionClient, entityType: 'producer' | 'product' | 'vintage', entityId: string, addedBy: number | null): Promise<void> {
+  if (addedBy === null) return
+  await tx.catalogReviewItem.create({ data: { entityType, entityId, reason: 'user-mint' }, select: { id: true } })
+}
 
 export class CatalogValidationError extends Error {
   constructor(message: string) {
@@ -268,6 +278,9 @@ export type NewProductInput = {
   abv?: number | null
   grapes?: unknown
   region?: unknown
+  // The wine's ORIGIN (contract v3, `wine_products.country`): where the wine is
+  // from, never the producer's home. ISO 3166-1 alpha-2 via the allow-list.
+  country?: unknown
 }
 
 // ── Mint a producer ────────────────────────────────────────────────────────
@@ -299,6 +312,7 @@ export async function createProducer(
   // rejects any supplied value with 428C9 — a loud runtime error rather than
   // silent drift (prisma/CLAUDE.md). Never add them here.
   await client.producer.create({ data, select: { id: true } })
+  await recordUserMint(tx, 'producer', data.id, addedBy)
   return { id: data.id }
 }
 
@@ -328,6 +342,7 @@ export async function createProduct(
   const colour = productColour(input.colour)
   const sparkling = productSparkling(input.sparkling)
   const region = optionalFact(input.region)
+  const country = optionalCountry(input.country)
   const grapes = normalizeGrapes(input.grapes)
   const abv = normalizeAbv(input.abv)
   if (!input.producerId) throw new CatalogValidationError('producerId is required')
@@ -348,6 +363,7 @@ export async function createProduct(
         abv,
         grapes,
         region,
+        country,
         // 🔒 EXPLICIT, always — see SHARED_SCOPE.
         scope: SHARED_SCOPE,
         status: PROVISIONAL,
@@ -363,6 +379,7 @@ export async function createProduct(
         data: collaborators.map(producerId => ({ productId: id, producerId, role: 'collaborator' })),
       })
     }
+    await recordUserMint(t, 'product', id, addedBy)
     return { id }
   }
   // An outer transaction is reused rather than nested: the lead link must
@@ -424,6 +441,7 @@ export async function createVintage(
   }
   const client = tx
   await client.wineVintage.create({ data, select: { id: true } })
+  await recordUserMint(tx, 'vintage', data.id, addedBy)
   return { id: data.id }
 }
 
@@ -432,6 +450,10 @@ export async function createVintage(
 // first, so an out-of-range value raises "numeric field overflow" from the
 // TYPE before the CHECK is ever reached. Bounding here gives a clean 400
 // instead of a 500 from either.
+// The abv rule on its own (the add flow validates a typed abv even when it is
+// not written: an existing vintage keeps its own).
+export function assertAbv(raw: unknown): void { normalizeAbv(raw) }
+
 function normalizeAbv(raw: unknown): number | null {
   if (raw === null || raw === undefined || raw === '') return null
   const n = Number(raw)
@@ -510,10 +532,14 @@ function productStyle(raw: unknown, category: string): string | null {
 // omitted means KEEP and null means CLEAR, per field, matching the semantics
 // `normalizeWine` (lib/session.ts) already implements one layer down. Callers that have no
 // stored link (creates) simply omit it.
+// `db`: the caller's transaction when it runs inside one (review r2: a pick is
+// resolved under the writer's locks, and a second pool connection taken while
+// the transaction holds its own could wait on a pool nobody releases).
 export async function resolveCatalogLink(
   productId: unknown,
   vintageId: unknown,
   existing?: { productId?: string | null; vintageId?: string | null },
+  db: Prisma.TransactionClient | typeof prisma = prisma,
 ): Promise<{ productId: string | null; vintageId: string | null }> {
   // 🔒 A PRESENT-BUT-MALFORMED id is a 400, NOT a silent clear.
   //
@@ -557,7 +583,7 @@ export async function resolveCatalogLink(
   // safe to be specific about — they reveal nothing about which ids exist.
   if (!p && v) throw new CatalogValidationError('vintageId requires productId')
 
-  const product = await prisma.wineProduct.findUnique({
+  const product = await db.wineProduct.findUnique({
     where: { id: p! },
     select: { id: true, status: true, scope: true },
   })
@@ -582,7 +608,7 @@ export async function resolveCatalogLink(
   if (product.scope !== SHARED_SCOPE) throw deny(`product scope is ${product.scope}`)
   if (!v) return { productId: product.id, vintageId: null }
 
-  const vintage = await prisma.wineVintage.findUnique({
+  const vintage = await db.wineVintage.findUnique({
     where: { id: v },
     select: { id: true, productId: true, status: true },
   })
@@ -597,104 +623,9 @@ export async function resolveCatalogLink(
 // from add-time suggestions. `linked` and `rejected` are not.
 const LINKABLE_STATUSES = ['provisional', 'confirmed', 'archived']
 
-// ── The identity-changing-edit rule ────────────────────────────────────────
+// ── The identity-changing-edit rule: RETIRED (catalogue model change step 4) ─
 //
-// 🔒 A wine-instance edit that changes the instance's IDENTITY must not
-// silently keep a now-incompatible catalog link (RFC § Identity-changing wine
-// edits). Wine-instance fields are historical SNAPSHOTS — they do not derive
-// from live catalog facts — so an edit that renames the wine, changes its
-// producer, or changes its year has, as far as the catalog is concerned,
-// pointed the instance at a different thing. Keeping the old link there would
-// silently attribute one label's ratings to another.
-//
-// Cosmetic edits (photo, description, region, a typo-level fix confirmed
-// against the SAME entry) keep the link. That is why this compares the three
-// IDENTITY fields only — widening it to every field would clear links on a
-// photo upload, and narrowing it to `name` alone would keep the link across a
-// producer change, which is the worst case.
-//
-// The editor can always RE-LINK explicitly in the same request by sending
-// productId/vintageId, which takes precedence — this only decides what happens
-// when they DON'T.
-//
-// Returns the link the write should carry.
-export function applyIdentityEditRule(
-  existing: { name: string; producer: string; vintage: string; productId?: string | null; vintageId?: string | null },
-  incoming: { name?: unknown; producer?: unknown; vintage?: unknown },
-  explicitLink: { productId: string | null; vintageId: string | null } | null,
-): { productId: string | null; vintageId: string | null } {
-  // An explicit re-link (or an explicit clear) always wins — the editor said so.
-  if (explicitLink) return explicitLink
-  if (!existing.productId) return { productId: null, vintageId: null }
-  // Only fields PRESENT in the body count. A PATCH that omits `producer`
-  // entirely is not changing the producer, so it must not be read as a change
-  // to the empty string.
-  // 🔒 COMPARE WHAT WILL ACTUALLY BE STORED, not the raw body value.
-  //
-  // The write paths normalize before storing — `scrub()` strips control and
-  // zero-width characters, and `vintage` goes through the shared canonicalizer
-  // — so comparing the RAW incoming value against the STORED one reports a
-  // change where the stored value would not actually move. Verified example: a
-  // name carrying a zero-width character cleared the link, because scrub()
-  // removes the character and leaves the stored value byte-identical.
-  //
-  // ⚠️ The vintage rule is NOT truncation. It is exactly-four-digits-or-NV,
-  // else empty, so an overlong '2019-2020' becomes EMPTY rather than '2019' —
-  // that genuinely moves the stored value and MUST clear the link. An earlier
-  // version of this comment (and an integration expectation) described the
-  // truncating write and became wrong when the contract tightened.
-  //
-  // Over-clearing fails SAFE but silently drops correct links on edits that
-  // change nothing, which is the failure this rule exists to avoid.
-  //
-  // On top of the write's own normalization: trim, case-fold, and collapse
-  // internal whitespace. Those three are typographic, not identity — "Grand
-  // Vin" and "Grand  Vin" are the same wine.
-  //
-  // Deliberately NOT accent-folded. Accents can distinguish real labels, and
-  // unlike the catalog's own matching path there is no generated column here to
-  // keep a second fold honest — so this stays a conservative string compare.
-  const norm = (v: unknown, field: 'name' | 'producer' | 'vintage') => {
-    // Mirrors lib/session.ts `clean()` (scrub → '') and its vintage rule. If
-    // those write-path rules change, this must change with them.
-    //
-    // 🔒 NO `String(v)` COERCION — the write path does `scrub(v)`, and `scrub`
-    // returns null for any non-string. Stringifying here made the comparator
-    // strictly more permissive than the write: a PATCH carrying NUMERIC 2019
-    // compared equal to a stored '2019' (so the link was KEPT) while the write
-    // stored '' — a blank vintage still linked to a vintage-grain catalog row.
-    // Same defect class as the omitted-vs-empty edit bug, reached by a different
-    // route. The comparator must model what the write ACTUALLY does, including
-    // its type rejection.
-    let s = scrub(v) ?? ''
-    // 🔒 The SHARED normalizer, not `.slice(0, 4)`. The write path canonicalizes
-    // NV tokens ('N.V.' → 'NV'), so a slice-based compare reported a change on
-    // an edit that only canonicalized — silently CLEARING a correct catalog
-    // link. Measured: stored 'N.V.' + incoming 'NV' → {productId: null,
-    // vintageId: null}. Using the same function the write uses makes
-    // "compare what will actually be stored" true rather than approximate.
-    if (field === 'vintage') s = normalizeVintageText(s)
-    return s.trim().toLowerCase().replace(/\s+/g, ' ')
-  }
-  const changed = (field: 'name' | 'producer' | 'vintage'): boolean => {
-    const next = incoming[field]
-    if (next === undefined) return false
-    // 🔒 MODEL THE WRITE'S FALLBACK, not just its normalization. `name` is
-    // REQUIRED, so both write paths do `scrub(name) || existing` — an invalid
-    // (non-string) or blank name is IGNORED and the stored name is retained.
-    // Nothing moves, so the link must survive. Without this the comparator
-    // cleared a correct link on an edit the write discarded, which is the same
-    // over-clearing class as the `.slice(0,4)` and `String(v)` defects.
-    //
-    // ⚠️ `vintage` is deliberately NOT symmetric: it is OPTIONAL, so the write
-    // stores the normalized value even when that is empty — a blank or numeric
-    // vintage really does move the stored value, and really must clear the link.
-    // The asymmetry is the write paths', not this function's invention.
-    if (field === 'name' && norm(next, field) === '') return false
-    return norm(existing[field], field) !== norm(next, field)
-  }
-  if (changed('name') || changed('producer') || changed('vintage')) {
-    return { productId: null, vintageId: null }
-  }
-  return { productId: existing.productId ?? null, vintageId: existing.vintageId ?? null }
-}
+// A bottle's identity is its catalogue LINK: an edit that changes producer,
+// name or year is a RE-LINK through the add flow (lib/catalogLink.ts), which
+// writes the whole snapshot from the new entry. Typed identity text is ignored
+// on every write, so there is no free-text change left to detect.

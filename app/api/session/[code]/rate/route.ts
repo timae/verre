@@ -8,7 +8,7 @@ import { normalizeCode } from '@verre/core'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors } from '@/lib/flavours'
 import { gateAromas, type AromaSelection } from '@/lib/aromas'
-import { validateScore } from '@verre/core'
+import { validateScore, kindOfStyle } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { engagementCascadeIn, reclaimImages } from '@/lib/engagementCascade'
 import { withSessionMutation, admitted, refuse, ContractCold, ratingKeyWrite } from '@/lib/sessionMutation'
@@ -131,7 +131,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
       // §6g gate + §5 zero-fill in one: the stored shape holds for every writer
       // whatever the client sent (an off-style zero key is stripped; a non-zero
       // descriptor key from a stale client → 400).
-      const norm = gateAndFillFlavors(validFlavors, 'wine', wine.type)
+      // Bubbles from the bottle's kind (its snapshot: the cached `type` is the
+      // token a link derived from the entry's pair; catalogue model change step 4).
+      const norm = gateAndFillFlavors(validFlavors, 'wine', kindOfStyle(wine.type))
       if (norm.error) throw refuse(400, norm.error)
       const storedFlavors = norm.value ?? {}
       const key = k.rating(c, caller.id, wineId)

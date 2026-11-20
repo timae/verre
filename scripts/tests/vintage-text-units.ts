@@ -20,7 +20,7 @@ import {
   normalizeVintageText,
   filterVintageInput,
 } from '@verre/core';
-import { applyIdentityEditRule, validateYear } from '../../lib/catalogWrite';
+import { validateYear } from '../../lib/catalogWrite';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -180,50 +180,11 @@ check('filter: length capped (no unbounded growth)', filterVintageInput('n'.repe
   check('round-trip: filter→normalize is always NV, digits, or empty', ok, bad);
 }
 
-// ── applyIdentityEditRule: canonicalizing must NOT clear a catalog link ──
-// 🔒 The write path canonicalizes 'N.V.' → 'NV'. applyIdentityEditRule compares
-// "what will actually be stored", so it must use the SAME normalizer — with a
-// raw/sliced compare, an edit that only canonicalized reported a change and
-// silently returned {productId: null, vintageId: null}, dropping a correct link.
-{
-  const existing = { name: 'Blanc de Blancs', producer: 'A Maker', vintage: 'N.V.', productId: 'p1', vintageId: 'v1' };
-  const kept = applyIdentityEditRule(existing, { vintage: 'NV' }, null);
-  check('link: N.V. → NV PRESERVES the catalog link', kept.productId === 'p1' && kept.vintageId === 'v1', JSON.stringify(kept));
-  const kept2 = applyIdentityEditRule(existing, { vintage: 'non-vintage' }, null);
-  check('link: N.V. → non-vintage preserves the link', kept2.productId === 'p1', JSON.stringify(kept2));
-  // A REAL identity change must still clear it — the fix must not over-preserve.
-  const cleared = applyIdentityEditRule(existing, { vintage: '2019' }, null);
-  check('link: N.V. → 2019 CLEARS the link (real change)', cleared.productId === null && cleared.vintageId === null, JSON.stringify(cleared));
-  // And a year edit that only reformats keeps it.
-  const yr = { name: 'X', producer: 'Y', vintage: '2019', productId: 'p2', vintageId: 'v2' };
-  check('link: "2019" → " 2019 " preserves the link', applyIdentityEditRule(yr, { vintage: ' 2019 ' }, null).productId === 'p2');
-  check('link: "2019" → "2020" clears the link', applyIdentityEditRule(yr, { vintage: '2020' }, null).productId === null);
-
-  // 🔒 NON-STRING input: the comparator must model the write's TYPE handling,
-  // not just its string handling. `scrub` returns null for a non-string, so the
-  // write stores '' — while a String(v)-coercing comparator saw numeric 2019 as
-  // equal to stored '2019' and KEPT the link. Result: blank vintage, retained
-  // vintage-grain link. Same defect class as the omitted-vs-empty edit bug via a
-  // different route.
-  const numeric = applyIdentityEditRule(yr, { vintage: 2019 as unknown as string }, null);
-  check('link: NUMERIC 2019 clears the link (write would store empty)', numeric.productId === null && numeric.vintageId === null, JSON.stringify(numeric));
-  // 🔒 NAME IS ASYMMETRIC WITH VINTAGE, because the WRITES are. `name` is
-  // required, so both write paths either fall back (`scrub(name) || existing`,
-  // the check-in PATCH) or reject outright (the session path) — an invalid or
-  // blank name is IGNORED and the stored name retained. Nothing moves, so the
-  // link must SURVIVE. An earlier pin here asserted it cleared, which locked in
-  // over-clearing: the comparator's contract is to model what the write actually
-  // stores, and the write stores the old name.
-  const numName = applyIdentityEditRule(yr, { name: 123 as unknown as string }, null);
-  check('link: NUMERIC name PRESERVES the link (write keeps the old name)', numName.productId === 'p2', JSON.stringify(numName));
-  const blankName = applyIdentityEditRule(yr, { name: '' }, null);
-  check('link: BLANK name PRESERVES the link (write falls back)', blankName.productId === 'p2', JSON.stringify(blankName));
-  const realName = applyIdentityEditRule(yr, { name: 'Other Wine' }, null);
-  check('link: a REAL name change still clears the link', realName.productId === null, JSON.stringify(realName));
-  // Producer is optional and IS stored when blanked, so it is not exempt.
-  const blankProd = applyIdentityEditRule(yr, { producer: '' }, null);
-  check('link: BLANK producer clears the link (optional field, really stored)', blankProd.productId === null, JSON.stringify(blankProd));
-}
+// ── applyIdentityEditRule: RETIRED (catalogue model change step 4) ──────────
+// A bottle's identity is its catalogue link; typed identity text never becomes
+// the snapshot, so there is no free-text comparison left to model. An identity
+// edit is a re-link through the add flow: scripts/tests/catalog-every-write.mts
+// § 9 pins it (the snapshot follows a re-link, a cosmetic edit never rewrites).
 
 // ── The scanner's untrusted JSON ───────────────────────────────────────────
 // MOVED to scripts/tests/impression-payload-units.ts, which imports the

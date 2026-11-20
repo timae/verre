@@ -15,8 +15,15 @@ export type SessionFeedWine = {
   vintage: string | null
   grape: string | null
   // Maps from `wines.style` ('red' | 'white' | 'spark' | 'rose' | 'nonalc' …).
-  // Kept as `type` to match the existing CheckinCard / WineIdentity vocabulary.
+  // Kept as `type` for the app until its build (catalogue model change step 7;
+  // build step 5 rewrites this read onto the catalogue).
   type: string | null
+  // The bottle's kind (its snapshot): the axes read `sparkling` (catalogue
+  // model change step 4). Stay on a blind row, like the style always did; the
+  // abv does not (null on a blind row, ruled 2026-11-20).
+  colour: string | null
+  sparkling: boolean
+  abv: number | null
   // Image priority: rating photo first, falling back to the wine's
   // canonical bottle shot. Null when neither is set OR when blind-redacted.
   imageUrl: string | null

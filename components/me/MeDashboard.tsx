@@ -11,10 +11,11 @@ import { setAnonToken, webApiFetch } from '@/lib/sessionFetch'
 import { validateCodeInput, formatCode, formatCodeInput, BLIND_FEED_REVEAL_NOTE, profilePath } from '@verre/core'
 import { sessionPath } from '@/lib/sessionCode'
 import { ICO } from '@/lib/wineTypeColors'
+import { kindToken } from '@verre/core'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
 type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: number | null; date_from: string | null; ttl_seconds: number; lifespan: string | null }
-type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; style: string | null; image_url: string | null; session_code: string | null; _blind?: boolean }
+type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; style: string | null; colour?: string | null; sparkling?: boolean; abv?: number | null; image_url: string | null; session_code: string | null; _blind?: boolean }
 
 export function MeDashboard({ user }: { user: User }) {
   const router = useRouter()
@@ -233,7 +234,7 @@ export function MeDashboard({ user }: { user: User }) {
                   <Link key={b.wine_id} href={`/me/saved`} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',background:'var(--bg3)',borderRadius:8,textDecoration:'none'}}>
                     {b.image_url
                       ? <img src={b.image_url} alt={b.name} style={{width:28,height:28,borderRadius:6,objectFit:'cover',flexShrink:0}} />
-                      : <span style={{fontSize:16,flexShrink:0}}>{ICO[b.style||'']||'🍷'}</span>}
+                      : <span style={{fontSize:16,flexShrink:0}}>{ICO[kindToken(b)]||'🍷'}</span>}
                     <div style={{minWidth:0}}>
                       <p style={{fontSize:11,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'var(--fg)'}}>{b.name}</p>
                       {b.vintage && <p style={{fontSize:9,color:'var(--fg-dim)'}}>{b.vintage}</p>}

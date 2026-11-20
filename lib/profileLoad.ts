@@ -22,6 +22,10 @@ export type LoadedCheckin = {
   vintage: string | null
   grape: string | null
   type: string | null
+  // The bottle's kind (its snapshot; the axes read `sparkling`) and alcohol.
+  colour: string | null
+  sparkling: boolean
+  abv: number | null
   score: number | null
   flavors: unknown
   // Aroma selections, same wire shape as the feed payloads (aroma-layer.md
@@ -199,7 +203,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
       rating: {
         select: {
           score: true, flavors: true, aromas: true, notes: true,
-          wine: { select: { name: true, producer: true, vintage: true, grape: true, style: true, imageUrl: true } },
+          wine: { select: { name: true, producer: true, vintage: true, grape: true, style: true, colour: true, sparkling: true, abv: true, imageUrl: true } },
           images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { imageUrl: true } },
         },
       },
@@ -301,6 +305,9 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
         vintage: wine.vintage,
         grape: wine.grape,
         type: wine.style,
+        colour: wine.colour,
+        sparkling: wine.sparkling,
+        abv: wine.abv === null ? null : Number(wine.abv),
         score: decimalToNumber(f.rating.score),
         flavors: f.rating.flavors,
         // Wire parity with the feed's checkin payload — the PR D profile

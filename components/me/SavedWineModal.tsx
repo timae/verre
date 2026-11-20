@@ -11,10 +11,11 @@ import { Modal } from '@/components/ui/Modal'
 import { StarRating } from '@/components/ui/StarRating'
 import { formatCode } from '@verre/core'
 import { ICO } from '@/lib/wineTypeColors'
+import { kindToken } from '@verre/core'
 
 type Bookmark = {
   wine_id: string; name: string; producer: string | null; vintage: string | null
-  grape: string | null; style: string | null; image_url: string | null
+  grape: string | null; style: string | null; colour?: string | null; sparkling?: boolean; abv?: number | null; image_url: string | null
   session_code: string | null
   session_deleted?: boolean
 }
@@ -31,9 +32,9 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
   // ratings of differently-spelled same-name wines once the §8 scrub nulls
   // session_code on both rows.
   const rating = ratings.find(r => r.wine_id === wine.wine_id)
-  // Read surface (§6d): per-present-key array. Style comes from the bookmark
-  // (no type on the rating).
-  const fl = perRatingAxes(rating?.flavors, resolveAxesColoured('wine', wine.style))
+  // Read surface (§6d): per-present-key array. The kind comes from the bookmark's
+  // bottle (no kind on the rating).
+  const fl = perRatingAxes(rating?.flavors, resolveAxesColoured('wine', wine))
   const wheelRef = useRef<HTMLDivElement>(null)
 
   return (
@@ -47,7 +48,7 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
         )}
 
         <div style={{display:'flex',alignItems:'flex-start',gap:12,marginBottom:16}}>
-          {!wine.image_url && <span style={{fontSize:28}}>{ICO[wine.style||'']||'🍷'}</span>}
+          {!wine.image_url && <span style={{fontSize:28}}>{ICO[kindToken(wine)]||'🍷'}</span>}
           <div style={{flex:1, minWidth:0}}>
             <WineIdentity wine={wine} size="card" />
             {wine.session_deleted ? (

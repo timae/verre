@@ -14,10 +14,12 @@ import {
   fillFlavourZeros,
   type StructureAxis,
   type WineStyle,
+  type AxisKind,
+  type BottleKind,
 } from '@verre/core'
 
 export { resolveAxes, perRatingAxes, fillFlavourZeros }
-export type { StructureAxis, WineStyle }
+export type { StructureAxis, WineStyle, AxisKind, BottleKind }
 
 // Renderer-facing axis shape: the neutral core axis + a web colour. PolarChart /
 // RadarChart / FlavorChips consume `FlItem[]` via their `fl` prop, so colour is
@@ -85,8 +87,8 @@ export function withColours(axes: StructureAxis[]): FlItem[] {
 
 // Convenience: the colour-bearing resolved set for a (category, style). Most web
 // call sites want this directly.
-export function resolveAxesColoured(category: string | null | undefined, style: string | null | undefined): FlItem[] {
-  return withColours(resolveAxes(category, style))
+export function resolveAxesColoured(category: string | null | undefined, kind: AxisKind): FlItem[] {
+  return withColours(resolveAxes(category, kind))
 }
 
 // Server-side write-boundary normalisation — the registry gate (§6g) + the
@@ -114,14 +116,14 @@ export function resolveAxesColoured(category: string | null | undefined, style: 
 export function gateAndFillFlavors(
   flavors: Record<string, number> | null | undefined,
   category: string | null | undefined,
-  style: string | null | undefined,
+  kind: AxisKind,
 ): { value: Record<string, number>; error?: undefined } | { value?: undefined; error: string } {
   const src = flavors ?? {}
-  const allowed = new Set(resolveAxes(category, style).map(a => a.k))
+  const allowed = new Set(resolveAxes(category, kind).map(a => a.k))
   const kept: Record<string, number> = {}
   for (const [key, v] of Object.entries(src)) {
     if (allowed.has(key)) kept[key] = v
     else if (v !== 0) return { error: `unknown flavor key: ${key}` }
   }
-  return { value: fillFlavourZeros(kept, category, style) }
+  return { value: fillFlavourZeros(kept, category, kind) }
 }

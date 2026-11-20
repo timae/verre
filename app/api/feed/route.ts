@@ -259,6 +259,11 @@ export async function GET(req: NextRequest) {
             vintage: wine.vintage,
             grape: wine.grape,
             type: wine.style,
+            // The bottle's kind (its snapshot; the axes read `sparkling`) and
+            // alcohol (catalogue model change step 4).
+            colour: wine.colour,
+            sparkling: wine.sparkling,
+            abv: wine.abv === null ? null : Number(wine.abv),
             score: decimalToNumber(f.rating.score),
             notes: f.rating.notes,
             // Image priority: the rating's own photo first (the user's

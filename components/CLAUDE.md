@@ -23,11 +23,14 @@ Local rules for `components/*`. Root CLAUDE.md still applies; this is overlay co
 - **`<AromaReadChips>`** (`components/ui/AromaReadChips.tsx`) — canonical read-side aroma-descriptor rendering: someone's stored `aromas: {a, m, p?}[]` as family-tinted chips ("Strawberry, jammy"), pronounced-first then grouped by family (aroma-layer.md §7 — the web twin of the native `AromaReadChips`). Family colours come from `aromaFamilyColour` in `lib/flavours.ts` (provisional, beside `WEB_PALETTE`). Read-only by design — web aroma *input* is deferred to the redesign; never render aroma selections inline elsewhere. No blind fork: aromas are the taster's own perception, render them on blind wines exactly like score/flavors.
 - **`<Avatar>`** (`components/profile/Avatar.tsx`) — canonical user-avatar circle. Renders `<img>` when `imageUrl` is set, falls back to the user's initial letter on an accent-tinted background. Single `size` prop (pixels). Use this everywhere a user circle appears (ProfileHeader, ProfilePreviewInline, CheckinCard author byline, ProfilePanelPeople rows, AvatarEditor empty state). Two thin client wrappers add behavior: `<EditableAvatar>` (own avatar — tap opens AvatarEditor with optimistic UI + TanStack invalidation on save), `<ZoomableAvatar>` (other users — tap opens the full-screen lightbox).
 
+- **`<CatalogPicker>`** (`components/wine/CatalogPicker.tsx`) — the plain catalogue picker of the add / edit / check-in sheets (catalogue model change step 4): producer first (search, or browse a chosen producer's wines A to Z), then the wine, then its year (the vintage lookup, "year unknown", or add a missing year); create options only for a signed-in caller (a guest picks). Hands back a `CatalogChoice` (a pick of ids, or the add flow's `create` body). The type picker is red / white / rosé / sparkling plus an optional abv: alcohol-free is derived (≤ 0.5 %), never a choice. A search 404 reads "Adding bottles is unavailable right now." (the kill switch).
+- **`<ChosenWine>`** (`components/wine/ChosenWine.tsx`) — the summary of a bottle's chosen wine (name + year, producer, one action). 🔒 The sheets FREEZE a choice into it once it may have landed (a 2xx, or a lost answer; never a definite refusal, which keeps the form), so a retry re-sends the same choice and never an edited `create` (which would mint a second entry); "change wine" reopens the picker and offers "keep …" back (the chips restored); a changed wine after a lost first post re-links through the follow-up PATCH (`firstPosted`), applied only once that request succeeded.
+
 ## Pending extractions
 
 Track for next time you touch the relevant area:
 
-- `<WineIdentityFields>` — sibling for create/edit forms (CheckinModal, AddWineModal). Same canonical field order as `<WineIdentity>`.
+- (`<WineIdentityFields>` for the create / edit forms is superseded: a bottle's identity comes from `<CatalogPicker>` since step 4.)
 
 ## Modal primitive
 

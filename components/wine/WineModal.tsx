@@ -479,8 +479,9 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       // to {}. Also the edit-path transform (§6g) — only registry keys survive,
       // so a stale descriptor row can't 400 the write gate. Keeps web + native
       // writing ONE shape into the shared ratings.flavors column.
-      const ratedStyle = wines.find(w => w.id === ratedWineId)?.type ?? null
-      const body = { wineId: ratedWineId, ...value, flavors: fillFlavourZeros(value.flavors, 'wine', ratedStyle) }
+      // The bottle's kind: Bubbles from `sparkling` (catalogue model change step 4).
+      const ratedKind = wines.find(w => w.id === ratedWineId) ?? null
+      const body = { wineId: ratedWineId, ...value, flavors: fillFlavourZeros(value.flavors, 'wine', ratedKind) }
       const res = await sessionFetch(code, `/api/session/${code}/rate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -969,14 +970,11 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
         {forPane === 'rate' && (
           <RatingPane
             key={forWineId}
-            // Pass the real style even when blind-redacted: style (red/white/
-            // spark/rose) is NOT identity (the taster perceives fizz from the
-            // glass), so the structure wheel should offer the right axes — e.g.
-            // Bubbles on a blind sparkling wine. The server preserves `type` on
-            // a _blind wine (lib/wineRedaction.ts); discarding it here would
-            // give blind spark only the base 8 axes, inconsistent with feed/
-            // compare. (Was `red ? null` for the old descriptor-set hiding.)
-            wineType={w.type}
+            // The bottle's kind even when blind-redacted: colour and sparkling
+            // are NOT identity (the taster perceives fizz from the glass), so
+            // the wheel offers the right axes (Bubbles on a blind sparkling
+            // wine). The server keeps them on a _blind row (lib/wineRedaction.ts).
+            kind={w}
             value={forRating}
             onChange={interactive ? setRating : () => {}}
           />

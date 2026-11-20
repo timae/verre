@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma'
+import { resolveEffectiveIds, MERGE_DEPTH_CAP } from '@/lib/catalogEntries'
 
 // ── catalogSearch: THE fuzzy matcher. There is exactly one. ────────────────
 //
@@ -228,46 +229,8 @@ function statusesFor(scope: MatchScope): readonly string[] {
 // (links_to IS NOT NULL)` CHECKs make a self-link or a pointerless tombstone
 // impossible, but a longer cycle is not structurally excluded, so the cap is
 // real defence rather than decoration.
-const MERGE_DEPTH_CAP = 10
-
-async function resolveEffectiveIds(
-  table: 'producers' | 'wine_products',
-  ids: string[],
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>()
-  if (!ids.length) return out
-  let frontier = [...new Set(ids)]
-  const seen = new Set(frontier)
-  // Each round follows one hop for every id still pointing somewhere.
-  const chain = new Map<string, string>()
-  for (let depth = 0; depth < MERGE_DEPTH_CAP && frontier.length; depth++) {
-    const rows = await prisma.$queryRawUnsafe<{ id: string; links_to: string | null }[]>(
-      `SELECT id, links_to FROM ${table} WHERE id = ANY($1)`,
-      frontier,
-    )
-    const next: string[] = []
-    for (const r of rows) {
-      if (!r.links_to) continue
-      chain.set(r.id, r.links_to)
-      if (!seen.has(r.links_to)) { seen.add(r.links_to); next.push(r.links_to) }
-    }
-    frontier = next
-  }
-  // Walk each starting id to the end of its chain, bounded by the same cap.
-  for (const id of ids) {
-    let cur = id
-    const walked = new Set([cur])
-    for (let i = 0; i < MERGE_DEPTH_CAP; i++) {
-      const nxt = chain.get(cur)
-      if (!nxt || walked.has(nxt)) break
-      walked.add(nxt)
-      cur = nxt
-    }
-    out.set(id, cur)
-  }
-  return out
-}
-
+// The chain walk itself (visited set + depth cap) is the ONE resolver in
+// lib/catalogEntries.ts, shared with every other catalogue read.
 // 🔒 Drop lifecycle state from ADD-TIME results — the ruling-3 contingency
 // (see the ProducerMatch note). Applied HERE, inside the search functions,
 // rather than in the route: a strip that lived in one caller would leak the
@@ -521,6 +484,36 @@ export async function searchProducts(
   const near = withinThreshold(rows)
   const resolved = (await resolveProductMatches(near, statuses)).sort(byRank)
   return stripAddTimeFields(dropRankFields(resolved.slice(0, limit)), scope)
+}
+
+// The wines of ONE chosen producer, with no query or a query shorter than a
+// trigram (review r1: such a name could not be found at all, which nudged a
+// person to create a duplicate; r2: a 1–2 character query filters by PREFIX of
+// the folded name, so a short name beyond the first page is still found).
+// Alphabetical by the folded name, add-time statuses, shared scope, the
+// producer's alias group like the scoped search; merges resolved the same way.
+// Two statements; the second reads one producer's products (the
+// product_producers producer index), so the prefix filter is cheap.
+export async function browseProducts(producerId: string, opts: { limit?: number; prefix?: string } = {}): Promise<ProductMatch[]> {
+  // One over the page size is allowed here (the answer's "is there more").
+  const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? MAX_LIMIT)), MAX_LIMIT + 1)
+  const statuses = statusesFor('add')
+  const groupIds = await producerAliasGroup(producerId)
+  if (!groupIds.length) return []
+  const rows = await prisma.$queryRawUnsafe<MatchedProduct[]>(
+    `SELECT wp.id, wp.name, wp.style, wp.colour, wp.sparkling, wp.region, wp.status, wp.links_to AS "linksTo",
+            1::float AS score, false AS exact, 0::float AS sim,
+            pr.id AS "producerId", pr.name AS "producerName", pr.status AS "producerStatus"
+       FROM wine_products wp
+       JOIN product_producers pp ON pp.product_id = wp.id AND pp.role = 'lead'
+       JOIN producers pr ON pr.id = pp.producer_id
+      WHERE wp.status = ANY($1) AND wp.scope = 'shared' AND pp.producer_id = ANY($2)
+        AND starts_with(wp.name_folded, catalog_fold_v1($3))
+      ORDER BY wp.name_folded, wp.id
+      LIMIT ${limit}`,
+    [...statuses, 'linked'], groupIds, (opts.prefix ?? '').trim().slice(0, 2))
+  const resolved = (await resolveProductMatches(rows, statuses)).sort((a, b) => a.name.localeCompare(b.name))
+  return stripAddTimeFields(dropRankFields(resolved), 'add')
 }
 
 type MatchedProduct = ProductMatch & RankFields & { linksTo: string | null; producerStatus: string }

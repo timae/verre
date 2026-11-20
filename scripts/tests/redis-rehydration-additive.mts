@@ -17,6 +17,7 @@
 // --worker) and SIGKILL it at a hook; assertions run here, in a separate
 // process, so no cleanup of the dead worker can help it.
 import { nanoid } from 'nanoid'
+import { linkLegacy } from './lib/catalogFixture.mts'
 import { toWire, fromWire, wireParams } from './lib/wireIds.mts'
 import { fixtureUsername } from './lib/fixtureUsername.mjs'
 import { spawn } from 'node:child_process'
@@ -123,6 +124,8 @@ function request(method: string, path: string, actor: Actor = {}, body?: unknown
 type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>
 // Wire ids in, internal ids out (scripts/tests/lib/wireIds.mts).
 async function call(handler: unknown, method: string, path: string, actor: Actor, body?: unknown, params: Record<string, string> = {}) {
+  // Catalogue model change step 4: a typed bottle becomes a minted entry + its pick.
+  body = await linkLegacy(method, path, body)
   const res = await (handler as Handler)(request(method, path, actor, await toWire(body)), { params: Promise.resolve(await wireParams(params)) })
   let json: unknown = null
   try { json = await fromWire(await res.json()) } catch {}

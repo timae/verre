@@ -12,6 +12,7 @@
 //   DATABASE_URL=postgres://…/<throwaway> REDIS_URL=redis://…:<throwaway> \
 //   AUTH_SECRET=… npx tsx scripts/tests/occurrence-persistence.mts [--only <section>]
 import { toWire, fromWire, wireParams } from './lib/wireIds.mts'
+import { linkLegacy, entryFor } from './lib/catalogFixture.mts'
 import { fixtureUsername } from './lib/fixtureUsername.mjs'
 import { oldMirrorLineup } from './lib/oldMirrorLineup.mts'
 import { spawn, execFileSync } from 'node:child_process'
@@ -44,6 +45,8 @@ function request(method: string, path: string, actor: Actor = {}, body?: unknown
 }
 type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>
 async function call(handler: unknown, method: string, path: string, actor: Actor, body?: unknown, params: Record<string, string> = {}) {
+  // Catalogue model change step 4: a typed bottle becomes a minted entry + its pick.
+  body = await linkLegacy(method, path, body)
   if (typeof handler !== 'function') return { status: -1, json: { error: 'no such handler (not built yet)' } as Record<string, unknown>, headers: new Headers() }
   const res = await (handler as Handler)(request(method, path, actor, await toWire(body)), { params: Promise.resolve(await wireParams(params)) })
   let json: unknown = null
@@ -353,13 +356,15 @@ async function revision() {
   const snap = await prisma.$queryRaw<{ style: string | null; colour: string | null; sparkling: boolean; origin: string | null }[]>`SELECT style, colour, sparkling, origin FROM wines WHERE id = ${w1}`
   check('(3d) an edited type writes style AND its colour / sparkling in the same statement, origin session', snap[0]?.style === 'white' && snap[0]?.colour === 'white' && snap[0]?.sparkling === false && snap[0]?.origin === 'session', snap[0])
 
-  // The style rule (spec § 8a.0): an unrelated edit of a `nonalc` bottle keeps
-  // the token (no colour / sparkling pair can express it), its snapshot neither,
-  // abv 0; a type change re-derives the pair in the same statement.
+  // The style rule (spec § 8a.0): since every new bottle links (step 4) its
+  // token is derived from the entry's PAIR, so an alcohol-free entry (abv 0,
+  // no colour) gives no token; the alcohol-free fact is the abv, and an
+  // unrelated edit keeps it. (A legacy `nonalc` token surviving an unrelated
+  // edit: catalog-every-write.mts § 9c.) A re-link re-derives the pair.
   const na = await addWine(s.code, { cookie: H.cookie }, 'Alcohol Free Bottle', { type: 'nonalc' })
-  await editWine(s.code, { cookie: H.cookie }, na, { name: 'Alcohol Free Bottle', type: 'nonalc', description: 'Unrelated edit' })
+  await editWine(s.code, { cookie: H.cookie }, na, { description: 'Unrelated edit' })
   const naRow = await prisma.$queryRaw<{ style: string | null; colour: string | null; sparkling: boolean; abv: unknown; description: string | null }[]>`SELECT style, colour, sparkling, abv, description FROM wines WHERE id = ${na}`
-  check('(3d) a nonalc bottle edited for an unrelated field keeps nonalc, neither colour nor sparkling, abv 0', naRow[0]?.style === 'nonalc' && naRow[0]?.colour === null && naRow[0]?.sparkling === false && Number(naRow[0]?.abv) === 0 && naRow[0]?.description === 'Unrelated edit' && (await redisWines(s.code)).find(w => w.id === na)?.type === 'nonalc', naRow[0])
+  check('(3d) a linked alcohol-free bottle edited for an unrelated field: no token, neither colour nor sparkling, abv 0 kept', naRow[0]?.style === null && naRow[0]?.colour === null && naRow[0]?.sparkling === false && Number(naRow[0]?.abv) === 0 && naRow[0]?.description === 'Unrelated edit' && (await redisWines(s.code)).find(w => w.id === na)?.type === '', naRow[0])
   await editWine(s.code, { cookie: H.cookie }, na, { name: 'Alcohol Free Bottle', type: 'spark' })
   const spRow = await prisma.$queryRaw<{ style: string | null; colour: string | null; sparkling: boolean }[]>`SELECT style, colour, sparkling FROM wines WHERE id = ${na}`
   check('(3d) …a type change to spark sets sparkling, colour unknown, in the same statement', spRow[0]?.style === 'spark' && spRow[0]?.colour === null && spRow[0]?.sparkling === true, spRow[0])
@@ -568,9 +573,10 @@ async function oldMirror() {
   section('§ 7 the OLD mirrorLineup (main) over a line-up the new code projected changes no row')
   const H = await mkUser('Host Old')
   const s = await promotedMoment(H)
+  // The bottle's grape, region and origin come from its entry since step 4.
   const product = await prisma.$transaction(async (tx) => {
     const p = await createProducer({ name: `${TAG} Old Producer` }, H.id, tx)
-    const pr = await createProduct({ name: `${TAG} Old Wine`, producerId: p.id, colour: 'red' }, H.id, [], tx)
+    const pr = await createProduct({ name: `${TAG} Old Wine`, producerId: p.id, colour: 'red', grapes: ['Pinot Noir'], region: 'Burgundy', country: 'FR' }, H.id, [], tx)
     const v = await createVintage(pr.id, 2019, H.id, null, tx)
     return { productId: pr.id, vintageId: v.id }
   })
@@ -578,7 +584,12 @@ async function oldMirror() {
     producer: 'Maison Test', vintage: '2019', grape: 'Pinot Noir', type: 'red', description: 'A description.', region: 'Burgundy',
     country: 'FR', vinification: 'Oak, 12 months.', purchaseUrl: 'https://shop.example/wine', ...product,
   })
-  const nonalc = await addWine(s.code, { cookie: H.cookie }, 'Alcohol Free', { type: 'nonalc' })
+  // A LEGACY alcohol-free bottle (a linked one has no token since step 4):
+  // written as the expand migration left such rows, then projected by the
+  // reveal below like every bottle of the record.
+  const nonalc = nanoid()
+  await prisma.$executeRaw`INSERT INTO wines (id, session_id, origin, name, style, colour, sparkling, abv, position)
+    VALUES (${nonalc}, ${(await liveRow(s.code))!.id}, 'session', 'Alcohol Free', 'nonalc', NULL, false, 0, 1)`
   if (imageIO) {
     const real = imageIO.upload
     imageIO.upload = async (keyBase) => `https://s3.test/verre/${keyBase}.png`
@@ -1041,9 +1052,14 @@ async function codex1() {
   const cid = String(ci.json?.id)
   const occ = (await prisma.$queryRaw<{ wine_id: string }[]>`SELECT r.wine_id FROM feed_items fi JOIN ratings r ON r.id = fi.rating_id WHERE fi.id = ${Number(cid)}`)[0].wine_id
   await resetLimits()
-  await call(checkinRoute.PATCH, 'PATCH', `/api/checkins/${cid}`, { cookie: U.cookie }, { type: 'spark' }, { id: cid })
+  // Since step 4 the kind is the entry's: a re-link to a sparkling wine (a
+  // type-only edit is ignored, identity text never becomes the snapshot).
+  const fizz = await entryFor('C1 Fizz', 'spark', { producer: 'P2' })
+  await call(checkinRoute.PATCH, 'PATCH', `/api/checkins/${cid}`, { cookie: U.cookie }, { type: 'red' }, { id: cid })
+  const unchanged = (await prisma.$queryRaw<{ style: string | null }[]>`SELECT style FROM wines WHERE id = ${occ}`)[0]?.style
+  await call(checkinRoute.PATCH, 'PATCH', `/api/checkins/${cid}`, { cookie: U.cookie }, { productId: fizz.productId, vintageId: null }, { id: cid })
   const sp = await prisma.$queryRaw<{ style: string | null; colour: string | null; sparkling: boolean; producer: string | null }[]>`SELECT style, colour, sparkling, producer FROM wines WHERE id = ${occ}`
-  check('(15d) a type-only edit re-derives the pair from the stored style (spark: sparkling, colour unknown) and leaves the producer', sp[0]?.style === 'spark' && sp[0]?.colour === null && sp[0]?.sparkling === true && sp[0]?.producer === 'P1', sp[0])
+  check('(15d) a type-only edit changes nothing; a re-link writes the new entry\'s pair (spark: sparkling, colour unknown) and producer', unchanged === 'red' && sp[0]?.style === 'spark' && sp[0]?.colour === null && sp[0]?.sparkling === true && sp[0]?.producer === 'P2', { unchanged, row: sp[0] })
   await prisma.$executeRaw`UPDATE wines SET producer = 'Changed Elsewhere' WHERE id = ${occ}`
   await resetLimits()
   await call(checkinRoute.PATCH, 'PATCH', `/api/checkins/${cid}`, { cookie: U.cookie }, { notes: 'only a note' }, { id: cid })

@@ -8,7 +8,7 @@ import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 type CheckinPayload = {
   id: number; wineName: string; producer?: string|null; vintage?: string|null
-  grape?: string|null; type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
+  grape?: string|null; colour?: string|null; sparkling?: boolean; abv?: number|null; score?: number|null; notes?: string|null; imageUrl?: string|null
   venueName?: string|null; city?: string|null; country?: string|null
   flavors?: Record<string,number>; likeCount: number; liked?: boolean; createdAt?: string
   aromas?: { a: string; m: string | null; p?: boolean }[]
@@ -103,7 +103,7 @@ export function FeedClient({ myId }: { myId: string }) {
                 producer: item.checkin.producer,
                 vintage: item.checkin.vintage,
                 grape: item.checkin.grape,
-                type: item.checkin.type,
+                sparkling: item.checkin.sparkling,
                 imageUrl: item.checkin.imageUrl,
                 venueName: item.checkin.venueName,
                 city: item.checkin.city,

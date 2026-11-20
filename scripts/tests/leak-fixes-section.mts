@@ -672,7 +672,9 @@ export async function leakFixes(h: Harness) {
   const gcode = `G${TAG.slice(-9)}`.toUpperCase()
   const [gs] = await prisma.$queryRaw`INSERT INTO sessions (code, name, host_user_id, created_at, date_from, blind) VALUES (${gcode}, 'Grapes', ${Hg.id}, now(), now() + interval '1 day', true) RETURNING id` as { id: number }[]
   const gw = (n: string) => `gw${TAG.slice(-8)}${n}`
-  await prisma.$executeRaw`INSERT INTO wines (id, session_id, name, grape, style) VALUES (${gw('a')}, ${gs.id}, 'Open', 'Merlot', 'white'), (${gw('b')}, ${gs.id}, 'Masked', 'Syrah', 'red')`
+  // Every writer that sets `style` sets its snapshot pair in the same statement
+  // (catalogue model change § 8a.0); the badges count the pair since step 4.
+  await prisma.$executeRaw`INSERT INTO wines (id, session_id, name, grape, style, colour) VALUES (${gw('a')}, ${gs.id}, 'Open', 'Merlot', 'white', 'white'), (${gw('b')}, ${gs.id}, 'Masked', 'Syrah', 'red', 'red')`
   await prisma.$executeRaw`INSERT INTO wines (id, session_id, name, grape) VALUES (${gw('d')}, NULL, 'Standalone', 'Gamay')`
   await prisma.$executeRaw`INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, rated_at) VALUES (${gw('d')}, ${Rg.id}, NULL, 'standalone', 'Rae', 3, now())`
   await prisma.$executeRaw`INSERT INTO wines (id, session_id, name, grape) VALUES (${gw('c')}, NULL, 'Orphaned', 'Nebbiolo')`

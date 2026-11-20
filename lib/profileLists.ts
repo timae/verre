@@ -16,7 +16,7 @@
 
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { decimalToNumber, stylesWithAxis, type AromaFilterMatch } from '@verre/core'
+import { decimalToNumber, axisNeedsSparkling, type AromaFilterMatch } from '@verre/core'
 import { cravingSessionIdSql, hiddenSql, redactedSql } from '@/lib/outsideView'
 import type { ProfileGateOk } from '@/lib/profileVisibility'
 import { encodeKeyCursor, parseKeyCursor, usKeySql } from '@/lib/keyCursor'
@@ -80,15 +80,15 @@ export type ImpressionFilters = {
 
 // A structure range on one axis (Filter Impressions, ruled 2026-11-14): the
 // rating must carry the axis (0 = perceived None counts, an absent key does
-// not: nobody rated it) with a value inside the range. An axis only some
-// styles have (Bubbles) also needs the wine to be one of them NOW: the post's
-// wheel draws the current style's axes, and a session wine re-typed from
+// not: nobody rated it) with a value inside the range. An axis only a
+// sparkling bottle has (Bubbles) also needs the bottle to be sparkling NOW
+// (`w.sparkling`, its snapshot; catalogue model change step 4): the post's
+// wheel draws the bottle's current axes, and a session wine re-typed from
 // sparkling keeps its ratings' bubbles value (Codex review, 2026-11-14).
 function structureSql(s: { k: string; lo: number; hi: number }): Prisma.Sql {
-  const styles = stylesWithAxis(s.k)
   return Prisma.sql`(jsonb_typeof(r.flavors -> ${s.k}::text) = 'number'
     AND (r.flavors ->> ${s.k}::text)::numeric BETWEEN ${s.lo} AND ${s.hi}
-    ${styles ? Prisma.sql`AND w.style = ANY(${styles}::text[])` : Prisma.empty})`
+    ${axisNeedsSparkling(s.k) ? Prisma.sql`AND w.sparkling` : Prisma.empty})`
 }
 
 // One aroma pick: some stored selection satisfies it (core/aroma/filter.ts is

@@ -90,7 +90,13 @@ below are edited in place to match; where a ruling stands unchanged it is not re
   the alcohol-free choice leaves the picker **in this change** (steps 4 and 7). Legacy
   alcohol-free bottles (`style = 'nonalc'`) read as abv 0 (what the picker meant). The
   bottle's snapshot keeps the abv (§ 1). Catalogue data never writes 0 to mean
-  "alcohol-free, value unknown" (the step 1b feedback asks for the label value or empty). The flow
+  "alcohol-free, value unknown" (the step 1b feedback asks for the label value or empty).
+  ✅ **Ruled 2026-11-20 (Simon, step 4):** a typed abv lands on the VINTAGE created with it
+  when the person gives a year (or NV), else on the product (never a wrong number for
+  another year; a year added later shows none until typed); a PICKED existing entry gets no
+  abv field (that would be an edit of a shared entry, § 3). 🔒 **A blind row shows no abv and
+  no alcohol-free mark** until the reveal (colour and sparkling stay: the axes need them;
+  alcohol is neither needed for rating nor visible in the glass). The flow
   lets someone **find the producer first** and create only the wine under it, and **add
   a missing vintage to an existing wine**. Both are existing add-flow branches
   (`lib/catalogAddFlow.ts` branch 3 and branch 2); they need screens, not server work.
@@ -120,7 +126,7 @@ below are edited in place to match; where a ruling stands unchanged it is not re
 | **Wine-photo retention D8/D9** | The predicate ("no rating and no bookmark references the wine", `app/api/session/[code]/route.ts` DELETE and `lib/accountDelete.ts`, written out twice) moves onto occurrences. It keeps its bookmark half because a bookmark keeps its source pointer (§ 5). The wine DELETE and PATCH reclaim without it, by design (the host removes the bottle). |
 | **Post gate + `lib/outsideView.ts`** | The `w` alias becomes the occurrence (`revealed_at`, `added_by_identity_id`). A craving finds its moment through its source occurrence, as today (`cravingSessionIdSql`: `w.session_id`, else that occurrence's session ratings), so the blind / hidden-line-up rule keeps working; a craving whose source is hidden for its owner is LEFT OUT of the owner's lists (§ 5; today it shows as a blind row). A craving with no source (its bottle deleted, or a later save from a product page) has no moment: shown on your own list, dropped from someone else's (today's rule, `lib/profileLists.ts:245`). |
 | **Profile lists, tiles** | Impressions join ratings → occurrence; display fields come from the catalogue entry, else the snapshot. "Both had" stays *same occurrence* (both rated that bottle at that moment); a product-level "both had" is new aggregation, not part of this change. Cravings key on the bookmark id (shared with Moment Visibility step 3, § 7). Tile pools read occurrence photos; pins are URLs and keep working. |
-| **Blind redaction** | The line-up item carries catalogue identity under ONE key that `redactWine` replaces wholesale (it spreads `...rest`, so a flat new field leaks by default). Catalogue ids, names, grapes, region and a catalogue photo are all label identity; so are the snapshot's name, producer and vintage. 🔒 `colour` and `sparkling` stay on a blind row, as `type` does today (`lib/wineRedaction.ts:53-59`): the taster needs them for the axes, and they are what a pour shows anyway. |
+| **Blind redaction** | The line-up item carries catalogue identity under ONE key that `redactWine` replaces wholesale (it spread `...rest`, so a flat new field leaked by default; ✅ step 4 builds the blind row as an allow-list). Catalogue ids, names, grapes, region and a catalogue photo are all label identity; so are the snapshot's name, producer and vintage. 🔒 `colour` and `sparkling` stay on a blind row, as `type` did (`lib/wineRedaction.ts`): the taster needs them for the axes, and they are what a pour shows anyway. 🔒 The abv does NOT (ruled 2026-11-20): `abv: null`, no alcohol-free mark. ✅ Built in step 4: `entry: null`, no flat ids on the wire at all. |
 
 ---
 
@@ -233,7 +239,7 @@ occurrence is the unit, not the catalog link.
 | `category`, `style` | Catalog entry | Same. `style` stays on the row until the contract migration (§ 12 step 9) as the legacy source of the snapshot |
 | *(new)* `origin` | Occurrence | `session` / `standalone`; `session_id IS NULL` is ambiguous (orphaning, above) |
 | `region` | Catalog entry (`wine_products.region`) | Same. The occurrence keeps its stored value as history |
-| `country` (of origin), `description`, `vinification` | **New catalogue columns on `wine_products`** (Simon, 2026-11-18: the catalogue had no place for them; `producers.country` is the company's home, never the wine's origin). Contract below | A contract change, announced to the catalogue-maintenance side before the push (§ 9 condition 3a). The occurrence keeps its stored values as history; nothing is dropped in step 9 |
+| `country` (of origin), `description`, `vinification` | **New catalogue columns on `wine_products`** (Simon, 2026-11-18: the catalogue had no place for them; `producers.country` is the company's home, never the wine's origin). Contract below. 🔒 **A person's "About" / "Vinification" text stays ON THE BOTTLE** (ruled 2026-11-20, Simon, step 4): the occurrence's `description` / `vinification`, like the purchase link, never written into the shared entry by a user mint. Contract v3 restricts the catalogue's text to licensed sources or the catalogue-maintenance side (pasted producer or shop copy would be a licence problem), which conflicted with the user-typed text this row had sent there; the catalogue columns stay for review or a licensed source. The origin country IS a catalogue fact a user mint may set | A contract change, announced to the catalogue-maintenance side before the push (§ 9 condition 3a). The occurrence keeps its stored values as history; nothing is dropped in step 9 |
 | `session_id` | Occurrence | Per-event; null for standalone |
 | `added_by_identity_id`, `added_by_display_name` | Occurrence | Who brought this bottle, this time |
 | `revealed_at` | Occurrence | Per-tasting blind state |
@@ -337,7 +343,9 @@ first deploy of this change.
 needs a search, and `GET /api/catalog/search` answers 401 to anyone not signed in
 (`app/api/catalog/search/route.ts:26`, on purpose: no open enumeration channel). Without
 more, a guest who hosts or brings bottles could add none. So a **moment-scoped search**:
-under `/api/session/<code>/…`, behind the entrance gate (`openSessionFor`, so a wrong
+under `/api/session/<code>/…` (✅ built in step 4: `GET /api/session/<code>/catalog/search`, the
+same `kind` = `producer` / `product` / `vintages` answers as the global route through one
+module, `lib/catalogSearchAnswer.ts`), behind the entrance gate (`openSessionFor`, so a wrong
 code pays the wrong-code budget like every moment route), for a caller who may add
 bottles to THAT moment (host, cohost, provider: the same test as the wine POST),
 budgeted per user when signed in (`rl:catalog-search`, shared with the global route so
@@ -1537,6 +1545,21 @@ dry run counts them, `inlinePhotos`); (3) an OLD instance's moment delete leaves
 for whichever instance serves the request: "every instance" means sampling until the old commit
 stops appearing, or the platform's own release view.
 
+⚠️ **Read-path residuals named in step 4's review** (ruled 2026-11-20: logged, fixed later in one
+pass on the read path, not in step 4). A line-up read combines reads taken moments apart, and two
+combinations can serve one caller one poll of bottles they should not see; each needs two host
+acts inside that poll's few milliseconds. (1) *Settings older than the grant* (since rehydration
+release B, in production): the host turns Blind for Everyone on, then makes the polling taster a
+cohost, between the entrance's cached read and the grant read; settings and roles never bump
+`lineup_revision`, so the fast path (`servedLineup`, revision unchanged) serves the cached line-up
+with the old settings and the new role, unmasked. (2) *Bottles older than the settings* (step 3):
+the busy / error fallback reads the record's bottles, then the settings, then the grant, and never
+checks the grant's revision against the bottles it read: a re-link and Hide Line-up off between
+those reads serve the OLD, never-shown bottle unhidden. The fix shape: bind bottles, settings and
+the grant to one consistent view (the fallback: compare the fresh grant's revision with the one
+read with the bottles and answer 503 on a change; the fast path: a version that settings and role
+writes bump as well).
+
 🔒 **Image attach is a separate operation from create.** A check-in's photo goes through its
 own edit call (`PATCH /api/checkins/<id>` with `{imageData}`, step 3); ruled 2026-11-20 (Simon):
 that first photo, sent alone within 10 minutes of posting, costs no second slot of the shared
@@ -1629,8 +1652,13 @@ every user-minted entry is a duplicate candidate.
 profile, or an average quietly excludes half its ratings. This is exactly the recurring
 defect class from phases 1 and 2 — a guard that looks correct against a fresh fixture.
 **Mitigation: one shared resolver that every aggregate goes through, not discipline at
-each call site.** Same reasoning as `lib/profileVisibility.ts` and `lib/catalogWrite.ts`;
-consider a CI gate like `check-identity-writes.mjs` if call sites proliferate.
+each call site.** Same reasoning as `lib/profileVisibility.ts` and `lib/catalogWrite.ts`.
+✅ **Decided and built in step 4:** the resolver is `lib/catalogEntries.ts` (`resolveEffectiveIds`,
+`loadEntries`, `linkableLink`, `productVintages`; `lib/catalogSearch.ts` uses its walk), and a CI
+census, `scripts/check-catalog-reads.mjs` (`check-identity-writes.yml`), lists every raw read of
+the five catalogue tables outside those two modules with its reason (validation reads that refuse
+a tombstone; nothing shown or counted), with its own negative control; a new read fails the build
+until it is reviewed. Step 5's reads (feed, Saved, profiles) arrive through the resolver.
 
 #### 🔒 Collaborator links must resolve too — a named gap, recorded before it bites
 
@@ -1892,8 +1920,11 @@ Carried from phase 2, both now due, because this change OPENS the fence:
    land in Postgres, never vanish. This is the T1 race; it cannot be verified by
    inspection. The rehydration's cutover suite drives such races through
    `mutationHooks`; extend it rather than write a second harness.
-6. **Interleaved concurrent-PATCH test run, and search capacity decided** (✅ capacity decided
-   2026-11-18, above; the PATCH test is step 4), before
+6. ✅ **Interleaved concurrent-PATCH test run, and search capacity decided** (capacity decided
+   2026-11-18, above; ✅ the PATCH test built in step 4, `scripts/tests/catalog-every-write.mts`
+   § 10, in `check-schema.yml`: two real overlapping requests through `mutationHooks`; it failed
+   on the step-3 code first, a cosmetic edit queued behind a re-link put the old wine's name and
+   colour on the new link), before
    release day: the fence opens with the code (§ 7), because a closed fence means only
    staff can add a bottle.
 
@@ -1902,7 +1933,8 @@ Carried from phase 2, both now due, because this change OPENS the fence:
 - ✅ ~~Revisit error handling on every `pgUpsertWine` call site~~ — the calls are gone;
   what replaces this item is removing `bestEffortMirror` from occurrence content in
   promoted sessions (§ 8a).
-- Decide whether the merge resolver warrants a CI gate (§ 8b).
+- ✅ ~~Decide whether the merge resolver warrants a CI gate (§ 8b)~~ — yes: the census
+  `scripts/check-catalog-reads.mjs` (step 4).
 - ✅ ~~Make `tx` required on the three mint helpers~~ — already so (`lib/catalogWrite.ts`
   `createProducer` / `createProduct` / `createVintage` take a required `tx`; Codex r1).
 - **Cache-revision reconstruction must be a tested code path**, not a claimed property

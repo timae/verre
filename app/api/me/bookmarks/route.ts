@@ -83,7 +83,14 @@ export async function GET(req: NextRequest) {
       producer: isBlind ? null : b.wine.producer,
       vintage: isBlind ? null : b.wine.vintage,
       grape: isBlind ? null : b.wine.grape,
-      style: b.wine.style,
+      // A legacy alcohol-free token is hidden on a blind row (the mark, ruled
+      // 2026-11-20), like the abv.
+      style: isBlind && b.wine.style === 'nonalc' ? null : b.wine.style,
+      // The bottle's kind (the axes read `sparkling`); alcohol hidden on a
+      // blind row (catalogue model change step 4).
+      colour: b.wine.colour,
+      sparkling: b.wine.sparkling,
+      abv: isBlind || b.wine.abv === null ? null : Number(b.wine.abv),
       category: b.wine.category,
       image_url: isBlind ? null : b.wine.imageUrl,
       purchase_url: isBlind ? null : b.wine.purchaseUrl,

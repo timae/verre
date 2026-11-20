@@ -7,7 +7,7 @@ import { CheckinModal, type CopySource } from './CheckinModal'
 
 type Checkin = {
   id: number; wineName: string; producer?: string|null; vintage?: string|null
-  grape?: string|null; type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
+  grape?: string|null; colour?: string|null; sparkling?: boolean; abv?: number|null; score?: number|null; notes?: string|null; imageUrl?: string|null
   venueName?: string|null; city?: string|null; country?: string|null
   flavors?: Record<string, number>|null; likeCount?: number; liked?: boolean
   aromas?: { a: string; m: string | null; p?: boolean }[]|null
@@ -105,7 +105,7 @@ export function ProfileCheckins({ initialCheckins, initialSessionPosts = [], pro
             producer: copySource.producer,
             vintage: copySource.vintage,
             grape: copySource.grape,
-            type: copySource.type,
+            sparkling: copySource.sparkling,
             imageUrl: copySource.imageUrl,
             venueName: copySource.venueName,
             city: copySource.city,

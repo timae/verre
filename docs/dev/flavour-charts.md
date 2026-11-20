@@ -1,7 +1,7 @@
 # Flavour chart system
 
 > **⚠️ The rated axes are STRUCTURE intensities, not flavour descriptors.**
-> The model is the **structure wheel** — `resolveAxes(category, style)` +
+> The model is the **structure wheel** — `resolveAxes(category, kind)` +
 > `perRatingAxes` from `@verre/core` (re-exported via `lib/flavours.ts`). The old
 > type-specific *descriptor* sets (`FL_RED`/`FL_WHITE`/…, `detectFL`,
 > `detectLegacyDescriptorFL`) were the Expand-window dual-read fallback and were
@@ -11,14 +11,14 @@
 
 Two chart types coexist:
 
-- **Polar chart** (`<PolarChart flavors fl size>`) — arc segments per axis. Single-wine detail, compare cards, user profile. The `fl` axis array is built at the CALL SITE: a read surface uses `perRatingAxes(row, resolveAxesColoured(cat, style))` (only the axes present in the rating, present-and-0 drawn at centre, §6d); an input surface hands the full `resolveAxesColoured` set. Renderer unchanged by the structure wheel.
+- **Polar chart** (`<PolarChart flavors fl size>`) — arc segments per axis. Single-wine detail, compare cards, user profile. The `fl` axis array is built at the CALL SITE: a read surface uses `perRatingAxes(row, resolveAxesColoured(cat, kind))` (only the axes present in the rating, present-and-0 drawn at centre, §6d); an input surface hands the full `resolveAxesColoured` set. Renderer unchanged by the structure wheel.
 - **Radar** (`<RadarChart series fl size>`) — polygon overlay for multi-taster compare. Each taster's polygon spans only its rated axes (open path, §10 #1); frame = union of present axes in registry order.
 
 ## The structure axes (active model)
 
-Per-`(category, style)` from `resolveAxes` (`@verre/core`). Wine base (red/white/rose) = **Sweetness · Acidity · Smell · Taste · Funk · Tannin · Body · Finish** (0–5 intensities, display order per Simon's 2026-07-09 ruling — Funk joined the set the same day, closing the drift vs the brief's wine baseline); **spark** INSERTS **Bubbles** between Taste and Funk. Rows predating Funk lack the key → no spoke (the Bubbles precedent). No per-type pruning — an absent axis sits at None. Colour is per-platform (web `WEB_PALETTE` + `withColours`; native resolves from theme), not in core. The four carried-over keys (`body`/`acid`/`tannin`/`sweet`) are byte-identical to the legacy keys, so migrated data renders unchanged.
+Per-`(category, kind)` from `resolveAxes` (`@verre/core`). 🔒 **Bubbles comes from the bottle's `sparkling`** (catalogue model change step 4): `kind` is the bottle's `{ sparkling }` (the line-up wire, a check-in, a catalogue entry); a legacy style token (`'spark'` = sparkling) is still accepted for the app until its build (step 7). Colour and the alcohol-free mark never change the set. Wine base (still wines) = **Sweetness · Acidity · Smell · Taste · Funk · Tannin · Body · Finish** (0–5 intensities, display order per Simon's 2026-07-09 ruling — Funk joined the set the same day, closing the drift vs the brief's wine baseline); a **sparkling** bottle INSERTS **Bubbles** between Taste and Funk. Rows predating Funk lack the key → no spoke (the Bubbles precedent). No per-type pruning — an absent axis sits at None. Colour is per-platform (web `WEB_PALETTE` + `withColours`; native resolves from theme), not in core. The four carried-over keys (`body`/`acid`/`tannin`/`sweet`) are byte-identical to the legacy keys, so migrated data renders unchanged.
 
-The **profile aggregate** (`lib/profileFlavor.ts`) derives its key list from `resolveAxes('wine','red')` (the base 8, incl. Funk since 2026-07-09) — one source of truth with the wheel.
+The **profile aggregate** (`lib/profileFlavor.ts`) derives its key list from `resolveAxes('wine', { sparkling: false })` (the base 8, incl. Funk since 2026-07-09) — one source of truth with the wheel.
 
 ## Legacy descriptor dimensions (removed)
 

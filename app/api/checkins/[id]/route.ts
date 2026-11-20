@@ -10,15 +10,18 @@ import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors, fillFlavourZeros } from '@/lib/flavours'
 import { gateAromas, type AromaSelection } from '@/lib/aromas'
-import { validateScore, decimalToNumber, normalizeCode, normalizeVintageText } from '@verre/core'
+import { validateScore, decimalToNumber, normalizeCode } from '@verre/core'
 import { redis, k, existsKey, touchWithMeta } from '@/lib/redis'
 import { engagementCascadeIn, reclaimImages } from '@/lib/engagementCascade'
 import { withSessionMutation, ContractRefused, ContractBusy, ContractNeedsLease, LockLost, ratingKeyWrite, type MutationCtx } from '@/lib/sessionMutation'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
-import { scrub, cleanCountry, cleanUrl } from '@/lib/textSafe'
-import { resolveCatalogLink, applyIdentityEditRule, CatalogValidationError } from '@/lib/catalogWrite'
-import { syncSnapshot } from '@/lib/occurrences'
+import { scrub } from '@/lib/textSafe'
+import { CatalogValidationError } from '@/lib/catalogWrite'
+import { relinkOccurrence, editOccurrenceNotes } from '@/lib/occurrences'
+import { prepareLink, applyRelink, type AppliedLink } from '@/lib/catalogLink'
+import { loadEntries, entryKey } from '@/lib/catalogEntries'
+import { cleanBottleNotes } from '@/lib/session'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
@@ -142,19 +145,20 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     if (l) return l
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
-  const { wineName, producer, vintage, grape, type, score, flavors, aromas, notes,
+  // 🔒 The wine is its catalogue link (catalogue model change step 4): an
+  // identity change is a RE-LINK (`productId` / `vintageId` pick, or `create`)
+  // that writes the whole snapshot from the entry; typed identity text
+  // (wineName, producer, vintage, grape, type, wineRegion, wineCountry) is
+  // ignored. The bottle's own fields (About, vinification, the purchase link)
+  // are written as sent.
+  const { score, flavors, aromas, notes,
     imageData, venueName, city, country, lat, lng, taggedUserIds,
-    wineRegion, wineCountry, vinification, description, purchaseUrl,
-    productId, vintageId } = body
+    vinification, description, purchaseUrl } = body
   // Mirror the per-field length caps from POST so over-sized PATCH input
   // returns 400 instead of letting Prisma raise P2000 (→ 500).
   const lenCheck: Array<[string, unknown, number]> = [
-    ['wineName', wineName, 200], ['producer', producer, 200], ['vintage', vintage, 8],
-    ['grape', grape, 200], ['type', type, 32],
     ['venueName', venueName, 200], ['city', city, 100], ['country', country, 8],
     ['notes', notes, 4000],
-    // Wine-origin metadata (feed-edit round, 2026-07-17) — same caps as POST.
-    ['wineRegion', wineRegion, 255], ['wineCountry', wineCountry, 8],
     ['vinification', vinification, 1000], ['description', description, 1000],
     ['purchaseUrl', purchaseUrl, 1000],
   ]
@@ -168,31 +172,24 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
   // Run validators and capture the parsed values.
   let validScore: number | null | undefined = undefined
-  let validFlavorsValue: Record<string, number> | undefined = undefined
   let rawFlavors: Record<string, number> | undefined = undefined
   if (score !== undefined) {
     const c = validateScore(score)
     if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
     validScore = c.value
   }
-  // Effective style = the body type (if a valid style) else the EXISTING
-  // wine.style — the same resolution the wine update below writes. Hoisted
-  // because BOTH flavour paths key on it (sent-flavours gate + the
-  // style-changed re-normalisation of stored flavours).
-  const effStyle = type !== undefined
-    ? (typeof type === 'string' && ['red','white','spark','rose','nonalc'].includes(type) ? type : null)
-    : wine.style
+  // The link's shape, before any upload or write: a create is gated (signed in,
+  // the kill switch, its budget); a pick is validated, and a create minted, in
+  // the transaction below against the locked bottle (applyRelink). The
+  // check-in's own `rl:checkin` budget is already charged.
+  const linkReq = await prepareLink(req, body, { userId, identityId: `u:${userId}`, pickRate: false, required: false })
+  if (linkReq instanceof NextResponse) return linkReq
   if (flavors !== undefined) {
     const c = validateFlavors(flavors)
     if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
     rawFlavors = c.value ?? {}
-    // Server-side flavour normalisation (§6g gate + §5 zero-fill — see
-    // gateAndFillFlavors). category is 'wine'. Non-zero descriptor key → 400;
-    // zero-valued off-style keys are stripped (stale-type fill artifacts);
-    // the stored shape is filled-or-empty by construction.
-    const norm = gateAndFillFlavors(c.value, 'wine', effStyle)
-    if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
-    validFlavorsValue = norm.value
+    // Gated against the bottle's kind under the lock (the transaction below):
+    // a re-link in the same request, or a concurrent one, decides it.
   }
   // Aromas: same chokepoint + present-replaces / omitted-preserves contract
   // as the session rate route (aroma-layer.md §4/§5). A PRESENT field —
@@ -261,45 +258,6 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     }
   }
 
-  // Catalog link on edit — same two composed rules as the session wine PATCH
-  // (explicit re-link wins; otherwise an identity-changing edit CLEARS the
-  // link rather than keeping an incompatible one). Resolved before the txn:
-  // the lookups can't affect its outcome and shouldn't hold it open.
-  //
-  // `wine` here is the full row (`wine: true` in the include above), so its
-  // stored link is what the rule compares against.
-  let catalogLink: { productId: string | null; vintageId: string | null }
-  // Whether this request DECIDED the link (explicit re-link/clear, or the
-  // identity-changing-edit rule firing) versus merely resolving to "unchanged".
-  // Only a deliberate decision may overwrite what is live at write time.
-  let catalogLinkIsDeliberate = false
-  try {
-    // Stored link passed so a partial link edit keeps the untouched grain —
-    // see the session wine PATCH for the same rule.
-    const explicit = (productId !== undefined || vintageId !== undefined)
-      ? await resolveCatalogLink(productId, vintageId, wine)
-      : null
-    catalogLink = applyIdentityEditRule(
-      {
-        name: wine.name,
-        producer: wine.producer ?? '',
-        vintage: wine.vintage ?? '',
-        productId: wine.productId,
-        vintageId: wine.vintageId,
-      },
-      { name: wineName, producer, vintage },
-      explicit,
-    )
-    catalogLinkIsDeliberate = explicit !== null
-      || catalogLink.productId !== (wine.productId ?? null)
-      || catalogLink.vintageId !== (wine.vintageId ?? null)
-  } catch (err) {
-    if (err instanceof CatalogValidationError) {
-      return NextResponse.json({ error: err.message }, { status: 400 })
-    }
-    throw err
-  }
-
   // S3 reclaim: capture URLs to reclaim AFTER the txn commits.
   const urlsToReclaim: string[] = []
   if (nextImageUrl !== undefined && currentImage && currentImage.imageUrl !== nextImageUrl) {
@@ -310,72 +268,29 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   try {
     txResult = await prisma.$transaction(async (tx) => {
     // 🔒 The rating and its bottle as they stand NOW, locked (Codex r1, r2):
-    // every value this edit derives (the flavour shape for the style) comes
+    // every value this edit derives (the flavour shape for the kind) comes
     // from these rows, never from the request's pre-read.
-    const locked = (await tx.$queryRaw<{ style: string | null; flavors: unknown }[]>`
-      SELECT w.style, r.flavors FROM ratings r JOIN wines w ON w.id = r.wine_id WHERE r.id = ${rating.id} FOR UPDATE OF r, w`)[0]
+    const locked = (await tx.$queryRaw<{ sparkling: boolean; flavors: unknown; product_id: string | null; vintage_id: string | null }[]>`
+      SELECT w.sparkling, r.flavors, w.product_id, w.vintage_id FROM ratings r JOIN wines w ON w.id = r.wine_id WHERE r.id = ${rating.id} FOR UPDATE OF r, w`)[0]
     if (!locked) throw Object.assign(new Error('gone'), { code: 'P2025' })
-    const nextStyle = type !== undefined ? effStyle : locked.style
-    // Sent flavours were gated against the pre-read style; the bottle's style
-    // changed meanwhile (another edit) → re-gate, and refuse rather than store
-    // a shape for the wrong style.
-    let sentFlavors = validFlavorsValue
-    if (rawFlavors !== undefined && type === undefined && locked.style !== wine.style) {
-      const again = gateAndFillFlavors(rawFlavors, 'wine', locked.style)
-      if (again.error) throw Object.assign(new Error('style changed'), { code: 'STYLE_CHANGED' })
-      sentFlavors = again.value
+    // A re-link: mint (a create) and read the new entry; its snapshot replaces
+    // the bottle's identity in one statement.
+    // Resolved against the bottle AS LOCKED (a partial pick keeps the current
+    // grain; a retried `create` on the same bottle mints nothing: applyRelink).
+    let applied: AppliedLink | null = null
+    try { applied = await applyRelink(tx, linkReq, userId, { productId: locked.product_id, vintageId: locked.vintage_id }) }
+    catch (err) { if (err instanceof CatalogValidationError) throw Object.assign(new Error(err.message), { code: 'BAD_LINK' }); throw err }
+    if (applied) await relinkOccurrence(tx, null, wine.id, applied, applied.snapshot)
+    const nextSparkling = applied ? applied.snapshot.sparkling : locked.sparkling
+    // Sent flavours are gated against the kind the bottle has after this edit.
+    let sentFlavors: Record<string, number> | undefined = undefined
+    if (rawFlavors !== undefined) {
+      const norm = gateAndFillFlavors(rawFlavors, 'wine', { sparkling: nextSparkling })
+      if (norm.error) throw Object.assign(new Error(norm.error), { code: 'BAD_LINK' })
+      sentFlavors = norm.value
     }
-    // Wine-side fields (name, producer, vintage, grape, style).
-    const updatedWine = await tx.wine.update({
-      where: { id: wine.id },
-      // 🔒 Only the fields this request sent are written (Codex r1): a field
-      // left out keeps whatever is stored NOW, never this request's pre-read
-      // (a concurrent edit of another field, or a photo-only PATCH paused in its
-      // upload, would otherwise write the stale value back).
-      data: {
-        ...(wineName !== undefined && scrub(wineName) ? { name: scrub(wineName)! } : {}),
-        ...(producer !== undefined ? { producer: scrub(producer) } : {}),
-        // Canonicalize, don't truncate — see lib/session.ts.
-        ...(vintage !== undefined ? { vintage: normalizeVintageText(scrub(vintage) ?? '') || null } : {}),
-        ...(grape !== undefined ? { grape: scrub(grape) } : {}),
-        // Validate `type` against the seeded category_styles. Unknown
-        // values coerce to NULL — see POST handler for the rationale. Its
-        // snapshot follows in SQL against the locked row (syncSnapshot below).
-        ...(type !== undefined ? { style: effStyle } : {}),
-        // Origin + metadata (POST parity: scrub, ISO-2 cleanCountry, cleanUrl
-        // http(s)-only) — partial semantics like every other field here.
-        ...(wineRegion !== undefined ? { region: scrub(wineRegion) || null } : {}),
-        ...(wineCountry !== undefined ? { country: cleanCountry(wineCountry) || null } : {}),
-        ...(vinification !== undefined ? { vinification: scrub(vinification) || null } : {}),
-        ...(description !== undefined ? { description: scrub(description) || null } : {}),
-        ...(purchaseUrl !== undefined ? { purchaseUrl: cleanUrl(purchaseUrl).slice(0, 1000) || null } : {}),
-        // wine.imageUrl is the catalog bottle shot, not the user's tasting
-        // photo. Tasting photos live on rating_images. Don't touch wine
-        // imageUrl from this surface — it stays whatever it was at create
-        // time (null for standalone POSTs).
-        //
-        // 🔒 The catalog link is written ONLY when this request made a
-        // DELIBERATE decision about it — an explicit re-link/clear, or the
-        // identity-changing-edit rule firing. Writing it unconditionally looked
-        // safe (with no explicit link and no identity change, `catalogLink`
-        // resolves to the wine's CURRENT values, so the write is a no-op) but
-        // those values come from a snapshot read BEFORE the transaction: a
-        // concurrent re-link landing in between would be silently reverted by
-        // this "no-op". Skipping the write entirely lets the concurrent value
-        // stand, which is the correct outcome for an edit that never mentioned
-        // the link. The condition must NOT be `productId !== undefined` — that
-        // would skip the identity-changing CLEAR, which is the whole point of
-        // the rule.
-        ...(catalogLinkIsDeliberate
-          ? { productId: catalogLink.productId, vintageId: catalogLink.vintageId }
-          : {}),
-      },
-    })
-    // 🔒 The snapshot moves with `style` in the same transaction, decided on
-    // the row as it now stands (model change § 8a.0: rewritten only when the
-    // stored pair no longer derives to the token, so the release-day backfill
-    // re-run never touches a row this edit wrote).
-    if (type !== undefined) await syncSnapshot(tx, wine.id)
+    await editOccurrenceNotes(tx, null, wine.id, cleanBottleNotes({ description, vinification, purchaseUrl }))
+    const updatedWine = await tx.wine.findUniqueOrThrow({ where: { id: wine.id } })
 
     // Rating-side fields (score, flavors, notes).
     // Rating-side fields: only the ones sent (Codex r2: an omitted field keeps
@@ -393,8 +308,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         // invariant the write boundary guarantees.
         ...(flavors !== undefined
           ? { flavors: sentFlavors ?? {} }
-          : nextStyle !== locked.style
-            ? { flavors: fillFlavourZeros((locked.flavors ?? {}) as Record<string, number>, 'wine', nextStyle) }
+          : nextSparkling !== locked.sparkling
+            ? { flavors: fillFlavourZeros((locked.flavors ?? {}) as Record<string, number>, 'wine', { sparkling: nextSparkling }) }
             : {}),
         ...(aromasProvided ? { aromas: validAromas } : {}),
         ...(notes !== undefined ? { notes: scrub(notes) } : {}),
@@ -469,8 +384,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     if (errCode === 'P2025') {
       return NextResponse.json({ error: 'not found' }, { status: 404 })
     }
-    if (errCode === 'STYLE_CHANGED') {
-      return NextResponse.json({ error: 'The wine type changed meanwhile. Reload and try again.' }, { status: 409 })
+    if (errCode === 'BAD_LINK') {
+      return NextResponse.json({ error: (err as Error).message }, { status: 400 })
     }
     throw err
   }
@@ -488,7 +403,12 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     producer: updatedWine.producer,
     vintage: updatedWine.vintage,
     grape: updatedWine.grape,
-    type: updatedWine.style,
+    colour: updatedWine.colour,
+    sparkling: updatedWine.sparkling,
+    abv: updatedWine.abv === null ? null : Number(updatedWine.abv),
+    entry: updatedWine.productId
+      ? (await loadEntries([{ productId: updatedWine.productId, vintageId: updatedWine.vintageId }])).get(entryKey(updatedWine.productId, updatedWine.vintageId)) ?? null
+      : null,
     wineRegion: updatedWine.region,
     wineCountry: updatedWine.country,
     vinification: updatedWine.vinification,
@@ -576,8 +496,8 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
   const code = sess?.code ? normalizeCode(sess.code) : null
   type Out = { nextScore: number | null; nextFlavors: Record<string, number>; nextAromas: AromaSelection[]; nextNotes: string | null; reaped: boolean; reclaim: string[]; mirrored: boolean }
   const run = async (tx: Prisma.TransactionClient, liveCode: string | null, ctx: MutationCtx | null): Promise<Out | NextResponse> => {
-    const rows = await tx.$queryRaw<{ id: number; score: unknown; flavors: unknown; aromas: unknown; notes: string | null; style: string | null }[]>`
-      SELECT r.id, r.score, r.flavors, r.aromas, r.notes, w.style FROM ratings r JOIN wines w ON w.id = r.wine_id
+    const rows = await tx.$queryRaw<{ id: number; score: unknown; flavors: unknown; aromas: unknown; notes: string | null; sparkling: boolean }[]>`
+      SELECT r.id, r.score, r.flavors, r.aromas, r.notes, w.sparkling FROM ratings r JOIN wines w ON w.id = r.wine_id
        WHERE r.user_id = ${userId} AND r.session_id = ${sessionId} AND r.wine_id = ${wineId} FOR UPDATE OF r`
     const rating = rows[0]
     if (!rating) return NextResponse.json({ error: 'not found' }, { status: 404 })
@@ -599,7 +519,7 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
     const sets: Prisma.Sql[] = []
     if (score !== undefined) sets.push(Prisma.sql`score = ${validScore}::numeric`)
     if (checkedFlavors !== undefined) {
-      const norm = gateAndFillFlavors(checkedFlavors, 'wine', rating.style)
+      const norm = gateAndFillFlavors(checkedFlavors, 'wine', { sparkling: rating.sparkling })
       if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
       sets.push(Prisma.sql`flavors = ${JSON.stringify(norm.value ?? {})}::jsonb`)
     }

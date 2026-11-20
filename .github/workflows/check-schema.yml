@@ -246,6 +246,23 @@ jobs:
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-occurrence-persistence-secret-0123456789
 
+      # Catalogue model change step 4: every new bottle links (pick, or create
+      # signed in only: one fixed refusal for a guest), the snapshot from the
+      # entry, the line-up's `entry` key and its blind redaction (no entry, no
+      # abv; colour / sparkling stay), merges resolved on every read, the
+      # moment's own search for guests (its budget, a spent wrong-code budget),
+      # the vintage lookup, the review item on every user mint (rolled back with
+      # it), the gate open by default ('false' the kill switch), badges from the
+      # snapshot, and the interleaved concurrent PATCH (release condition 6: two
+      # real overlapping requests through mutationHooks).
+      - name: Catalogue on every write (catalogue model change step 4)
+        run: npx tsx scripts/tests/catalog-every-write.mts
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-catalog-every-write-secret-0123456789
+
       # You profile step 2 (.local plan § Verification): bio normalisation +
       # PATCH /api/me/profile, the tile pools and pins (D3 re-hide, D7, the
       # dead-pin clear vs a same-URL re-pick on the locked row), the D8 / D9

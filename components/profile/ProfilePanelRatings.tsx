@@ -53,7 +53,7 @@ export function ProfilePanelRatings({ lifetimeRatings, flavor, profileUserName, 
   // Profile aggregate = the full STRUCTURE axis set (§6a). The aggregate is a
   // dense, complete frame (every structure axis, null for never-tasted), so the
   // wheel uses the full resolved set, not a per-rating subset. Null → 0.
-  const axes = resolveAxesColoured('wine', 'red')
+  const axes = resolveAxesColoured('wine', { sparkling: false })
   const flavors = axes.reduce((o, f) => {
     const v = flavor.keys[f.k]
     return { ...o, [f.k]: v == null ? 0 : v }

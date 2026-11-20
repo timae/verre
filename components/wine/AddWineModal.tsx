@@ -5,18 +5,13 @@ import { nanoid } from 'nanoid'
 import type { WireWine } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { Modal } from '@/components/ui/Modal'
-import { CountrySelect } from '@/components/ui/CountrySelect'
 import { UnsavedChangesConfirm } from '@/components/ui/UnsavedChangesConfirm'
 import { useDirtyGuard } from '@/lib/dirtyGuard'
 import { normalizeVintageText, scanText, scanVintage } from '@verre/core'
-
-const TYPES = [
-  { k: 'red', l: 'Red', ico: '🍷' },
-  { k: 'white', l: 'White', ico: '🥂' },
-  { k: 'spark', l: 'Bubbles', ico: '🍾' },
-  { k: 'rose', l: 'Rosé', ico: '🌸' },
-  { k: 'nonalc', l: 'Non-alc', ico: '🌿' },
-]
+import { CatalogPicker, type CatalogChoice, type ScanPrefill } from '@/components/wine/CatalogPicker'
+import { ChosenWine } from '@/components/wine/ChosenWine'
+import { useSession } from '@/components/session/SessionShell'
+import { wineShown } from '@/lib/wineDisplay'
 
 const AI_PROVIDERS = {
   openai: { label: 'OpenAI', keyStore: 'vr_ai_key_openai', placeholder: 'sk-...' },
@@ -33,15 +28,19 @@ interface Props {
 
 export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 }: Props) {
   const isEdit = !!editWine
-  const [name, setName] = useState(editWine?.name || '')
-  const [producer, setProducer] = useState(editWine?.producer || '')
-  const [vintage, setVintage] = useState(editWine?.vintage || '')
-  const [grape, setGrape] = useState(editWine?.grape || '')
-  const [type, setType] = useState(editWine?.type || '')
+  // 🔒 The wine is a catalogue entry (catalogue model change step 4): picked,
+  // or created (signed in only). Its name, producer, year and kind come from
+  // the entry; this sheet keeps only the bottle's own fields.
+  const { myId } = useSession()
+  const canCreate = myId.startsWith('u:')
+  const [choice, setChoice] = useState<CatalogChoice | null>(null)
+  // Edit: the current wine stays unless the host changes it.
+  const [relinking, setRelinking] = useState(!isEdit)
+  const [scanPrefill, setScanPrefill] = useState<ScanPrefill | null>(null)
+  // The choice last SENT (frozen into its summary; see the wine section).
+  const [sentChoice, setSentChoice] = useState<CatalogChoice | null>(null)
   const [position, setPosition] = useState(String(winesCount + 1))
   const [description, setDescription] = useState(editWine?.description || '')
-  const [region, setRegion] = useState(editWine?.region || '')
-  const [country, setCountry] = useState(editWine?.country || '')
   const [vinification, setVinification] = useState(editWine?.vinification || '')
   const [purchaseUrl, setPurchaseUrl] = useState(editWine?.purchaseUrl || '')
   const [saving, setSaving] = useState(false)
@@ -52,6 +51,7 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
   const [scanStatus, setScanStatus] = useState('')
 
   const maxPosition = winesCount + 1
+  const current = editWine ? wineShown(editWine) : null
   // The bottle's id, minted once per open sheet: a Save retried after a lost
   // answer finds the same bottle instead of adding a second one (the server
   // answers `alreadyAdded`). The photo follows with its own call.
@@ -62,6 +62,14 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
   // baseline from then on.
   const savedId = useRef<string | null>(null)
   const [savedFields, setSavedFields] = useState<Record<string, string> | null>(null)
+  // The choice the saved bottle was created or re-linked with: a later Save
+  // sends the link again only when the choice changed (a create is never sent
+  // twice: it would mint a second entry).
+  const appliedChoice = useRef<CatalogChoice | null>(null)
+  // The choice the FIRST add post carried (the one a lost answer may have
+  // landed), and the frozen choice a "change wine" left (offered back as "keep").
+  const firstPosted = useRef<CatalogChoice | null>(null)
+  const [undo, setUndo] = useState<CatalogChoice | null>(null)
 
 
   async function handlePhoto(e: React.ChangeEvent<HTMLInputElement>) {
@@ -91,7 +99,7 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
     if (!key) { setScanStatus(`no ${cfg.label} key saved: add one below`); return }
     setScanning(true); setScanStatus('scanning label…')
     try {
-      const prompt = 'This is a wine bottle label. Extract: wine name, producer/winery, vintage (the 4-digit year, or "NV" if the label says non-vintage / NV / N.V.), grape variety/blend, wine type (red/white/sparkling/rosé). Return JSON: {name,producer,vintage,grape,type} where type is one of: red,white,spark,rose,nonalc. Only return the JSON object.'
+      const prompt = 'This is a wine bottle label. Extract: wine name, producer/winery, vintage (the 4-digit year, or "NV" if the label says non-vintage / NV / N.V.), grape variety/blend, wine type (red/white/sparkling/rosé). Return JSON: {name,producer,vintage,grape,type} where type is one of: red,white,spark,rose. Only return the JSON object.'
       const b64 = photo.startsWith('data:') ? photo.split(',')[1] : null
       const imageUrl = photo.startsWith('http') ? photo : null
       // 🔒 UNTRUSTED: this is model-generated JSON, not a typed API. Asserting
@@ -132,18 +140,19 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
       // green while production broke. Text fields are strings only; vintage
       // additionally accepts an integer, since a model answering "the 4-digit
       // year" with a JSON number is a legitimate reading of the label.
-      const gotName = scanText(result.name); if (gotName) setName(gotName)
-      const gotProducer = scanText(result.producer); if (gotProducer) setProducer(gotProducer)
       // A 4-digit year OR the literal NV survives; anything else is dropped.
-      // Stripping non-digits unconditionally turned a scanned non-vintage
-      // bottling into a blank field, destroying what the label actually said —
-      // "NV" is a valid Char(4) value.
+      // The label seeds the SEARCH (never a link: the person still picks).
       const gotVintage = scanVintage(result.vintage)
-      if (gotVintage) setVintage(normalizeVintageText(gotVintage))
-      const gotGrape = scanText(result.grape); if (gotGrape) setGrape(gotGrape)
       const gotType = scanText(result.type)
-      if (gotType && TYPES.find(t => t.k === gotType)) setType(gotType)
-      setScanStatus('fields prefilled ✓')
+      setScanPrefill({
+        producer: scanText(result.producer) || undefined,
+        name: scanText(result.name) || undefined,
+        grape: scanText(result.grape) || undefined,
+        year: gotVintage ? normalizeVintageText(gotVintage) : undefined,
+        type: gotType || undefined,
+      })
+      setRelinking(true)
+      setScanStatus('search prefilled from the label ✓')
     } catch {
       setScanStatus('scan failed: check your key')
     }
@@ -151,8 +160,9 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
   }
 
   async function save(): Promise<boolean> {
-    if (!name.trim()) { setError('Name required'); return false }
-    if (!type) { setError('Select a type'); return false }
+    const linkChange = relinking ? choice : null
+    if (!isEdit && !savedId.current && !choice) { setError('Choose a wine, or add a new one'); return false }
+    if (isEdit && relinking && !choice) { setError('Choose a wine, or keep the current one'); return false }
     let parsedPos: number | null = null
     if (!isEdit) {
       parsedPos = parseInt(position, 10)
@@ -162,42 +172,66 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
       }
     }
     setSaving(true); setError('')
-    const fields = {
-      // Canonicalize on the way out so the official client sends the same form
-      // the server stores (the server normalizes too, for UX parity, not
-      // correctness).
-      name, producer, vintage: normalizeVintageText(vintage), grape, type,
-      description, region, country, vinification, purchaseUrl,
-    }
+    // The bottle's own fields (ruled 2026-11-20: About and vinification stay
+    // on the bottle, like the purchase link).
+    const fields = { description, vinification, purchaseUrl }
+    const linkBody = (c: CatalogChoice | null) => !c || c === appliedChoice.current ? {}
+      : c.kind === 'pick' ? { productId: c.productId, vintageId: c.vintageId } : { create: c.body }
     const creating = !isEdit && !savedId.current
-    const body: Record<string, unknown> = { ...fields }
+    const body: Record<string, unknown> = { ...fields, ...linkBody(linkChange) }
     if (creating) body.id = newId.current
     if (creating && parsedPos != null) body.position = parsedPos
     let wineId = isEdit ? editWine!.id : (savedId.current ?? newId.current)
+    // Frozen once it may have LANDED (a 2xx, or a lost answer), never on a
+    // definite refusal: a 400 / 403 / 429 minted nothing, so the form stays as
+    // typed (review r2).
+    const sending = linkChange && linkChange !== appliedChoice.current ? linkChange : null
+    if (creating && sending && !firstPosted.current) firstPosted.current = sending
     const fail = (msg: string) => { setSaving(false); setError(msg); return false }
+    const why = async (res: Response) => (await res.json().catch(() => null) as { error?: string } | null)?.error
     try {
       const res = await sessionFetch(code, creating ? `/api/session/${code}/wines` : `/api/session/${code}/wines/${wineId}`, {
         method: creating ? 'POST' : 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-      if (!res.ok) return fail(isEdit ? 'Could not update wine' : 'Could not save wine')
+      // (`firstPosted` is kept on a refusal: it says nothing about whether an
+      // earlier lost post landed; the worst case is one redundant re-link,
+      // which a pick and a recognised create absorb. Review r3.)
+      if (!res.ok) {
+        // A 5xx may come after a COMMIT (Codex r1): the choice may have landed,
+        // so it is frozen like a lost answer; a 4xx is a definite refusal.
+        if (res.status >= 500 && sending) setSentChoice(sending)
+        const msg = res.status === 400 || res.status === 403 ? await why(res) : null
+        return fail(msg || (isEdit ? 'Could not update wine' : 'Could not save wine'))
+      }
       // The id the server stored (an older server mints its own).
       const answer = creating ? await res.json().catch(() => null) as { id?: string; alreadyAdded?: boolean } | null : null
       if (creating) wineId = answer?.id ?? wineId
       if (!isEdit) savedId.current = wineId
-      // A retry whose first answer was lost: the bottle exists already; this
-      // Save's fields may have changed since, so they go through the edit.
+      // A retry whose first answer was lost: the bottle exists already, linked
+      // as the FIRST post left it; this Save's fields go through the edit, and
+      // the link too when the person changed the wine since (a deliberate
+      // re-link: the server recognises a retried create of it). The first
+      // post's own create is never sent twice.
       if (answer?.alreadyAdded) {
+        const changed = linkChange && linkChange !== firstPosted.current ? linkBody(linkChange) : {}
         const upd = await sessionFetch(code, `/api/session/${code}/wines/${wineId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(fields),
+          body: JSON.stringify({ ...fields, ...changed }),
         })
-        if (!upd.ok) return fail('Could not save wine')
+        if (!upd.ok) {
+          if (upd.status >= 500 && sending) setSentChoice(sending)
+          return fail('Could not save wine')
+        }
       }
+      // Frozen once the request that carries it succeeded (review r3: on a
+      // replay that is the follow-up PATCH above).
+      if (sending) setSentChoice(sending)
+      if (linkChange) appliedChoice.current = linkChange
       if (photoDataUrl) {
-        setSavedFields({ ...fields, vintage })
+        setSavedFields({ ...fields })
         const img = await sessionFetch(code, `/api/session/${code}/wines/${wineId}/image`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -209,7 +243,9 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
         }
       }
     } catch {
-      // A lost answer: Save again reuses the same id, so nothing is added twice.
+      // A lost answer: Save again reuses the same id, so nothing is added twice;
+      // the choice may have landed, so it is frozen.
+      if (sending) setSentChoice(sending)
       return fail(savedId.current ? 'Saved, but the photo could not be added. Try again.' : (isEdit ? 'Could not update wine' : 'Could not save wine'))
     }
     setSaving(false)
@@ -240,15 +276,13 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
   // hazard.
   const dirty = (() => {
     const baseline = savedFields || editWine || {}
-    const current: Record<string, string> = {
-      name, producer, vintage, grape, type,
-      description, region, country, vinification, purchaseUrl,
-    }
+    const current: Record<string, string> = { description, vinification, purchaseUrl }
     for (const k of Object.keys(current)) {
       const a = current[k] || ''
       const b = (baseline as Record<string, string | undefined | null>)[k] || ''
       if (a !== b) return true
     }
+    if (choice && choice !== appliedChoice.current) return true
     return !!photoDataUrl
   })()
 
@@ -369,57 +403,45 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
           )}
         </div>
 
-        <div style={{display:'flex',gap:8}}>
-          <div className="field" style={{flex:1}}>
-            <div className="fl">name *</div>
-            <input className="fi" value={name} onChange={e => setName(e.target.value)} placeholder="Château de Whatever" />
-          </div>
-          <div className="field" style={{maxWidth:88}}>
-            <div className="fl">vintage</div>
-            <input className="fi" value={vintage} onChange={e => setVintage(e.target.value)} maxLength={4} placeholder="20XX" />
-          </div>
-        </div>
-        <div className="field">
-          <div className="fl">producer</div>
-          <input className="fi" value={producer} onChange={e => setProducer(e.target.value)} placeholder="Domaine…" />
-        </div>
-        <div className="field">
-          <div className="fl">type *</div>
-          <div className="chips">
-            {TYPES.map(t => (
-              <div key={t.k} className="chip" data-sel={type === t.k ? t.k : undefined} onClick={() => setType(t.k)}>
-                <span>{t.ico}</span>{t.l}
-              </div>
-            ))}
-          </div>
-        </div>
+        {/* The wine: its catalogue entry (picked or created). 🔒 Once a choice
+            has been SENT it is frozen into its summary (review r1): a Save
+            again after a failed photo or a lost answer re-sends the same
+            choice (the server recognises the retry), never an edited create
+            that would mint a second entry; changing it is a deliberate
+            "change wine". */}
+        {isEdit && !relinking && editWine ? (
+          <ChosenWine label="wine" name={current!.name} year={current!.vintage} producer={current!.producer} action="change wine" onAction={() => setRelinking(true)} />
+        ) : sentChoice && choice === sentChoice ? (
+          <ChosenWine label="wine *" name={choice.label.name} year={choice.label.year} producer={choice.label.producer}
+            note={choice.kind === 'create' ? 'new' : undefined} action="change wine" onAction={() => { setUndo(choice); setChoice(null); setSentChoice(null) }} />
+        ) : (
+          <>
+            <CatalogPicker
+              search={(qs) => sessionFetch(code, `/api/session/${code}/catalog/search?${qs}`)}
+              canCreate={canCreate}
+              value={choice}
+              onChange={setChoice}
+              prefill={scanPrefill}
+            />
+            {undo ? (
+              <button type="button" className="btn-s" style={{marginBottom:12}} onClick={() => { setChoice(undo); setSentChoice(undo); setUndo(null) }}>
+                keep {undo.label.name}
+              </button>
+            ) : isEdit && (
+              <button type="button" className="btn-s" style={{marginBottom:12}} onClick={() => { setRelinking(false); setChoice(null); setSentChoice(null) }}>
+                keep the current wine
+              </button>
+            )}
+          </>
+        )}
 
-        {/* Optional details — wine identity beyond name/type. Separated
-            visually so the required fields stay the focal point. */}
+        {/* The bottle's own details (optional): what this bottle is, here. */}
         <div style={{
           marginTop:14,marginBottom:14,padding:'14px 12px 6px',
           border:'1px solid var(--border)',borderRadius:8,
           background:'rgba(255,255,255,0.015)',
         }}>
           <div className="panel-hdr">details (optional)</div>
-
-          <div className="field">
-            <div className="fl">grape / style</div>
-            <input className="fi" value={grape} onChange={e => setGrape(e.target.value)} placeholder="Pinot Noir, Pét-Nat…" />
-          </div>
-
-          <div style={{display:'flex',gap:8}}>
-            <div className="field" style={{flex:1,minWidth:0}}>
-              <div className="fl">region</div>
-              <input className="fi" value={region} maxLength={255}
-                onChange={e => setRegion(e.target.value)}
-                placeholder="Burgundy, Wachau…" />
-            </div>
-            <div className="field" style={{flex:1,minWidth:0}}>
-              <div className="fl">country</div>
-              <CountrySelect value={country} onChange={setCountry} />
-            </div>
-          </div>
 
           <div className="field">
             <div className="fl">vinification</div>

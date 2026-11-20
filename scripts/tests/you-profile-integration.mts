@@ -82,6 +82,7 @@
 //   DATABASE_URL=postgres://…/<throwaway> REDIS_URL=redis://…:<throwaway> \
 //   AUTH_SECRET=… npx tsx scripts/tests/you-profile-integration.mts
 import { nanoid } from 'nanoid'
+import { linkLegacy } from './lib/catalogFixture.mts'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { registerHooks } from 'node:module'
@@ -286,6 +287,8 @@ async function pidLookup(pid: string): Promise<number | null> {
 const pidOf = async (id: number) => (await prisma.user.findUniqueOrThrow({ where: { id }, select: { publicId: true } })).publicId
 
 async function call(handler: unknown, method: string, path: string, actor: Actor, body?: unknown, params: Record<string, string> = {}, extra: Record<string, string> = {}) {
+  // Catalogue model change step 4: a typed bottle becomes a minted entry + its pick.
+  body = await linkLegacy(method, path, body)
   const headers: Record<string, string> = { 'content-type': 'application/json', ...extra }
   if (actor.cookie) headers.cookie = actor.cookie
   if (actor.anon) headers['x-vr-anon-token'] = actor.anon
@@ -2370,7 +2373,9 @@ try {
   const rs = await call(rateRoute.POST, 'POST', `/api/session/${MS}/rate`, Pp, { wineId: ws.json.id, score: 4, flavors: { bubbles: 4 }, notes: 'n' }, { code: MS })
   check('fixture: the sparkling session rating landed', ws.status === 200 && rs.status === 200, { ws: ws.status, rs: rs.status })
   await expectSet('Bubbles 4–4 → the sparkling session wine', 'st=bubbles:4-4', of({ wine: ws.json.id as string }))
-  await prisma.$executeRaw`UPDATE wines SET style = 'red' WHERE id = ${ws.json.id as string}`
+  // Re-typed the way a re-link does it (catalogue model change step 4: the
+  // style token and its pair move together; the filter reads `sparkling`).
+  await prisma.$executeRaw`UPDATE wines SET style = 'red', colour = 'red', sparkling = false WHERE id = ${ws.json.id as string}`
   const kept = await prisma.$queryRaw<{ b: unknown }[]>`SELECT flavors -> 'bubbles' AS b FROM ratings WHERE wine_id = ${ws.json.id as string}`
   check('fixture: re-typed to red, her rating still holds bubbles 4', Number(kept[0]?.b) === 4, kept)
   await expectSet('🔒 …then no longer (the wheel stopped drawing Bubbles)', 'st=bubbles:0-5', of(c4))

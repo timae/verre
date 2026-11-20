@@ -12,6 +12,8 @@ import {
 } from '@/lib/session'
 import { ensureSessionLive, ratingsLost } from '@/lib/sessionRehydrate'
 import { redactWine } from '@/lib/wineRedaction'
+import { loadEntries, type CatalogEntry } from '@/lib/catalogEntries'
+import { readSnapshots, snapshotFor, type BottleSnapshot } from '@/lib/occurrences'
 import { blockPairIds } from '@/lib/userBlock'
 import { wireIdentityMap, mapIdentityList } from '@/lib/publicIds'
 import { viewableAvatars } from '@/lib/avatarGate'
@@ -208,6 +210,18 @@ export function lineupHiddenFor(meta: SessionMeta, identity: AuthorizedIdentity,
   return now < revealAt
 }
 
+// The line-up poll keeps working through a catalogue read failure: the
+// bottles then show their snapshot (entry null), like a purged link.
+async function loadEntriesFailSoft(wines: WineMeta[]): Promise<Map<string, CatalogEntry>> {
+  try { return await loadEntries(wines) }
+  catch (err) { console.error('[wines] catalogue entries unavailable, serving snapshots:', err); return new Map() }
+}
+// The record's kind / abv per bottle; a failure falls back to the cached token.
+async function readSnapshotsFailSoft(c: string, wines: WineMeta[]): Promise<Map<string, BottleSnapshot>> {
+  try { return await readSnapshots(c, wines.map(w => w.id)) }
+  catch (err) { console.error('[wines] bottle snapshots unavailable, serving the cached kind:', err); return new Map() }
+}
+
 // `wines` is the lineup the route loaded absent-aware (openSession /
 // loadLiveWines) — never a `[]` standing in for an evicted key.
 export async function buildWinesView(
@@ -227,7 +241,10 @@ export async function buildWinesView(
   // Hybrid resolution for `addedByDisplayName`: live identities map →
   // users.name fallback for kicked logged-in adders → snapshot on the wine
   // itself → null.
-  const adderLookup = await buildAdderLookup(wines, identities)
+  // The catalogue entries of the linked bottles, merges followed (ONE read,
+  // lib/catalogEntries.ts). A blind row never uses them (redactWine replaces
+  // `entry` whole), but they are read once for the line-up either way.
+  const [adderLookup, entries, snapshots] = await Promise.all([buildAdderLookup(wines, identities), loadEntriesFailSoft(wines), readSnapshotsFailSoft(c, wines)])
 
   // Provenance strip (Moment Setup → "Show Who Brought Each Impression").
   // When the host turned attribution OFF, wineToWire nulls the adder name +
@@ -262,15 +279,21 @@ export async function buildWinesView(
       const redacted = redactWine(w, {
         revealed: !!w.revealedAt,
         isHost: isUserHost,
-        ownsWine: owned ? owned.has(w.id) : !!w.addedByIdentityId && w.addedByIdentityId === identity.id,
+        // 🔒 BOTH the record (a former owner's stale cache must not keep the
+        // bypass, r1-5) AND the served row (Codex r4, step 4: a re-link then a
+        // reassign between the line-up read and this ownership read would hand
+        // the new owner the OLD bottle's payload) must name the caller. Fails
+        // closed for the moment a fresh reassign's projection is in flight.
+        ownsWine: (owned ? owned.has(w.id) : true) && !!w.addedByIdentityId && w.addedByIdentityId === identity.id,
         index: i,
         blindForEveryone: !!meta.blindForEveryone,
+        snapshot: snapshotFor(w, snapshots),
       })
-      return redacted ?? wineToWire(w, identity.id, identities, adderLookup, showProvenance)
+      return redacted ?? wineToWire(w, identity.id, identities, adderLookup, showProvenance, entries, snapshots)
     })
   }
 
-  return wines.map(w => wineToWire(w, identity.id, identities, adderLookup, showProvenance))
+  return wines.map(w => wineToWire(w, identity.id, identities, adderLookup, showProvenance, entries, snapshots))
 }
 
 // The reply of a line-up write (reorder, reveal / hide, a wine edit, the

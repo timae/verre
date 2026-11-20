@@ -40,9 +40,10 @@ import { execSync } from 'node:child_process'
 const EXPECTED = {
   // The record-first primitives: the reconciliation's orphaning, copyLineup
   // (strict copy), renumber, insertOccurrence (insert + two slot moves),
-  // updateOccurrence, the projection script (KEYS: the line-up), and
-  // syncSnapshot (the standalone check-in edit's pair; no moment). Every
-  // moment caller bumps (the contract's row lock, `bumpLineup`) or stamps 1.
+  // relinkOccurrence (a re-link's snapshot) and editOccurrenceNotes (the
+  // bottle's own fields; both also the standalone check-in edit's, no
+  // moment), the projection script (KEYS: the line-up). Every moment caller
+  // bumps (the contract's row lock, `bumpLineup`) or stamps 1.
   'lib/occurrences.ts': 9,
   // mutateWines (the Redis-only moment's authority: no record, no revision);
   // reassignProvenance (provenance on the row, inside the reassign contract,
@@ -78,9 +79,9 @@ const EXPECTED = {
   'app/api/session/[code]/wines/reveal-all/route.ts': 1,
   'app/api/session/[code]/wines/hide-all/route.ts': 1,
   // A standalone check-in's occurrence (no moment, no revision): the create
-  // (INSERT-only on the client id) and the edit.
+  // (INSERT-only on the client id). Its edit writes through relinkOccurrence /
+  // editOccurrenceNotes (lib/occurrences.ts).
   'app/api/checkins/route.ts': 1,
-  'app/api/checkins/[id]/route.ts': 1,
   // Operator scripts: the session photo re-key (record-first under the
   // contract, bumps, projects); the user photo re-key (bumps every touched
   // moment's non-NULL revision in the same transaction); the release-B
