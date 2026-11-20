@@ -218,10 +218,12 @@ FK is NoAction" was false and is corrected in `e2b9247`. Since the catalogue mod
 
 🔒 **The FK pin** (`scripts/check-catalog-inbound-fks.mjs`, in `check-schema.yml`): every
 FK whose TARGET is one of the five catalogue tables must be `ON DELETE NO ACTION`, except
-this one, which must stay `CASCADE`. It finds the keys from `pg_constraint` by target,
+this one, which must stay `CASCADE`, and none may be `DEFERRABLE` (a deferred key is checked
+at COMMIT, so a replace that deletes and reloads an id would no longer fail on a link
+committed during its load; the catalogue-maintenance side's report refuses one too). It finds the keys from `pg_constraint` by target,
 never from a list, so a table that links into the catalogue later is covered the day it
-lands (negative control: `catalog-schema-integration.mjs` § 22 commits a CASCADE and a
-SET NULL key and requires the pin to fail). Why: a hard purge clears or redirects every
+lands (negative control: `catalog-schema-integration.mjs` § 22 commits a CASCADE, a
+SET NULL and two DEFERRABLE keys and requires the pin to fail). Why: a hard purge clears or redirects every
 reference itself and never deletes user history, and the catalogue-maintenance side's
 replace mode needs a link committed during its load to make the delete FAIL; CASCADE
 would delete a craving, SET NULL would clear it silently. Changing a key into the

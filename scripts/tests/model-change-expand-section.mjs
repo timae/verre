@@ -259,11 +259,11 @@ export async function modelChangeExpandSection({ prisma, ok, rejects, accepts, r
   ok(green.status === 0, `the pin passes on the migrated chain${green.status === 0 ? '' : ` (exit ${green.status}: ${(green.stderr || green.stdout).trim().slice(0, 300)})`}`)
   ok(Number(green.stdout.match(/^ok\s+(\d+) foreign keys/)?.[1]) === 11,
     `…over 11 keys (the nine forward catalogue keys + the two from bookmarks)${green.stdout ? ` — ${green.stdout.trim()}` : ''}`)
-  for (const action of ['ON DELETE CASCADE', 'ON DELETE SET NULL', 'ON UPDATE CASCADE']) {
+  for (const action of ['ON DELETE CASCADE', 'ON DELETE SET NULL', 'ON UPDATE CASCADE', 'DEFERRABLE INITIALLY DEFERRED', 'DEFERRABLE INITIALLY IMMEDIATE']) {
     await prisma.$executeRawUnsafe(`CREATE TABLE test_fk_pin_probe (id int PRIMARY KEY, product_id varchar(21) REFERENCES wine_products(id) ${action})`)
     const red = pin()
     await prisma.$executeRawUnsafe(`DROP TABLE test_fk_pin_probe`)
-    ok(red.status === 1 && red.stderr.includes('test_fk_pin_probe.') && red.stderr.includes(action),
+    ok(red.status === 1 && red.stderr.includes('test_fk_pin_probe.') && red.stderr.includes(action.startsWith('DEFERRABLE') ? ', DEFERRABLE;' : action),
       `🔒 negative control: a NEW table with an ${action} key into the catalogue fails the pin, named${red.status === 1 ? '' : ` (exit ${red.status}: ${red.stdout.trim()})`}`)
   }
   ok(pin().status === 0, '…and the pin is green again once it is gone')
