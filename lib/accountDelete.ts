@@ -8,7 +8,7 @@ import { deleteAllNativeSessions } from '@/lib/identityStore'
 import { withSessionLocks, scopedInvalidate, type LockedSession } from '@/lib/sessionMutation'
 import { acquireSessionLock, releaseSessionLock, renewSessionLock, sessionLockHeld, sessionLockKey, fencedDel, lockTiming } from '@/lib/sessionLock'
 import type { SessionMeta, WineMeta } from '@/lib/session'
-import { bumpLineupRevision } from '@/lib/occurrences'
+import { bumpLineupRevision, reclaimablePhotos } from '@/lib/occurrences'
 import { isOwnTile } from '@/lib/profileTiles'
 
 export const TOMBSTONE_NAME = '[deleted]'
@@ -451,12 +451,7 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
       // bookmarks): keep a wiped moment's wine photo while any rating or
       // bookmark still references the wine.
       if (wineCandidates.length > 0) {
-        const unused = await tx.$queryRaw<{ image_url: string }[]>`
-          SELECT w.image_url FROM wines w
-           WHERE w.id = ANY(${wineCandidates.map(c => c.id)}::text[]) AND w.image_url IS NOT NULL
-             AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = w.id)
-             AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = w.id)`
-        reclaimUrls.push(...unused.map(u => u.image_url))
+        reclaimUrls.push(...(await reclaimablePhotos(tx, wineCandidates.map(c => c.id))).map(u => u.imageUrl))
       }
       return { plan, sessions, liveCodes, reclaimUrls, leases }
     }, { timeout: opts.txTimeoutMs ?? 60_000, maxWait: 10_000 })

@@ -19,6 +19,7 @@ import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
 import { CatalogValidationError } from '@/lib/catalogWrite'
 import { relinkOccurrence, editOccurrenceNotes } from '@/lib/occurrences'
+import { afterRelink } from '@/lib/cravings'
 import { prepareLink, applyRelink, type AppliedLink } from '@/lib/catalogLink'
 import { loadEntries, entryKey } from '@/lib/catalogEntries'
 import { cleanBottleNotes } from '@/lib/session'
@@ -280,7 +281,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     let applied: AppliedLink | null = null
     try { applied = await applyRelink(tx, linkReq, userId, { productId: locked.product_id, vintageId: locked.vintage_id }) }
     catch (err) { if (err instanceof CatalogValidationError) throw Object.assign(new Error(err.message), { code: 'BAD_LINK' }); throw err }
-    if (applied) await relinkOccurrence(tx, null, wine.id, applied, applied.snapshot)
+    // A re-link carries the bottle's cravings to the new wine (R3).
+    if (applied) { await relinkOccurrence(tx, null, wine.id, applied, applied.snapshot); await afterRelink(tx, wine.id) }
     const nextSparkling = applied ? applied.snapshot.sparkling : locked.sparkling
     // Sent flavours are gated against the kind the bottle has after this edit.
     let sentFlavors: Record<string, number> | undefined = undefined

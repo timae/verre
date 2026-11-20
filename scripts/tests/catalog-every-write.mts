@@ -412,8 +412,10 @@ async function blind() {
   await postWine(s.code, as(H), { id: rid, ...pick(red) })
   const rw = wiresOf(await winesGet(s.code, as(T))).find(x => x.id === rid)
   check('(7d) a blind RED bottle keeps colour red (and sparkling false), abv null', rw?.colour === 'red' && rw?.sparkling === false && rw?.abv === null && rw?.entry === null, rw)
+  // (+ `saved`, step 5: the signed-in viewer's own save of THAT bottle, never
+  // the wine-level state; lib/cravings.ts savedFlags.)
   check('(7d) 🔒 the blind row is an ALLOW-LIST: exactly the keys a taster may know',
-    !!rw && Object.keys(rw).sort().join() === ['_blind', 'abv', 'addedByDisplayName', 'addedByUserId', 'colour', 'country', 'description', 'entry', 'grape', 'id', 'image', 'imageUrl', 'isMine', 'name', 'producer', 'purchaseUrl', 'region', 'revealedAt', 'sparkling', 'vintage', 'vinification'].sort().join(), rw && Object.keys(rw))
+    !!rw && Object.keys(rw).sort().join() === ['_blind', 'abv', 'addedByDisplayName', 'addedByUserId', 'colour', 'country', 'description', 'entry', 'grape', 'id', 'image', 'imageUrl', 'isMine', 'name', 'producer', 'purchaseUrl', 'region', 'revealedAt', 'saved', 'sparkling', 'vintage', 'vinification'].sort().join(), rw && Object.keys(rw))
   const { redactWine } = await import('../../lib/wineRedaction.ts')
   const extra = redactWine({ id: 'x', name: 'n', producer: 'p', vintage: '', grape: '', type: 'red', image: '', imageUrl: '', futureLabelField: 'LEAK' } as unknown as WineMeta, { revealed: false, isHost: false, ownsWine: false, index: 0 })
   check('(7d) 🔒 a field added to WineMeta later stays OFF a blind row (no spread)', !!extra && !JSON.stringify(extra).includes('LEAK'), extra)

@@ -21,7 +21,7 @@ The minimal contract is the easiest to audit for privacy and forces explicit doc
 
 ### Children survive untouched
 
-- `wines.session_id` is **nulled** on soft-delete (today's pre-rewire behaviour preserved per the Q3 phase-2 decision). The wines themselves stay reachable for bookmark/Wishlist surfaces. **The wishlist tombstone label resolves via `ratings.session_id`** — find a rating the viewer wrote against this wine, follow its `session_id` to the tombstoned session row, read `deletedAt`. This commits to the future direction where `wines.session_id` becomes deprecated entirely (a wine is a thing, ratings are the session-scoped event). See `app/api/me/bookmarks/route.ts` for the resolver.
+- `wines.session_id` is **nulled** on soft-delete (today's pre-rewire behaviour preserved per the Q3 phase-2 decision). The wines themselves stay reachable for bookmark/Wishlist surfaces. **A craving's moment label resolves via the moment the craving stores** (`bookmarks.source_session_id`, written with its source since the catalogue model change, step 5; `lib/outsideView.ts` `cravingSessionIdSql` reads it first, then the bottle's own session, then a rating's), so an orphaned or deleted bottle changes nothing; Saved names a moment's code only for a moment you were in. Resolver: `lib/cravings.ts`.
 - `ratings.session_id` keeps pointing at the deleted session's id.
 - `feed_items.session_id` keeps pointing at the deleted session's id.
 - All ratings, feed_items, likes, tags, and `rating_images` survive untouched.

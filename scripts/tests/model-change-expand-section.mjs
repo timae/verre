@@ -137,9 +137,9 @@ export async function modelChangeExpandSection({ prisma, ok, rejects, accepts, r
     SELECT conname, confdeltype::text AS del FROM pg_constraint
      WHERE conrelid = 'bookmarks'::regclass AND contype = 'f' ORDER BY conname`)
   ok(Array.isArray(fkDel) && JSON.stringify(fkDel.map(f => `${f.conname}:${f.del}`)) === JSON.stringify([
-    'bookmarks_product_id_fkey:a', 'bookmarks_source_session_id_fkey:a', 'bookmarks_user_id_fkey:c',
+    'bookmarks_product_id_fkey:a', 'bookmarks_source_item_id_fkey:n', 'bookmarks_source_session_id_fkey:a', 'bookmarks_user_id_fkey:c',
     'bookmarks_vintage_id_product_id_fkey:a', 'bookmarks_wine_id_fkey:c']),
-    `bookmarks' keys: product, vintage and moment NO ACTION; user and source bottle CASCADE${Array.isArray(fkDel) ? ` (${fkDel.map(f => `${f.conname}:${f.del}`).join(' ')})` : ''}`)
+    `bookmarks' keys: product, vintage and moment NO ACTION; user and source bottle CASCADE; the post it came from SET NULL (step 5)${Array.isArray(fkDel) ? ` (${fkDel.map(f => `${f.conname}:${f.del}`).join(' ')})` : ''}`)
   // 🔒 The two partial uniques are NOT in the Prisma datamodel (an @@unique
   // cannot carry a WHERE, so the drift gate would ask for a different index):
   // this is what pins their predicate, columns and NULLS NOT DISTINCT.

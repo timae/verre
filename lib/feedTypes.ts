@@ -15,8 +15,10 @@ export type SessionFeedWine = {
   vintage: string | null
   grape: string | null
   // Maps from `wines.style` ('red' | 'white' | 'spark' | 'rose' | 'nonalc' …).
-  // Kept as `type` for the app until its build (catalogue model change step 7;
-  // build step 5 rewrites this read onto the catalogue).
+  // Kept as `type` for the app until its build (catalogue model change step 7).
+  // Name / producer / vintage / grape / region / country come from the
+  // catalogue entry when the bottle is linked (merges followed), else its
+  // snapshot (step 5).
   type: string | null
   // The bottle's kind (its snapshot): the axes read `sparkling` (catalogue
   // model change step 4). Stay on a blind row, like the style always did; the
@@ -51,6 +53,10 @@ export type SessionFeedWine = {
   // Set when the wine is blind-redacted. UI renders the mystery card
   // and skips identity-bearing fields.
   _blind?: boolean
+  // The signed-in viewer's save state (lib/cravings.ts savedFlags): on a
+  // redacted row only their save of THAT bottle, never whether they crave the
+  // wine (catalogue model change § 5). Absent for a signed-out viewer.
+  saved?: boolean
 }
 
 // The session-feed payload, replacing the phase-2 `'session_stub'` shape.

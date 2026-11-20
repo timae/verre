@@ -544,7 +544,10 @@ is already built.
 🔒 **A craving is one per wine and remembers where it was first craved (Simon,
 2026-11-18).** "You can only crave once, but check in many": one bookmark per
 `(user, product, vintage)`, the ruling above, unchanged. It points at a catalogue wine
-(only legacy unconverted and purged rows have none, § 5a); **"you craved it here"** is the place it was first craved (a bottle in a moment, a
+(only legacy unconverted and purged rows have none, § 5a; as built, the survivor of a
+merge when that is still the bottle's wine, else the bottle's own pair: after a product
+merge a year can exist only under the merged-away product, and every read follows the
+merge, § 8b); **"you craved it here"** is the place it was first craved (a bottle in a moment, a
 check-in, someone else's post: all occurrences), kept as the bookmark's source
 (`wine_id`, nullable from now on). **"Where you had it"** is never stored: it aggregates
 your check-ins and moments of that wine (your ratings, § 5 above). On any later moment,
@@ -564,14 +567,27 @@ is:
   viewer term stays, `lib/profileLists.ts`). It shows once its source is revealed for
   the owner (a reveal, or the moment over by its record dates). "Where you had it"
   applies the same rule to the blind bottle itself.
-- 🔒 **On a bottle hidden for you, the crave button is neutral** (the one addition to
-  Simon's description, needed because "you already crave it" on "Wine N" names the
-  wine): it always offers Crave, and the answer is the same whether a new craving was
-  stored (hidden) or the wine was already craved (nothing changes). No un-crave there
-  until the reveal. Decided by the live rule (`lib/sessionState.ts`, the one that
-  redacts the bottle on the moment screen), under the contract's locks, before any other
-  refusal ("not in the catalogue yet" included), so no answer depends on the hidden
-  bottle's link.
+- 🔒 **On a bottle hidden for you, a save is a save of THAT BOTTLE** (ruled 2026-11-20,
+  Simon, replacing the neutral button of review r7: "on a blind you can in that very
+  moment save and unsave. But if the wine was saved before already, it does not have any
+  impact on that save in particular ... your unsave is only valid for the temporary save
+  that we put on the wine"). It reads saved after the tap AND after a reload, can be
+  unsaved there, and never changes a craving of the same wine made elsewhere; it never
+  shows "you already crave it" on "Wine N" (that would name the wine). 🔒 Stored as a
+  `blind_saves` row per (user, bottle) (build step 5's migration, with the bottle's
+  moment and the post it came from) and NOTHING ELSE while the bottle is hidden for its
+  saver (review r1 of step 5: storing a craving only when the wine was not craved yet
+  made the bookmarks id sequence an oracle, and a craving shared by two blind saves of
+  one wine named the still-hidden bottle at the other's reveal). The save COUNTS AS A
+  CRAVING of its bottle's wine once that bottle is no longer hidden for the saver: every
+  list reads both (one row per wine, a real craving first, else the earliest such save);
+  each bottle's save matures at its own reveal; a re-link moves it with the bottle; a
+  bottle deleted after its reveal turns it into a real craving (R1). The answer is the
+  same, and the work the same, whatever the wine. Decided by the live rule
+  (`bottleHiddenFor`, `lib/sessionState.ts`, the one that redacts the bottle on the
+  moment screen), under the contract's locks, before any other refusal ("not in the
+  catalogue yet" included), so no answer depends on the hidden bottle's link. Rules in
+  `lib/cravings.ts`.
 - **A craving from a place you can see re-points a craving whose source is still hidden
   for you**: if you crave wine P on a visible bottle or post while your craving of P
   is sourced from a still-hidden bottle, the craving's source moves to the visible place
@@ -581,10 +597,17 @@ is:
   would sit where the blind craving was made and say the hidden bottle was P (review r7).
   Answer, count, position, date and id then match a fresh craving of P exactly.
 - **Deleting a bottle** keeps the cravings first made there, losing "you craved it here"
-  AND their stored moment (both pointers cleared together, Codex r2: a moment pointer
-  without its bottle would read `revealed_at` as NULL and hide a craving that was
-  visible); EXCEPT a craving whose source is still hidden for its owner (`outsideViewSql`),
-  which goes with the bottle (with no source left, nothing could keep its label hidden).
+  but KEEPING their stored moment (ruled 2026-11-20, Simon: "the moment should stay
+  visible on that occasion"; this replaces Codex r2's "both pointers cleared together"),
+  and they show to EVERYONE who may see the list (offered "only the craver", because a
+  host's or adder's craving of their own blind bottle deleted mid-tasting then appears;
+  Simon chose everyone). The outside rule's bottle term is skipped for a craving whose
+  bottle is gone (its visibility was decided at the delete), the moment term (Hide
+  Line-up) still applies; EXCEPT a craving whose source is still hidden for its owner
+  (`outsideViewSql`), which goes with the bottle (with no source left, nothing could keep
+  its label hidden). A blind save of the deleted bottle that already counts as a craving
+  (its bottle was revealed) becomes a real craving with its moment and date; one still
+  hidden goes with the bottle.
   🔒 **Mechanism (Codex r1): the source FK KEEPS `ON DELETE CASCADE`.** The new wine
   DELETE first detaches (`wine_id = NULL`) the cravings sourced from that bottle that
   are visible to their owner, in the same transaction, then deletes; the hidden ones
@@ -601,34 +624,50 @@ is:
   or over. No pre-orphaning cleanup is needed (it replaces review r7/r8's rule).
   Residual, named: a legacy bookmark whose bottle is ALREADY orphaned with no rating left
   backfills no moment and shows, as it does today.
-- **Re-linking a bottle** (an identity edit, § 3): a craving sourced from it whose source
-  is still hidden for its owner (`outsideViewSql`) follows the bottle to the new wine (or disappears into an
-  existing craving of that wine, which shows nothing new while it is hidden); a visible
-  craving stays on its wine and loses "you craved it here" and its stored moment
-  together.
+- **Re-linking a bottle** (an identity edit, § 3): EVERY craving sourced from it follows
+  the bottle to the new wine, visible ones too, keeping its bottle and its moment (ruled
+  2026-11-20, Simon: re-link stays, since delete and re-add would lose every rating on
+  the bottle, "and the craving moves as well"; replaces "a visible craving stays on its
+  wine"); a collision with an existing craving of the new wine keeps the visible row,
+  else the earlier `saved_at`. A blind save reads its bottle's wine live, so it follows
+  the re-link on its own.
 - **Collisions** (the purge's vintage-null, the conversion's merges, a re-link into an
   existing craving): keep the visible row, else the earlier `saved_at`.
+- **A craving saved from someone else's post** (ruled 2026-11-20, Simon: "people that
+  shouldn't won't see it, people that can, will"): it remembers the post
+  (`source_item_id`); on the saver's Cravings, a bottle from a moment the saver was not in
+  shows its photo and bottle id only to a viewer who may see that post (its author's post
+  gate, block pairs included); everyone else sees the wine without them, and such a photo
+  is never a picked Cravings tile. The saver's own view follows the same rule (ruled
+  2026-11-20: once they can no longer see the post, a block or a narrowed audience, the
+  photo, bottle id and purchase link go; the wine stays). Saved names a moment's join code
+  only for a moment the saver was in (review r1: a code is a join credential).
+- **One save budget** (ruled 2026-11-20): 300 saves or unsaves an hour per user, shared by
+  the moment's and the post's toggle (`rl:crave`, `app/api/rate-limits.md`).
 - **Badges** count visible cravings only (the raw `bookmark.count` at
   `lib/badgeService.ts:115` changes); a hidden one counts after its reveal. No crave path
   awards badges or XP in its own answer (today only the rate POST calls
   `checkAndAwardBadges`); keep it that way, or the answer becomes the oracle.
-- **`craved` is never emitted on a row redacted for the viewer**, by whichever rule
-  redacts that surface: the live rule in the moment, the outside rule in the feed and on
-  profiles (a feed "Wine N" must not light up because the viewer craves P). Craving from
-  someone else's POST goes through the post gate (`viewerCanSeePosts`) and the outside
-  rule for the caller, the same neutral answer when the post's bottle is redacted for
-  them.
-- **The old by-wine routes go**: `DELETE /api/session/[code]/wines/[wineId]/bookmark`
-  (`deleteMany` by wine id, no participant check) and `DELETE /api/me/bookmarks/[wineId]`
-  would be an un-crave on a hidden bottle; removal is by bookmark id only, and refused
-  (the neutral answer) while the craving's source is hidden for the caller.
+- **The wine-level state is never emitted on a row redacted for the viewer**, by
+  whichever rule redacts that surface: the live rule in the moment, the outside rule in
+  the feed and on profiles (a feed "Wine N" must not light up because the viewer craves
+  P). The per-viewer flag (`saved`, as built) on such a row is only the viewer's own save
+  of that bottle. Craving from someone else's POST (`POST/DELETE
+  /api/feed-items/[id]/crave`) goes through the post gate (`viewerCanSeePosts`) and the
+  outside rule for the caller: a save of that bottle when the post's bottle is redacted
+  for them.
+- **The old by-wine removals go**: `DELETE /api/me/bookmarks/[wineId]` is replaced by
+  `DELETE /api/me/bookmarks/[id]` (the craving's id; a craving hidden for the caller is
+  the same 404 as a missing one). The moment's `DELETE …/wines/[wineId]/bookmark` stays
+  as the per-BOTTLE unsave (it had no participant check; it now runs in the contract with
+  the participant gate): on a hidden bottle only that bottle's save (R2), on a visible
+  one the wine's visible craving.
 - **Residuals, named** (review r7): (1) *live-hidden, outside-visible*: the live rule has
   no "moment over by dates" term (`lib/sessionState.ts`), the outside rule does
-  (`lib/outsideView.ts`); in a moment that is over but unrevealed, the neutral crave stores
-  a craving that shows at once, labelled. No new leak (the outside rule already shows
-  that label), but the button stays neutral there. (2) *Lost blind craves*: with P already
-  craved visibly, craving "Wine N" (= P) stores nothing; if the host then re-links N to
-  Q, the user does not crave Q after the reveal. (3) A visible craving disappears from
+  (`lib/outsideView.ts`); in a moment that is over but unrevealed, a save there is a blind
+  save whose craving shows at once, labelled. No new leak (the outside rule already shows
+  that label). (2) *Lost blind craves*: CLOSED by the blind save (2026-11-20): a saved
+  "Wine N" re-linked from P to Q gets a craving of Q at the re-link. (3) A visible craving disappears from
   the list if its source's moment is later switched to blind or to a hidden line-up;
   craving the wine anywhere visible re-points it. (4) The cohost case below.
 - **Residual (4), the cohost**: a cohost sees labels in the moment (the live rule bypasses cohosts)
@@ -669,6 +708,18 @@ a rating or a bookmark.** Concretely, extending the existing purge transaction:
 - **Bookmark collision** — nulling `vintage_id` can collide with an existing product-grain
   bookmark for the same user under the `NULLS NOT DISTINCT` constraint. The purge must
   merge the pair, not fail, keeping the visible row, else the earlier `saved_at` (§ 5).
+- **Blind saves** (as built, step 5): a save of a bottle hidden for its saver counts as a
+  craving only while its bottle is linked. So a product purge first turns each save that
+  already counts as a craving into a real, unlinked one (the entry's snapshot, its bottle,
+  moment, post and date; one per saver and wine, none where a real craving of that wine
+  already shows). A still-hidden save stays a save of its bottle and, after its reveal,
+  counts as none, as on any unlinked bottle (named).
+- **Lock order** (as built, step 5): the moments' advisory locks and rows (in code order,
+  as account deletion), then their bottles, then the people's craving locks; only what was
+  locked is written; the plan includes the moments the saves carry (an orphaned bottle's
+  save keeps its moment) and the owner of every craving sourced from a locked bottle. A
+  reference made meanwhile keeps its link and fails the delete on its key (a save in a
+  moment not held: `PurgeRaced`), so the whole purge rolls back and the caller retries.
 
 This makes the **historical snapshot on the occurrence load-bearing.** An occurrence keeps
 its own `name` / `producer` / `vintage` strings — not as denormalised catalog data, but so

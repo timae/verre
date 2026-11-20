@@ -14,6 +14,7 @@ import { withSessionMutation, admitted, refuse, ContractCold, type MutationCtx }
 import { readGrant, grantStatus, type AuthorizedIdentity } from '@/lib/sessionGrant'
 import { contractFailure } from '@/lib/sessionRehydrate'
 import { openSessionFor } from '@/lib/sessionRoute'
+import { beforeBottleDelete, afterRelink } from '@/lib/cravings'
 import { reconcileLineup, lockOccurrence, relinkOccurrence, editOccurrenceNotes, withSnapshot, recordLineup, projectLineup, renumber, readOccurrence } from '@/lib/occurrences'
 import type { WineMeta, SessionMeta } from '@/lib/session'
 import { buildWineEcho } from '@/lib/sessionState'
@@ -136,7 +137,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       if (hidden && linkReq.kind === 'create') throw refuse(400, CREATE_HIDDEN)
       const applied = await link(tx, wine)
       if (ctx.row) {
-        if (applied) await relinkOccurrence(tx, ctx.row.id, wineId, applied, applied.snapshot)
+        // A re-link carries the bottle's cravings to the new wine (R3).
+        if (applied) { await relinkOccurrence(tx, ctx.row.id, wineId, applied, applied.snapshot); await afterRelink(tx, wineId) }
         await editOccurrenceNotes(tx, ctx.row.id, wineId, notes)
         return { lineup: await recordLineup(tx, ctx.row.id), revision: ctx.row.lineupRevision }
       }
@@ -274,6 +276,10 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
       if (!mayEdit(ctx, caller, wine)) throw refuse(403, 'only the host or the provider who added this wine can delete it')
       let lineup: WineMeta[] | null = null
       if (ctx.row) {
+        // Its cravings first (lib/cravings.ts, catalogue model change § 5): the
+        // ones visible to their owner lose the bottle and keep their moment;
+        // the still-hidden ones go with the row (the key's CASCADE).
+        await beforeBottleDelete(tx, wineId)
         await tx.$executeRaw`DELETE FROM wines WHERE id = ${wineId} AND session_id = ${ctx.row.id}`
         await renumber(tx, ctx.row.id)
         lineup = await recordLineup(tx, ctx.row.id)

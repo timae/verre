@@ -11,6 +11,8 @@ import { getProfileFlavor, type FlavorBlock } from '@/lib/profileFlavor'
 import { viewerBlockedAmong } from '@/lib/userBlock'
 import { decimalToNumber } from '@verre/core'
 import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import { entryKey, loadEntriesSoft } from '@/lib/catalogEntries'
+import { entryYear } from '@/lib/wineDisplay'
 import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
 import { impressionsCount } from '@/lib/profileLists'
 import type { SessionFeedWine } from '@/lib/feedTypes'
@@ -203,7 +205,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
       rating: {
         select: {
           score: true, flavors: true, aromas: true, notes: true,
-          wine: { select: { name: true, producer: true, vintage: true, grape: true, style: true, colour: true, sparkling: true, abv: true, imageUrl: true } },
+          wine: { select: { name: true, producer: true, vintage: true, grape: true, style: true, colour: true, sparkling: true, abv: true, imageUrl: true, productId: true, vintageId: true } },
           images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { imageUrl: true } },
         },
       },
@@ -288,6 +290,9 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   // (leak-fixes F6): you never see someone you blocked or who blocked you on
   // anyone's list. Absence is no tell (you don't know who was tagged).
   const viewerTagBlocked = viewerId === userId ? blockedTagUserIds : await viewerBlockedAmong(viewerId, tagUserIds)
+  // A check-in's bottle shows its catalogue entry (merges followed), else its
+  // snapshot (catalogue model change step 5).
+  const checkinEntries = await loadEntriesSoft(standaloneFeedItems.flatMap(f => (f.rating ? [{ productId: f.rating.wine.productId, vintageId: f.rating.wine.vintageId }] : [])))
 
   return {
     ...head,
@@ -296,14 +301,15 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
       // violation; drop rather than crash.
       if (!f.rating) return []
       const wine = f.rating.wine
+      const e = wine.productId ? checkinEntries.get(entryKey(wine.productId, wine.vintageId)) : undefined
       const ratingImage = f.rating.images[0]?.imageUrl ?? null
       const place = postPlace(f, showPlace, isOwner)
       return [{
         id: f.id,
-        wineName: wine.name,
-        producer: wine.producer,
-        vintage: wine.vintage,
-        grape: wine.grape,
+        wineName: e?.name ?? wine.name,
+        producer: e?.producer ?? wine.producer,
+        vintage: e ? (entryYear(e) || null) : wine.vintage,
+        grape: e ? (e.grapes.join(', ') || null) : wine.grape,
         type: wine.style,
         colour: wine.colour,
         sparkling: wine.sparkling,

@@ -6,6 +6,7 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { ALL_BADGES, BADGE_MAP, evaluateBadges, XP_REWARDS, type UserStats } from '@/lib/badges'
 import { redactedSql, hiddenSql } from '@/lib/outsideView'
+import { visibleCravingCount } from '@/lib/cravings'
 import { NON_ALCOHOLIC_MAX_ABV } from '@verre/core'
 
 // Errors we expect during best-effort badge inserts: a duplicate from a
@@ -122,7 +123,10 @@ export async function getUserStats(userId: number): Promise<UserStats> {
     LEFT JOIN (SELECT session_code, COUNT(*) AS cnt FROM session_members GROUP BY session_code) mc ON mc.session_code=sm.session_code
     WHERE sm.user_id=${userId}`
 
-  const bookmarkCount = await prisma.bookmark.count({ where: { userId } })
+  // Visible cravings only (catalogue model change § 5): a craving whose source
+  // is still hidden for its owner counts after its reveal, so a badge never
+  // tells what "Wine N" is. No crave path awards anything in its own answer.
+  const bookmarkCount = await visibleCravingCount(userId)
 
   // daysSinceFirst is derived from the snapshotted firstRatedAt — never
   // shrinks, even if the original first rating gets deleted later.

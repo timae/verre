@@ -48,7 +48,8 @@ async function reclaimImage(url: string | null | undefined) {
 //                     historical rating author with no member row is recorded
 //                     as kicked too (r1-4). Ratings stay for their own history.
 //   - 'kick-delete' → kick + delete the user's session-scoped data (ratings,
-//                     feed item, bookmarks-of-wines-in-this-session,
+//                     feed item, their cravings from this session (its
+//                     stored moment, or its bottle's) + their blind saves,
 //                     session_members).
 //   - 'ban'         → kick-delete + the ban (session_bans row = the record for
 //                     a Postgres-backed session; the Redis set is its cache).
@@ -142,8 +143,16 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
         reclaim.push(...await ratingImages(tx, Prisma.sql`r.user_id = ${userId} AND r.session_id = ${row.id}`))
         await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id = ${row.id}`
         await tx.$executeRaw`DELETE FROM feed_items WHERE user_id = ${userId} AND session_id = ${row.id}`
+        // Their cravings from this moment: by the moment the craving stores
+        // (catalogue model change § 5: kept when its bottle is orphaned or
+        // deleted), or by its bottle's; and their saves of its bottles.
         await tx.$executeRaw`
-          DELETE FROM bookmarks b USING wines w WHERE b.wine_id = w.id AND w.session_id = ${row.id} AND b.user_id = ${userId}`
+          DELETE FROM bookmarks b WHERE b.user_id = ${userId}
+             AND (b.source_session_id = ${row.id} OR b.wine_id IN (SELECT w.id FROM wines w WHERE w.session_id = ${row.id}))`
+        await tx.$executeRaw`
+          DELETE FROM blind_saves bs WHERE bs.user_id = ${userId} AND (bs.session_id = ${row.id} OR bs.wine_id IN (
+            SELECT w.id FROM wines w WHERE w.session_id = ${row.id}
+            UNION SELECT r.wine_id FROM ratings r WHERE r.session_id = ${row.id}))`
         await tx.$executeRaw`DELETE FROM session_members WHERE user_id = ${userId} AND session_code = ${code}`
       }
     }

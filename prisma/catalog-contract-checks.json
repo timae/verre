@@ -402,6 +402,7 @@
   ],
   "foreignKeys": [
     "bookmarks.bookmarks_product_id_fkey=FOREIGN KEY (product_id) REFERENCES wine_products(id)",
+    "bookmarks.bookmarks_source_item_id_fkey=FOREIGN KEY (source_item_id) REFERENCES feed_items(id) ON DELETE SET NULL",
     "bookmarks.bookmarks_source_session_id_fkey=FOREIGN KEY (source_session_id) REFERENCES sessions(id)",
     "bookmarks.bookmarks_user_id_fkey=FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
     "bookmarks.bookmarks_vintage_id_product_id_fkey=FOREIGN KEY (vintage_id, product_id) REFERENCES wine_vintages(id, product_id)",

@@ -184,6 +184,8 @@ const cravingsRoute = await import('../../app/api/users/[id]/cravings/route.ts')
 const meRatingsRoute = await import('../../app/api/me/ratings/route.ts')
 const meBookmarksRoute = await import('../../app/api/me/bookmarks/route.ts')
 const bookmarkRoute = await import('../../app/api/session/[code]/wines/[wineId]/bookmark/route.ts')
+const bookmarkByIdRoute = await import('../../app/api/me/bookmarks/[id]/route.ts')
+const postCraveRoute = await import('../../app/api/feed-items/[id]/crave/route.ts')
 const { outsideViewMatrix } = await import('./outside-view-matrix.mts')
 // § 20 the leak fixes (.local/leak-fixes/plan.md)
 const { leakFixes } = await import('./leak-fixes-section.mts')
@@ -1499,6 +1501,24 @@ try {
   await resetLimits()
   const rv = await call(revealRoute.POST, 'POST', `/api/session/${Pm}/wines/${wb.wire.id}/reveal`, Ap, {}, { code: Pm, wineId: wb.wire.id })
   check('reveal echo: addedByUserId public', rv.status === 200 && rv.wire.wine.addedByUserId === Bp.pid, rv.wire)
+  // The saves (catalogue model change step 5): each answer goes through the canary.
+  await resetLimits()
+  const sv = await call(bookmarkRoute.POST, 'POST', `/api/session/${Pm}/wines/${wb.wire.id}/bookmark`, Bp, undefined, { code: Pm, wineId: wb.wire.id })
+  check('save in the moment → { ok, saved }', sv.status === 200 && sv.wire.saved === true, sv.wire)
+  const savedW = await call(meBookmarksRoute.GET, 'GET', '/api/me/bookmarks', Bp)
+  check('Saved: 200, one wine', savedW.status === 200 && Array.isArray(savedW.wire) && savedW.wire.length === 1, savedW.wire)
+  const theirC = await call(cravingsRoute.GET, 'GET', `/api/users/${Bp.pid}/cravings`, Ap, undefined, { id: Bp.pid })
+  check('someone\'s Cravings: 200, the row', theirC.status === 200 && theirC.wire.items.length === 1, theirC.wire)
+  const ciWine = (await prisma.$queryRaw<{ w: string }[]>`SELECT r.wine_id AS w FROM feed_items f JOIN ratings r ON r.id = f.rating_id WHERE f.id = ${ciId}`)[0].w
+  const pc = await call(postCraveRoute.POST, 'POST', `/api/feed-items/${ciId}/crave`, Ap, { wineId: ciWine }, { id: String(ciId) })
+  check('save from a post → { ok, saved }', pc.status === 200 && pc.wire.saved === true, pc.wire)
+  const pcu = await call(postCraveRoute.DELETE, 'DELETE', `/api/feed-items/${ciId}/crave`, Ap, { wineId: ciWine }, { id: String(ciId) })
+  check('unsave from a post → { ok, saved: false }', pcu.status === 200 && pcu.wire.saved === false, pcu.wire)
+  const bkId = (await prisma.bookmark.findFirstOrThrow({ where: { userId: Bp.id }, select: { id: true } })).id
+  const rmv = await call(bookmarkByIdRoute.DELETE, 'DELETE', `/api/me/bookmarks/${bkId}`, Bp, undefined, { id: String(bkId) })
+  check('remove a craving by its id → 200', rmv.status === 200, rmv.wire)
+  const usv = await call(bookmarkRoute.DELETE, 'DELETE', `/api/session/${Pm}/wines/${wb.wire.id}/bookmark`, Bp, undefined, { code: Pm, wineId: wb.wire.id })
+  check('unsave in the moment → { ok, saved: false }', usv.status === 200 && usv.wire.saved === false, usv.wire)
   await resetLimits()
   const se = await call(settingsRoute.PATCH, 'PATCH', `/api/session/${Pm}/settings`, Ap, { description: 'public ids' }, { code: Pm })
   check('settings echo: meta wire', se.status === 200 && se.wire.meta.hostUserId === Ap.pid && se.wire.meta.hostIdentityId === `u:${Ap.pid}`, se.wire)
@@ -1967,7 +1987,9 @@ try {
 
   // ── Cravings ──
   const orphan = `orph${TAG.slice(-8)}`
-  await prisma.$executeRaw`INSERT INTO wines (id, name, image_url) VALUES (${orphan}, ${`${TAG} Orphan`}, ${urlOf('wines/orphan.png')})`
+  // A moment's bottle (origin 'session': the insert trigger would read a raw
+  // session-less row as a check-in's) whose moment is gone and unrecorded.
+  await prisma.$executeRaw`INSERT INTO wines (id, name, image_url, origin) VALUES (${orphan}, ${`${TAG} Orphan`}, ${urlOf('wines/orphan.png')}, 'session')`
   for (const w of [wa, we, wc, orphan]) await bookmark(Oo.id, w)
   await bookmark(Oo.id, wd)
   // Saved order ≠ id order (the first bookmark saved last), so "served as
@@ -1981,12 +2003,15 @@ try {
     rowOf(cv, wa)?.score === 3.5 && rowOf(cv, wa)?.postId === (await postOf(Oo.id, M1.code)) && rowOf(cv, we)?.score === null && rowOf(cv, we)?.postId === null
     && !/momentName|savedAt|saved_at|"key"|\d{4}-\d{2}-\d{2}T/.test(JSON.stringify(cv.wire)), cv.wire)
   const cvOwn = await list('cravings', Oo, Oo)
-  check('your own cravings: all five, the blind one blind, the orphan shown (named residual), the remove key = the wine id',
-    cIds(cvOwn).length === 5 && rowOf(cvOwn, wc)?.blind === true && rowOf(cvOwn, wc)?.name === '' && rowOf(cvOwn, orphan)?.key === orphan, cvOwn.json)
+  // Re-cast by design (catalogue model change step 5, spec § 5): a craving
+  // whose source is hidden for its OWNER is left out of their own list too
+  // (no blind row), and the remove key is the craving's id.
+  check('your own cravings: four, the blind one LEFT OUT until its reveal, the orphan shown (named residual), the remove key = the craving id',
+    cIds(cvOwn).length === 4 && !cIds(cvOwn).includes(wc) && /^\d+$/.test(String(rowOf(cvOwn, orphan)?.key)) && !('id' in (rowOf(cvOwn, orphan) ?? {})), cvOwn.json)
   t = await tiles(Oo, Vv)
-  check('🔒 D7: Cravings tile == list total (Vera 2, Odile 5)', t.cravings?.count === 2 && (await tiles(Oo, Oo)).cravings?.count === 5, { v: t.cravings })
+  check('🔒 D7: Cravings tile == list total (Vera 2, Odile 4)', t.cravings?.count === 2 && (await tiles(Oo, Oo)).cravings?.count === 4, { v: t.cravings })
   const byScore = await list('cravings', Oo, Oo, 'sort=score')
-  check('own sort=score: scored first (5, 4, 3.5), then unscored', JSON.stringify(cIds(byScore).slice(0, 3)) === JSON.stringify([wd, wc, wa]), cIds(byScore))
+  check('own sort=score: scored first (5, 3.5; the blind 4 left out), then unscored', JSON.stringify(cIds(byScore).slice(0, 2)) === JSON.stringify([wd, wa]) && !cIds(byScore).includes(wc), cIds(byScore))
   await prisma.user.update({ where: { id: Oo.id }, data: { checkinVisibility: 'only-me' } })
   const hiddenScores = await list('cravings', Oo, Vv, 'sort=score')
   const recentOrder = await list('cravings', Oo, Vv)
@@ -2178,12 +2203,12 @@ try {
   // found" and show in full on the owner's own list and tile.
   const [hlRow] = await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM sessions WHERE code = ${HL.code}`
   const unhooked = `uh${TAG.slice(-8)}`
-  await prisma.$executeRaw`INSERT INTO wines (id, name, image_url, added_by_identity_id) VALUES (${unhooked}, ${`${TAG} Unhooked`}, ${urlOf('wines/unhooked.png')}, ${`u:${Hx.id}`})`
+  await prisma.$executeRaw`INSERT INTO wines (id, name, image_url, added_by_identity_id, origin) VALUES (${unhooked}, ${`${TAG} Unhooked`}, ${urlOf('wines/unhooked.png')}, ${`u:${Hx.id}`}, 'session')`
   await prisma.$executeRaw`INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, rated_at) VALUES (${unhooked}, ${Hx.id}, ${hlRow.id}, 'session', 'Hugo', 4, now())`
   await bookmark(Oo.id, unhooked)
   const ownAfter = await list('cravings', Oo, Oo)
   check('🔒 an unhooked bottle resolves its moment through its rating: hidden line-up → left out of the owner\'s own list, her tile count and someone\'s list',
-    !cIds(ownAfter).includes(unhooked) && (await tiles(Oo, Oo)).cravings?.count === 5 && !cIds(await list('cravings', Oo, Vv)).includes(unhooked), cIds(ownAfter))
+    !cIds(ownAfter).includes(unhooked) && (await tiles(Oo, Oo)).cravings?.count === 4 && !cIds(await list('cravings', Oo, Vv)).includes(unhooked), cIds(ownAfter))
   check('🔒 …and it never becomes a picked Cravings photo', !(await listPickable('cravings', Oo.id, 50)).includes(urlOf('wines/unhooked.png')))
   await prisma.bookmark.deleteMany({ where: { userId: Oo.id, wineId: unhooked } })
 
@@ -2254,11 +2279,14 @@ try {
   const mr = await call(meRatingsRoute.GET, 'GET', '/api/me/ratings', Vv)
   const mb = await call(meBookmarksRoute.GET, 'GET', '/api/me/bookmarks', Vv)
   const mrBlind = (mr.json as unknown as J[]).find(x => x.wine_id === wc)
-  const mbBlind = (mb.json as unknown as J[]).find(x => x.wine_id === wc)
+  const mbNames = (mb.json as unknown as J[]).map(x => x.name)
   check('🔒 /api/me/ratings: the hidden line-up left out, the blind bottle a blind row',
     !(mr.json as unknown as J[]).some(x => x.wine_id === hw) && mrBlind?._blind === true && mrBlind.wine_name === '' && mrBlind.image_url === null && mrBlind.score === 4, mrBlind)
-  check('🔒 /api/me/bookmarks: the same, grape + purchase link blank too',
-    !(mb.json as unknown as J[]).some(x => x.wine_id === hw) && mbBlind?._blind === true && mbBlind.name === '' && mbBlind.grape === null && mbBlind.purchase_url === null, mbBlind)
+  // Re-cast by design (catalogue model change step 5, spec § 5): Saved has no
+  // blind rows any more; a save whose bottle is hidden for you is left out
+  // until its reveal, like the hidden line-up.
+  check('🔒 /api/me/bookmarks: the hidden line-up AND the blind bottle left out (no blind row, no name)',
+    mb.status === 200 && !mbNames.includes(`${TAG} Hidden Bottle`) && !mbNames.includes(`${TAG} Gamma`) && !mbNames.includes(''), mbNames)
   check('…and a shown row stays whole', (mr.json as unknown as J[]).find(x => x.wine_id === wa)?.wine_name === `${TAG} Alpha`)
 
   // ── § 12 extended: no moment code on any of the new reads ──

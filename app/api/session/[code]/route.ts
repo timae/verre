@@ -12,6 +12,7 @@ import { withSessionMutation, refuse } from '@/lib/sessionMutation'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 import { contractFailure } from '@/lib/sessionRehydrate'
 import { openSessionFor } from '@/lib/sessionRoute'
+import { reclaimablePhotos } from '@/lib/occurrences'
 
 // Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and
 // lib/session.ts. Adding a third named export to lib/s3.ts trips a Next 15.5 /
@@ -255,12 +256,8 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
           // from /me/saved; rated ones still show in the surviving ratings,
           // feed posts and profile tiles (and will feed the catalog's
           // pictures). Only a moderator removes such a photo.
-          const orphanImages = await tx.$queryRaw<{ image_url: string }[]>`
-            SELECT image_url FROM wines
-             WHERE session_id = ${row.id} AND image_url IS NOT NULL
-               AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = wines.id)
-               AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = wines.id)`
-          for (const r of orphanImages) if (r.image_url) urls.add(r.image_url)
+          // The predicate is lib/occurrences.ts reclaimablePhotos (one copy).
+          for (const r of await reclaimablePhotos(tx, { sessionId: row.id })) urls.add(r.imageUrl)
           // Ratings + feed_items SURVIVE (rewire § 8): their session_id still
           // points at the tombstoned row.
           // Wines orphan (session_id NULL); member + ban rows go — both are

@@ -40,7 +40,10 @@ const EXPECTED = {
   // caller-supplied id is a real, linkable row (status, scope, the vintage's
   // product). A tombstone is REFUSED there (link to the survivor), so nothing
   // it reads is shown or counted.
-  'lib/catalogWrite.ts': 2,
+  // The hard purge's reference clearing (catalogue model change § 5a, step
+  // 5): the purged entity's own rows deleted and the product's vintages
+  // listed to purge them first; nothing shown or counted.
+  'lib/catalogWrite.ts': 5,
   // The add flow's branch checks before a mint (the product of branch 2, its
   // existing year, the producer of branch 3, the collaborators): status
   // checks that refuse a tombstone; nothing displayed.

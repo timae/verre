@@ -629,3 +629,102 @@ const LINKABLE_STATUSES = ['provisional', 'confirmed', 'archived']
 // name or year is a RE-LINK through the add flow (lib/catalogLink.ts), which
 // writes the whole snapshot from the new entry. Typed identity text is ignored
 // on every write, so there is no free-text change left to detect.
+
+// ── The hard purge's reference clearing (catalogue model change § 5a) ───────
+//
+// 🔒 A purge clears or redirects catalogue references; it NEVER deletes an
+// occurrence, a rating or a craving. The staff purge itself (`catalog.purge`,
+// admin, audited) is phase 3's; these are the steps it runs inside its one
+// transaction:
+//   • a VINTAGE: the bottles and the cravings fall back to product grain; a
+//     craving that then collides with the same person's "any year" craving of
+//     that wine is merged (keep the row visible to its owner, else the earlier
+//     saved_at, lib/cravings.ts); its review item goes; the row is deleted.
+//   • a PRODUCT: its vintages first, then the bottles and cravings unlinked
+//     (each keeps its snapshot, so it still renders; an unlinked craving is
+//     exempt from the one-per-wine unique; a blind save that already counts as
+//     a craving becomes one first, Codex r1); its review item; the row (its
+//     product_producers rows cascade, by ruling, prisma/CLAUDE.md).
+// The moments whose bottles changed get a new line-up revision (their caches
+// still carry the old link).
+// 🔒 Lock order as every writer takes it (Codex r1: bottles first deadlocked
+// against a moment's own contract): the moments' advisory locks and rows, in
+// code order (`withSessionLocks`, as account deletion does), then the bottles,
+// then the people's craving locks. The plan is read once, before the locks;
+// only what was locked is written. A reference made meanwhile (a bottle linked
+// in another moment, a craving by someone not locked) keeps its link, and so
+// does a reference class these steps forget (an EAN, a merge pointing at the
+// row): the delete FAILS on its NO ACTION key and the whole purge rolls back
+// (the keys are the backstop; the caller retries).
+// The plan also holds the moments a product purge's blind saves carry (an
+// orphaned bottle's save keeps its moment, which the craving it becomes
+// references, Codex r2) and every owner of a craving sourced from a locked
+// bottle (an old instance's craving has no stored link). A save made after the
+// plan in a moment it does not hold → `PurgeRaced` (rolled back, retry).
+// (lib/cravings.ts, lib/occurrences.ts and lib/sessionMutation.ts read this
+// module's neighbours, so they are loaded when a purge runs, never at import:
+// no module cycle.)
+export class PurgeRaced extends Error {}
+
+export async function purgeVintage(tx: Prisma.TransactionClient, vintageId: string): Promise<void> {
+  await purgeReferences(tx, null, [vintageId])
+}
+
+export async function purgeProduct(tx: Prisma.TransactionClient, productId: string): Promise<void> {
+  const vintages = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM wine_vintages WHERE product_id = ${productId} ORDER BY id`
+  await purgeReferences(tx, productId, vintages.map(v => v.id))
+}
+
+async function purgeReferences(tx: Prisma.TransactionClient, productId: string | null, vintageIds: string[]): Promise<void> {
+  const { CRAVING_FROM, SAVE_MOMENT, cravingHiddenSql, lockCravings, maturedSavesToCravings } = await import('@/lib/cravings')
+  const { bumpLineupRevision } = await import('@/lib/occurrences')
+  const { withSessionLocks } = await import('@/lib/sessionMutation')
+  const { Prisma: P } = await import('@prisma/client')
+  const hit = (a: string) => (productId
+    ? P.sql`${P.raw(a)}.product_id = ${productId}`
+    : P.sql`${P.raw(a)}.vintage_id = ANY(${vintageIds}::text[])`)
+  const codes = await tx.$queryRaw<{ code: string }[]>`
+    SELECT s.code FROM wines w JOIN sessions s ON s.id = w.session_id WHERE ${hit('w')} AND s.code IS NOT NULL
+    ${productId ? P.sql`UNION SELECT s.code FROM blind_saves bs JOIN wines w ON w.id = bs.wine_id JOIN sessions s ON s.id = ${SAVE_MOMENT}
+     WHERE ${hit('w')} AND s.code IS NOT NULL` : P.empty}`
+  const moments = [...(await withSessionLocks(tx, codes.map(c => c.code))).values()].flatMap(r => (r ? [r.id] : []))
+  const bottles = await tx.$queryRaw<{ id: string; session_id: number | null }[]>`
+    SELECT w.id, w.session_id FROM wines w
+     WHERE ${hit('w')} AND (w.session_id IS NULL OR w.session_id = ANY(${moments}::int[])) ORDER BY w.id FOR UPDATE`
+  const wineIds = bottles.map(b => b.id)
+  const owners = (await tx.$queryRaw<{ u: number }[]>`
+    SELECT user_id AS u FROM bookmarks b WHERE ${hit('b')}
+    UNION SELECT user_id FROM bookmarks WHERE wine_id = ANY(${wineIds}::text[])
+    UNION SELECT user_id FROM blind_saves WHERE wine_id = ANY(${wineIds}::text[])`).map(r => r.u)
+  await lockCravings(tx, owners)
+  if (productId && !(await maturedSavesToCravings(tx, wineIds, moments))) throw new PurgeRaced('a save was made in a moment this purge does not hold: retry')
+  if (wineIds.length) {
+    if (productId) await tx.$executeRaw`UPDATE wines SET vintage_id = NULL, product_id = NULL WHERE id = ANY(${wineIds}::text[])`
+    else await tx.$executeRaw`UPDATE wines SET vintage_id = NULL WHERE id = ANY(${wineIds}::text[])`
+  }
+  for (const id of new Set(bottles.map(b => b.session_id).filter((x): x is number => x !== null))) await bumpLineupRevision(tx, id)
+  for (const vintageId of vintageIds) {
+    const pairs = await tx.$queryRaw<{ a: number; b: number }[]>`
+      SELECT x.id AS a, y.id AS b FROM bookmarks x
+        JOIN bookmarks y ON y.user_id = x.user_id AND y.product_id = x.product_id AND y.vintage_id IS NULL
+       WHERE x.vintage_id = ${vintageId} AND x.user_id = ANY(${owners}::int[])`
+    for (const { a, b } of pairs) {
+      const rows = await tx.$queryRaw<{ id: number; saved_at: Date; hidden: boolean }[]>`
+        SELECT b.id, b.saved_at, ${cravingHiddenSql(P.sql`b.user_id`)} AS hidden FROM ${CRAVING_FROM} WHERE b.id IN (${a}, ${b})`
+      const [x, y] = [rows.find(r => r.id === a), rows.find(r => r.id === b)]
+      if (!x || !y) continue
+      const keepX = (x.hidden === false) !== (y.hidden === false) ? x.hidden === false : (+x.saved_at < +y.saved_at || (+x.saved_at === +y.saved_at && x.id < y.id))
+      await tx.$executeRaw`DELETE FROM bookmarks WHERE id = ${keepX ? y.id : x.id}`
+    }
+    await tx.$executeRaw`UPDATE bookmarks SET vintage_id = NULL WHERE vintage_id = ${vintageId} AND user_id = ANY(${owners}::int[])`
+  }
+  if (productId) await tx.$executeRaw`UPDATE bookmarks SET product_id = NULL WHERE product_id = ${productId} AND user_id = ANY(${owners}::int[])`
+  for (const vintageId of vintageIds) {
+    await tx.$executeRaw`DELETE FROM catalog_review_items WHERE entity_type = 'vintage' AND entity_id = ${vintageId}`
+    await tx.$executeRaw`DELETE FROM wine_vintages WHERE id = ${vintageId}`
+  }
+  if (productId) {
+    await tx.$executeRaw`DELETE FROM catalog_review_items WHERE entity_type = 'product' AND entity_id = ${productId}`
+    await tx.$executeRaw`DELETE FROM wine_products WHERE id = ${productId}`
+  }
+}

@@ -263,6 +263,22 @@ jobs:
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-catalog-every-write-secret-0123456789
 
+      # Catalogue model change step 5: cravings. One per (user, wine, vintage)
+      # with its first source and stored moment; hidden while that source is
+      # hidden for its owner (lists, counts, badges, the saved flag); a save of
+      # a bottle hidden for you saves that bottle (blind_saves, ruled
+      # 2026-11-20); re-point = a fresh craving; a deleted bottle's visible
+      # craving keeps its moment; a re-link carries the cravings; the feed and
+      # the line-up's per-viewer `saved`; Saved as one wine with its vintages;
+      # merges followed on every match; D8 in one helper; the purge's clearing.
+      - name: Catalogue cravings (catalogue model change step 5)
+        run: npx tsx scripts/tests/catalog-cravings.mts
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-catalog-cravings-secret-0123456789
+
       # You profile step 2 (.local plan § Verification): bio normalisation +
       # PATCH /api/me/profile, the tile pools and pins (D3 re-hide, D7, the
       # dead-pin clear vs a same-URL re-pick on the locked row), the D8 / D9

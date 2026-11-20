@@ -109,6 +109,10 @@ export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName'
   // re-exposing the raw addedByIdentityId. 🔒 Never the integer.
   addedByUserId: string | null
   _blind?: boolean
+  // The signed-in viewer's save state (lib/cravings.ts savedFlags, catalogue
+  // model change § 5): on a row hidden for them ("Wine N") only their save of
+  // THAT bottle, never whether they crave the wine; absent for a guest.
+  saved?: boolean
 }
 
 // The SINGLE sanctioned wire transform — every endpoint that returns

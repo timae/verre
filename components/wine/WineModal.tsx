@@ -63,6 +63,8 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   const [provenanceOpen, setProvenanceOpen] = useState(false)
   const [pendingClose, setPendingClose] = useState(false)
   const [commitError, setCommitError] = useState<string | null>(null)
+  // A refused save (409: the bottle isn't in the catalogue yet; 429): its text.
+  const [saveError, setSaveError] = useState<string | null>(null)
   // Stashed `proceed` callback from the dirty guard. Null when the
   // confirm was opened by the modal's own close path (Discard just
   // calls onClose); non-null when an external nav triggered it
@@ -146,6 +148,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     }
     setBookmarked(bookmarkedIds?.has(activeWineId) || false)
     setCommitError(null)
+    setSaveError(null)
     setProvenanceOpen(false)
     setMenuOpen(false)
     // ⚠️ LOAD-BEARING — see docs/dev/ios-touch-gestures.md §6.
@@ -747,14 +750,19 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     const targetWineId = activeWineId
     const wasBookmarked = bookmarked
     // Optimistic flip — revert on server failure so the heart doesn't
-    // lie. On success, invalidate the in-session bookmarkedIds query
-    // AND the /me/saved page's query so the bookmark surfaces there
-    // immediately on next navigation.
+    // lie. On success, refresh the line-up (its `saved` flags) AND
+    // invalidate the /me/saved page's query so the save surfaces there
+    // immediately on next navigation. On a blind bottle this is a save of
+    // that bottle only (catalogue model change § 5): it reads saved, can be
+    // unsaved here, and shows in Saved after the reveal.
     setBookmarked(!wasBookmarked)
+    setSaveError(null)
     const res = await sessionFetch(code, `/api/session/${code}/wines/${targetWineId}/bookmark`, {
       method, headers: { 'Content-Type': 'application/json' },
     })
     if (!res.ok) {
+      const text = res.status === 409 || res.status === 429 ? ((await res.json().catch(() => null)) as { error?: string } | null)?.error : null
+      if (activeWineId === targetWineId && text) setSaveError(text)
       // Only revert if the user is still looking at the same wine.
       // If they swapped, the new wine's bookmarked state was seeded
       // by the activeWineId-change effect — overwriting it here
@@ -762,7 +770,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       if (activeWineId === targetWineId) setBookmarked(wasBookmarked)
       return
     }
-    qc.invalidateQueries({ queryKey: ['bookmarks'] })
+    refresh()
     qc.invalidateQueries({ queryKey: ['me-bookmarks'] })
   }
 
@@ -1309,6 +1317,16 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
           background:'rgba(184,64,64,0.08)',
           color:'rgba(220,90,90,1)',fontSize:12,lineHeight:1.4,
         }}>{commitError}</div>
+      )}
+
+      {saveError && (
+        <div style={{
+          marginTop:14,padding:'10px 12px',
+          borderRadius:8,
+          border:'1px solid rgba(184,64,64,0.5)',
+          background:'rgba(184,64,64,0.08)',
+          color:'rgba(220,90,90,1)',fontSize:12,lineHeight:1.4,
+        }}>{saveError}</div>
       )}
 
       {/* Undo chip is rendered by UndoChipProvider (lib/undoChip.tsx)

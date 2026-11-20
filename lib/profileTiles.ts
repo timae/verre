@@ -15,7 +15,7 @@
 //     the create path until 2026-11-08 and the settings path until 2026-11-11):
 //     the tile is served outside the moment and a code joins. A pin on one
 //     reads as dead and is cleared, like any removed source.
-//   - cravings: a bookmark whose wine has that image.
+//   - cravings: a craving whose source bottle has that image.
 // - PICK = what may be newly chosen, and what the automatic photo draws from:
 //   impressions + cravings = LIVE + SAFE_PHOTO (never an unrevealed blind
 //   wine); moments = LIVE (a cover is never blind-redacted,
@@ -41,7 +41,8 @@
 
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { cravingSessionIdSql, lineupHiddenNowSql } from '@/lib/outsideView'
+import { lineupHiddenNowSql } from '@/lib/outsideView'
+import { ownerCravingsSql, ownerWasThereSql } from '@/lib/cravings'
 
 export const TILE_KEYS = ['impressions', 'moments', 'cravings'] as const
 export type TileKey = (typeof TILE_KEYS)[number]
@@ -117,17 +118,31 @@ function pool(tile: TileKey, profileId: number, pick: boolean): Prisma.Sql {
       AND sm.removed_state IS DISTINCT FROM 'kicked'
       AND s.cover_photo_url IS NOT NULL
       AND strpos(s.cover_photo_url, 'sessions/' || s.code || '_') = 0`
-  // A craving's moment: the bottle's own, else a session rating's (a banned
-  // adder's bottles in a running moment lose wines.session_id). One whose
-  // moment can't be found never gives a picked photo.
-  return Prisma.sql`
+  // A craving's photo is its bottle's (lib/cravings.ts: the owner's shown set,
+  // real cravings and the blind saves that count as one). A source-less craving
+  // gives none. A picked photo (shown to every visitor) also needs a moment that
+  // can be found, unless the bottle is a check-in's, and one the owner was IN:
+  // a bottle saved from someone else's post shows only to people who may see
+  // that post (ruled 2026-11-20), which a tile cannot tell.
+  // LIVE (a pin's reference still exists): every real craving and every blind
+  // save of that photo, whatever their state (review r2: a pin picked from a
+  // matured blind save must not read as dead), as before: a pin is not cleared
+  // because its craving is hidden for a while.
+  if (!pick) return Prisma.sql`
     SELECT w.image_url AS url, b.saved_at AS at
-    FROM bookmarks b
-    JOIN wines w ON w.id = b.wine_id
-    LEFT JOIN sessions s ON s.id = ${cravingSessionIdSql('w')}
-    WHERE b.user_id = ${profileId}
-      AND w.image_url IS NOT NULL
-      ${pick ? Prisma.sql`AND s.id IS NOT NULL AND ${SAFE_PHOTO}` : Prisma.empty}`
+    FROM bookmarks b JOIN wines w ON w.id = b.wine_id
+    WHERE b.user_id = ${profileId} AND w.image_url IS NOT NULL
+    UNION ALL
+    SELECT w.image_url, bs.saved_at
+    FROM blind_saves bs JOIN wines w ON w.id = bs.wine_id
+    WHERE bs.user_id = ${profileId} AND w.image_url IS NOT NULL`
+  return Prisma.sql`
+    SELECT w.image_url AS url, oc.saved_at AS at
+    FROM (${ownerCravingsSql(profileId)}) oc
+    JOIN wines w ON w.id = oc.wine_id
+    LEFT JOIN sessions s ON s.id = oc.sid
+    WHERE w.image_url IS NOT NULL
+      AND (s.id IS NOT NULL OR w.origin = 'standalone') AND ${SAFE_PHOTO} AND ${ownerWasThereSql(profileId)}`
 }
 
 type Db = Pick<typeof prisma, '$queryRaw'> | Prisma.TransactionClient

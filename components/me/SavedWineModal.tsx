@@ -12,29 +12,19 @@ import { StarRating } from '@/components/ui/StarRating'
 import { formatCode } from '@verre/core'
 import { ICO } from '@/lib/wineTypeColors'
 import { kindToken } from '@verre/core'
+import { type SavedWine, type SavedVintage, vintageLabel } from '@/lib/savedWines'
 
-type Bookmark = {
-  wine_id: string; name: string; producer: string | null; vintage: string | null
-  grape: string | null; style: string | null; colour?: string | null; sparkling?: boolean; abv?: number | null; image_url: string | null
-  session_code: string | null
-  session_deleted?: boolean
-}
-type Rating = {
-  wine_id: string
-  wine_name: string; score: number; flavors: Record<string,number>; notes: string | null
-  session_code: string | null
-}
+interface Props { wine: SavedWine; onClose: () => void; onRemove?: (key: string) => void | Promise<void> }
 
-interface Props { wine: Bookmark; ratings: Rating[]; onClose: () => void; onRemove?: () => void | Promise<void> }
+const where = (x: Pick<SavedVintage, 'session_code' | 'session_deleted'>) =>
+  x.session_deleted ? '[deleted session]' : x.session_code ? `session ${formatCode(x.session_code)}` : null
 
-export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
-  // Cross-match on wine_id — name-based join collides across deleted-session
-  // ratings of differently-spelled same-name wines once the §8 scrub nulls
-  // session_code on both rows.
-  const rating = ratings.find(r => r.wine_id === wine.wine_id)
-  // Read surface (§6d): per-present-key array. The kind comes from the bookmark's
-  // bottle (no kind on the rating).
-  const fl = perRatingAxes(rating?.flavors, resolveAxesColoured('wine', wine))
+// One saved wine: the vintages you saved (each removable on its own) and your
+// ratings of it (where you had it: derived from your ratings, never stored).
+export function SavedWineModal({ wine, onClose, onRemove }: Props) {
+  const latest = wine.ratings[0]
+  // Read surface (§6d): per-present-key array. The kind comes from the wine.
+  const fl = perRatingAxes(latest?.flavors, resolveAxesColoured('wine', wine))
   const wheelRef = useRef<HTMLDivElement>(null)
 
   return (
@@ -50,25 +40,35 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
         <div style={{display:'flex',alignItems:'flex-start',gap:12,marginBottom:16}}>
           {!wine.image_url && <span style={{fontSize:28}}>{ICO[kindToken(wine)]||'🍷'}</span>}
           <div style={{flex:1, minWidth:0}}>
-            <WineIdentity wine={wine} size="card" />
-            {wine.session_deleted ? (
-              <p style={{fontSize:10,color:'var(--fg-faint)',marginTop:4,fontFamily:'var(--mono)'}}>[deleted session]</p>
-            ) : wine.session_code ? (
-              <p style={{fontSize:10,color:'var(--fg-faint)',marginTop:4,fontFamily:'var(--mono)'}}>session {formatCode(wine.session_code)}</p>
-            ) : null}
+            <WineIdentity wine={{ name: wine.name, producer: wine.producer, grape: wine.grape, vintage: null }} size="card" />
           </div>
         </div>
 
-        {rating ? (
+        <div className="panel">
+          <div className="panel-hdr">saved</div>
+          {wine.vintages.map(v => (
+            <div key={v.key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'4px 0'}}>
+              <span style={{fontFamily:'var(--mono)',fontSize:12}}>{vintageLabel(v.vintage, wine.linked)}</span>
+              {where(v) && <span style={{fontSize:10,color:'var(--fg-faint)',fontFamily:'var(--mono)'}}>{where(v)}</span>}
+            </div>
+          ))}
+        </div>
+
+        {latest ? (
           <>
             <div className="panel">
-              <div className="panel-hdr">your score</div>
-              <div style={{display:'flex',justifyContent:'center'}}>
-                <StarRating value={rating.score} size="detail" />
-              </div>
+              <div className="panel-hdr">your ratings</div>
+              {wine.ratings.map(r => (
+                <div key={r.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'4px 0'}}>
+                  <span style={{fontFamily:'var(--mono)',fontSize:11,color:'var(--fg-dim)'}}>
+                    {[r.vintage, where(r)].filter(Boolean).join(' · ')}
+                  </span>
+                  {r.score ? <StarRating value={r.score} /> : null}
+                </div>
+              ))}
             </div>
 
-            {Object.values(rating.flavors || {}).some(v => v > 0) && (
+            {Object.values(latest.flavors || {}).some(v => v > 0) && (
               <div className="panel" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
                 <div className="panel-hdr" style={{alignSelf:'flex-start',width:'100%'}}>flavour profile</div>
                 <div
@@ -77,15 +77,15 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
                   style={{cursor:'zoom-in'}}
                   title="Click to expand"
                 >
-                  <PolarChart flavors={rating.flavors} fl={fl} size={CHART_SIZE.DETAIL} />
+                  <PolarChart flavors={latest.flavors} fl={fl} size={CHART_SIZE.DETAIL} />
                 </div>
               </div>
             )}
 
-            {rating.notes && (
+            {latest.notes && (
               <div className="panel">
                 <div className="panel-hdr">tasting notes</div>
-                <p style={{fontSize:12,color:'var(--fg-dim)',fontStyle:'italic',lineHeight:1.6}}>&ldquo;{rating.notes}&rdquo;</p>
+                <p style={{fontSize:12,color:'var(--fg-dim)',fontStyle:'italic',lineHeight:1.6}}>&ldquo;{latest.notes}&rdquo;</p>
               </div>
             )}
           </>
@@ -95,13 +95,14 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
           </div>
         )}
 
-        {onRemove && (
+        {onRemove && wine.vintages.map(v => (
           <ConfirmDeleteButton
-            label="⌫ remove from saved"
+            key={v.key}
+            label={wine.vintages.length > 1 ? `⌫ remove ${vintageLabel(v.vintage, wine.linked)} from saved` : '⌫ remove from saved'}
             confirmLabel="tap again to remove"
-            onConfirm={onRemove}
+            onConfirm={() => onRemove(v.key)}
           />
-        )}
+        ))}
     </Modal>
   )
 }

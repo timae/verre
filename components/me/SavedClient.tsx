@@ -4,54 +4,32 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SavedWineModal } from './SavedWineModal'
 import { authedFetch } from '@/lib/authedFetch'
-import { labelBlind } from '@/lib/blindLabel'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { formatCode } from '@verre/core'
 import { StarRating } from '@/components/ui/StarRating'
 import { ICO } from '@/lib/wineTypeColors'
 import { kindToken } from '@verre/core'
+import { type SavedWine, vintagesLabel } from '@/lib/savedWines'
 
-type Bookmark = {
-  wine_id: string; name: string; producer: string | null; vintage: string | null
-  grape: string | null; style: string | null; colour?: string | null; sparkling?: boolean; abv?: number | null; image_url: string | null
-  session_code: string | null
-  // session_deleted: true when the source session has been soft-deleted
-  // (the §8 contract scrubs the session row). Renderer shows
-  // "[deleted session]" instead of the join code.
-  session_deleted?: boolean
-  session_id?: number | null
-  _blind?: boolean
-}
-type Rating = {
-  wine_id: string
-  wine_name: string; score: number; flavors: Record<string,number>; notes: string | null
-  session_code: string | null
-  session_deleted?: boolean
-  session_id?: number | null
-  _blind?: boolean
-}
-
+// /me/saved (catalogue model change § 5): one wine per row, the vintages you
+// saved of it underneath, your ratings of it as context (all from
+// /api/me/bookmarks). A save of a blind bottle shows here after its reveal.
 export function SavedClient() {
-  const [selected, setSelected] = useState<Bookmark | null>(null)
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const qc = useQueryClient()
 
-  const { data: bookmarks = [], isLoading } = useQuery<Bookmark[]>({
+  const { data: wines = [], isLoading } = useQuery<SavedWine[]>({
     queryKey: ['me-bookmarks'],
-    queryFn: () => authedFetch<Bookmark[]>('/api/me/bookmarks').then(rows => labelBlind(rows, 'name')),
-    // Always refetch on mount so a bookmark made elsewhere in the app
-    // (modal save in a session) shows up immediately when the user
-    // arrives at /me/saved, even if RSC navigation served a cached
-    // page shell.
+    queryFn: () => authedFetch<SavedWine[]>('/api/me/bookmarks'),
+    // Always refetch on mount so a save made elsewhere in the app (modal save
+    // in a session) shows up immediately when the user arrives at /me/saved,
+    // even if RSC navigation served a cached page shell.
     refetchOnMount: 'always',
   })
-  const { data: ratings = [] } = useQuery<Rating[]>({
-    queryKey: ['me-ratings'],
-    queryFn: () => authedFetch<Rating[]>('/api/me/ratings').then(rows => labelBlind(rows, 'wine_name')),
-    refetchOnMount: 'always',
-  })
+  const selected = wines.find(w => w.key === selectedKey) ?? null
 
   if (isLoading) return <p style={{color:'var(--fg-dim)',fontSize:13}}>Loading…</p>
-  if (!bookmarks.length) return (
+  if (!wines.length) return (
     <p style={{color:'var(--fg-dim)',fontSize:13,padding:'32px 0',textAlign:'center'}}>No saved wines yet. Tap ☆ on any wine detail to save it.</p>
   )
 
@@ -59,32 +37,28 @@ export function SavedClient() {
     <>
       <h1 style={{fontSize:24,fontWeight:700,color:'#F0E3C6',marginBottom:16}}>Saved wines</h1>
       <div className="wine-stack">
-        {bookmarks.map(b => {
-          // Cross-match on wine_id (the only stable join key). The legacy
-          // session_code/wine_name name-based join collided across two
-          // deleted-session ratings of differently-spelled same-name wines
-          // once the §8 scrub nulled session_code on both rows.
-          const rating = ratings.find(r => r.wine_id === b.wine_id)
+        {wines.map(w => {
+          const latest = w.ratings[0]
+          const where = w.vintages[0]
           return (
-            <button key={b.wine_id} className="wine-card" style={{width:'100%',textAlign:'left'}} onClick={() => setSelected(b)}>
-              {b.image_url ? (
-                <img src={b.image_url} alt={b.name} onClick={e=>{e.stopPropagation();openLightbox(b.image_url!,b.name)}} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
+            <button key={w.key} className="wine-card" style={{width:'100%',textAlign:'left'}} onClick={() => setSelectedKey(w.key)}>
+              {w.image_url ? (
+                <img src={w.image_url} alt={w.name} onClick={e=>{e.stopPropagation();openLightbox(w.image_url!,w.name)}} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
               ) : (
                 <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>
-                  {ICO[kindToken(b)]||'🍷'}
+                  {ICO[kindToken(w)]||'🍷'}
                 </div>
               )}
               <div style={{flex:1,minWidth:0}}>
-                <WineIdentity wine={b} size="compact" />
-                {b.session_deleted ? (
-                  <p style={{fontSize:9,color:'var(--fg-faint)',marginTop:2,fontFamily:'var(--mono)',letterSpacing:'0.06em'}}>[deleted session]</p>
-                ) : b.session_code ? (
-                  <p style={{fontSize:9,color:'var(--fg-faint)',marginTop:2,fontFamily:'var(--mono)',letterSpacing:'0.06em'}}>session {formatCode(b.session_code)}</p>
-                ) : null}
+                <WineIdentity wine={{ name: w.name, producer: w.producer, grape: w.grape, vintage: null }} size="compact" />
+                <p style={{fontSize:9,color:'var(--fg-faint)',marginTop:2,fontFamily:'var(--mono)',letterSpacing:'0.06em'}}>
+                  {vintagesLabel(w)}
+                  {where?.session_deleted ? ' · [deleted session]' : where?.session_code ? ` · session ${formatCode(where.session_code)}` : ''}
+                </p>
               </div>
-              {rating?.score ? (
+              {latest?.score ? (
                 <div style={{flexShrink:0}}>
-                  <StarRating value={rating.score} />
+                  <StarRating value={latest.score} />
                 </div>
               ) : null}
             </button>
@@ -95,12 +69,11 @@ export function SavedClient() {
       {selected && (
         <SavedWineModal
           wine={selected}
-          ratings={ratings}
-          onClose={() => setSelected(null)}
-          onRemove={async () => {
-            const res = await fetch(`/api/me/bookmarks/${selected.wine_id}`, { method: 'DELETE' })
+          onClose={() => setSelectedKey(null)}
+          onRemove={async (key) => {
+            const res = await fetch(`/api/me/bookmarks/${encodeURIComponent(key)}`, { method: 'DELETE' })
             if (!res.ok) throw new Error(`remove failed: ${res.status}`)
-            setSelected(null)
+            if (selected.vintages.length <= 1) setSelectedKey(null)
             qc.invalidateQueries({ queryKey: ['me-bookmarks'] })
           }}
         />

@@ -352,3 +352,80 @@ export async function isReplayedCreate(
   return !!v && v.year === (body.year ?? null) && abv === (v.abv === null ? null : Number(v.abv))
     && v.grapes_override === hasVg && v.grapes.join('\u0000') === vg.join('\u0000')
 }
+
+// ── Matching two stored links, merges followed (catalogue model change § 8b) ──
+//
+// A craving and a bottle (or a rating's bottle) are the SAME WINE when their
+// effective product and effective vintage are equal. Both sides hold stored
+// ids, which a merge never rewrites, so an equality of raw ids is a forgotten
+// resolution (a craving of a merged-away product would stop matching its
+// survivor's bottles). These SQL fragments are the one spelling of it, kept
+// here so the census (scripts/check-catalog-reads.mjs) sees every catalogue
+// read in this module. Same walk as `resolveEffectiveIds`: links_to followed,
+// a visited path, at most MERGE_DEPTH_CAP hops (a corrupt cycle stops where the
+// TypeScript walk stops).
+
+// One primary-key read when the row is not merged (the common case: the walk
+// runs only for a tombstone; measured, the walk on every row cost the Cravings
+// list ~0.1 ms per craving).
+function effectiveSql(table: 'wine_products' | 'wine_vintages', col: Prisma.Sql): Prisma.Sql {
+  const t = Prisma.raw(table)
+  return Prisma.sql`(SELECT CASE WHEN e0.links_to IS NULL THEN e0.id ELSE (WITH RECURSIVE ch(id, nxt, d, path) AS (
+      SELECT e0.id, e0.links_to, 0, ARRAY[e0.id]::text[]
+      UNION ALL
+      SELECT p.id, p.links_to, ch.d + 1, ch.path || p.id FROM ch JOIN ${t} p ON p.id = ch.nxt
+       WHERE ch.d < ${MERGE_DEPTH_CAP} AND NOT p.id = ANY(ch.path))
+    SELECT id FROM ch ORDER BY d DESC LIMIT 1) END
+    FROM ${t} e0 WHERE e0.id = (${col}))`
+}
+// The effective product / vintage id of a stored id column (NULL stays NULL).
+export const effectiveProductSql = (col: Prisma.Sql): Prisma.Sql => effectiveSql('wine_products', col)
+export const effectiveVintageSql = (col: Prisma.Sql): Prisma.Sql => effectiveSql('wine_vintages', col)
+
+// Every stored product id that resolves to one of these EFFECTIVE ids (the ids
+// themselves included): the reverse walk down `links_to`, index-served
+// (`wine_products_links_to_idx`), seeded by the given ids only, never a
+// catalogue-wide scan. `col IN (${productAliasesSql(ids)})` keeps a match on an
+// indexed column.
+export function productAliasesSql(effectiveIds: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`SELECT id FROM (WITH RECURSIVE al(id, d) AS (
+      SELECT x, 0 FROM unnest(${effectiveIds}) x
+      UNION
+      SELECT p.id, al.d + 1 FROM wine_products p JOIN al ON p.links_to = al.id WHERE al.d < ${MERGE_DEPTH_CAP})
+    SELECT id FROM al) aliases`
+}
+
+// "The same wine" between two link pairs (product + vintage columns): the
+// effective product equal, and the effective vintage equal (NULL = "this wine,
+// any year", a grain of its own). An unlinked side (NULL product) never matches.
+export function sameWineSql(a: { p: Prisma.Sql; v: Prisma.Sql }, b: { p: Prisma.Sql; v: Prisma.Sql }): Prisma.Sql {
+  return Prisma.sql`((${a.p}) IS NOT NULL AND (${b.p}) IS NOT NULL
+    AND ${effectiveProductSql(a.p)} = ${effectiveProductSql(b.p)}
+    AND ${effectiveVintageSql(a.v)} IS NOT DISTINCT FROM ${effectiveVintageSql(b.v)})`
+}
+
+// The effective id of every TOMBSTONE among `ids` (a SELECT of stored ids), as
+// (id, eff) rows: ONE recursive walk per query, seeded only by the tombstones
+// (none until phase 3 merges anything: an index probe that returns nothing).
+// Callers LEFT JOIN it and read COALESCE(map.eff, stored id). Same walk as
+// `resolveEffectiveIds` (at most MERGE_DEPTH_CAP hops, stopping before a node
+// already seen). Preferred over a per-row `effectiveProductSql` on a list:
+// measured on a Cravings page, the per-row walk's cost ESTIMATE crossed
+// Postgres' JIT threshold and the compile alone took ~60 ms.
+export function tombstoneMapSql(table: 'wine_products' | 'wine_vintages', ids: Prisma.Sql): Prisma.Sql {
+  const t = Prisma.raw(table)
+  return Prisma.sql`SELECT DISTINCT ON (start) start AS id, cur AS eff FROM (WITH RECURSIVE ch(start, cur, d, seen) AS (
+      SELECT p.id, p.links_to, 1, ARRAY[p.id, p.links_to]::text[] FROM ${t} p WHERE p.links_to IS NOT NULL AND p.id IN (${ids})
+      UNION ALL
+      SELECT ch.start, p.links_to, ch.d + 1, ch.seen || p.links_to FROM ch JOIN ${t} p ON p.id = ch.cur
+       WHERE p.links_to IS NOT NULL AND ch.d < ${MERGE_DEPTH_CAP} AND NOT p.links_to = ANY(ch.seen))
+    SELECT start, cur, d FROM ch) walk ORDER BY start, d DESC`
+}
+
+// A read surface (feed, profile lists, Saved, ratings) keeps serving through a
+// catalogue read failure: its bottles then show their snapshot (an empty map,
+// as for a purged link). The line-up has its own (lib/sessionState.ts).
+export async function loadEntriesSoft(links: CatalogLink[]): Promise<Map<string, CatalogEntry>> {
+  try { return await loadEntries(links) }
+  catch (err) { console.error('[catalog] entries unavailable, serving snapshots:', err); return new Map() }
+}

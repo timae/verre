@@ -200,7 +200,8 @@ export async function reconcileLineup(
          WHERE NOT EXISTS (SELECT 1 FROM wines w WHERE w.image_url = u
                              AND (w.session_id IS NOT NULL
                                   OR EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = w.id)
-                                  OR EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = w.id)))
+                                  OR EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = w.id)
+                                  OR EXISTS (SELECT 1 FROM blind_saves bs WHERE bs.wine_id = w.id)))
            AND NOT EXISTS (SELECT 1 FROM rating_images ri WHERE ri.image_url = u)`).map(r => r.u))
     }
     await copyCachedLineup(tx, ctx, row.id, prep)
@@ -562,4 +563,24 @@ export async function copyRatingKeys(fence: Fence, moved: [string, string][]): P
     if (r < 0) throw new LockLost(fence.code)
   }
   return old
+}
+
+// 🔒 Wine-photo retention (D8, ruled 2026-11-10): a bottle's photo may be
+// reclaimed only while NO rating, NO craving sourced from it (a bookmark's
+// `wine_id`) and NO blind save of it (it counts as a craving once revealed)
+// references the bottle: the surviving ratings, feed posts, profile
+// tiles and Cravings still show it (and it will feed the catalogue's pictures;
+// only a moderator removes such a photo). ONE predicate for every path that
+// reclaims a moment's wine photos (the moment DELETE, account deletion): give
+// it the bottle ids, or a moment's id for all of its bottles.
+export async function reclaimablePhotos(db: Db, scope: string[] | { sessionId: number }): Promise<{ id: string; imageUrl: string }[]> {
+  const where = Array.isArray(scope) ? Prisma.sql`w.id = ANY(${scope}::text[])` : Prisma.sql`w.session_id = ${scope.sessionId}`
+  if (Array.isArray(scope) && !scope.length) return []
+  const rows = await db.$queryRaw<{ id: string; image_url: string }[]>`
+    SELECT w.id, w.image_url FROM wines w
+     WHERE ${where} AND w.image_url IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = w.id)
+       AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = w.id)
+       AND NOT EXISTS (SELECT 1 FROM blind_saves bs WHERE bs.wine_id = w.id)`
+  return rows.map(r => ({ id: r.id, imageUrl: r.image_url }))
 }

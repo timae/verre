@@ -17,6 +17,9 @@ import { blockPairIds, viewerBlockedAmong } from '@/lib/userBlock'
 import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
 import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
 import { parsePathId } from '@/lib/parsePathId'
+import { entryKey, loadEntriesSoft } from '@/lib/catalogEntries'
+import { entryYear } from '@/lib/wineDisplay'
+import { savedFlags } from '@/lib/cravings'
 import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 const PAGE = 20
@@ -220,6 +223,15 @@ export async function GET(req: NextRequest) {
   const sessionPairs: SessionFeedPair[] = feedItems.flatMap(f =>
     f.kind === 'session' && f.session ? [{ authorId: f.user.id, sessionId: f.session.id }] : [])
   const sessionWines = await loadSessionFeedWines(sessionPairs, userId)
+  // A check-in's bottle: shown from its catalogue entry (merges followed), else
+  // its snapshot; the viewer's save state (a check-in is never blind).
+  const checkinWines = feedItems.flatMap(f => (f.kind === 'standalone' && f.rating ? [f.rating.wine] : []))
+  const checkinEntries = await loadEntriesSoft(checkinWines.map(w => ({ productId: w.productId, vintageId: w.vintageId })))
+  const entryOfWine = (w: { productId: string | null; vintageId: string | null }) => (w.productId ? checkinEntries.get(entryKey(w.productId, w.vintageId)) : undefined)
+  const checkinSaved = await savedFlags(userId, checkinWines.map(w => {
+    const e = entryOfWine(w)
+    return { id: w.id, hidden: false, effective: e ? { productId: e.productId, vintageId: e.vintageId } : null }
+  })).catch((err) => { console.error('[feed] saved flags unavailable:', err); return null })
 
   // Badge unlocks used to merge in as standalone 'badge' feed items.
   // Removed: they cluttered the feed and didn't carry the context of
@@ -244,6 +256,7 @@ export async function GET(req: NextRequest) {
       if (f.kind === 'standalone') {
         if (!f.rating) return []  // defensive — schema invariant says standalone has ratingId set
         const wine = f.rating.wine
+        const e = entryOfWine(wine)
         const ratingImage = f.rating.images[0]?.imageUrl ?? null
         // Show My Locations: the author's flag from their settings (fail
         // closed when absent), never from `f.user` (shipped as `author`).
@@ -254,10 +267,12 @@ export async function GET(req: NextRequest) {
           author: wireAuthor(f.user),
           checkin: {
             id: f.id,
-            wineName: wine.name,
-            producer: wine.producer,
-            vintage: wine.vintage,
-            grape: wine.grape,
+            // The bottle (the crave-from-post route takes its id).
+            wineId: wine.id,
+            wineName: e?.name ?? wine.name,
+            producer: e?.producer ?? wine.producer,
+            vintage: e ? (entryYear(e) || null) : wine.vintage,
+            grape: e ? (e.grapes.join(', ') || null) : wine.grape,
             type: wine.style,
             // The bottle's kind (its snapshot; the axes read `sparkling`) and
             // alcohol (catalogue model change step 4).
@@ -282,8 +297,8 @@ export async function GET(req: NextRequest) {
             // so no redaction fork. `wineRegion`/`wineCountry` are the WINE's
             // ORIGIN (Origin row) — deliberately NOT `f.country` (the venue), a
             // conflation the old standalone card had.
-            wineRegion: wine.region,
-            wineCountry: wine.country,
+            wineRegion: e?.region ?? wine.region,
+            wineCountry: e?.country ?? wine.country,
             vinification: wine.vinification,
             description: wine.description,
             purchaseUrl: wine.purchaseUrl,
@@ -299,6 +314,7 @@ export async function GET(req: NextRequest) {
             tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`) && !viewerTagBlocked.has(t.user.id)).map(t => ({ id: t.user.publicId, name: t.user.name, username: t.user.username })),
             liked: myLikes.has(f.id),
             viewerFollowsAuthor: myFollowing.has(f.user.id),
+            ...(checkinSaved ? { saved: checkinSaved.get(wine.id) ?? false } : {}),
           },
         }]
       }

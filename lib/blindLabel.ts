@@ -1,6 +1,6 @@
-// The web's label for a blind row from /api/me/ratings + /api/me/bookmarks
+// The web's label for a blind row from /api/me/ratings
 // (`_blind`: the server blanked the identity, lib/outsideView.ts). Applied
-// where the rows are fetched, so every render below (lists, SavedWineModal)
+// where the rows are fetched, so every render below (the history lists)
 // reads it as the name.
 export const BLIND_IMPRESSION = 'Blind impression'
 

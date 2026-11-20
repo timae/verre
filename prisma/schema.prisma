@@ -115,6 +115,7 @@ model User {
   showMoments               Boolean                @default(true) @map("show_moments")
   showLocations             Boolean                @default(true) @map("show_locations")
   bookmarks                 Bookmark[]
+  blindSaves                BlindSave[]
   ratings                   Rating[]
   members                   SessionMember[]
   hostedSessions            Session[]
@@ -436,6 +437,7 @@ model Session {
   feedItems   FeedItem[]
   // Cravings first made in this moment (bookmarks.source_session_id).
   sourcedBookmarks Bookmark[]
+  blindSaves       BlindSave[]
 
   @@map("sessions")
 }
@@ -511,6 +513,7 @@ model Wine {
   sparkling          Boolean        @default(false)
   abv                Decimal?       @db.Decimal(4, 2)
   bookmarks          Bookmark[]
+  blindSaves         BlindSave[]
   ratings            Rating[]
   session            Session?       @relation(fields: [sessionId], references: [id], onUpdate: NoAction)
   // Composite FK to category_styles guarantees (category, style) is a valid
@@ -717,6 +720,12 @@ model Bookmark {
   product         WineProduct? @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   catalogVintage  WineVintage? @relation(fields: [vintageId, productId], references: [id, productId], onDelete: NoAction, onUpdate: NoAction)
   sourceSession   Session?  @relation(fields: [sourceSessionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // The post this craving was made from (NULL in a moment): decides who may see
+  // its photo on the craver's lists (ruled 2026-11-20). SET NULL with the post.
+  sourceItemId    Int?      @map("source_item_id")
+  sourceItem      FeedItem? @relation(fields: [sourceItemId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  // Made from a post (true) or in a moment (false); kept when the post goes.
+  fromPost        Boolean   @default(false) @map("from_post")
 
   // One save per person per source bottle (implied by one craving per wine).
   // 🔒 A CONSTRAINT on prod, an INDEX in the chain: dropped in the contract step
@@ -729,7 +738,35 @@ model Bookmark {
   @@index([productId])
   @@index([vintageId])
   @@index([sourceSessionId])
+  @@index([sourceItemId])
   @@map("bookmarks")
+}
+
+// A save of a bottle hidden from its saver ("Wine N"; catalogue model change
+// § 5, ruled 2026-11-20 R2): the bottle's own button state while it is hidden,
+// and ALL that is stored while it is (no craving, no bookmarks id: review r1).
+// It counts as a craving once its bottle is no longer hidden for the saver.
+// `itemId` = the post it was saved from (NULL in the moment). Written only by
+// lib/cravings.ts.
+model BlindSave {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  wineId    String    @map("wine_id") @db.VarChar(21)
+  // The bottle's moment, kept like a craving's `source_session_id`.
+  sessionId Int?      @map("session_id")
+  itemId    Int?      @map("item_id")
+  // Saved from a post (true) or in the moment (false: its saver was a participant).
+  fromPost  Boolean   @default(false) @map("from_post")
+  savedAt   DateTime  @default(now()) @map("saved_at") @db.Timestamptz(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  wine      Wine      @relation(fields: [wineId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  session   Session?  @relation(fields: [sessionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  item      FeedItem? @relation(fields: [itemId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([userId, wineId])
+  @@index([wineId])
+  @@index([itemId])
+  @@map("blind_saves")
 }
 
 // Badge catalog. Seeded from lib/badges.ts via ensureBadgesSeedOnce().
@@ -917,6 +954,8 @@ model FeedItem {
   // social wrapper of the rating).
   rating         Rating?        @relation(fields: [ratingId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   likes          FeedItemLike[]
+  cravings       Bookmark[]
+  blindSaves     BlindSave[]
   tags           FeedItemTag[]
 
   // One feed_item per (user, session) — prevents double-creation under

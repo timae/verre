@@ -55,6 +55,11 @@ const EXPECTED = {
   'lib/sessionRehydrate.ts': 4,
   // Ban-with-delete: the record's orphan UPDATE, then bumpLineupRevision.
   'lib/sessionWipe.ts': 1,
+  // The hard purge's reference clearing (catalogue model change § 5a, step 5):
+  // a vintage purge drops the bottles to product grain, a product purge unlinks
+  // them; each affected moment gets bumpLineupRevision (a NULL revision stays
+  // NULL) in the purge's transaction.
+  'lib/catalogWrite.ts': 2,
   // Account deletion: the provenance tombstone (bumps a non-NULL revision);
   // the empty-moment wipe's orphaning (the moment ends: its scrub NULLs the
   // revision); session-less orphans' provenance (no moment, no revision); the
