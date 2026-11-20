@@ -999,7 +999,9 @@ attributions page ✅ → first catalog fill ✅ → model change → review que
   `VACUUM (FULL, ANALYZE)` (rehearsed 2026-11-19 by reloading the same content: without it
   the tables stay at double size). Links held only in Redis (a guest moment's bottle can
   carry a `productId`) are invisible to that check: before the prod load we scan the live
-  line-ups for catalogue ids in the removed / merged lists. Ids stay stable for every entity that persists; removed and merged ids
+  line-ups for catalogue ids in the removed / merged lists (`scripts/scan-redis-catalogue-links.mts`,
+  read-only: SCAN / TYPE / GET; it lists every cached bottle with a catalogue id, expected none,
+  and flags the listed ones; built 2026-11-20 so the rehearsal runs it too). Ids stay stable for every entity that persists; removed and merged ids
   come as lists and are never reused. The three new columns' values come as a second file,
   loaded after migrate by a guarded one-off update (ours, `scripts/catalog-columns-update.mjs`).
   🔒 Its manifest names the catalogue it was built on (`builtOn`: file 1's own cd1 digest of
@@ -1011,7 +1013,18 @@ attributions page ✅ → first catalog fill ✅ → model change → review que
   step 2 adds `catalog_review_items`, and we tell them of any new one); and it runs
   `VACUUM (FULL, ANALYZE)` after the commit. A guest bottle's `vintageId` without a
   `productId`, which the composite key's MATCH SIMPLE would let through, is already refused
-  by `wines_catalog_link_check`. **Timing (Simon, 2026-11-19):** the replacement is
+  by `wines_catalog_link_check`. **Their read-only prod report** (the zero-reference report,
+  reviewed 2026-11-20 against prod's migration chain and the rehearsal copy): the keys into the
+  five tables, their delete rule and rows; the link CHECK's text; `catalog_audit`'s rows; rows
+  our side added or curated (`added_by` / `curated_by` set or `status <> 'confirmed'`: matches
+  how we mark them, every app mint is `provisional`). Asked of them (Simon, 2026-11-20): report
+  and refuse a DEFERRABLE key (our FK pin refuses one too), require the two known keys from
+  `wines` to be present, count `links_to` and curator locks as ours too with one count per
+  table, and read a missing digest as a failure. 🔒 **`catalog_audit` stays EMPTY on prod until
+  the replacement** (ruled 2026-11-20): nothing in the app writes it before the review queue,
+  no row is written by hand on prod, staff testing stays on the rehearsal copy; their check
+  stays strict (the replacement is single-use: from the release on every new bottle links).
+  **Timing (Simon, 2026-11-19):** the replacement is
   TARGETED for Fri 2026-12-04 and the columns file may follow. No rehearsal date is set
   (Simon runs both sides). 🔒 **The fallback ends when the catalogue-maintenance side marks
   the first delivery superseded** (agreed 2026-11-19): until then a missed replacement
