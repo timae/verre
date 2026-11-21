@@ -324,11 +324,15 @@ async function roundTrip() {
   check('ensureSessionLive rebuilds it', (await ensureSessionLive(s.code)) === 'live')
   const after = await snapshot(s.code)
   // Expected differences: tokens, lastseen, gen, kickv (cache-only: the Redis-only
-  // kick version — a Postgres-backed moment versions kicks by the member row), anonymous entries.
+  // kick version — a Postgres-backed moment versions kicks by the member row), anonymous entries,
+  // and `shown` (Moment Visibility: the guests without an account who are shown
+  // to people looking in — cache-only like the guests themselves; a rebuild
+  // never re-creates it, so after an eviction nobody is shown: it fails closed).
   const anon = (id: string) => id.startsWith('a:')
-  const drop = (key: string) => /:(tokens|lastseen|gen|kickv)$/.test(key) || key.includes(':r:a:')
+  const drop = (key: string) => /:(tokens|lastseen|gen|kickv|shown)$/.test(key) || key.includes(':r:a:')
   const keysB = Object.keys(before).filter(x => !drop(x)), keysA = Object.keys(after).filter(x => !drop(x))
-  check('same key set (modulo tokens / lastseen / gen / kickv / anonymous rating keys)', JSON.stringify(keysB) === JSON.stringify(keysA), { onlyBefore: keysB.filter(x => !keysA.includes(x)), onlyAfter: keysA.filter(x => !keysB.includes(x)) })
+  check('🔒 a rebuild never re-creates `shown` (a lost key hides the guests, it never shows them)', `s:${s.code}:shown` in before && !(`s:${s.code}:shown` in after), { before: `s:${s.code}:shown` in before, after: `s:${s.code}:shown` in after })
+  check('same key set (modulo tokens / lastseen / gen / kickv / shown / anonymous rating keys)', JSON.stringify(keysB) === JSON.stringify(keysA), { onlyBefore: keysB.filter(x => !keysA.includes(x)), onlyAfter: keysA.filter(x => !keysB.includes(x)) })
   const mB = before[k.meta(s.code)] as Record<string, unknown>, mA = after[k.meta(s.code)] as Record<string, unknown>
   const norm = (f: string, v: unknown) => (f === 'dateFrom' || f === 'dateTo') && typeof v === 'string' ? Date.parse(v)
     : Array.isArray(v) ? [...v].filter(x => !anon(String(x))).sort() : v ?? null

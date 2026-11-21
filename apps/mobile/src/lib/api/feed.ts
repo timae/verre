@@ -22,7 +22,12 @@ export type FeedAuthor = {
 // SessionFeedWine. Blind-redacted wines arrive with `_blind: true` and
 // blanked identity + metadata (name === '', producer/region/etc null).
 export type SessionFeedWine = {
-  id: string;
+  // The author's rating row: on EVERY row, the key for lists and for finding
+  // a row (a standalone post adapts its feed_items id, checkinToWine).
+  ratingId: number;
+  // The wine's id. 🔒 ABSENT on a blind row unless you wrote that rating
+  // (Edit / Delete Rating need it): never key or match on it.
+  id?: string;
   name: string;
   producer: string | null;
   vintage: string | null;
@@ -353,6 +358,7 @@ export function findFeedItem(pages: FeedPage[] | undefined, id: number): FeedIte
 // wine-catalog metadata, so the About block matches a session wine's.
 export function checkinToWine(c: CheckinPayload): SessionFeedWine {
   return {
+    ratingId: c.id,
     id: String(c.id),
     name: c.wineName,
     producer: c.producer,

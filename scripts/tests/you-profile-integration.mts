@@ -73,6 +73,14 @@
 //        one-step sign-up (app + web), by-username = the id route, `username`
 //        on every person outside a moment and never inside one, search, the
 //        limits, the writes census
+//   Moment Visibility, step 1a (docs/dev/proposals/moment-visibility.md),
+//   scripts/tests/moment-visibility-section.mts:
+//   § 23 sessions.public_id + the CHECKs and triggers, a real create's
+//        defaults, a promotion landing closed, the visibility GET / PATCH and
+//        the look-in link (who, the flag after the entrance gate, the freeze,
+//        the secret failing closed, the shared limiter), the scrub gate on
+//        both delete paths, the migration's one-off statements run for real,
+//        guests' `shown`, blind rows without a wine id
 //   + the CANARY over every response of the run (no user integer leaves)
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
@@ -191,6 +199,8 @@ const { outsideViewMatrix } = await import('./outside-view-matrix.mts')
 const { leakFixes } = await import('./leak-fixes-section.mts')
 // § 21 usernames (docs/dev/proposals/usernames.md § 12)
 const { usernames } = await import('./usernames-section.mts')
+// § 23 Moment Visibility, step 1a
+const { momentVisibility } = await import('./moment-visibility-section.mts')
 // § 18 public user ids
 const stateRoute = await import('../../app/api/session/[code]/state/route.ts')
 const visitRoute = await import('../../app/api/session/[code]/visit/route.ts')
@@ -1958,11 +1968,19 @@ try {
 
   // ── Impressions ──
   let r = await list('impressions', Oo, Vv)
-  const wineIds = (x: { json: J }) => (x.json.items as J[]).map(i => i.wineId)
+  // Rows key on the RATING's id; a blind row of someone else's list carries
+  // no wine id (moment-visibility step 1a), so the walks below resolve the
+  // bottle from the rating.
+  const wineOfRating = new Map((await prisma.$queryRaw<{ id: number; wine_id: string }[]>`SELECT id, wine_id FROM ratings WHERE user_id = ${Oo.id}`).map(x => [x.id, x.wine_id]))
+  // (Cravings rows carry no rating id and always their wine id.)
+  const wineOf = (i: J) => (i.wineId ?? wineOfRating.get(i.id as number)) as string | undefined
+  const wineIds = (x: { json: J }) => (x.json.items as J[]).map(wineOf)
   check('impressions for Vera: newest post first, the hidden line-up LEFT OUT (had_at, not the re-rate)',
     JSON.stringify(wineIds(r)) === JSON.stringify([wc, wb, wa, soloWine]) && !wineIds(r).includes(wd), wineIds(r))
-  const rowOf = (x: { json: J }, w: string) => (x.json.items as J[]).find(i => i.wineId === w) as J
+  const rowOf = (x: { json: J }, w: string) => (x.json.items as J[]).find(i => wineOf(i) === w) as J
   const blindRow = rowOf(r, wc)
+  check('🔒 a blind row of someone else\'s list carries NO wine id (the rating id is the key); a shown row keeps it',
+    !!blindRow && !('wineId' in blindRow) && typeof blindRow.id === 'number' && rowOf(r, wa)?.wineId === wa && !JSON.stringify(r.wire).includes(wc), blindRow)
   check('🔒 the blind row: no name / producer / vintage / photo, the moment name + score + style stay',
     blindRow?.blind === true && blindRow.name === '' && blindRow.producer === null && blindRow.vintage === null && blindRow.imageUrl === null && blindRow.score === 4 && blindRow.momentName === `${TAG} Blind night` && blindRow.type === 'red', blindRow)
   check('🔒 "both had": commonCount 1 (the blind bottle both rated never counts), yourScore on the shared one, null on the blind one',
@@ -1978,6 +1996,7 @@ try {
   const own = await list('impressions', Oo, Oo)
   check('your own impressions: the hidden line-up you host is there, the blind one is blind for you too, no commonCount',
     wineIds(own).includes(wd) && rowOf(own, wc)?.blind === true && !('commonCount' in own.json) && !('yourScore' in (own.json.items as J[])[0]), own.json)
+  check('🔒 …and on your OWN list the blind row keeps its wine id (Edit / Delete Rating, Crave need it)', rowOf(own, wc)?.wineId === wc, rowOf(own, wc))
   // D7: the tile count is the list's total, across the D4 states.
   let t = await tiles(Oo, Vv)
   const ownT = await tiles(Oo, Oo)
@@ -2330,12 +2349,19 @@ try {
     await resetLimits()
     return call(impressionsRoute.GET, 'GET', `/api/users/${Pp.pid}/impressions${q ? `?${q}` : ''}`, viewer, undefined, { id: Pp.pid })
   }
-  const set = (x: { json: J }) => ((x.json.items ?? []) as J[]).map(i => i.wineId as string).sort().join()
+  // By the rating (a blind row of someone else's list carries no wine id).
+  const set = async (x: { json: J }) => {
+    const items = (x.json.items ?? []) as J[]
+    const rows = items.length ? await prisma.$queryRaw<{ id: number; wine_id: string }[]>`SELECT id, wine_id FROM ratings WHERE id = ANY(${items.map(i => i.id as number)}::int[])` : []
+    const by = new Map(rows.map(x => [x.id, x.wine_id]))
+    return items.map(i => by.get(i.id as number) as string).sort().join()
+  }
   const of = (...cs: { wine: string }[]) => cs.map(c => c.wine).sort().join()
   const ar = (picks: unknown[], mode?: 'any') => `ar=${encodeURIComponent(JSON.stringify(picks))}${mode ? '&armode=any' : ''}`
   const expectSet = async (name: string, q: string, want: string, viewer: User = Vw) => {
     const x = await lst(viewer, q)
-    check(name, x.status === 200 && set(x) === want, { status: x.status, got: set(x), want })
+    const got = await set(x)
+    check(name, x.status === 200 && got === want, { status: x.status, got, want })
   }
   await expectSet('unfiltered: all five (the post-less one too)', '', of(c1, c2, c3, c4, c5))
   // Structure.
@@ -2387,7 +2413,7 @@ try {
   const gx = await lst(Vw, ar([{ a: 'grapefruit' }]))
   const gRow = ((gx.json.items ?? []) as J[])[0]
   check('🔒 a blind bottle matches by her aromas and stays blind (no name, no photo); the hidden line-up is left out',
-    gx.status === 200 && (gx.json.items as J[]).length === 1 && gRow?.wineId === wB && gRow.blind === true && gRow.name === '' && gRow.imageUrl === null, gx.json)
+    gx.status === 200 && (gx.json.items as J[]).length === 1 && (await set(gx)) === wB && !('wineId' in gRow) && gRow.blind === true && gRow.name === '' && gRow.imageUrl === null, gx.json)
   await expectSet('🔒 the same with a structure range', 'st=sweet:2-2', of({ wine: wB }, c4))
   await expectSet('her own list: she hosts the hidden line-up, so it matches there', ar([{ a: 'grapefruit' }]), of({ wine: wB }, { wine: wH }), Pp)
   // A session sparkling wine re-typed to red after she rated it: her rating
@@ -2408,6 +2434,9 @@ try {
   check('fixture: re-typed to red, her rating still holds bubbles 4', Number(kept[0]?.b) === 4, kept)
   await expectSet('🔒 …then no longer (the wheel stopped drawing Bubbles)', 'st=bubbles:0-5', of(c4))
   }
+
+  // ── § 23 Moment Visibility, step 1a ──────────────────────────────────────
+  await momentVisibility({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
 
   section('canary: no response carried a user integer')
   check('🔒 no response body or header carried a fixture user integer, a u:<digit>, or a public id inside a URL', canaryViolations.length === 0, [...new Set(canaryViolations)].slice(0, 20))

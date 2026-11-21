@@ -152,7 +152,7 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
         ListFooterComponent={listQ.isFetchingNextPage ? <View style={{ paddingVertical: 16, alignItems: 'center' }}><ActivityIndicator color={theme.inkSoft} /></View> : undefined}
         renderItem={({ item: g }) => g.kind === 'month'
           ? <MonthHeader label={g.label} first={g.first} />
-          : <ImpressionListRow row={g.row} showYours={!own} onPress={g.row.postId != null ? (handle) => void openPost(g.row.postId, g.row.wineId, handle) : undefined} />}
+          : <ImpressionListRow row={g.row} showYours={!own} onPress={g.row.postId != null ? (handle) => void openPost(g.row.postId, { ratingId: g.row.id }, handle) : undefined} />}
       />
     );
   }

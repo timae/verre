@@ -7,8 +7,15 @@
 // placeholder. Use `_blind: true` on the redacted variant so the UI
 // can render the mystery slot the same way the live session view does.
 export type SessionFeedWine = {
-  // Postgres `wines.id` (string nanoid). Stable across renders.
-  id: string
+  // The author's rating row (`ratings.id`): on EVERY row, and the key clients
+  // use for lists and for finding a row. It only links one person's own rows
+  // to each other.
+  ratingId: number
+  // Postgres `wines.id` (string nanoid). 🔒 ABSENT on a blind row unless the
+  // viewer wrote that rating (their Edit / Delete Rating need it): a blind
+  // bottle's id is label identity for anyone else (an old photo key fetches
+  // the label, and the id joins the row to other surfaces).
+  id?: string
   // Identity fields, blanked out when blind & not yet revealed.
   name: string
   producer: string | null

@@ -73,7 +73,7 @@ export function SessionFeedCard({ session, author, createdAt, showAuthor = true 
       {session.wines.length > 0 && (
         <div style={{ marginTop:14, display:'flex', flexDirection:'column', gap:14 }}>
           {session.wines.map((w, i) => (
-            <WineRow key={w.id} wine={w} index={i} />
+            <WineRow key={w.ratingId} wine={w} index={i} />
           ))}
         </div>
       )}

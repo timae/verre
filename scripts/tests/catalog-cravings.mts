@@ -156,7 +156,7 @@ const rowsOf = (u: User) => prisma.$queryRaw<BRow[]>`
 const markersOf = async (u: User): Promise<{ id: number; wine_id: string; session_id: number | null; item_id: number | null }[] | null> => {
   try { return await prisma.$queryRaw`SELECT id, wine_id, session_id, item_id FROM blind_saves WHERE user_id = ${u.id} ORDER BY saved_at` } catch { return null }
 }
-type Wire = Record<string, unknown> & { id: string; _blind?: boolean; saved?: boolean }
+type Wire = Record<string, unknown> & { id: string; ratingId?: number; _blind?: boolean; saved?: boolean }
 async function lineup(code: string, u: User): Promise<Wire[]> {
   const r = await state(code, as(u))
   return ((r.json?.wines as Wire[] | undefined) ?? [])
@@ -467,15 +467,18 @@ async function feedSection() {
   const pb = await addBottle(plain, as(H), eN)
   await crave(plain, T, pb)
   await rate(code, as(H), a)
+  // A blind row of someone else's post carries no wine id (Moment Visibility
+  // 1a): it is found by its key, the author's rating.
+  const rid = (await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM ratings WHERE wine_id = ${a} AND session_id IS NOT NULL`)[0]?.id
   const items = ((await feed(T)).json?.items as FeedItem[] | undefined) ?? []
-  const post = items.find(i => i.type === 'session' && i.session?.wines.some(w => w.id === a))
-  const row = post?.session?.wines.find(w => w.id === a)
+  const post = items.find(i => i.type === 'session' && i.session?.wines.some(w => w.ratingId === rid))
+  const row = post?.session?.wines.find(w => w.ratingId === rid)
   check('(10a) T sees H\'s post with Wine N redacted, and NOT saved although T craves that wine', !!row && row._blind === true && row.saved !== true, row)
   const cp = await cravePost(T, post!.session!.id, a)
   check('(10b) crave from the redacted post → the blind save\'s answer', cp.status === 200 && JSON.stringify(cp.json) === SAVED, [cp.status, cp.json])
   check('(10b) …T\'s craving of that wine is untouched, one row', (await rowsOf(T)).length === 1 && (await rowsOf(T))[0].wine_id === pb)
   const items2 = ((await feed(T)).json?.items as FeedItem[] | undefined) ?? []
-  const row2 = items2.find(i => i.type === 'session' && i.session?.id === post!.session!.id)?.session?.wines.find(w => w.id === a)
+  const row2 = items2.find(i => i.type === 'session' && i.session?.id === post!.session!.id)?.session?.wines.find(w => w.ratingId === rid)
   check('(10b) …and the feed row now reads saved (this bottle\'s own save)', row2?.saved === true, row2)
   const un = await cravePost(T, post!.session!.id, a, 'DELETE')
   check('(10c) unsave from the post → { ok, saved: false }', JSON.stringify(un.json) === UNSAVED, un.json)

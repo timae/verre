@@ -85,6 +85,12 @@ export const k = {
   // previous release and the raw readers parse `wines` as WineMeta[]). A
   // Redis-only moment has none. Lives and dies with the session.
   wrev:       (c: string) => `s:${c}:wrev`,
+  // Guests WITHOUT an account who are shown to people looking in (Moment
+  // Visibility, moment-visibility § 5): a Set of `a:` identity ids. 🔒 Added
+  // ONLY when a join mints the identity (app/api/session/join/route.ts), so no
+  // later path re-shows a guest who hid; a guest missing from it is counted,
+  // never named, so a lost key hides (fails closed). Expires with the session.
+  shown:      (c: string) => `s:${c}:shown`,
   // USER-scoped (NOT s:{CODE}: — the first user-scoped session-related key):
   // the set of session codes this user dismissed from the Moments-home
   // highlight carousel. Must outlive any single session, so it can't ride a

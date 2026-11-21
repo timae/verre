@@ -120,7 +120,7 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
         ListEmptyComponent={<ListNote>{search ? 'Nothing matches.' : 'No cravings yet.'}</ListNote>}
         ListFooterComponent={listQ.isFetchingNextPage ? <View style={{ paddingVertical: 16, alignItems: 'center' }}><ActivityIndicator color={theme.inkSoft} /></View> : undefined}
         renderItem={({ item }) => {
-          const row = <CravingListRow row={item} onPress={item.postId != null ? (handle) => void openPost(item.postId, item.wineId, handle) : undefined} />;
+          const row = <CravingListRow row={item} onPress={item.postId != null ? (handle) => void openPost(item.postId, { wineId: item.wineId }, handle) : undefined} />;
           return own && item.key ? <RemovableRow width={rowWidth} onRemove={() => void remove(item.key!)}>{row}</RemovableRow> : row;
         }}
       />

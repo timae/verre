@@ -14,8 +14,9 @@ After the soft-delete commits, the only data guaranteed to survive on the `sessi
 
 - `id` — the grouping key; children (wines, ratings, feed_items) keep their FK references.
 - `deleted_at` — the tombstone marker.
+- `public_id` — the moment's in-app address (Moment Visibility). It is immutable and NOT NULL, names nothing, and a tombstone's id answers the same 404 as an unknown one.
 
-**Every other column is scrubbed to NULL**: `name`, `description`, `link`, `code`, `host_user_id`, `host_name`, `timezone`, `created_at`, `archived_at`, `address`, `date_from`, `date_to`, `blind`, `blind_for_everyone`, `cover_photo_url`, `category`, and anything else added later. The tombstone is genuinely empty — you can tell the row exists and that it was deleted, nothing more. The cover photo's S3 bytes are additionally reclaimed (captured before the txn, reclaimed after commit) in both delete paths — the scrub alone would orphan them.
+**Every other column is scrubbed to NULL**: `name`, `description`, `link`, `code`, `host_user_id`, `host_name`, `timezone`, `created_at`, `archived_at`, `address`, `date_from`, `date_to`, `blind`, `blind_for_everyone`, `cover_photo_url`, `category`, `lifespan`, `hide_lineup`, `hide_lineup_minutes_before`, `show_provenance`, the seven Moment Visibility columns (`visibility`, `include_guest_circles`, `show_place`, `show_details`, `link_version`, `link_active`, `link_since`), and anything else added later. 🔒 Pinned: `scripts/tests/moment-visibility-section.mts` (§ 23 f) fills every column of a moment, deletes it through each path, reads the tombstone back as JSON and fails on anything non-NULL besides the three above. The tombstone is genuinely empty — you can tell the row exists and that it was deleted, nothing more. The cover photo's S3 bytes are additionally reclaimed (captured before the txn, reclaimed after commit) in both delete paths — the scrub alone would orphan them.
 
 The minimal contract is the easiest to audit for privacy and forces explicit doc + schema updates the day someone wants a specific field to survive. Cost is small: tombstoned-session UX in user history shows just "[deleted session]" with no extra context.
 
@@ -42,7 +43,7 @@ Both delete paths (`DELETE /api/session/<code>`, account deletion's empty-sessio
 
 ### Adding a new column to `sessions`
 
-Whenever a new column lands on the `sessions` model, the `UPDATE sessions SET ... = NULL` scrub list in `app/api/session/[code]/route.ts` MUST be extended to include it (and the matching list in `lib/accountDelete.ts:deleteSessionFromPostgres`). The schema-level enforcement is the nullability — but a NOT-NULL column added later would block soft-delete with a constraint error. Make all new columns nullable, and add them to the scrub.
+Whenever a new column lands on the `sessions` model, the `UPDATE sessions SET ... = NULL` scrub list in `app/api/session/[code]/route.ts` MUST be extended to include it (and the matching list in `lib/accountDelete.ts` `wipeEmptySession`). The schema-level enforcement is the nullability — but a NOT-NULL column added later would block soft-delete with a constraint error. Make all new columns nullable, and add them to the scrub. The scrub gate (§ 23 f of the you-profile suite) fails until the new column is both filled in its fixture and scrubbed by both paths. `public_id` is the one deliberate NOT NULL survivor.
 
 ### Why soft-delete instead of nulling the child FKs
 
@@ -99,15 +100,28 @@ ALTER TABLE sessions DISABLE TRIGGER prevent_session_hard_delete;
 --    BUT ONLY rows that have no children left. After the §8 scrub, ratings
 --    and feed_items still reference the session id — those need explicit
 --    nulling first (or check that none reference the targets before delete).
+--    moment_privacy (people's "Only Inside This Moment" choices) is a
+--    RESTRICT child: its rows only mean something while a post of that moment
+--    survives, so they go with the tombstone, first.
 --
 --    Example: purge sessions tombstoned more than a year ago whose children
 --    have already been cleaned up separately:
+DELETE FROM moment_privacy
+ WHERE session_id IN (
+   SELECT id FROM sessions
+    WHERE deleted_at IS NOT NULL
+      AND deleted_at < NOW() - INTERVAL '1 year'
+      AND id NOT IN (SELECT session_id FROM ratings WHERE session_id IS NOT NULL)
+      AND id NOT IN (SELECT session_id FROM feed_items WHERE session_id IS NOT NULL)
+      AND id NOT IN (SELECT source_session_id FROM bookmarks WHERE source_session_id IS NOT NULL)
+      AND id NOT IN (SELECT session_id FROM blind_saves WHERE session_id IS NOT NULL));
 DELETE FROM sessions
  WHERE deleted_at IS NOT NULL
    AND deleted_at < NOW() - INTERVAL '1 year'
    AND id NOT IN (SELECT session_id FROM ratings WHERE session_id IS NOT NULL)
    AND id NOT IN (SELECT session_id FROM feed_items WHERE session_id IS NOT NULL)
-   AND id NOT IN (SELECT source_session_id FROM bookmarks WHERE source_session_id IS NOT NULL);
+   AND id NOT IN (SELECT source_session_id FROM bookmarks WHERE source_session_id IS NOT NULL)
+   AND id NOT IN (SELECT session_id FROM blind_saves WHERE session_id IS NOT NULL);
 
 -- 3. Re-enable the trigger before committing. If anything went wrong above,
 --    ROLLBACK leaves both the trigger state AND the table state untouched.
@@ -119,17 +133,18 @@ COMMIT;
 **Operator notes:**
 - Always run inside a transaction so `DISABLE TRIGGER` + the DELETE + `ENABLE TRIGGER` are atomic. A crash mid-script leaves the trigger disabled otherwise.
 - Take a `pg_dump` first. Per `prisma/CLAUDE.md`, this is destructive work.
-- The `NOT IN (SELECT session_id FROM ratings WHERE session_id IS NOT NULL)` guard prevents accidentally deleting a session that still has child rows (which would orphan ratings via the `Restrict` FK and roll back the txn — but verifying first is cheaper than waiting for the error). The `bookmarks.source_session_id` guard is the same for cravings first made in that moment (`NO ACTION`, since the catalogue model change's expand migration).
+- The `NOT IN (SELECT session_id FROM ratings WHERE session_id IS NOT NULL)` guard prevents accidentally deleting a session that still has child rows (which would orphan ratings via the `Restrict` FK and roll back the txn — but verifying first is cheaper than waiting for the error). The `bookmarks.source_session_id` guard is the same for cravings first made in that moment (`NO ACTION`, since the catalogue model change's expand migration). `moment_privacy` rows of the same tombstones are deleted first for the same reason: its FK is `RESTRICT` too.
 - This is operator work, not Claude work — don't automate or schedule. Periodic, manual, audited.
 
 ## Future hard-delete (GDPR purge) — same escape hatch
 
-A future GDPR / retention-window purge job follows the same `DISABLE TRIGGER` pattern. The plan ([proposals/rewire.md](proposals/rewire.md), §4 "Out of scope" item #12) captures this as future work. The FK contract requires explicit cleanup of children before `DELETE FROM sessions`, because the four child FKs behave differently on delete:
+A future GDPR / retention-window purge job follows the same `DISABLE TRIGGER` pattern. The plan ([proposals/rewire.md](proposals/rewire.md), §4 "Out of scope" item #12) captures this as future work. The FK contract requires explicit cleanup of children before `DELETE FROM sessions`, because the child FKs behave differently on delete:
 
 1. `UPDATE feed_items SET session_id = NULL WHERE session_id = $sid` (FK is `ON DELETE RESTRICT` — a bare `DELETE FROM sessions` would be rejected).
 2. `UPDATE ratings SET session_id = NULL WHERE session_id = $sid` (same — `ON DELETE RESTRICT`). ⚠️ **Redesign before use** (catalogue model change, step 2): the partial unique `ratings_standalone_wine_id_key` allows ONE session-less rating per bottle, so this statement now fails for any bottle two people rated, and for one rating it turns a session rating into a standalone-shaped row. A purge must delete those ratings or keep their moment; decide it with the purge's own design.
 3. `UPDATE bookmarks SET source_session_id = NULL WHERE source_session_id = $sid` (`NO ACTION`): the craving keeps its wine and its source bottle (which survives, orphaned) and loses only its moment.
-4. `DELETE FROM sessions WHERE id = $sid` (wines orphan automatically: `wines.session_id` is `ON DELETE SET NULL`).
+4. `DELETE FROM moment_privacy WHERE session_id = $sid` (same — `ON DELETE RESTRICT`; the column is part of its primary key, so the rows are deleted, not nulled).
+5. `DELETE FROM sessions WHERE id = $sid` (wines orphan automatically: `wines.session_id` is `ON DELETE SET NULL`).
 
 Restrict was chosen over SetNull on the new FKs deliberately (see [proposals/rewire.md](proposals/rewire.md), §2 `feed_items` reasoning) — to force this cleanup to be explicit rather than silent. `wines.session_id` keeps its pre-existing `SET NULL` so bookmarked wines stay reachable after a session is gone.
 

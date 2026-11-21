@@ -14,7 +14,7 @@ import { throwApiError } from './sessions';
 export type ImpressionRow = {
   id: number; // the rating
   postId: number | null; // the post it belongs to (null: none, inert)
-  wineId: string;
+  wineId?: string; // absent on a blind row of someone else's list
   name: string;
   vintage: string | null;
   producer: string | null;

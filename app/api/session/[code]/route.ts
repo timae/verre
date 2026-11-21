@@ -267,14 +267,19 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
           await tx.$executeRaw`DELETE FROM session_bans WHERE session_code = ${c}`
           await tx.$executeRaw`
             INSERT INTO session_tombstones (code, created_at) VALUES (${c}, ${row.createdAt ?? new Date(meta.createdAt)}) ON CONFLICT DO NOTHING`
-          // Scrub to a tombstone: only `id` and `deleted_at` survive.
+          // Scrub to a tombstone: only `id`, `deleted_at` and `public_id`
+          // survive (the public id answers the same 404 as an unknown one).
+          // 🔒 Every other column, the Moment Visibility ones included: the
+          // suite reads the tombstone back and fails on anything non-NULL.
           await tx.$executeRaw`
             UPDATE sessions
               SET deleted_at = NOW(), code = NULL, host_user_id = NULL, host_name = NULL, blind = NULL,
                   blind_for_everyone = NULL, created_at = NULL, archived_at = NULL, name = NULL, address = NULL,
                   date_from = NULL, date_to = NULL, timezone = NULL, description = NULL, link = NULL,
                   cover_photo_url = NULL, category = NULL, lifespan = NULL, hide_lineup = NULL,
-                  hide_lineup_minutes_before = NULL, show_provenance = NULL, lineup_revision = NULL
+                  hide_lineup_minutes_before = NULL, show_provenance = NULL, lineup_revision = NULL,
+                  visibility = NULL, include_guest_circles = NULL, show_place = NULL, show_details = NULL,
+                  link_version = NULL, link_active = NULL, link_since = NULL
              WHERE id = ${row.id}`
         }
         const keys = await scanKeys(`s:${c}:*`)

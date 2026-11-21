@@ -72,5 +72,10 @@ jobs:
       - name: Username UI pins (app)
         run: npx tsx scripts/tests/username-ui-units.ts
 
+      # Opening a post from a profile list: Impressions match by the rating id,
+      # Cravings by the wine id; an absent id never matches a blind row.
+      - name: List row → post row pins (app)
+        run: npx tsx scripts/tests/list-post-units.ts
+
       - name: Vintage surface wiring
         run: node scripts/check-vintage-wiring.mjs

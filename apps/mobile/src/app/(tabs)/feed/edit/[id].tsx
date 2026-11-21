@@ -73,7 +73,7 @@ export default function EditFeedPost() {
   const isSession = item?.type === 'session';
   const wine: SessionFeedWine | CheckinPayload | null = item
     ? item.type === 'session'
-      ? item.session.wines.find((w) => w.id === wineParam) ?? null
+      ? (wineParam ? item.session.wines.find((w) => w.id === wineParam) ?? null : null)
       : item.checkin
     : null;
   const style = wine?.type ?? null;
@@ -155,7 +155,10 @@ export default function EditFeedPost() {
       // preserves omitted aromas); anything else sends the current list.
       const aromasPatch = aromasSeedFailed.current && !aromasDirty.current ? {} : { aromas };
       if (item.type === 'session') {
+        // Your own post: the row carries its wine id (it was found by it,
+        // above). The write needs the id; the cache updates key on the rating.
         const w = wine as SessionFeedWine;
+        if (!w.id) { setError('Could not save. Try again.'); return; }
         const res = await patchSessionRating(feedItemId, {
           wineId: w.id,
           score,
@@ -172,7 +175,7 @@ export default function EditFeedPost() {
           // shouldn't block on it).
           await applyToFeedCache((it) => {
             if (it.type !== 'session' || it.session.id !== feedItemId) return it;
-            const wines = it.session.wines.filter((sw) => sw.id !== w.id);
+            const wines = it.session.wines.filter((sw) => sw.ratingId !== w.ratingId);
             if (wines.length === 0 || res.feedItemDeleted) return null;
             return { ...it, session: { ...it.session, wines } };
           });
@@ -200,7 +203,7 @@ export default function EditFeedPost() {
               session: {
                 ...it.session,
                 wines: it.session.wines.map((sw) =>
-                  sw.id === w.id
+                  sw.ratingId === w.ratingId
                     ? { ...sw, score: res.score, flavors: res.flavors, aromas: res.aromas, notes: res.notes }
                     : sw,
                 ),

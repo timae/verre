@@ -123,7 +123,9 @@ export async function loadSessionFeedWines(
     const ratingImage = r.images[0]?.imageUrl ?? null
     const wireWine: SessionFeedWine = redacted
       ? {
-          id: w.id,
+          ratingId: r.id,
+          // 🔒 No wine id on a blind row, except for the rating's own author.
+          ...(viewerUserId !== null && viewerUserId === r.userId ? { id: w.id } : {}),
           name: '',     // UI renders "Wine N" via index — see SessionFeedCard
           producer: null,
           vintage: null,
@@ -157,6 +159,7 @@ export async function loadSessionFeedWines(
           _blind: true,
         }
       : {
+          ratingId: r.id,
           id: w.id,
           name: entryOf(w)?.name ?? w.name,
           producer: entryOf(w)?.producer ?? w.producer,

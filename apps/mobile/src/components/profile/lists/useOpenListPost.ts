@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
 import { feedItemQueryOptions, findFeedItem } from '@/lib/api/feed';
 import { errorText } from '@/lib/errorCopy';
+import { listPostIndex, type ListPostTarget } from '@/lib/listPost';
 import { setFeedTransitionSource } from '@/lib/feedTransition';
 import { viewerCacheEpoch } from '@/lib/query';
 import { feedHref, useSessionTab } from '@/lib/sessionStack';
@@ -16,10 +17,11 @@ const CARD_OPEN_DEBOUNCE_MS = 700;
 // the item is fetched FIRST: 🔒 `fetchInfiniteQuery` (never `fetchQuery`: a
 // plain { items } entry under a ['feed', …] key breaks every feed-cache write),
 // the viewer epoch checked after the await, the index taken from an EXACT
-// wine match (a moment post can outlive the tapped rating while others remain,
-// and a missing index would clamp to another impression; a standalone post is
-// index 0, its one wine IS the post), then the fade and the push with that
-// index. The post then GROWS out of the tapped row (feedTransition kind
+// match on the row's `target` (lib/listPost.ts: an impression by its rating
+// id, a craving by its wine id; a moment post can outlive the tapped rating
+// while others remain, and a missing index would clamp to another impression;
+// a standalone post is index 0, its one wine IS the post), then the fade and
+// the push with that index. The post then GROWS out of the tapped row (feedTransition kind
 // 'row', a container transform with the row's face): the row is measured after the fetch, right before the push, so a
 // scroll during the fetch can't leave a stale frame; a row gone by then (or no
 // measurer) falls back to the fade. A miss (the empty page, or the bottle not in the post) is the alert
@@ -41,7 +43,7 @@ export function useOpenListPost(ownerId: string, onMiss: () => void, active = tr
   useEffect(() => () => { gen.current += 1; }, []);
   useEffect(() => { if (!active) gen.current += 1; }, [active]);
   return useCallback(
-    async (postId: number | null, wineId: string, row?: RowHandle) => {
+    async (postId: number | null, target: ListPostTarget, row?: RowHandle) => {
       if (postId == null || busy.current) return;
       if (mount.post != null && Date.now() - lastCardOpen.current < CARD_OPEN_DEBOUNCE_MS) return;
       busy.current = true;
@@ -52,7 +54,7 @@ export function useOpenListPost(ownerId: string, onMiss: () => void, active = tr
         const data = await queryClient.fetchInfiniteQuery(feedItemQueryOptions(ownerId, postId));
         if (stale()) return;
         const item = findFeedItem(data.pages, postId);
-        const index = !item ? -1 : item.type === 'checkin' ? 0 : item.session.wines.findIndex((w) => w.id === wineId);
+        const index = listPostIndex(item, target);
         if (index < 0) {
           Alert.alert('This impression isn’t available.');
           onMiss();

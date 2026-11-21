@@ -130,9 +130,12 @@ function impressionsAfter(sort: ImpressionSort, c: ImpressionsCursor): Prisma.Sq
 }
 
 export type ImpressionRow = {
+  // The rating's id: the row's key, and what finds the row in its post
+  // (`ratingId` there).
   id: number
   postId: number | null
-  wineId: string
+  // 🔒 Absent on a blind row of someone else's list (label identity).
+  wineId?: string
   name: string
   vintage: string | null
   producer: string | null
@@ -152,6 +155,7 @@ export async function loadImpressions(
   if (!gate.sees.posts) return { items: [], nextCursor: null }
   const viewerId = gate.viewer.id
   const other = viewerId !== null && viewerId !== ownerId ? viewerId : null
+  const own = viewerId !== null && viewerId === ownerId
   const redacted = redactedSql(viewerId, 's', 'w')
   const where: Prisma.Sql[] = [impressionsWhere(ownerId, viewerId)]
   if (f.from) where.push(Prisma.sql`${HAD_AT} >= ${f.from}`)
@@ -206,7 +210,7 @@ export async function loadImpressions(
     return {
       id: r.id,
       postId: r.post_id,
-      wineId: r.wine_id,
+      ...(!blind || own ? { wineId: r.wine_id } : {}),
       name: blind ? '' : e?.name ?? r.name,
       vintage: blind ? null : e ? (entryYear(e) || null) : r.vintage,
       producer: blind ? null : e?.producer ?? r.producer,

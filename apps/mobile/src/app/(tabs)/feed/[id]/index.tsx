@@ -221,12 +221,13 @@ export default function FeedImpression() {
   const maxPage = detail ? Math.max(0, detail.wines.length - 1) : 0;
 
   const [active, setActive] = useState(startIndex);
-  // Per-page collapse/title state, keyed by WINE ID (not page index): a
+  // Per-page collapse/title state, keyed by the RATING's id (not page index,
+  // and not the wine id: a blind row of someone else's post carries none): a
   // rating delete can shrink the wines array and shift indices while a page
   // stays active — index keys would pin a stale collapsed flag/title on
   // whichever wine slid into that slot. The bar reads the active wine's flag.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [titles, setTitles] = useState<Record<string, string>>({});
+  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
+  const [titles, setTitles] = useState<Record<number, string>>({});
 
   // Fullscreen impression gallery (design gFull): hero tap opens ALL of the
   // moment's photo impressions as a swipeable fullscreen carousel; closing
@@ -390,7 +391,7 @@ export default function FeedImpression() {
   // The same value is also set as this screen's own option: the post is a
   // CONTAINED transparent modal (feed/_layout.tsx), which UIKit may ask
   // directly; whichever channel answers, it says the same thing.
-  const statusBarStyle = activeUri && !collapsed[activeWine!.id] && presentationInteractive ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark';
+  const statusBarStyle = activeUri && !collapsed[activeWine!.ratingId] && presentationInteractive ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark';
   useForwardStatusBarStyle(statusBarStyle);
   const navigation = useNavigation();
   useEffect(() => {
@@ -593,7 +594,11 @@ export default function FeedImpression() {
     // the card's own alias ("Wine N") instead.
     const name = activeWine ? (activeWine._blind ? `Wine ${clampedActive + 1}` : activeWine.name) : '';
     if (detail?.isSession && activeWine) {
+      // Your own post: every row carries its wine id (a blind one too). The
+      // write needs it; the cache drop keys on the rating.
       const wineId = activeWine.id;
+      const ratingId = activeWine.ratingId;
+      if (!wineId) { Alert.alert('Couldn’t Delete', 'Try again.'); return; }
       Alert.alert(
         name ? `Delete your rating of “${name}”?` : 'Delete your rating?',
         'This resets your rating for this impression. This cannot be undone.',
@@ -609,7 +614,7 @@ export default function FeedImpression() {
                 // when that was its last impression (the server reaps it).
                 (it) => {
                   if (it.type !== 'session' || it.session.id !== feedItemId) return it;
-                  const wines = it.session.wines.filter((w) => w.id !== wineId);
+                  const wines = it.session.wines.filter((w) => w.ratingId !== ratingId);
                   if (wines.length === 0) return null;
                   return { ...it, session: { ...it.session, wines } };
                 },
@@ -793,11 +798,11 @@ export default function FeedImpression() {
     [screenW, maxPage, landCard],
   );
 
-  const reportCollapse = useCallback((wineId: string, c: boolean) => {
-    setCollapsed((prev) => (prev[wineId] === c ? prev : { ...prev, [wineId]: c }));
+  const reportCollapse = useCallback((ratingId: number, c: boolean) => {
+    setCollapsed((prev) => (prev[ratingId] === c ? prev : { ...prev, [ratingId]: c }));
   }, []);
-  const reportTitle = useCallback((wineId: string, t: string) => {
-    setTitles((prev) => (prev[wineId] === t ? prev : { ...prev, [wineId]: t }));
+  const reportTitle = useCallback((ratingId: number, t: string) => {
+    setTitles((prev) => (prev[ratingId] === t ? prev : { ...prev, [ratingId]: t }));
   }, []);
   // Each mounted page registers its "scroll to About" imperative here; the
   // collapsed-bar title tap drives the ACTIVE page's (the wine-name tap in the
@@ -832,8 +837,8 @@ export default function FeedImpression() {
   // Read-side clamp: `active` seeds from the raw route param before wines are
   // known, so index the per-page maps through the clamped value.
   const page = clampedActive;
-  const pageWineId = wines[page]?.id ?? '';
-  const barSolid = !!collapsed[pageWineId];
+  const pageRatingId = wines[page]?.ratingId ?? -1;
+  const barSolid = !!collapsed[pageRatingId];
   // Only photo-bearing impressions go fullscreen (a blind/photoless page has
   // nothing to show); wineIndex maps a gallery page back to its pager slot.
   const galleryPages: GalleryPage[] = wines
@@ -927,8 +932,8 @@ export default function FeedImpression() {
             onPlacePress={momentCode ? enterMoment : undefined}
             onAuthorPress={onAuthorPress}
             dismissible={!cardMode}
-            onCollapse={(c) => reportCollapse(wines[0].id, c)}
-            onTitle={(t) => reportTitle(wines[0].id, t)}
+            onCollapse={(c) => reportCollapse(wines[0].ratingId, c)}
+            onTitle={(t) => reportTitle(wines[0].ratingId, t)}
             onRegisterScrollToAbout={(fn) => registerScrollToAbout(0, fn)}
             insetTop={insets.top}
             bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
@@ -975,7 +980,7 @@ export default function FeedImpression() {
                 i === entryIndex ||
                 (warmLevel >= 1 && (Math.abs(i - page) <= 1 || (i >= mountedLo && i <= mountedHi)));
               return (
-              <View key={w.id} style={{ width: screenW }}>
+              <View key={w.ratingId} style={{ width: screenW }}>
                 {mount ? (
                   <DetailPage
                     wine={w}
@@ -987,8 +992,8 @@ export default function FeedImpression() {
                     onPlacePress={momentCode ? enterMoment : undefined}
                     onAuthorPress={onAuthorPress}
                     dismissible={!cardMode}
-                    onCollapse={(c) => reportCollapse(w.id, c)}
-                    onTitle={(t) => reportTitle(w.id, t)}
+                    onCollapse={(c) => reportCollapse(w.ratingId, c)}
+                    onTitle={(t) => reportTitle(w.ratingId, t)}
                     onRegisterScrollToAbout={(fn) => registerScrollToAbout(i, fn)}
                     insetTop={insets.top}
                     bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
@@ -1067,7 +1072,7 @@ export default function FeedImpression() {
       >
         <FloatBar
           solid={barSolid}
-          title={barSolid ? titles[pageWineId] ?? '' : ''}
+          title={barSolid ? titles[pageRatingId] ?? '' : ''}
           onBack={requestClose}
           card={cardMode}
           onTitlePress={scrollActiveToAbout}

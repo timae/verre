@@ -151,7 +151,7 @@ export function FullscreenGallery({
         data={pages}
         initialIndex={startIndex}
         ListComponent={FlatList}
-        listProps={{ keyExtractor: (item: GalleryPage) => item.wine.id }}
+        listProps={{ keyExtractor: (item: GalleryPage) => String(item.wine.ratingId) }}
         // Black ground + container, exactly as ui/FullscreenImage (its in-file
         // comments carry the rationale: universal photo ground, and the
         // dismiss-drag backdrop fade needs a black container behind it).

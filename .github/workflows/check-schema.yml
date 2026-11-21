@@ -304,9 +304,20 @@ jobs:
       # BEFORE trigger, a missing row lock), honest one-step sign-up (app and
       # web), by-username = the id route, `username` on every person outside a
       # moment and never inside one, search, the limits, the writes census.
-      - name: You profile (tiles, retention, profile images, settings, public ids)
+      #
+      # § 23 Moment Visibility, step 1a (docs/dev/proposals/moment-visibility.md,
+      # scripts/tests/moment-visibility-section.mts): sessions.public_id and the
+      # three triggers migrate diff cannot see, a real create's defaults, a
+      # promotion landing closed, the visibility GET / PATCH and the look-in
+      # link (the flag after the entrance gate, the freeze, the secret failing
+      # closed, the version only going up), the scrub gate on both delete
+      # paths (a tombstone keeps id, deleted_at, public_id), the migration's
+      # two one-off statements run verbatim through psql on fixture rows
+      # (psql is on ubuntu-latest, as the catalog suite relies on), guests'
+      # `shown`, blind rows without a wine id.
+      - name: You profile (tiles, retention, profile images, settings, public ids, moment visibility)
         run: npx tsx scripts/tests/you-profile-integration.mts
-        timeout-minutes: 8
+        timeout-minutes: 12
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
           REDIS_URL: redis://localhost:6379

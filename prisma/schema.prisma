@@ -135,6 +135,7 @@ model User {
   authSessions              AuthSession[]
   usernameHolds             UsernameHold[]
   usernameChanges           UsernameChange[]
+  momentPrivacy             MomentPrivacy[]
   staffRoles                StaffRole[]            @relation("StaffRoleHolder")
   staffRolesGranted         StaffRole[]            @relation("StaffRoleGranter")
   // Catalog attribution. All SetNull — community catalog rows are never
@@ -431,6 +432,30 @@ model Session {
   // two. NULL = not reconciled yet (never a revision), and the soft-delete scrub
   // leaves it NULL. Int, not BigInt, so no BigInt reaches JSON.
   lineupRevision Int?    @map("lineup_revision")
+  // Moment Visibility (docs/dev/proposals/moment-visibility.md § 4 / § 5).
+  // The moment's in-app address, never its code: same shape and generator as
+  // users.public_id. 🔒 Minted by the BEFORE INSERT trigger
+  // `sessions_public_id_mint` whatever an insert supplies (the DEFAULT is for
+  // the backfill and this declaration; never write it), immutable by
+  // `sessions_public_id_immutable`, format CHECK
+  // `sessions_public_id_format_chk`. The ONE column besides `id` and
+  // `deletedAt` a tombstone keeps (it answers the same 404 as an unknown id).
+  publicId    String     @unique @default(dbgenerated("gen_public_user_id()")) @map("public_id") @db.VarChar(12)
+  // Who may look in without the code: 'members' | 'friends' | 'followers' |
+  // 'verre' (CHECK `sessions_visibility_chk`). 🔒 NULL (a tombstone) reads as
+  // closed, like every column below reads as off. Read and written from the
+  // record only (lib/momentSettings.ts), never mirrored into the cached meta.
+  // 🔒 A row inserted without a host lands as 'members' by the trigger
+  // `sessions_guest_hosted_closed`, whatever the insert says.
+  visibility          String?   @default("friends") @db.VarChar(16)
+  includeGuestCircles Boolean?  @default(true) @map("include_guest_circles")
+  showPlace           Boolean?  @default(false) @map("show_place")
+  showDetails         Boolean?  @default(false) @map("show_details")
+  // The look-in link's state (lib/momentLink.ts): nothing secret is stored.
+  // 🔒 The version only ever goes up (Reset, and Share on a link that is off).
+  linkVersion         Int?      @default(0) @map("link_version")
+  linkActive          Boolean?  @default(false) @map("link_active")
+  linkSince           DateTime? @map("link_since") @db.Timestamptz(6)
   host        User?      @relation(fields: [hostUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   wines       Wine[]
   ratings     Rating[]
@@ -438,8 +463,25 @@ model Session {
   // Cravings first made in this moment (bookmarks.source_session_id).
   sourcedBookmarks Bookmark[]
   blindSaves       BlindSave[]
+  momentPrivacy MomentPrivacy[]
 
   @@map("sessions")
+}
+
+// One person's per-moment choice, "Only Inside This Moment" (moment-visibility
+// § 5 / § 9). Keyed by the session's ID, not its code: member rows are keyed
+// by a recyclable code and are deleted with the moment, and this choice must
+// outlive both (RESTRICT, like feed_items: rows survive the soft delete; the
+// hard-delete runbook clears them first). Read-only until step 3.
+model MomentPrivacy {
+  sessionId  Int     @map("session_id")
+  userId     Int     @map("user_id")
+  onlyInside Boolean @map("only_inside")
+  session    Session @relation(fields: [sessionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([sessionId, userId])
+  @@map("moment_privacy")
 }
 
 model Wine {

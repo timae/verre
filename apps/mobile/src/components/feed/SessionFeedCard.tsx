@@ -93,6 +93,9 @@ export function SessionFeedCard({
   // scroll math and later writers start from a real slide.
   const maxIdx = Math.max(0, wines.length - 1);
   const activeIdx = Math.min(rawActiveIdx, maxIdx);
+  // Edit / Delete Rating need the wine id: always there on your own post (the
+  // only place the menu shows), absent on a blind row of someone else's.
+  const activeWineId = wines[activeIdx]?.id;
   useEffect(() => {
     setActiveIdx((cur) => Math.min(cur, maxIdx));
   }, [maxIdx]);
@@ -282,10 +285,10 @@ export function SessionFeedCard({
             {timeAgo(createdAt)}
           </VText>
         </View>
-        {onEdit && wines[activeIdx] ? (
+        {onEdit && activeWineId ? (
           <FeedCardMenu
-            onEdit={() => onEdit(wines[activeIdx].id)}
-            onDelete={onDeleteRating ? () => onDeleteRating(wines[activeIdx].id) : undefined}
+            onEdit={() => onEdit(activeWineId)}
+            onDelete={onDeleteRating ? () => onDeleteRating(activeWineId) : undefined}
             deleteLabel="Delete Rating"
             deleteAccessibilityLabel="Delete Rating"
           />
@@ -314,7 +317,7 @@ export function SessionFeedCard({
             >
               {wines.map((w, i) => (
                 <WineSlide
-                  key={w.id}
+                  key={w.ratingId}
                   wine={w}
                   index={i}
                   width={photoW}
@@ -360,7 +363,7 @@ export function SessionFeedCard({
         >
           {wines.map((w, i) => (
             <NonPhotoHero
-              key={w.id}
+              key={w.ratingId}
               wine={w}
               index={i}
               axisColor={axisColor}
@@ -377,7 +380,7 @@ export function SessionFeedCard({
         <View style={styles.dots}>
           {wines.map((w, i) => (
             <View
-              key={w.id}
+              key={w.ratingId}
               style={[
                 styles.dot,
                 { backgroundColor: i === activeIdx ? theme.accent : theme.inkFaint },

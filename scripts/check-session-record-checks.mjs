@@ -12,7 +12,12 @@
 // `u:<int>` / `a:` / `d:` shapes only, public-user-ids § 3), so a missed
 // inbound translation fails loudly instead of storing a ban that never
 // matches. Since the catalogue model change also the occurrence's origin and
-// snapshot CHECKs on wines and the bookmark's link CHECK. Sibling of check-catalog-contract-checks.mjs, much
+// snapshot CHECKs on wines and the bookmark's link CHECK. And the two CHECKs
+// Moment Visibility put on `sessions` (moment-visibility § 5): the public id's
+// format and the four visibility values (every read treats anything else as
+// closed, so a loosened CHECK would hide moments, never open them, but it
+// should not move unseen). `moment_privacy` is listed so a CHECK added there
+// later lands here too. Sibling of check-catalog-contract-checks.mjs, much
 // smaller: the tables below are not an import contract, so only the CHECK
 // bodies are compared.
 //
@@ -36,7 +41,7 @@ const SNAPSHOT = join(root, 'prisma', 'session-record-checks.json')
 // `bookmarks` since the catalogue model change (step 2): its catalogue-link CHECK
 // is the only guard against a vintage without its product (the composite key is
 // MATCH SIMPLE), as `wines_catalog_link_check` is for an occurrence.
-const TABLES = ['ratings', 'sessions', 'session_members', 'session_bans', 'session_tombstones', 'wines', 'bookmarks']
+const TABLES = ['ratings', 'sessions', 'session_members', 'session_bans', 'session_tombstones', 'wines', 'bookmarks', 'moment_privacy']
 
 const prisma = createPrismaClient()
 try {
