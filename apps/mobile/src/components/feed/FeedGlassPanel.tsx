@@ -4,7 +4,7 @@ import { VText } from '@/components/ui/VText';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { buildWheelAxes } from '@/lib/flavourAxes';
 import { GLASS_FILL } from '@/lib/layout';
-import { wineTypeLabel } from '@/lib/momentFormat';
+import { kindLabel } from '@/lib/momentFormat';
 import { radius, space, useTheme } from '@/theme';
 import { formatScore } from '@verre/core';
 import type { SessionFeedWine } from '@/lib/api/feed';
@@ -34,14 +34,14 @@ export function GlassPanelInner({
   const { theme } = useTheme();
   if (!wine) return null;
   const blind = !!wine._blind;
-  const typeLabel = wineTypeLabel(wine.type);
+  const typeLabel = kindLabel(wine);
   const sub = blind ? 'Hidden until the host reveals it' : [wine.producer, typeLabel].filter(Boolean).join(' · ');
   // Blind masks IDENTITY only (name→"Wine N", no producer/vintage) — the
   // subjective rating STAYS: the score (below) AND the flavour wheel. The
   // server ships a redacted wine's flavors/score unblanked on purpose (the
   // author's own take; same as the in-session view). So the wheel is NOT gated
   // on blind — only identity fields are. (Simon, reverses an earlier over-redact.)
-  const axes = buildWheelAxes(wine.flavors, wine.type, axisColor);
+  const axes = buildWheelAxes(wine.flavors, wine, axisColor);
   return (
     <>
       <View style={styles.panelMain}>

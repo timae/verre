@@ -36,7 +36,6 @@ import { PersonPreviewProvider, usePersonPreview } from '@/components/moments/Pe
 import {
   ApiError,
   deleteWine,
-  getBookmarkedWineIds,
   getSessionState,
   hideWine,
   rateWine,
@@ -50,10 +49,12 @@ import { authClient } from '@/lib/authClient';
 import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
-import { wineTypeLabel } from '@/lib/momentFormat';
+import { kindLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { radius, useTheme } from '@/theme';
 import { markProfileHeaderStale } from '@/lib/feedCache';
+import { errorText } from '@/lib/errorCopy';
+import { alcoholText, bottleGrapes, bottleOrigin } from '@/lib/bottleFacts';
 import { useMeId } from '@/lib/meId';
 
 const POLL_MS = 5000;
@@ -226,23 +227,36 @@ export default function ImpressionDetail() {
     setAromas(next);
   };
 
-  // Crave = wine bookmark (web WineModal parity, optimistic). The local
-  // override is keyed on the wine id, so a sibling-wine swap ignores it at
-  // render time — no reset effect, no stale-heart frame.
+  // Crave = save the bottle (optimistic). It reads the row's own `saved`
+  // (catalogue model change step 5): on a bottle hidden for you that is your
+  // save of THAT bottle, never whether you crave the wine elsewhere. The local
+  // override is keyed on the wine id (a sibling swap ignores it) and dropped
+  // once the line-up has re-read; a refusal springs the heart back and says
+  // why (ADR-0009: "Too many saves. Try again in …").
   const meIdForLists = useMeId();
-  const bookmarks = useQuery({ queryKey: ['bookmarks'], queryFn: getBookmarkedWineIds });
   const [craveLocal, setCraveLocal] = useState<{ wineId: string; on: boolean } | null>(null);
-  const craved = craveLocal?.wineId === wineId ? craveLocal.on : bookmarks.data?.has(wineId) ?? false;
+  const craved = craveLocal?.wineId === wineId ? craveLocal.on : !!wine?.saved;
   const craveMut = useMutation({
     mutationFn: (vars: { wineId: string; on: boolean }) => setBookmark(code, vars.wineId, vars.on),
     onMutate: (vars) => setCraveLocal(vars),
-    onError: (_e, vars) => setCraveLocal({ wineId: vars.wineId, on: !vars.on }),
+    onSuccess: (r, vars) => setCraveLocal((cur) => (cur?.wineId === vars.wineId ? { wineId: vars.wineId, on: r.saved } : cur)),
+    onError: (e, vars) => {
+      // Only this bottle's override springs back (review r1: a sibling's save
+      // in flight must not lose its own).
+      setCraveLocal((cur) => (cur?.wineId === vars.wineId ? null : cur));
+      Alert.alert(vars.on ? 'Couldn’t Save' : 'Couldn’t Remove', errorText(e));
+    },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['bookmarks'] });
       // Your Cravings tile follows (lists plan D12) when you next look at it.
       void markProfileHeaderStale(queryClient, meIdForLists);
+      void queryClient.invalidateQueries({ queryKey: ['session-state', code] });
     },
   });
+  // The override goes once the line-up row agrees (a refetch that failed keeps it).
+  const rowSaved = !!wine?.saved;
+  useEffect(() => {
+    if (craveLocal && craveLocal.wineId === wineId && craveLocal.on === rowSaved && !craveMut.isPending) setCraveLocal(null);
+  }, [craveLocal, wineId, rowSaved, craveMut.isPending]);
 
   const rateMut = useMutation({
     mutationFn: (body: { wineId: string; score: number; flavors: Record<string, number>; aromas?: AromaSelection[]; notes: string }) =>
@@ -303,12 +317,12 @@ export default function ImpressionDetail() {
     // ("perceived None", a centre-point wedge); all-None collapses to {}. Also
     // the edit-path transform (§6g) — only registry keys survive, so a stale
     // descriptor row can't 400 the write gate.
-    const cleanFlavors = fillFlavourZeros(flavors, 'wine', wine?.type ?? null);
+    const cleanFlavors = fillFlavourZeros(flavors, 'wine', wine ?? null);
     // Diff BOTH sides normalised, so missing ≡ explicit-0. A rating stored under
     // the old sparse shape ({acid:4}) must not read as "changed" against the
     // reloaded filled shape ({…,acid:4,…}) — otherwise tapping Next/Back on an
     // untouched legacy rating reposts it and bumps its `at` timestamp.
-    const cleanExisting = fillFlavourZeros(existing?.flavors ?? {}, 'wine', wine?.type ?? null);
+    const cleanExisting = fillFlavourZeros(existing?.flavors ?? {}, 'wine', wine ?? null);
     // Aromas diff canonical-to-canonical (the local state is always gated;
     // stored selections re-gate here) so key order / a legacy p:false can't
     // read as a change.
@@ -545,7 +559,7 @@ export default function ImpressionDetail() {
           shown on blind wines too: `type` (the STYLE) is NOT masked by
           redaction (mirrors web RatingPane + wineRedaction). */}
       <RatingSection
-        style={wine.type}
+        kind={wine}
         score={score}
         onScore={editScore}
         notes={notes}
@@ -980,9 +994,9 @@ function Hero({
             </>
           ) : null}
         </VText>
-        {wine.producer || wine.type ? (
+        {wine.producer || kindLabel(wine) ? (
           <VText style={{ fontFamily: 'InstrumentSans_400Regular', ...phone.text('small'), color: 'rgba(255,255,255,0.82)', marginTop: 2 }}>
-            {[wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
+            {[wine.producer, kindLabel(wine)].filter(Boolean).join(' · ')}
           </VText>
         ) : null}
       </View>
@@ -1034,7 +1048,7 @@ function NameBlock({
             : hostBlind
               ? 'Hidden from guests. Reveal to show it.'
               : 'Revealed when the host or co-host reveals it'
-          : [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
+          : [wine.producer, kindLabel(wine)].filter(Boolean).join(' · ')}
       </VText>
     </View>
   );
@@ -1068,11 +1082,17 @@ function AboutBlock({
   // wine.country is an ISO 3166-1 alpha-2 code ("IT"); show the full English
   // name ("Italy"), falling back to the raw code for anything off-list —
   // mirrors the web WineInfoPane's `countryName(country) || country`.
-  const country = wine.country ? countryName(wine.country) || wine.country : '';
-  const origin = [wine.region, country].filter(Boolean).join(' · ');
+  // Origin and variety are the catalogue wine's (ADR-0009), the bottle's own
+  // copy only for an unlinked old bottle; a blind row has neither.
+  const o = bottleOrigin(wine.entry, wine);
+  const country = o.country ? countryName(o.country) || o.country : '';
+  const origin = [o.region, country].filter(Boolean).join(' · ');
+  const grapes = bottleGrapes(wine.entry, wine.grape);
+  const alcohol = alcoholText(wine.abv);
   const rows: Array<[string, React.ReactNode]> = [];
   if (origin) rows.push(['Origin', <VText key="v" style={{ fontFamily: 'InstrumentSans_500Medium', ...phone.text('small') }}>{origin}</VText>]);
-  if (wine.grape) rows.push(['Variety', <ClampText key="v" text={wine.grape} lines={2} medium />]);
+  if (grapes) rows.push(['Variety', <ClampText key="v" text={grapes} lines={2} medium />]);
+  if (alcohol) rows.push(['Alcohol', <VText key="v" style={{ fontFamily: 'InstrumentSans_500Medium', ...phone.text('small') }}>{alcohol}</VText>]);
   if (wine.vinification) rows.push(['Process', <ClampText key="v" text={wine.vinification} lines={2} medium />]);
   if (!broughtBy && rows.length === 0 && !wine.description && !wine.purchaseUrl) return null;
   // Separator rule: a section's bottom edge draws the line between

@@ -9,7 +9,7 @@ import {
   FLAVOUR_MAX,
   flavourLevelFromFraction,
   type StructureAxis,
-} from '@verre/core';
+ type AxisKind } from '@verre/core';
 import { intensityRangeWord, intensityWord } from '@/lib/scoreWords'; // range: VoiceOver value only
 import { usePhoneTokens } from '@/lib/layout';
 import { VText } from '@/components/ui/VText';
@@ -83,9 +83,9 @@ function rangeEdges([lo, hi]: readonly [number, number]): [number, number] {
 
 type Props =
   | {
-      // The wine style drives the axis set (sparkling adds Bubbles). null/unknown →
-      // base wine set (resolveAxes is defensive).
-      style: string | null | undefined;
+      // The bottle's kind drives the axis set (sparkling adds Bubbles): a bottle
+      // (`{ sparkling }`) or a legacy style token. null/unknown → base wine set.
+      kind: AxisKind;
       range?: false;
       // The current rating's flavour map — keys present are rated (0 = perceived
       // None but explicitly set). Absent keys are not rated.
@@ -93,17 +93,17 @@ type Props =
       onChange: (next: Record<string, number>) => void;
     }
   | {
-      style: string | null | undefined;
+      kind: AxisKind;
       range: true;
       value: StructureRanges;
       onChange: (next: StructureRanges) => void;
     };
 
 export function StructureInput(props: Props) {
-  const { style } = props;
+  const { kind } = props;
   const phone = usePhoneTokens();
   const axisColor = useFlavourColors();
-  const axes = resolveAxes('wine', style);
+  const axes = resolveAxes('wine', kind);
   // Two columns on a roomy phone, one on a narrow one (the design's 640px
   // grid break — phones below ~380pt read cramped with two 38px tracks).
   const twoCol = phone.width >= 380;

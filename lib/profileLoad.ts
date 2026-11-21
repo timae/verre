@@ -23,7 +23,6 @@ export type LoadedCheckin = {
   producer: string | null
   vintage: string | null
   grape: string | null
-  type: string | null
   // The bottle's kind (its snapshot; the axes read `sparkling`) and alcohol.
   colour: string | null
   sparkling: boolean
@@ -310,7 +309,6 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
         producer: e?.producer ?? wine.producer,
         vintage: e ? (entryYear(e) || null) : wine.vintage,
         grape: e ? (e.grapes.join(', ') || null) : wine.grape,
-        type: wine.style,
         colour: wine.colour,
         sparkling: wine.sparkling,
         abv: wine.abv === null ? null : Number(wine.abv),

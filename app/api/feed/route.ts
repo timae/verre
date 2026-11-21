@@ -267,13 +267,12 @@ export async function GET(req: NextRequest) {
           author: wireAuthor(f.user),
           checkin: {
             id: f.id,
-            // The bottle (the crave-from-post route takes its id).
+            // The bottle (a key: the post's save needs no body, its bottle is the post's own).
             wineId: wine.id,
             wineName: e?.name ?? wine.name,
             producer: e?.producer ?? wine.producer,
             vintage: e ? (entryYear(e) || null) : wine.vintage,
             grape: e ? (e.grapes.join(', ') || null) : wine.grape,
-            type: wine.style,
             // The bottle's kind (its snapshot; the axes read `sparkling`) and
             // alcohol (catalogue model change step 4).
             colour: wine.colour,

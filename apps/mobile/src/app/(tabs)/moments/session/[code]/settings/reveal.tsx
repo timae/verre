@@ -2,10 +2,11 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { BLIND_FEED_REVEAL_NOTE } from '@verre/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
+import { ChoiceChip } from '@/components/ui/ChoiceChip';
 import { SettingsFooter, SettingsScreenFallback, ToggleRow } from '@/components/moments/settingsParts';
 import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
 import {
@@ -16,7 +17,6 @@ import {
 } from '@/lib/api/sessions';
 import { useSettingsSession } from '@/lib/useSettingsSession';
 import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
-import { radius, useTheme } from '@/theme';
 
 // 02f·3 Moment Setup — pushed full-screen toggles page (renamed from
 // "Reveal & Blind"; it now holds format/mechanics settings, not just blind:
@@ -58,7 +58,6 @@ function RevealForm({
   onSaved: () => void;
   onDiscard: () => void;
 }) {
-  const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const [hideLineup, setHideLineup] = useState(!!meta.hideLineup);
   const [hideMinutes, setHideMinutes] = useState(meta.hideLineupMinutesBefore ?? 0);
@@ -118,18 +117,9 @@ function RevealForm({
                 (revealAt = dateFrom − minutes); ruled 2026-11-11. */}
             <VText variant="small" color="inkSoft" style={{ marginTop: 10 }}>Reveal before the start</VText>
             <View style={{ flexDirection: 'row', gap: 7, marginTop: 6, flexWrap: 'wrap' }}>
-              {([['At start', 0], ['15 min', 15], ['30 min', 30], ['60 min', 60]] as const).map(([label, mins]) => {
-                const on = hideMinutes === mins;
-                return (
-                  <Pressable
-                    key={label}
-                    onPress={() => setHideMinutes(mins)}
-                    style={{ paddingVertical: 7, paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: on ? 'transparent' : theme.rule, backgroundColor: on ? theme.accent : theme.bg }}
-                  >
-                    <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: on ? theme.accentInk : theme.inkSoft }}>{label}</VText>
-                  </Pressable>
-                );
-              })}
+              {([['At start', 0], ['15 min', 15], ['30 min', 30], ['60 min', 60]] as const).map(([label, mins]) => (
+                <ChoiceChip key={label} label={label} on={hideMinutes === mins} onPress={() => setHideMinutes(mins)} />
+              ))}
             </View>
           </>
         ) : null}

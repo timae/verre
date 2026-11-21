@@ -46,7 +46,7 @@ import { SessionTabs, type SessionTab } from '@/components/moments/SessionTabs';
 import { MOMENT_EDIT_HINT, MOMENT_FIELD_MAX, MomentBarName, MomentCoverName, MomentEditBar, useMomentEdit, type MomentEditApi } from '@/components/moments/MomentEdit';
 import { InlineField, LongPressable, markNoShake } from '@/components/ui/InPlaceEdit';
 import { DATE_LOCALE } from '@/lib/locale';
-import { sessionWhen, wineTypeLabel } from '@/lib/momentFormat';
+import { sessionWhen, kindLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { lockState, useSessionPoll } from '@/lib/useSessionPoll';
 import { sessionHref, tabHomeHref, useSessionTab } from '@/lib/sessionStack';
@@ -86,7 +86,7 @@ const LU_SORTS: { key: Exclude<LuSort, 'lineup'>; label: string }[] = [
 // stub matches only its displayed "Impression N" label.
 function luSearchHay(wine: WireWine, lineupIndex: number): string {
   if (wine._blind) return `Impression ${lineupIndex + 1}`;
-  return [wine.name, wine.producer, wine.vintage, wine.grape, wine.type, wineTypeLabel(wine.type), wine.region, wine.country]
+  return [wine.name, wine.producer, wine.vintage, wine.grape, kindLabel(wine), wine.region, wine.country]
     .filter(Boolean)
     .join(' ');
 }

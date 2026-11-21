@@ -12,13 +12,16 @@ import { checkRate, formatWait } from '@/lib/rateLimit'
 type Ctx = { params: Promise<{ id: string }> }
 const NO_STORE = { 'Cache-Control': 'private, no-store' }
 
-// POST / DELETE /api/feed-items/<id>/crave { wineId }: save or unsave a bottle
-// from someone's post (catalogue model change § 5; lib/cravings.ts has the
-// rules). Answers `{ ok, saved }`, like the moment's own save.
+// POST / DELETE /api/feed-items/<id>/crave: save or unsave a bottle from
+// someone's post (catalogue model change § 5; lib/cravings.ts has the rules).
+// Answers `{ ok, saved }`, like the moment's own save. A moment post names the
+// row by its key, `{ ratingId }` (the author's rating, on every row since
+// Moment Visibility 1a: a still-hidden bottle on someone else's post carries
+// no wine id); a check-in's bottle is the post's own (no body).
 //
 // 🔒 Order: the post gate (`viewerCanSeePosts`: profile tier + Check-Ins
 // Visible To) → 404, the bottle must be one of THIS post's (a check-in's own,
-// or a session post's: the author rated it in that moment) → 404, a line-up
+// or a session post's: the author's rating in that moment) → 404, a line-up
 // hidden from the caller → 404 (the feed leaves it out), then the OUTSIDE rule
 // for the caller (lib/outsideView.ts, the one the feed redacts by): on a
 // redacted "Wine N" the save is a save of that bottle, answered the same
@@ -34,18 +37,35 @@ async function run(req: NextRequest, { params }: Ctx, on: boolean): Promise<Next
   const itemId = parsePathId((await params).id)
   if (itemId === null) return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
   const body = await req.json().catch(() => null) as Record<string, unknown> | null
-  const wineId = typeof body?.wineId === 'string' && body.wineId.length <= 21 ? body.wineId : null
-  if (!wineId) return NextResponse.json({ error: 'wineId required' }, { status: 400, headers: NO_STORE })
+  const raw = body?.ratingId
+  // A rating id is an int4 (an over-range value would fail inside Prisma).
+  const ratingId = typeof raw === 'number' && Number.isInteger(raw) && raw > 0 && raw <= 2_147_483_647 ? raw : null
+  if (raw !== undefined && ratingId === null) return NextResponse.json({ error: 'ratingId must be a rating id' }, { status: 400, headers: NO_STORE })
 
   const item = await prisma.feedItem.findUnique({ where: { id: itemId }, select: { userId: true, kind: true, sessionId: true, ratingId: true } })
   if (!item || !(await viewerCanSeePosts(userId, item.userId))) return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
+  // The bottle: the author's rating the row names, in THIS moment; or the
+  // check-in's own. A moment post without a key, any other rating id, and a
+  // line-up hidden from the caller (the feed leaves that post out) are the same
+  // 404 as a bottle not in it, all BEFORE the budget (review r1: a 400 told a
+  // moment post apart, a charged 404 counted a hidden line-up's ratings). The
+  // transaction below decides again under the locks (the authority).
+  const target = item.kind === 'session'
+    ? (item.sessionId !== null && ratingId !== null ? Prisma.sql`r.id = ${ratingId} AND r.user_id = ${item.userId} AND r.session_id = ${item.sessionId}` : null)
+    : (item.ratingId !== null ? Prisma.sql`r.id = ${item.ratingId}` : null)
+  const { redacted, hidden } = outsideViewSql(userId, { s: 's', w: 'w' })
+  const pre = target === null ? undefined : (await prisma.$queryRaw<{ wine_id: string; hidden: boolean | null }[]>`
+    SELECT r.wine_id, ${hidden} AS hidden
+      FROM ratings r JOIN wines w ON w.id = r.wine_id LEFT JOIN sessions s ON s.id = ${item.sessionId}
+     WHERE ${target}`)[0]
+  // A NULL flag (never by construction) reads as the closed side.
+  if (!pre || pre.hidden !== false) return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
+  const wineId = pre.wine_id
   const own = item.kind === 'session'
-    ? item.sessionId !== null && Prisma.sql`EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = w.id AND r.user_id = ${item.userId} AND r.session_id = ${item.sessionId})`
-    : item.ratingId !== null && Prisma.sql`EXISTS (SELECT 1 FROM ratings r WHERE r.id = ${item.ratingId} AND r.wine_id = w.id)`
-  if (!own) return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
+    ? Prisma.sql`EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = w.id AND r.user_id = ${item.userId} AND r.session_id = ${item.sessionId})`
+    : Prisma.sql`EXISTS (SELECT 1 FROM ratings r WHERE r.id = ${item.ratingId} AND r.wine_id = w.id)`
   const rl = await checkRate(SAVE_LIMIT.key(userId), SAVE_LIMIT.limit, SAVE_LIMIT.windowSec)
   if (!rl.allowed) return NextResponse.json({ error: `Too many saves. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429, headers: NO_STORE })
-  const { redacted, hidden } = outsideViewSql(userId, { s: 's', w: 'w' })
   try {
     const out = await prisma.$transaction(async (tx) => {
       // 🔒 Lock order (review r2, r3): the moment's row FIRST, as every session

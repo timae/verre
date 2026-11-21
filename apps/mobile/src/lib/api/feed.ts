@@ -32,7 +32,11 @@ export type SessionFeedWine = {
   producer: string | null;
   vintage: string | null;
   grape: string | null;
-  type: string | null;
+  // The bottle's kind (its snapshot): the axes read `sparkling`. Stay on a
+  // blind row; the abv does not (null there).
+  colour: string | null;
+  sparkling: boolean;
+  abv: number | null;
   imageUrl: string | null;
   score: number | null;
   flavors: Record<string, number>;
@@ -48,16 +52,21 @@ export type SessionFeedWine = {
   description: string | null;
   purchaseUrl: string | null;
   _blind?: boolean;
+  // Your save state (signed in): on a blind row only your save of THAT bottle.
+  saved?: boolean;
 };
 
 // A standalone check-in ("<name> had a wine"). One impression, one photo.
 export type CheckinPayload = {
   id: number; // feed_items.id
+  wineId: string; // the bottle (a key only)
   wineName: string;
   producer: string | null;
   vintage: string | null;
   grape: string | null;
-  type: string | null;
+  colour: string | null;
+  sparkling: boolean;
+  abv: number | null;
   score: number | null;
   notes: string | null;
   imageUrl: string | null;
@@ -82,6 +91,7 @@ export type CheckinPayload = {
   tags: { id: string; name: string }[];
   liked: boolean;
   viewerFollowsAuthor: boolean;
+  saved?: boolean;
 };
 
 // A session-aggregate post ("<name> shared a moment") — mirrors
@@ -152,17 +162,14 @@ export async function setFeedItemLike(
 // The response (a legacy checkin envelope) is not consumed — callers surface
 // the new post via a feed refetch()-in-place instead.
 export type CreateCheckinBody = {
-  wineName: string;
-  producer?: string;
-  vintage?: string; // a 4-digit year OR the "NV" token; the server canonicalizes
-  //                    (exactly-4-digits-or-NV, else empty) — it does NOT truncate
-  grape?: string; // design "Variety"
-  type?: string; // WineTypeCode; unknown values coerce to null server-side
-  // WINE-origin metadata, landed on the minted wine row (the About block).
-  // wineRegion/wineCountry are named apart from `country` (the VENUE country)
-  // — the same split the feed payload makes.
-  wineRegion?: string;
-  wineCountry?: string; // ISO-2; invalid codes drop server-side
+  // The client's id for the new bottle (lib/clientId.ts), minted once per
+  // flow: a retry by the same person answers the existing check-in (200),
+  // someone else's id is a 409.
+  occurrenceId: string;
+  // The catalogue wine (lib/catalogChoice.ts linkBody): a pick or a `create`.
+  productId?: string;
+  vintageId?: string | null;
+  create?: Record<string, unknown>;
   vinification?: string; // design "Process"
   description?: string;
   purchaseUrl?: string; // http(s)-only server-side (cleanUrl)
@@ -173,20 +180,24 @@ export type CreateCheckinBody = {
   // Omitted = [] on create (present-replaces / omitted-preserves contract).
   aromas?: AromaSelection[];
   notes?: string;
-  imageData?: string;
   venueName?: string;
   city?: string;
   country?: string; // VENUE country, ISO-2
   copyFromCheckinId?: number;
 };
 
-export async function createCheckin(body: CreateCheckinBody): Promise<void> {
+// The post's answer: its feed item id (the photo attaches to it afterwards),
+// and whether it was a REPLAY of a check-in that had already landed (200: the
+// stored one is answered as it is, so a later edit of the draft must be sent).
+export async function createCheckin(body: CreateCheckinBody): Promise<{ id: number; replayed: boolean }> {
   const res = await apiFetch('/api/checkins', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) await throwApiError(res);
+  const j = (await res.json()) as { id: number };
+  return { id: j.id, replayed: res.status === 200 };
 }
 
 // ── Feed-post editing (2026-07-17) ───────────────────────────────────────────
@@ -196,8 +207,9 @@ export async function createCheckin(body: CreateCheckinBody): Promise<void> {
 
 // Standalone: wine metadata + rating. Everything optional — send what changed
 // (or the full truth; the server treats both the same).
-export type PatchCheckinBody = Partial<Omit<CreateCheckinBody, 'copyFromCheckinId' | 'imageData'>> & {
+export type PatchCheckinBody = Partial<Omit<CreateCheckinBody, 'copyFromCheckinId' | 'occurrenceId'>> & {
   // A fresh data URL replaces the photo; null removes it; omitted keeps it.
+  // A check-in's FIRST photo goes alone in its own PATCH right after the post.
   imageData?: string | null;
 };
 
@@ -210,7 +222,9 @@ export type PatchCheckinResponse = {
   producer: string | null;
   vintage: string | null;
   grape: string | null;
-  type: string | null;
+  colour: string | null;
+  sparkling: boolean;
+  abv: number | null;
   wineRegion: string | null;
   wineCountry: string | null;
   vinification: string | null;
@@ -364,7 +378,9 @@ export function checkinToWine(c: CheckinPayload): SessionFeedWine {
     producer: c.producer,
     vintage: c.vintage,
     grape: c.grape,
-    type: c.type,
+    colour: c.colour,
+    sparkling: c.sparkling,
+    abv: c.abv,
     imageUrl: c.imageUrl,
     score: c.score,
     flavors: c.flavors,
@@ -377,6 +393,7 @@ export function checkinToWine(c: CheckinPayload): SessionFeedWine {
     vinification: c.vinification,
     description: c.description,
     purchaseUrl: c.purchaseUrl,
+    ...(c.saved !== undefined ? { saved: c.saved } : {}),
   };
 }
 

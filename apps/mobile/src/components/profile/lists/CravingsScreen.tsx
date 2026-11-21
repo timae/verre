@@ -12,7 +12,7 @@ import { errorText } from '@/lib/errorCopy';
 import { invalidateProfileHeader } from '@/lib/feedCache';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { useMeId } from '@/lib/meId';
-import { wineTypeLabel } from '@/lib/momentFormat';
+import { kindLabel } from '@/lib/momentFormat';
 import { viewerCacheEpoch } from '@/lib/query';
 import { useTheme } from '@/theme';
 import { ListNote, ListRow, ToolRow, type RowHandle } from './ListParts';
@@ -62,9 +62,11 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
     retry: (n, e) => !(e instanceof ListGoneError) && n < 1,
     enabled: meId != null,
   });
+  // Your rows key on their remove handle; someone else's carry none (a save's
+  // id is a coarse save time) and key on their place in the page.
   const rows = useMemo(() => {
     const seen = new Set<string>();
-    return (listQ.data?.pages ?? []).flatMap((p) => p.items).filter((r) => (seen.has(r.wineId) ? false : (seen.add(r.wineId), true)));
+    return (listQ.data?.pages ?? []).flatMap((p) => p.items).filter((r) => (!r.key ? true : seen.has(r.key) ? false : (seen.add(r.key), true)));
   }, [listQ.data]);
   // Yours always offers the score sort; someone's only once a loaded row shows
   // a score (their scores follow their post visibility).
@@ -91,7 +93,8 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
       Alert.alert('Couldn’t Remove', errorText(e));
     }
     if (epoch !== viewerCacheEpoch()) return;
-    void queryClient.invalidateQueries({ queryKey: ['bookmarks'] });
+    // An open moment's hearts read `saved` off its line-up rows.
+    void queryClient.invalidateQueries({ queryKey: ['session-state'] });
     void invalidateProfileHeader(queryClient, meId);
   }, [queryClient, userId, meId]);
 
@@ -108,7 +111,7 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
       <FlatList
         removeClippedSubviews={!screenReader}
         data={rows}
-        keyExtractor={(r) => r.wineId}
+        keyExtractor={(r, i) => r.key ?? `p${i}`}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: TAB_BAR_CLEARANCE }}
@@ -120,7 +123,10 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
         ListEmptyComponent={<ListNote>{search ? 'Nothing matches.' : 'No cravings yet.'}</ListNote>}
         ListFooterComponent={listQ.isFetchingNextPage ? <View style={{ paddingVertical: 16, alignItems: 'center' }}><ActivityIndicator color={theme.inkSoft} /></View> : undefined}
         renderItem={({ item }) => {
-          const row = <CravingListRow row={item} onPress={item.postId != null ? (handle) => void openPost(item.postId, { wineId: item.wineId }, handle) : undefined} />;
+          // The post opens on the row of the rating the score comes from (step 7
+          // review: not the craving's bottle, which can be another one).
+          const ratingId = item.ratingId;
+          const row = <CravingListRow row={item} onPress={item.postId != null && ratingId != null ? (handle) => void openPost(item.postId, { ratingId }, handle) : undefined} />;
           return own && item.key ? <RemovableRow width={rowWidth} onRemove={() => void remove(item.key!)}>{row}</RemovableRow> : row;
         }}
       />
@@ -148,13 +154,12 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
 }
 
 function CravingListRow({ row, onPress }: { row: CravingRow; onPress?: (row: RowHandle) => void }) {
-  const title = row.blind ? 'Blind Impression' : row.name;
-  const meta = row.blind ? row.momentName ?? null : [row.producer, wineTypeLabel(row.type)].filter(Boolean).join(' · ') || null;
+  const meta = [row.producer, kindLabel(row)].filter(Boolean).join(' · ') || null;
   return (
     <ListRow
       uri={row.imageUrl}
-      title={title}
-      vintage={row.blind ? null : row.vintage}
+      title={row.name}
+      vintage={row.vintage}
       meta={meta}
       right={row.score ? <StarScore value={row.score} /> : null}
       onPress={onPress}

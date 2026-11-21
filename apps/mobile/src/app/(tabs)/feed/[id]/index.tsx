@@ -54,7 +54,8 @@ import { TAB_MOUNTS, closeOpenedPost, feedHref, feedListHref, useSessionTab } fr
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { FEED_PANEL_SCRIM, FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
-import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
+import { alcoholText } from '@/lib/bottleFacts';
+import { timeAgo, kindLabel } from '@/lib/momentFormat';
 import { scoreWord } from '@/lib/scoreWords';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { radius, space, springs, useTheme } from '@/theme';
@@ -1174,7 +1175,7 @@ function RevealWindow({ on, width, height, outer, inner, children }: {
 function HeroTitle({ wine, index, onNamePress }: { wine: SessionFeedWine; index: number; onNamePress?: () => void }) {
   const blind = !!wine._blind;
   const name = blind ? `Wine ${index + 1}` : wine.name;
-  const sub = !blind ? [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ') : '';
+  const sub = !blind ? [wine.producer, kindLabel(wine)].filter(Boolean).join(' · ') : '';
   // `box-none` when interactive (the page hero): the name Pressable takes its
   // own taps (→ scroll to About) while every other touch falls through to the
   // photo's gallery Pressable below. The traveling CLONE passes no onNamePress
@@ -1725,7 +1726,7 @@ function DetailPage({
   // (score + wheel + note) stays — same contract as the feed cards.
   const name = blind ? `Wine ${index + 1}` : wine.name;
   const hasScore = wine.score != null && wine.score > 0;
-  const axes = buildWheelAxes(wine.flavors, wine.type, axisColor);
+  const axes = buildWheelAxes(wine.flavors, wine, axisColor);
   const hasPhoto = hasHeroPhoto;
   // Report the bar title up AFTER commit (never call a parent setState during
   // render). Re-runs if the name changes.
@@ -1832,9 +1833,9 @@ function DetailPage({
               <VText variant="small" color="inkSoft" style={{ marginTop: 2 }}>
                 Hidden until the host reveals it
               </VText>
-            ) : (wine.producer || wine.type) ? (
+            ) : (wine.producer || kindLabel(wine)) ? (
               <VText numberOfLines={1} variant="small" color="inkSoft" style={{ marginTop: 2 }}>
-                {[wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
+                {[wine.producer, kindLabel(wine)].filter(Boolean).join(' · ')}
               </VText>
             ) : null}
           </View>
@@ -1914,7 +1915,7 @@ function DetailPage({
 }
 
 // About this impression — the repeated wine identity (name/vintage + producer)
-// then its description + metadata rows (Origin · Variety · Process) +
+// then its description + metadata rows (Origin · Variety · Alcohol · Process) +
 // "Where to buy". Renders the identity always (the block is the wine's own
 // record); the metadata rows/description drop when the wine carries none.
 // Only rendered for non-blind impressions (identity is real). Read-only.
@@ -1928,8 +1929,11 @@ function AboutBlock({ wine }: { wine: SessionFeedWine }) {
   const rows: Array<[string, React.ReactNode]> = [];
   if (origin) rows.push(['Origin', <VText key="v" style={{ fontFamily: 'InstrumentSans_500Medium', ...phone.text('small') }}>{origin}</VText>]);
   if (wine.grape) rows.push(['Variety', <ClampText key="v" text={wine.grape} lines={2} medium />]);
+  // The abv (ADR-0009): "13.5 %", "Alcohol-Free · 0.5 %"; none on a blind row.
+  const alcohol = alcoholText(wine.abv);
+  if (alcohol) rows.push(['Alcohol', <VText key="v" style={{ fontFamily: 'InstrumentSans_500Medium', ...phone.text('small') }}>{alcohol}</VText>]);
   if (wine.vinification) rows.push(['Process', <ClampText key="v" text={wine.vinification} lines={2} medium />]);
-  const producerLine = [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ');
+  const producerLine = [wine.producer, kindLabel(wine)].filter(Boolean).join(' · ');
   return (
     // Separator rule ABOVE the section (Simon's fixes round) — a full-width
     // hairline between the rating profile and About.

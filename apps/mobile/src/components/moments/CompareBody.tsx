@@ -39,7 +39,7 @@ import { getMyFriends } from '@/lib/api/me';
 import { blockLook } from '@/lib/blockLook';
 import { type RatingMeta, type RatingsView, type SessionMetaView, type WireWine } from '@/lib/api/sessions';
 import { GUTTER, usePhoneTokens } from '@/lib/layout';
-import { wineTypeLabel } from '@/lib/momentFormat';
+import { kindLabel } from '@/lib/momentFormat';
 import { fuzzyIncludes } from '@/lib/search';
 import { intensityWord } from '@/lib/scoreWords';
 import { motion, radius, useTheme } from '@/theme';
@@ -164,7 +164,7 @@ function buildItems(
           id: b.id,
           displayName: b.displayName,
           rating: b.ratings[wine.id],
-          filled: fillFlavourZeros(b.ratings[wine.id].flavors, 'wine', wine.type),
+          filled: fillFlavourZeros(b.ratings[wine.id].flavors, 'wine', wine),
           personIndex: rosterIndex.get(b.id)!,
         }))
         // Compare renders score, structure, OR aromas — an aroma-only rating is
@@ -184,7 +184,7 @@ function buildItems(
         scored: raters.filter((r) => (r.rating.score || 0) > 0).sort((a, b) => b.rating.score - a.rating.score),
         avg: groupScoreAverage(scores),
         spread: scoredScores.length >= 2 ? Math.max(...scoredScores) - Math.min(...scoredScores) : null,
-        consensus: consensusFromRatings(raters.map((r) => ({ score: r.rating.score || 0, flavors: r.rating.flavors })), 'wine', wine.type),
+        consensus: consensusFromRatings(raters.map((r) => ({ score: r.rating.score || 0, flavors: r.rating.flavors })), 'wine', wine),
       };
     })
     .filter((it) => it.raters.length > 0);
@@ -226,7 +226,7 @@ const SORT_FNS: Record<CompareSort, (a: CmpItem, b: CmpItem) => number> = {
 function searchHay(it: CmpItem): string {
   const w = it.wine;
   if (w._blind) return `Impression ${it.index + 1}`;
-  return [w.name, w.producer, w.vintage, w.grape, w.type, wineTypeLabel(w.type), w.region, w.country]
+  return [w.name, w.producer, w.vintage, w.grape, kindLabel(w), w.region, w.country]
     .filter(Boolean)
     .join(' ');
 }
@@ -657,8 +657,8 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const agg = useMemo(
-    () => aggregateFlavourAxes(item.raters.map((r) => r.rating.flavors), 'wine', wine.type),
-    [item, wine.type],
+    () => aggregateFlavourAxes(item.raters.map((r) => r.rating.flavors), 'wine', wine),
+    [item, wine.sparkling],
   );
   // The ONE compare-aroma derivation for this card (consensus + contributors +
   // mode fork + strip + all-aromas rows), computed once and passed to BOTH the
@@ -933,7 +933,7 @@ function CmpChart({
   const flavourColor = useFlavourColors();
   const personColor = usePersonColors();
   const [infoAnchor, setInfoAnchor] = useState<MenuAnchor | null>(null);
-  const axes = resolveAxes('wine', item.wine.type);
+  const axes = resolveAxes('wine', item.wine);
   // Measured host width → uniform chart scale-down (the design's .radar
   // max-width:100%): the natural canvas (232 + 2×58 label pad = 348) is wider
   // than the card's content column on small phones, and the card clips.

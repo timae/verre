@@ -49,17 +49,29 @@ function read(rel) {
 //
 // `label` describes the boundary; `must` is a regex for the call itself.
 const CALL_SITES = [
-  // Client input surfaces — per-keystroke filter.
-  { file: 'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', label: 'session add/edit: vintage input filter', must: /setVintage\(filterVintageInput\(/ },
-  { file: 'apps/mobile/src/app/(tabs)/feed/check-in/index.tsx', label: 'check-in create: vintage input filter', must: /setVintage\(filterVintageInput\(/ },
-  { file: 'apps/mobile/src/app/(tabs)/feed/edit/details.tsx', label: 'check-in edit: vintage input filter', must: /setVintage\(filterVintageInput\(/ },
-
-  // Client submit boundaries — canonicalize before sending.
-  // Canonicalization for this form lives in the tested payload builder (see 1b).
+  // The app (catalogue model change step 7, ADR-0009): every bottle is a
+  // catalogue wine picked in ONE component, the bottle picker; the year is a
+  // field beside an NV tick chip (ruled 2026-07-26: ticking it clears and
+  // disables the year and sends a real `year: null`). The three screens hold
+  // the picker and send its link; the year rules are pure in catalogChoice.
+  { file: 'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', label: 'app add / edit impression: the bottle picker', must: /<BottlePicker\b/ },
+  { file: 'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', label: 'app add impression: the picked link on the wire', must: /\.\.\.linkBody\(choice!\)/ },
+  { file: 'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', label: 'app edit impression: a re-link on the wire', must: /\.\.\.\(choice \? linkBody\(choice\) : \{\}\)/ },
+  { file: 'apps/mobile/src/app/(tabs)/feed/check-in/index.tsx', label: 'app check-in create: the bottle picker', must: /<BottlePicker\b/ },
+  { file: 'apps/mobile/src/app/(tabs)/feed/check-in/rate.tsx', label: 'app check-in create: the picked link on the wire', must: /\.\.\.linkBody\(draft\.choice\)/ },
+  { file: 'apps/mobile/src/app/(tabs)/feed/edit/details.tsx', label: 'app check-in edit: the bottle picker', must: /<BottlePicker\b/ },
+  { file: 'apps/mobile/src/app/(tabs)/feed/edit/[id].tsx', label: 'app check-in edit: a re-link on the wire', must: /\.\.\.\(m\.choice \? linkBody\(m\.choice\) : \{\}\)/ },
+  { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the NV tick chip beside the year', must: /<ChoiceChip tick label="NV" on=\{nv\} onPress=\{\(\) => onNv\(!nv\)\}/ },
+  { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the year field disabled while NV', must: /<TextField label="Year"[\s\S]{0,300}?editable=\{!nv\}/ },
+  { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the NV info popover beside the chip', must: /<NvInfo \/>[\s\S]*Non-vintage: a release without a year\./ },
+  { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the picked wine\'s year read through the NV chip', must: /pickedChoice\(product, vintages, nv, yearText, abvText\)/ },
+  { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the new wine\'s year read through the NV chip', must: /newWineChoice\(\{ producer, name: wineQ, colour, sparkling, nv, year: yearText,/ },
+  { file: 'apps/mobile/src/lib/catalogChoice.ts', label: 'app choice: NV ticked → year: null', must: /if \(nv\) return \{ ok: true, year: null \};/ },
+  { file: 'apps/mobile/src/lib/catalogChoice.ts', label: 'app choice: the typed year canonicalized', must: /const v = normalizeVintageText\(t\);/ },
+  { file: 'apps/mobile/src/lib/catalogChoice.ts', label: 'app choice: the added year sends the resolved year as is', must: /body: \{ productId: product\.id, year: f\.year,/ },
+  { file: 'apps/mobile/src/lib/catalogChoice.ts', label: 'app choice: the new wine sends the resolved year as is', must: /\.\.\.\('year' in y \? \{ year: y\.year \} : \{\}\)/ },
+  // The bottle's own fields keep the tested add-vs-edit split (1b).
   { file: 'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', label: 'session add/edit: payload builder', must: /buildImpressionPayload\(/ },
-  { file: 'apps/mobile/src/lib/impressionPayload.ts', label: 'payload builder: vintage canonicalization', must: /normalizeVintageText\(fields\.vintage\)/ },
-  { file: 'apps/mobile/src/app/(tabs)/feed/check-in/rate.tsx', label: 'check-in create: submit canonicalization', must: /normalizeVintageText\(draft\.vintage\)/ },
-  { file: 'apps/mobile/src/app/(tabs)/feed/edit/details.tsx', label: 'check-in edit: store canonicalization', must: /vintage:\s*normalizeVintageText\(vintage\)/ },
   // The web (catalogue model change step 4): a bottle's year is the catalogue
   // entry's, chosen from the vintage lookup or typed in the picker for a new
   // wine / a missing year, where it is canonicalized before it becomes the
@@ -238,6 +250,22 @@ function webYearInputs(raw) {
   }
   return out
 }
+// An app year INPUT (step 7): a `<TextField>` / `<TextInput>` labelled or shaped like a year
+// (label "Year" / "Vintage", placeholder "Year" / "20XX" / "YYYY", or an
+// accessibility label naming one). Its box is the NV tick chip, and it must be
+// disable-able by it (`editable={!…}`). The year field may then be digits-only:
+// NV is the chip, not typed (the forbidden patterns below still guard a
+// free-text vintage line).
+function appYearInputs(raw) {
+  const src = uncomment(raw)
+  const out = []
+  // A `TextField`, or a raw `TextInput` (review r1: a raw input was invisible).
+  for (const m of src.matchAll(/<(?:TextField|TextInput)\b[\s\S]*?\/>/g)) {
+    const tag = m[0]
+    if (/label="(?:Year|Vintage)"|placeholder="(?:Year|20XX|YYYY)"|accessibilityLabel="[^"]*(?:year|vintage)/i.test(tag)) out.push(tag)
+  }
+  return out
+}
 const SKIP_DIRS = new Set(['node_modules', '.next', 'ios', 'android', 'dist', 'build'])
 const listed = new Set(CALL_SITES.map((c) => c.file))
 
@@ -268,17 +296,19 @@ for (const root of CLIENT_ROOTS) {
     const src = readFileSync(file, 'utf8')
     // A vintage INPUT surface, not merely a file that reads a vintage for
     // display: it owns a vintage setter or declares a Vintage-labelled field.
-    const yearInputs = file.startsWith('apps/') ? [] : webYearInputs(src)
+    const app = file.startsWith('apps/')
+    const yearInputs = app ? appYearInputs(src) : webYearInputs(src)
     const isInput = /setVintage\(/.test(src) || /label\s*=\s*["']Vintage["']/.test(src) || /className="fl">vintage/.test(src) || yearInputs.length > 0
     if (!isInput) continue
     // One box per year input, not one per file (review r2: a file-level
-    // mention is not a call site).
-    const boxes = (uncomment(src).match(/<NvToggle /g) ?? []).length
+    // mention is not a call site). The app's box is the NV tick chip.
+    const boxes = (uncomment(src).match(app ? /<ChoiceChip tick label="NV"/g : /<NvToggle /g) ?? []).length
     if (yearInputs.length > boxes) {
-      problems.push(`${file}: ${yearInputs.length} year input(s) but ${boxes} NV box(es) (<NvToggle>). Ruled 2026-07-26: a checkbox beside every year field, sending a real year: null.`)
+      problems.push(`${file}: ${yearInputs.length} year input(s) but ${boxes} NV box(es) (${app ? '<ChoiceChip tick label="NV">' : '<NvToggle>'}). Ruled 2026-07-26: a box beside every year field, sending a real year: null.`)
     }
     for (const input of yearInputs) {
-      if (!/disabled=\{(?!\s*false\s*\})/.test(input)) problems.push(`${file}: a year input the NV box cannot disable: ${input.replace(/\s+/g, ' ').slice(0, 120)}`)
+      const disableable = app ? /editable=\{!/.test(input) : /disabled=\{(?!\s*false\s*\})/.test(input)
+      if (!disableable) problems.push(`${file}: a year input the NV box cannot disable: ${input.replace(/\s+/g, ' ').slice(0, 120)}`)
     }
     if (!listed.has(file)) {
       problems.push(`${file}: renders a vintage input but is NOT covered by scripts/check-vintage-wiring.mjs. Add a CALL_SITES entry asserting it filters input and canonicalizes on submit.`)

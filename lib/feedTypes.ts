@@ -21,12 +21,10 @@ export type SessionFeedWine = {
   producer: string | null
   vintage: string | null
   grape: string | null
-  // Maps from `wines.style` ('red' | 'white' | 'spark' | 'rose' | 'nonalc' …).
-  // Kept as `type` for the app until its build (catalogue model change step 7).
   // Name / producer / vintage / grape / region / country come from the
   // catalogue entry when the bottle is linked (merges followed), else its
-  // snapshot (step 5).
-  type: string | null
+  // snapshot (step 5). The legacy `type` (the style token) left the wire with
+  // the app's build (step 7): nothing read it.
   // The bottle's kind (its snapshot): the axes read `sparkling` (catalogue
   // model change step 4). Stay on a blind row, like the style always did; the
   // abv does not (null on a blind row, ruled 2026-11-20).

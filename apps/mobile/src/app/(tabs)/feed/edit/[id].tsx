@@ -1,6 +1,6 @@
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Image, Pressable, ScrollView, View, type ScrollViewInstance } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, View, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { useQueryClient } from '@tanstack/react-query';
@@ -23,8 +23,8 @@ import { ApiError } from '@/lib/api/sessions';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { clearCheckinEditMeta, getCheckinEditMeta, setCheckinEditMeta } from '@/lib/checkinEdit';
 import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
-import { wineTypeLabel } from '@/lib/momentFormat';
-import { type WineTypeCode } from '@/lib/api/sessions';
+import { kindLabel } from '@/lib/momentFormat';
+import { asColour, linkBody, writeOutcome } from '@/lib/catalogChoice';
 import { radius, useTheme } from '@/theme';
 import { useMeId } from '@/lib/meId';
 
@@ -76,7 +76,8 @@ export default function EditFeedPost() {
       ? (wineParam ? item.session.wines.find((w) => w.id === wineParam) ?? null : null)
       : item.checkin
     : null;
-  const style = wine?.type ?? null;
+  // The bottle's kind for the axes (Bubbles from `sparkling`).
+  const bottleKind = wine ? { sparkling: wine.sparkling } : null;
   const wineName = item?.type === 'session'
     ? (wine as SessionFeedWine | null)?._blind
       ? 'Hidden impression'
@@ -114,13 +115,8 @@ export default function EditFeedPost() {
       const c = item.checkin;
       setCheckinEditMeta({
         feedItemId,
-        name: c.wineName,
-        vintage: c.vintage ?? '',
-        producer: c.producer ?? '',
-        type: (c.type as WineTypeCode | null) ?? null,
-        grape: c.grape ?? '',
-        wineRegion: c.wineRegion ?? '',
-        wineCountry: c.wineCountry ?? '',
+        label: { name: c.wineName, producer: c.producer ?? '', year: c.vintage ?? '', colour: asColour(c.colour), sparkling: c.sparkling },
+        choice: null,
         vinification: c.vinification ?? '',
         description: c.description ?? '',
         purchaseUrl: c.purchaseUrl ?? '',
@@ -162,7 +158,7 @@ export default function EditFeedPost() {
         const res = await patchSessionRating(feedItemId, {
           wineId: w.id,
           score,
-          flavors: fillFlavourZeros(flavors, 'wine', style),
+          flavors: fillFlavourZeros(flavors, 'wine', bottleKind),
           ...aromasPatch,
           notes,
         });
@@ -214,25 +210,33 @@ export default function EditFeedPost() {
       } else {
         const m = meta;
         if (!m) throw new Error('nothing to save');
-        const res = await patchCheckin(feedItemId, {
-          wineName: m.name.trim() || undefined,
-          producer: m.producer,
-          vintage: m.vintage,
-          grape: m.grape,
-          type: m.type ?? undefined,
-          wineRegion: m.wineRegion,
-          wineCountry: m.wineCountry,
+        let res: Awaited<ReturnType<typeof patchCheckin>>;
+        try {
+          res = await patchCheckin(feedItemId, {
+          // A re-link (ADR-0009): the snapshot follows the new wine.
+          ...(m.choice ? linkBody(m.choice) : {}),
           vinification: m.vinification,
           description: m.description,
           purchaseUrl: m.purchaseUrl,
           venueName: m.venue,
           city: m.city,
           score,
-          flavors: fillFlavourZeros(flavors, 'wine', m.type),
+          flavors: fillFlavourZeros(flavors, 'wine', m.choice?.label ?? m.label),
           ...aromasPatch,
           notes,
           ...(m.photo !== undefined ? { imageData: m.photo === null ? null : m.photo.dataUrl } : {}),
-        });
+          });
+        } catch (e) {
+          // A re-link that adds a wine may have landed without an answer:
+          // never send it again (it would add the wine twice). Close and say so.
+          if (m.choice?.kind === 'create' && writeOutcome(e instanceof ApiError && e.status > 0 ? e.status : null) === 'unknown') {
+            refetchFeedCaches(queryClient);
+            router.back();
+            Alert.alert('Not Confirmed', 'We couldn’t confirm the change. Reopen the check-in and check.');
+            return;
+          }
+          throw e;
+        }
         await applyToFeedCache((it) => {
           if (it.type !== 'checkin' || it.checkin.id !== feedItemId) return it;
           return {
@@ -243,7 +247,9 @@ export default function EditFeedPost() {
               producer: res.producer,
               vintage: res.vintage,
               grape: res.grape,
-              type: res.type,
+              colour: res.colour,
+              sparkling: res.sparkling,
+              abv: res.abv,
               wineRegion: res.wineRegion,
               wineCountry: res.wineCountry,
               vinification: res.vinification,
@@ -315,7 +321,7 @@ export default function EditFeedPost() {
         {isSession ? (
           // The moment's identity line — context, not editable from here.
           <VText variant="small" color="inkSoft" style={{ marginBottom: 6 }}>
-            {[(wine as SessionFeedWine).producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ') || 'Your rating in this moment'}
+            {[(wine as SessionFeedWine).producer, kindLabel(wine)].filter(Boolean).join(' · ') || 'Your rating in this moment'}
           </VText>
         ) : meta ? (
           // The impression SQUARE (Simon's spec): tap to edit the wine itself;
@@ -339,10 +345,10 @@ export default function EditFeedPost() {
             )}
             <View style={{ flex: 1, minWidth: 0 }}>
               <VText numberOfLines={1} variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-                {meta.name || 'Untitled'}
+                {(meta.choice?.label ?? meta.label).name || 'Untitled'}
               </VText>
               <VText numberOfLines={1} variant="small" color="inkSoft" style={{ marginTop: 1 }}>
-                {[meta.producer, meta.vintage, wineTypeLabel(meta.type)].filter(Boolean).join(' · ') || 'Tap to edit the impression'}
+                {[(meta.choice?.label ?? meta.label).producer, (meta.choice?.label ?? meta.label).year, kindLabel(meta.choice?.label ?? meta.label)].filter(Boolean).join(' · ') || 'Tap to edit the impression'}
               </VText>
             </View>
             <VText variant="small" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Edit ›</VText>
@@ -350,7 +356,7 @@ export default function EditFeedPost() {
         ) : null}
 
         <RatingSection
-          style={isSession ? style : meta?.type ?? null}
+          kind={isSession ? bottleKind : meta?.choice?.label ?? meta?.label ?? null}
           score={score}
           onScore={setScore}
           notes={notes}

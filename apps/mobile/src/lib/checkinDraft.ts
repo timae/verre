@@ -1,5 +1,5 @@
 import type { AromaSelection } from '@verre/core';
-import type { WineTypeCode } from '@/lib/api/sessions';
+import type { CatalogChoice } from '@/lib/catalogChoice';
 
 // Ephemeral hand-off between the two check-in create stages (details →
 // rate), same module-level pattern as lib/feedTransition.ts: the details
@@ -14,14 +14,17 @@ import type { WineTypeCode } from '@/lib/api/sessions';
 // screen writes them back on unmount).
 
 export type CheckinDraft = {
+  // The flow's client id (lib/clientId.ts): a retry answers the same check-in.
+  occurrenceId: string;
+  // The catalogue wine (ADR-0009): a pick, or a new wine added with the post.
+  choice: CatalogChoice;
+  // 🔒 A post MAY have landed (the freeze rule): the details stage shows the
+  // choice read-only, so a retry never sends an edited `create`.
+  frozen: boolean;
   photo: { dataUrl: string; previewUri: string } | null;
-  name: string;
-  vintage: string;
-  producer: string;
-  type: WineTypeCode | null;
-  grape: string;
-  wineRegion: string;
-  wineCountry: string; // ISO-2, '' = unset
+  // A photo upload was tried for this check-in: a photo cleared since must be
+  // removed on the server too (the upload may have landed without its answer).
+  photoTried?: boolean;
   vinification: string;
   description: string;
   purchaseUrl: string;

@@ -1032,7 +1032,7 @@ export default function DevGallery() {
         <View style={{ gap: space.xs }}>
           <VText variant="heading">Structure input</VText>
           <VText variant="small" color="inkSoft">Fill-track: tap/drag; wheel below updates live. Badge-tint fill + ink font (ruled 2026-07-11).</VText>
-          <StructureInput style={SAMPLE_STYLE} value={levels} onChange={setLevels} />
+          <StructureInput kind={SAMPLE_STYLE} value={levels} onChange={setLevels} />
         </View>
 
         <View style={{ gap: space.xs }}>

@@ -130,13 +130,11 @@ export async function loadSessionFeedWines(
           producer: null,
           vintage: null,
           grape: null,
-          // Style (red/white/spark/rose) is NOT identity — a taster knows it's
-          // sparkling from the glass. Expose it so the structure wheel offers the
+          // The kind (colour / sparkling) is NOT identity — a taster knows it's
+          // sparkling from the glass. Exposed so the structure wheel offers the
           // right axes (e.g. Bubbles on a blind sparkling wine); the mystery slot
-          // keys on `_blind`, not type. Consistent with lib/wineRedaction.ts.
-          // A legacy alcohol-free token is the alcohol-free mark: hidden on a
-          // blind row (ruled 2026-11-20), like the abv.
-          type: w.style === 'nonalc' ? null : w.style,
+          // keys on `_blind`. Consistent with lib/wineRedaction.ts. The
+          // alcohol-free mark is hidden on a blind row (ruled 2026-11-20): no abv.
           colour: w.colour,
           sparkling: w.sparkling,
           abv: null,
@@ -165,7 +163,6 @@ export async function loadSessionFeedWines(
           producer: entryOf(w)?.producer ?? w.producer,
           vintage: (() => { const e = entryOf(w); return e ? (entryYear(e) || null) : w.vintage })(),
           grape: (() => { const e = entryOf(w); return e ? (e.grapes.join(', ') || null) : w.grape })(),
-          type: w.style,
           colour: w.colour,
           sparkling: w.sparkling,
           abv: w.abv === null ? null : Number(w.abv),

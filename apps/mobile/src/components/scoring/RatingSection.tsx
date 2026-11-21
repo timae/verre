@@ -1,3 +1,4 @@
+import type { AxisKind } from '@verre/core';
 import { View } from 'react-native';
 import type { AromaSelection } from '@verre/core';
 import { AromaInput } from '@/components/scoring/aroma/AromaInput';
@@ -22,7 +23,7 @@ import { useTheme } from '@/theme';
 // open state). The ⓘ intensity scale is `IntensityScaleInfo` (shared with
 // Filter for Structure).
 export function RatingSection({
-  style,
+  kind,
   score,
   onScore,
   notes,
@@ -33,10 +34,10 @@ export function RatingSection({
   onAromas,
   onRequestAromaScroll,
 }: {
-  // Structure-axes style for this drink (wines: red/white/spark/rose/nonalc;
-  // null = the base wine set). NOT masked on blind — a taster perceives
-  // fizz/tannin/body blind, so structure stays rateable while identity hides.
-  style: string | null;
+  // The bottle's kind for the structure axes (`{ sparkling }`: Bubbles; null =
+  // the base wine set). NOT masked on blind (colour and sparkling stay on a
+  // blind row): a taster perceives fizz / tannin / body blind.
+  kind: AxisKind;
   score: number;
   onScore: (v: number) => void;
   notes: string;
@@ -87,7 +88,7 @@ export function RatingSection({
         </View>
         {/* .filltrack per-attribute intensity grid — structure axes for this
             drink's style, colour from the active theme. */}
-        <StructureInput style={style} value={flavors} onChange={onFlavors} />
+        <StructureInput kind={kind} value={flavors} onChange={onFlavors} />
       </View>
       {/* Aromas — the descriptor layer (02e·11 search-first block). Always
           visible, blind included: like structure, aromas are the taster's own

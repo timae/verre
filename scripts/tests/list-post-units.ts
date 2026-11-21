@@ -2,8 +2,8 @@
 //
 // Which impression of a post a profile-list row opens. Since blind rows of
 // someone else's post carry no wine id (moment-visibility step 1a), the match
-// is an explicit selector: Impressions by the rating id, Cravings by the wine
-// id. The trap this pins: matching an absent id against an absent id
+// is an explicit selector: the post row's rating id (Impressions by their own,
+// Cravings by the one their score comes from, step 7). The trap this pins: matching an absent id against an absent id
 // (`undefined === undefined`) opens the FIRST blind row.
 //
 // Run: npx tsx scripts/tests/list-post-units.ts
@@ -31,16 +31,13 @@ check('the first blind row', listPostIndex(theirs, { ratingId: 11 }), 0)
 check('a named row', listPostIndex(theirs, { ratingId: 12 }), 1)
 check('a rating that left the post → -1 (never clamped to another row)', listPostIndex(theirs, { ratingId: 99 }), -1)
 
-console.log('\n§2 Cravings: by the wine id (their rows carry no rating id)')
-check('a named row of someone else\'s post', listPostIndex(theirs, { wineId: 'wineB' }), 1)
-check('your own post, second row', listPostIndex(mine, { wineId: 'wineY' }), 1)
-check('a wine not in the post → -1', listPostIndex(theirs, { wineId: 'nope' }), -1)
-check('🔒 an empty wine id never matches a row without one', listPostIndex(theirs, { wineId: '' }), -1)
-check('🔒 an absent wine id (a bad caller) never matches a row without one', listPostIndex(theirs, { wineId: undefined as unknown as string }), -1)
+console.log('\n§2 Cravings: by the rating their score and post come from (step 7)')
+check('the matched rating\'s row of your own post', listPostIndex(mine, { ratingId: 22 }), 1)
+check('a blind row of someone else\'s post, by its rating', listPostIndex(theirs, { ratingId: 11 }), 0)
+check('🔒 an absent key (a bad caller) never matches a row', listPostIndex(theirs, { ratingId: undefined as unknown as number }), -1)
 
 console.log('\n§3 a standalone post is its one impression; no post → -1')
 check('standalone, by rating', listPostIndex(standalone, { ratingId: 1 }), 0)
-check('standalone, by wine', listPostIndex(standalone, { wineId: 'w' }), 0)
 check('no item', listPostIndex(null, { ratingId: 1 }), -1)
 
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1) }

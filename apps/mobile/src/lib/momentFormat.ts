@@ -1,7 +1,6 @@
 // Display formatting for moment cards/rows (02s). Presentation-only.
 
 import { DATE_LOCALE } from '@/lib/locale';
-import type { WineTypeCode } from '@/lib/api/sessions';
 
 // "Hosted by X". Pass null to omit (e.g. when the host name already serves as
 // the card title on a name-less moment) so it isn't repeated.
@@ -94,24 +93,16 @@ function formatDay(d: Date): string | null {
   return day;
 }
 
-// Wine type codes ↔ display labels — the web AddWineModal's exact list (labels
-// like "Sparkling"; the server stores the code). Used by the add-impression
-// Type dropdown. (Compare shows producer-only rows — Simon's ruling.)
-export const WINE_TYPES: Array<{ code: WineTypeCode; label: string }> = [
-  { code: 'red', label: 'Red' },
-  { code: 'white', label: 'White' },
-  { code: 'spark', label: 'Sparkling' },
-  { code: 'rose', label: 'Rosé' },
-  { code: 'nonalc', label: 'Non-alcoholic' },
-];
-
-// Display form of a wine-type CODE. Raw codes leaked into the UI (line-up
-// rows and impression captions showed lowercase "nonalc" when no variety was
-// set — Simon's catch): anything user-facing goes through this. Unknown /
-// legacy codes fall back to the code itself rather than blanking.
-export function wineTypeLabel(code: string | null | undefined): string | null {
-  if (!code) return null;
-  return WINE_TYPES.find((t) => t.code === code)?.label ?? code;
+// A bottle's kind as words (catalogue model change: colour + sparkling, ADR-0009):
+// "Red", "Rosé", "Sparkling", "Sparkling Rosé"; null when nothing is known (an
+// imported entry without a colour: never a guess). Alcohol-free is not a kind:
+// it shows in the details, from the abv (lib/bottleFacts.ts).
+const COLOUR_LABEL: Record<string, string> = { red: 'Red', white: 'White', rose: 'Rosé' };
+export function kindLabel(b: { colour?: string | null; sparkling?: boolean | null } | null | undefined): string | null {
+  if (!b) return null;
+  const colour = b.colour ? COLOUR_LABEL[b.colour] ?? null : null;
+  if (b.sparkling) return colour ? `Sparkling ${colour}` : 'Sparkling';
+  return colour;
 }
 
 // Compact relative age for a feed post header ("now", "2h", "3d", "5w").

@@ -10,7 +10,7 @@ import { ListGoneError, getImpressionsPage, profileListKey, type ImpressionParam
 import { profileQueryOptions } from '@/lib/api/users';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { useMeId } from '@/lib/meId';
-import { wineTypeLabel } from '@/lib/momentFormat';
+import { kindLabel } from '@/lib/momentFormat';
 import { useTheme } from '@/theme';
 import { ImpressionFilterSheet, NO_IMP_FILTERS, impFilterCount, type ImpFilterUpdate, type ImpFilters } from './ImpressionFilters';
 import { ListNote, ListRow, MonthHeader, ScoreColumn, ToolRow, groupByMonth, type RowHandle } from './ListParts';
@@ -197,7 +197,7 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
 function ImpressionListRow({ row, showYours, onPress }: { row: ImpressionRow; showYours: boolean; onPress?: (row: RowHandle) => void }) {
   const title = row.blind ? 'Blind Impression' : row.name;
   // A blind row's line is its moment (what the post shows); else producer · type.
-  const meta = row.blind ? row.momentName ?? null : [row.producer, wineTypeLabel(row.type)].filter(Boolean).join(' · ') || null;
+  const meta = row.blind ? row.momentName ?? null : [row.producer, kindLabel(row)].filter(Boolean).join(' · ') || null;
   return (
     <ListRow
       uri={row.imageUrl}

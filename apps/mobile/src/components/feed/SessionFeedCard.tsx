@@ -161,7 +161,7 @@ export function SessionFeedCard({
   // screen-tall square of empty space (the 22:44 device bug). A blind wine is
   // NOT special here — it draws its real flavors like any wine (identity is
   // masked in the panel), so the plain flavour check covers it.
-  const anyWheel = !anyPhoto && wines.some((w) => hasRatedAxes(w.flavors, w.type));
+  const anyWheel = !anyPhoto && wines.some((w) => hasRatedAxes(w.flavors, w));
   const nonPhotoSlideH = anyWheel ? photoW : undefined;
 
   // Carousel frame rule (Simon): the TALLEST photo wins, clamped to the band;

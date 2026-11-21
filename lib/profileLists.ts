@@ -140,6 +140,11 @@ export type ImpressionRow = {
   vintage: string | null
   producer: string | null
   type: string | null
+  // The bottle's kind (its snapshot, like the style): a sparkling rosé is both
+  // (step 7, Simon 2026-11-21: the app's list labels it like everywhere else).
+  // Kept on a blind row, as the style always was (not identity).
+  colour: string | null
+  sparkling: boolean
   category: string
   imageUrl: string | null
   score: number | null
@@ -181,10 +186,10 @@ export async function loadImpressions(
 
   const rows = await prisma.$queryRaw<{
     id: number; post_id: number | null; wine_id: string; name: string; vintage: string | null; producer: string | null
-    style: string | null; category: string; image_url: string | null; score: Prisma.Decimal | null; had_at: Date; product_id: string | null; vintage_id: string | null
+    style: string | null; colour: string | null; sparkling: boolean; category: string; image_url: string | null; score: Prisma.Decimal | null; had_at: Date; product_id: string | null; vintage_id: string | null
     had_key: string; score_cents: number | null; redacted: boolean; moment_name: string | null; your_score: Prisma.Decimal | null; in_session: boolean
   }[]>`
-    SELECT r.id, ${POST_ID} AS post_id, r.wine_id, w.name, w.vintage, w.producer, w.style, w.category, w.product_id, w.vintage_id,
+    SELECT r.id, ${POST_ID} AS post_id, r.wine_id, w.name, w.vintage, w.producer, w.style, w.colour, w.sparkling, w.category, w.product_id, w.vintage_id,
            COALESCE((SELECT ri.image_url FROM rating_images ri WHERE ri.rating_id = r.id ORDER BY ri.sort_order ASC LIMIT 1), w.image_url) AS image_url,
            r.score, ${HAD_AT} AS had_at, ${usKeySql(HAD_AT)} AS had_key, (${SCORE_KEY} * 100)::int AS score_cents, ${redacted} AS redacted,
            CASE WHEN s.deleted_at IS NULL THEN s.name END AS moment_name,
@@ -214,7 +219,12 @@ export async function loadImpressions(
       name: blind ? '' : e?.name ?? r.name,
       vintage: blind ? null : e ? (entryYear(e) || null) : r.vintage,
       producer: blind ? null : e?.producer ?? r.producer,
-      type: r.style,
+      // 🔒 A legacy alcohol-free token is the alcohol-free mark: none on a blind
+      // row (ruled 2026-11-20; review r1 of step 7: the feed nulled it, this
+      // list didn't).
+      type: blind && r.style === 'nonalc' ? null : r.style,
+      colour: r.colour,
+      sparkling: r.sparkling,
       category: r.category,
       imageUrl: blind ? null : r.image_url,
       score: positive(r.score),
@@ -272,6 +282,8 @@ export type CravingRow = {
   key?: string
   wineId?: string
   postId: number | null
+  // The rating its score and post come from (beside a post only).
+  ratingId?: number
   name: string
   vintage: string | null
   producer: string | null
@@ -333,7 +345,7 @@ export async function loadCravings(
   const rows = await prisma.$queryRaw<{
     kind: string; id: number; sk: bigint; wine_id: string | null; product_id: string | null; vintage_id: string | null
     name: string | null; vintage: string | null; producer: string | null; style: string | null; colour: string | null; sparkling: boolean | null
-    wine_image: string | null; rating_image: string | null; score: Prisma.Decimal | null; post_id: number | null
+    wine_image: string | null; rating_image: string | null; score: Prisma.Decimal | null; post_id: number | null; rating_id: number | null
     at_us: string; moment_name: string | null; was_there: boolean | null; item_author: number | null
   }[]>`
     WITH mine_p AS (
@@ -361,6 +373,7 @@ export async function loadCravings(
            (SELECT ri.image_url FROM rating_images ri WHERE ri.rating_id = COALESCE(rv.id, rp.id, rw.id) ORDER BY ri.sort_order ASC LIMIT 1) AS rating_image,
            ${score} AS score,
            ${showScores ? Prisma.sql`COALESCE(fps.id, fpc.id)` : Prisma.sql`NULL::integer`} AS post_id,
+           ${showScores ? Prisma.sql`COALESCE(rv.id, rp.id, rw.id)` : Prisma.sql`NULL::integer`} AS rating_id,
            ${AT_US}::text AS at_us,
            CASE WHEN s.deleted_at IS NULL THEN s.name END AS moment_name,
            ${ownerWasThereSql(ownerId)} AS was_there,
@@ -394,6 +407,10 @@ export async function loadCravings(
       ...(own ? { key: cravingKey(r.kind, r.id) } : {}),
       ...(r.wine_id && showBottle ? { wineId: r.wine_id } : {}),
       postId: r.post_id,
+      // The rating the row's score and post come from: the post's row to open
+      // (step 7 review: since step 5 it can be another bottle of the same wine
+      // than the craving's). Only beside its post, so under the same gate.
+      ...(r.post_id !== null && r.rating_id !== null ? { ratingId: r.rating_id } : {}),
       name: e?.name ?? r.name ?? '',
       vintage: e ? (entryYear(e) || null) : (r.vintage?.trim() || null),
       producer: e?.producer ?? r.producer,

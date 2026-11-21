@@ -623,7 +623,7 @@ export function DatePickerSheet({
 
 // Description textarea (.field, 2 rows) — same focus convention as TextField.
 export function NotesField({
-  label, placeholder, value, onChange, maxLength,
+  label, placeholder, value, onChange, maxLength, editable = true,
 }: {
   // Optional since the rating block dropped its "Your Note" title (Simon,
   // 2026-07-12) — the placeholder carries the affordance there.
@@ -633,6 +633,8 @@ export function NotesField({
   onChange: (s: string) => void;
   // A hard cap in UTF-16 units (RN's own unit), e.g. the profile text's 200.
   maxLength?: number;
+  // false = read-only (a save that may have landed, ADR-0009).
+  editable?: boolean;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -650,6 +652,7 @@ export function NotesField({
         value={value}
         onChangeText={onChange}
         multiline
+        editable={editable}
         maxLength={maxLength}
         placeholder={placeholder}
         placeholderTextColor={theme.inkFaint}

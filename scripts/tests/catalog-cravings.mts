@@ -137,8 +137,18 @@ const ban = (code: string, actor: Actor, target: User, deleteAddedWines = false)
   call(bansRoute.POST, 'POST', `/api/session/${code}/bans`, actor, { identityId: `u:${target.id}`, mode: 'ban', deleteAddedWines }, { code })
 const crave = (code: string, u: User, wineId: string) => call(bookmarkRoute.POST, 'POST', `/api/session/${code}/wines/${wineId}/bookmark`, as(u), undefined, { code, wineId })
 const uncrave = (code: string, u: User, wineId: string) => call(bookmarkRoute.DELETE, 'DELETE', `/api/session/${code}/wines/${wineId}/bookmark`, as(u), undefined, { code, wineId })
-const cravePost = (u: User, itemId: number, wineId: string, method: 'POST' | 'DELETE' = 'POST') =>
-  call(postCrave[method], method, `/api/feed-items/${itemId}/crave`, as(u), { wineId }, { id: String(itemId) })
+// The post's save names a moment post's row by its key (the author's rating,
+// ADR-0009); a check-in's bottle is the post's own (no body). This helper
+// finds the key the client would read off the row for a bottle of the post.
+const cravePostBody = (u: User, itemId: number, body: Record<string, unknown>, method: 'POST' | 'DELETE' = 'POST') =>
+  call(postCrave[method], method, `/api/feed-items/${itemId}/crave`, as(u), body, { id: String(itemId) })
+const cravePost = async (u: User, itemId: number, wineId: string, method: 'POST' | 'DELETE' = 'POST') => {
+  const it = (await prisma.$queryRaw<{ kind: string; user_id: number; session_id: number | null }[]>`SELECT kind, user_id, session_id FROM feed_items WHERE id = ${itemId}`)[0]
+  const rid = it?.kind === 'session'
+    ? (await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM ratings WHERE wine_id = ${wineId} AND user_id = ${it.user_id} AND session_id = ${it.session_id}`)[0]?.id
+    : undefined
+  return cravePostBody(u, itemId, rid === undefined ? {} : { ratingId: rid }, method)
+}
 const removeById = (u: User, id: number | string) => call(bookmarkById.DELETE, 'DELETE', `/api/me/bookmarks/${id}`, as(u), undefined, { id: String(id) })
 const saved = (u: User) => call(bookmarksRoute.GET, 'GET', '/api/me/bookmarks', as(u))
 const feed = (u: User) => call(feedRoute.GET, 'GET', '/api/feed', as(u))
@@ -474,6 +484,7 @@ async function feedSection() {
   const post = items.find(i => i.type === 'session' && i.session?.wines.some(w => w.ratingId === rid))
   const row = post?.session?.wines.find(w => w.ratingId === rid)
   check('(10a) T sees H\'s post with Wine N redacted, and NOT saved although T craves that wine', !!row && row._blind === true && row.saved !== true, row)
+  check('(10a) …the feed rows carry the kind, not the legacy `type` (step 7: no reader left)', !!row && !('type' in row) && 'colour' in row && 'sparkling' in row, row)
   const cp = await cravePost(T, post!.session!.id, a)
   check('(10b) crave from the redacted post → the blind save\'s answer', cp.status === 200 && JSON.stringify(cp.json) === SAVED, [cp.status, cp.json])
   check('(10b) …T\'s craving of that wine is untouched, one row', (await rowsOf(T)).length === 1 && (await rowsOf(T))[0].wine_id === pb)
@@ -491,11 +502,71 @@ async function feedSection() {
   check('(10d) crave from a visible check-in → saved, sourced from its bottle, no moment', JSON.stringify(cv.json) === SAVED && !!crow && crow.wine_id === ciWine && crow.source_session_id === null, [cv.json, crow])
   const items3 = ((await feed(T)).json?.items as FeedItem[] | undefined) ?? []
   check('(10d) …the check-in reads saved in the feed', items3.find(i => i.type === 'checkin' && i.checkin?.id === ciId)?.checkin?.saved === true)
-  const wrong = await cravePost(T, ciId, pb)
-  check('(10e) a bottle that is not the post\'s → 404', wrong.status === 404, [wrong.status, wrong.json])
+  const ciItem = items3.find(i => i.type === 'checkin' && i.checkin?.id === ciId)?.checkin
+  check('(10d) …the feed check-in carries the kind, not the legacy `type`', !!ciItem && !('type' in ciItem) && 'colour' in ciItem && 'sparkling' in ciItem, ciItem)
+  // The row key must name the author's rating in THIS moment (ADR-0009).
+  const sessPost = post!.session!.id
+  const noKey = await cravePostBody(T, sessPost, {})
+  check('(10e) a moment post without the row key → 404, like a post it isn\'t (review r1: a 400 told a moment post apart)', noKey.status === 404, [noKey.status, noKey.json])
+  const bigKey = await cravePostBody(T, sessPost, { ratingId: 3_000_000_000 })
+  check('(10e) …a row key past an int4 → 400, never a 500', bigKey.status === 400, [bigKey.status, bigKey.json])
+  const badKey = await cravePostBody(T, sessPost, { ratingId: String(rid) })
+  check('(10e) …a row key that is not a rating id → 400', badKey.status === 400, [badKey.status, badKey.json])
+  await rate(plain, as(H), pb)
+  const elsewhere = (await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM ratings WHERE wine_id = ${pb} AND user_id = ${H.id}`)[0]?.id
+  const otherMoment = await cravePostBody(T, sessPost, { ratingId: elsewhere })
+  check('(10e) …the author\'s rating in ANOTHER moment → 404, nothing saved', otherMoment.status === 404 && (await rowsOf(T)).filter(x => x.wine_id === pb).length === 1, [otherMoment.status, otherMoment.json])
+  await rate(code, as(T), a)
+  const tessOwn = (await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM ratings WHERE wine_id = ${a} AND user_id = ${T.id}`)[0]?.id
+  const notAuthor = await cravePostBody(T, sessPost, { ratingId: tessOwn })
+  check('(10e) …someone else\'s rating in the same moment → 404', !!tessOwn && notAuthor.status === 404, [tessOwn, notAuthor.status, notAuthor.json])
+  const ciBody = await cravePostBody(T, ciId, { ratingId: rid })
+  check('(10e) …a check-in ignores a row key: its bottle is the post\'s own (already saved: still saved)', ciBody.status === 200 && JSON.stringify(ciBody.json) === SAVED && (await rowsOf(T)).filter(x => x.product_id === eC.productId).length === 1, [ciBody.status, ciBody.json])
   await call(blocksRoute.POST, 'POST', `/api/me/blocks/${T.pid}`, as(H), {}, { id: T.pid })
   const blocked = await cravePost(T, ciId, ciWine)
   check('(10f) behind the post gate (the author blocks T) → 404', blocked.status === 404, [blocked.status, blocked.json])
+
+  // (10g) a line-up hidden from the caller is the same 404 BEFORE the budget
+  // (review r1: a charged 404 counted the hidden line-up's ratings).
+  {
+    const m = await moment()
+    await follow(m.T, m.H)
+    const eh = await entry('Feed hidden')
+    const hb = await addBottle(m.code, as(m.H), eh)
+    await rate(m.code, as(m.H), hb)
+    await settings(m.code, as(m.H), { hideLineup: true, hideLineupMinutesBefore: 0 })
+    const hp = (await prisma.$queryRaw<{ id: number }[]>`SELECT f.id FROM feed_items f JOIN sessions s ON s.id = f.session_id WHERE f.user_id = ${m.H.id} AND s.code = ${m.code} AND f.kind = 'session'`)[0]?.id
+    const hr = (await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM ratings WHERE wine_id = ${hb} AND user_id = ${m.H.id}`)[0]?.id
+    const budget = async () => Number(await redis.get(`rl:crave:user:${m.T.id}:1h`) ?? 0)
+    const before = await budget()
+    const hid = await cravePostBody(m.T, hp!, { ratingId: hr })
+    check('(10g) a moment post whose line-up is hidden from the caller → 404, and the save budget untouched', !!hp && !!hr && hid.status === 404 && (await budget()) === before, [hid.status, before, await budget()])
+  }
+}
+
+// ── § 10h The Cravings row's post link (step 7 review) ──────────────────────
+async function cravingPostLink() {
+  section('§ 10h a craving opens the post its score comes from: the row carries that rating\'s key, under the post gate')
+  const m1 = await moment()
+  const e = await entry('Two moments')
+  const a = await addBottle(m1.code, as(m1.H), e)
+  await crave(m1.code, m1.T, a)
+  // T rates the SAME wine in a second moment (another bottle of it).
+  const m2code = await createSession(as(m1.H))
+  await visit(m2code, as(m1.H))
+  await enter(m2code, m1.T, 'Tess')
+  const b = await addBottle(m2code, as(m1.H), e)
+  await rate(m2code, as(m1.T), b)
+  const tr = (await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM ratings WHERE wine_id = ${b} AND user_id = ${m1.T.id}`)[0]?.id
+  const tp = (await prisma.$queryRaw<{ id: number }[]>`SELECT f.id FROM feed_items f JOIN sessions s ON s.id = f.session_id WHERE f.user_id = ${m1.T.id} AND s.code = ${m2code} AND f.kind = 'session'`)[0]?.id
+  const own = (await cravingsOf(m1.T, m1.T))[0]
+  check('(10h) your craving of bottle A, scored by your rating of the same wine on bottle B: postId = B\'s post, ratingId = that rating, wineId = A', !!own && own.wineId === a && own.postId === tp && own.ratingId === tr, own)
+  const V = await mkUser('Vic Viewer')
+  const theirs = (await cravingsOf(m1.T, V))[0]
+  check('(10h) …on someone else\'s view the rating key rides with the post only (present exactly when the post is)', !!theirs && ('ratingId' in theirs) === (theirs.postId !== null && theirs.postId !== undefined), theirs)
+  await prisma.$executeRaw`UPDATE users SET profile_visibility = 'public-mutual' WHERE id = ${m1.T.id}`
+  const hiddenView = await cravingsOf(m1.T, V)
+  check('(10h) …and a viewer the posts are hidden from gets neither (or no list at all)', hiddenView.every(x => x.postId == null && !('ratingId' in x)), hiddenView)
 }
 
 // ── § 11 Removal ────────────────────────────────────────────────────────────
@@ -1287,7 +1358,7 @@ async function paging() {
 
 const SECTIONS: [string, () => Promise<void>][] = [
   ['basics', basics], ['unlinked', unlinked], ['blind', blindSave], ['second', secondBottle], ['repoint', repoint],
-  ['delete', deletes], ['orphan', orphaned], ['sourceless', sourceless], ['old-delete', oldDelete], ['feed', feedSection],
+  ['delete', deletes], ['orphan', orphaned], ['sourceless', sourceless], ['old-delete', oldDelete], ['feed', feedSection], ['craving-post-link', cravingPostLink],
   ['removal', removal], ['relink', relink], ['modes', modes], ['cohost', cohost], ['nonalc', nonalc], ['d8', d8],
   ['purge', purge], ['merges', merges], ['saved', savedShape], ['row', rowShape],
   ['two-bottles', twoBottles], ['no-id', noId], ['no-code', noCode], ['post-photo', postPhoto], ['legacy', legacy],

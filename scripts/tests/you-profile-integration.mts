@@ -1983,6 +1983,19 @@ try {
     !!blindRow && !('wineId' in blindRow) && typeof blindRow.id === 'number' && rowOf(r, wa)?.wineId === wa && !JSON.stringify(r.wire).includes(wc), blindRow)
   check('🔒 the blind row: no name / producer / vintage / photo, the moment name + score + style stay',
     blindRow?.blind === true && blindRow.name === '' && blindRow.producer === null && blindRow.vintage === null && blindRow.imageUrl === null && blindRow.score === 4 && blindRow.momentName === `${TAG} Blind night` && blindRow.type === 'red', blindRow)
+  // 🔒 A legacy alcohol-free token on a blind row is the alcohol-free mark: none
+  // there (step 7 review r1), the visible rows keep theirs.
+  {
+    await prisma.$executeRaw`UPDATE wines SET style = 'nonalc' WHERE id = ${wc}`
+    const nr = await list('impressions', Oo, Vv)
+    const nb = (nr.json.items as J[]).find(i => i.id === blindRow?.id)
+    check('🔒 a blind Impressions row of a legacy alcohol-free bottle sends no `nonalc` token', !!nb && nb.blind === true && nb.type === null, nb)
+    await prisma.$executeRaw`UPDATE wines SET style = 'red' WHERE id = ${wc}`
+  }
+  // Catalogue model change step 7 (Simon 2026-11-21): the rows carry the kind
+  // (colour + sparkling, the snapshot), the blind one too, like its style.
+  check('impression rows carry colour + sparkling (the app labels a sparkling rosé "Sparkling Rosé"), a blind row too',
+    blindRow?.colour === 'red' && blindRow?.sparkling === false && (r.json.items as J[]).every(i => 'colour' in i && typeof i.sparkling === 'boolean'), r.json.items)
   check('🔒 "both had": commonCount 1 (the blind bottle both rated never counts), yourScore on the shared one, null on the blind one',
     r.json.commonCount === 1 && rowOf(r, wa)?.yourScore === 2.75 && blindRow?.yourScore === null && rowOf(r, wb)?.yourScore === null, { cc: r.json.commonCount, a: rowOf(r, wa) })
   check('impression rows carry the post id (session = the moment post, standalone = its own)', rowOf(r, wa)?.postId === (await postOf(Oo.id, M1.code)) && rowOf(r, wb)?.postId === rowOf(r, wa)?.postId && (r.json.items as J[])[3]?.postId === soloPost, r.json.items)

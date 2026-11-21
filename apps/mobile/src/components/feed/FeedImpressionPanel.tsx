@@ -3,7 +3,7 @@ import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { buildWheelAxes } from '@/lib/flavourAxes';
-import { wineTypeLabel } from '@/lib/momentFormat';
+import { kindLabel } from '@/lib/momentFormat';
 import { radius, space, useTheme } from '@/theme';
 import { formatScore } from '@verre/core';
 import type { SessionFeedWine } from '@/lib/api/feed';
@@ -45,8 +45,8 @@ export function FeedImpressionPanel({
   const name = blind ? `Wine ${index + 1}` : wine.name;
   // Producer/type sub is identity → hidden on blind; the wheel + score below are
   // the subjective rating → always shown.
-  const sub = blind ? 'Hidden until the host reveals it' : [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ');
-  const axes = buildWheelAxes(wine.flavors, wine.type, axisColor);
+  const sub = blind ? 'Hidden until the host reveals it' : [wine.producer, kindLabel(wine)].filter(Boolean).join(' · ');
+  const axes = buildWheelAxes(wine.flavors, wine, axisColor);
   return (
     <Pressable
       onPress={onPress}

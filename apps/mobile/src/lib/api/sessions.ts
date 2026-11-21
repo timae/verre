@@ -50,13 +50,39 @@ export const isUpcomingSession = (r: MySessionRow) => r.status === 'upcoming';
 // can be pinned). Use this for the highlight strip.
 export const isPinnedSession = (r: MySessionRow) => r.pinned;
 
+// The catalogue wine a bottle is linked to (lib/catalogEntries.ts
+// CatalogEntry, merges followed). 🔒 Label identity: `null` on a blind row,
+// which the server replaces wholesale.
+export type CatalogEntryWire = {
+  productId: string;
+  vintageId: string | null;
+  producerId: string;
+  producer: string;
+  name: string;
+  year: number | null;
+  category: string;
+  colour: string | null;
+  sparkling: boolean;
+  style: string | null;
+  abv: number | null;
+  grapes: string[];
+  region: string | null;
+  country: string | null;
+  description: string | null;
+  vinification: string | null;
+};
+
+// One bottle of the line-up (lib/session.ts wineToWire, the catalogue model
+// change): its own fields (name / producer / vintage are its snapshot of the
+// entry; About, Process and the purchase link are the bottle's own), the kind
+// as `colour` + `sparkling` (the axes read `sparkling`), the abv, and `entry`.
+// A blind row: `entry` null, `abv` null, no name; colour and sparkling stay.
 export type WireWine = {
   id: string;
   name: string;
   producer: string;
   vintage: string;
   grape: string;
-  type: string;
   image: string;
   imageUrl: string;
   description?: string;
@@ -65,11 +91,18 @@ export type WireWine = {
   vinification?: string;
   purchaseUrl?: string;
   revealedAt?: string | null;
+  colour: string | null;
+  sparkling: boolean;
+  abv: number | null;
+  entry: CatalogEntryWire | null;
   isMine: boolean;
   addedByDisplayName: string | null;
   // The adder's PUBLIC id (opaque string), null for an anonymous adder.
   addedByUserId: string | null;
   _blind?: boolean;
+  // The signed-in viewer's save (lib/cravings.ts savedFlags): on a row hidden
+  // for them only their save of THAT bottle, never whether they crave the wine.
+  saved?: boolean;
 };
 
 export type SessionParticipant = { id: string; displayName: string; imageUrl: string | null };
@@ -295,21 +328,17 @@ export async function rateWine(code: string, body: RateBody): Promise<void> {
   if (!res.ok) await throwApiError(res);
 }
 
-// Saved-wine ids for the Crave toggle — same shape the web SessionShell
-// consumes ([{ wine_id }] from /api/me/bookmarks).
-export async function getBookmarkedWineIds(): Promise<Set<string>> {
-  const res = await apiFetch('/api/me/bookmarks');
-  if (!res.ok) await throwApiError(res);
-  const rows: Array<{ wine_id: string }> = await res.json();
-  return new Set(rows.map((r) => r.wine_id));
-}
-
-export async function setBookmark(code: string, wineId: string, on: boolean): Promise<void> {
+// Save / unsave a bottle of the moment (signed-in participant) → the new
+// state. A refusal carries the server's sentence (409 "This bottle isn't in
+// the catalogue yet", 429 "Too many saves. Try again in …").
+export async function setBookmark(code: string, wineId: string, on: boolean): Promise<{ saved: boolean }> {
   const res = await apiFetch(
     `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/bookmark`,
     { method: on ? 'POST' : 'DELETE' },
   );
   if (!res.ok) await throwApiError(res);
+  const j = (await res.json().catch(() => null)) as { saved?: boolean } | null;
+  return { saved: typeof j?.saved === 'boolean' ? j.saved : on };
 }
 
 export type CreateMomentBody = {
@@ -340,45 +369,30 @@ export async function createMoment(body: CreateMomentBody): Promise<{ code: stri
   return res.json();
 }
 
-// Wine type codes the server accepts (lib/session.ts addWineToSession). The
-// design's 7-option dropdown (Orange/Dessert/Fortified…) has no backend home —
-// these 5 are the canonical set, matching the web AddWineModal. A required
-// field; the server 400s without a valid one.
-export type WineTypeCode = 'red' | 'white' | 'spark' | 'rose' | 'nonalc';
-
-// 02b·add add-impression. Adds a wine to a session line-up — host/cohost/
-// provider only (server gates on isHostByIdentity || isProviderById; providers
-// can later edit/delete only what they added). Field names map design→server:
-// Variety→grape, Process→vinification, Type→type. `position` (1-indexed) is
-// honoured for hosts only; providers always append (server ignores it for them).
-// `image` is a base64 data URL — keep it under the wine-image cap
-// (MAX_WINE_IMAGE_BYTES; sanitizeImage silently drops larger). All optional
-// except name + type.
+// 02b·add add-impression, on the catalogue (ADR-0009). Host / cohost /
+// provider. Every bottle is a catalogue wine: `productId` + `vintageId` picks
+// one, `create` adds one with the bottle (lib/catalogChoice.ts linkBody).
+// `id` is the client's (lib/clientId.ts), minted once per add screen: a retry
+// of the same id answers `{ id, alreadyAdded: true }`, someone else's id is a
+// 409. The photo is its own call after the add (putWineImage). `position`
+// (1-indexed) is honoured for hosts only.
 export type AddWineBody = {
-  name: string;
-  type: WineTypeCode;
-  producer?: string;
-  vintage?: string; // a 4-digit year OR the "NV" token; the server canonicalizes
-  //                    (exactly-4-digits-or-NV, else empty) — it does NOT truncate
-  grape?: string; // design "Variety"
-  region?: string;
-  country?: string; // ISO 3166-1 alpha-2; invalid codes drop server-side
-  vinification?: string; // design "Process"
+  id: string;
+  productId?: string;
+  vintageId?: string | null;
+  create?: Record<string, unknown>;
   description?: string;
+  vinification?: string; // design "Process"
   purchaseUrl?: string;
-  image?: string; // base64 data URL
-  position?: number; // 1-indexed insert; host-only server-side
+  position?: number;
 };
 
-export type UpdateWineBody = Omit<AddWineBody, 'position' | 'image'> & {
-  image?: string | null; // data URL replaces, null removes, omitted preserves
-};
+// An edit: a link (`productId` / `vintageId` or `create`) re-links, the three
+// own fields change only what is sent (an empty string clears). The photo has
+// its own call.
+export type UpdateWineBody = Omit<AddWineBody, 'id' | 'position'>;
 
-// Returns the created wine in the same WireWine shape as the GET/poll (isMine
-// always true — the caller is the adder). The current caller discards it and
-// just invalidates the line-up query (the poll refetches); the typed return is
-// kept so a future optimistic-splice caller has the right shape on hand.
-export async function addWine(code: string, body: AddWineBody): Promise<WireWine> {
+export async function addWine(code: string, body: AddWineBody): Promise<{ id: string; alreadyAdded?: boolean }> {
   const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -388,7 +402,7 @@ export async function addWine(code: string, body: AddWineBody): Promise<WireWine
   return res.json();
 }
 
-export async function updateWine(code: string, wineId: string, body: UpdateWineBody): Promise<WireWine> {
+export async function updateWine(code: string, wineId: string, body: UpdateWineBody): Promise<void> {
   const res = await apiFetch(
     `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}`,
     {
@@ -398,7 +412,23 @@ export async function updateWine(code: string, wineId: string, body: UpdateWineB
     },
   );
   if (!res.ok) await throwApiError(res);
-  return res.json();
+}
+
+// A bottle's photo, its own call (README: PUT / DELETE …/wines/:id/image):
+// a data URL under MAX_WINE_IMAGE_BYTES replaces it, DELETE removes it.
+export async function putWineImage(code: string, wineId: string, image: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/image`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image }) },
+  );
+  if (!res.ok) await throwApiError(res);
+}
+export async function deleteWineImage(code: string, wineId: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/image`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) await throwApiError(res);
 }
 
 // Reassign "Brought by" (host/cohost only) — an OWNERSHIP-ONLY request, sent

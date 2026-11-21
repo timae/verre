@@ -18,7 +18,9 @@ export type ImpressionRow = {
   name: string;
   vintage: string | null;
   producer: string | null;
-  type: string | null;
+  type: string | null; // the legacy style token
+  colour: string | null;
+  sparkling: boolean;
   category: string;
   imageUrl: string | null;
   score: number | null;
@@ -30,16 +32,24 @@ export type ImpressionRow = {
 export type ImpressionsPage = { items: ImpressionRow[]; nextCursor: string | null; commonCount?: number };
 
 export type CravingRow = {
-  key?: string; // your own rows: the remove key (the wine id today)
-  wineId: string;
+  // Your own rows: the remove handle (`DELETE /api/me/bookmarks/:key`: the
+  // craving's id, or `m` + a blind save's id). 🔒 Absent on someone else's
+  // list (a bookmark id is a coarse save time): key those rows on their place
+  // in the page (catalogue model change step 5).
+  key?: string;
+  // The row's bottle, while there is one (the post link pairs it with postId).
+  wineId?: string;
   postId: number | null; // the list owner's post of it, when they rated it
+  // The rating that post and the score come from (beside postId only): the
+  // post's row to open. Since step 5 it can be another bottle of the same wine.
+  ratingId?: number;
   name: string;
   vintage: string | null;
   producer: string | null;
-  type: string | null;
+  colour: string | null;
+  sparkling: boolean;
   imageUrl: string | null;
   score: number | null; // the list owner's score (theirs only through their post visibility)
-  blind?: true;
   momentName?: string;
 };
 export type CravingsPage = { items: CravingRow[]; nextCursor: string | null };
