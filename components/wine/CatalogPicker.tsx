@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { normalizeVintageText } from '@verre/core'
 import { CountrySelect } from '@/components/ui/CountrySelect'
 import { ChosenWine } from '@/components/wine/ChosenWine'
@@ -13,6 +13,10 @@ import { ChosenWine } from '@/components/wine/ChosenWine'
 // Creating needs an account (the server refuses a guest); a guest picks only.
 // The type picker is red / white / rosé / sparkling; alcohol-free is not a
 // choice: it is derived from the optional abv (≤ 0.5 %, spec § 0.2).
+// 🔒 The NV control (ruled 2026-07-26, phase B): a checkbox beside each year
+// input. Ticking it clears and disables the input, and the add flow gets a
+// real `year: null` (the NV row), never a string the server has to parse.
+// A typed "NV" is still read as NV (habit), the hint says 20XX.
 // 🔒 The match is only ever a suggestion: nothing is linked until the person
 // picks (never the top hit automatically).
 
@@ -46,12 +50,47 @@ interface Props {
 }
 
 // Year text → the add-flow's `year`: '' = unknown (absent), NV → null, a year.
-function parseYear(raw: string): { ok: true; year?: number | null } | { ok: false } {
+type YearRead = { ok: true; year?: number | null } | { ok: false }
+function parseYear(raw: string): YearRead {
   const v = normalizeVintageText(raw.trim())
   if (!raw.trim()) return { ok: true }
   if (v === 'NV') return { ok: true, year: null }
   if (/^\d{4}$/.test(v)) return { ok: true, year: Number(v) }
   return { ok: false }
+}
+// A year input with its NV box: ticked, the year is the NV row.
+const yearOf = (nvTicked: boolean, text: string): YearRead => nvTicked ? { ok: true as const, year: null } : parseYear(text)
+
+// The NV box beside a year input, with the (i) that says what NV means (the
+// IntensityHelp pattern: outside click or Escape closes it; so does focus
+// moving on past it, or a later Escape would be the popover's, not the sheet's).
+function NvToggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const noteId = useId()
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false) } }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey, true)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey, true) }
+  }, [open])
+  return (
+    <div ref={ref} onBlur={e => { if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) setOpen(false) }} style={{position:'relative',display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
+      <label style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:12,fontWeight:600,color:'var(--fg)',cursor:'pointer'}}>
+        <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} style={{accentColor:'var(--accent)',margin:0}} />
+        NV
+      </label>
+      <button type="button" onClick={() => setOpen(o => !o)} aria-label="What does NV mean?" aria-expanded={open} aria-describedby={open ? noteId : undefined}
+        style={{width:16,height:16,borderRadius:'50%',border:'1px solid var(--fg-dim)',background:'transparent',color:'var(--fg-dim)',fontFamily:'var(--mono)',fontSize:10,fontWeight:700,lineHeight:1,padding:0,cursor:'pointer',display:'inline-flex',alignItems:'center',justifyContent:'center'}}>i</button>
+      {open && (
+        <div id={noteId} role="note" style={{position:'absolute',top:'calc(100% + 4px)',left:0,zIndex:20,background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:8,padding:10,boxShadow:'0 8px 24px rgba(0,0,0,0.4)',minWidth:200,maxWidth:260,fontSize:11,color:'var(--fg)',lineHeight:1.4}}>
+          Non-vintage: a release without a year.
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function CatalogPicker({ search, canCreate, value, onChange, prefill }: Props) {
@@ -64,12 +103,14 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
   const [vintages, setVintages] = useState<Vintage[] | null>(null)
   const [creating, setCreating] = useState(false)
   const [kind, setKind] = useState(prefill?.type && KINDS.some(t => t.k === prefill.type) ? prefill.type : '')
-  const [yearText, setYearText] = useState(prefill?.year ?? '')
+  const [nv, setNv] = useState(prefill?.year === 'NV')
+  const [yearText, setYearText] = useState(prefill?.year === 'NV' ? '' : prefill?.year ?? '')
   const [abvText, setAbvText] = useState('')
   const [grapes, setGrapes] = useState(prefill?.grape ?? '')
   const [region, setRegion] = useState('')
   const [country, setCountry] = useState('')
   const [addYear, setAddYear] = useState('')
+  const [addNv, setAddNv] = useState(false)
   const [notice, setNotice] = useState('')
   const [more, setMore] = useState(false)
   const seq = useRef(0)
@@ -78,7 +119,8 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
   useEffect(() => {
     if (!prefill) return
     setProducer(null); setProduct(null); setCreating(false); onChange(null)
-    setProducerQ(prefill.producer ?? ''); setWineQ(prefill.name ?? ''); setYearText(prefill.year ?? ''); setGrapes(prefill.grape ?? '')
+    setProducerQ(prefill.producer ?? ''); setWineQ(prefill.name ?? ''); setGrapes(prefill.grape ?? '')
+    setNv(prefill.year === 'NV'); setYearText(prefill.year === 'NV' ? '' : prefill.year ?? '')
     if (prefill.type && KINDS.some(t => t.k === prefill.type)) setKind(prefill.type)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill])
@@ -131,7 +173,7 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
   // The draft of a NEW wine, kept as the choice while it is valid.
   useEffect(() => {
     if (!creating || !producer) return
-    const y = parseYear(yearText)
+    const y = yearOf(nv, yearText)
     const abv = abvText.trim() === '' ? undefined : Number(abvText.replace(',', '.'))
     const valid = !!wineQ.trim() && !!kind && y.ok && (abv === undefined || (Number.isFinite(abv) && abv >= 0 && abv <= 25))
     if (!valid) { if (value) onChange(null); return }
@@ -148,18 +190,22 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
     }
     onChange({ kind: 'create', body, label: { name: wineQ.trim(), producer: producer.name.trim(), year: y.ok && 'year' in y ? (y.year === null ? 'NV' : String(y.year)) : '', ...kindLabel(kind) } })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [creating, producer, wineQ, kind, yearText, abvText, grapes, region, country])
+  }, [creating, producer, wineQ, kind, nv, yearText, abvText, grapes, region, country])
 
   function reset() {
-    setProducer(null); setProduct(null); setVintages(null); setCreating(false); setAddYear(''); onChange(null)
+    setProducer(null); setProduct(null); setVintages(null); setCreating(false); setAddYear(''); setAddNv(false); onChange(null)
   }
   const pickYear = (p: Product, v: Vintage | null) => onChange({
     kind: 'pick', productId: p.id, vintageId: v?.id ?? null,
     label: { name: p.name, producer: p.producerName, year: v ? (v.year === null ? 'NV' : String(v.year)) : '', colour: p.colour, sparkling: p.sparkling },
   })
+  // "add a year" offers NV only once the years are in and none is NV (that
+  // one is a chip); a tick from before they arrived counts for nothing.
+  const nvAddable = vintages !== null && !vintages.some(v => v.year === null)
+  const addNvOn = addNv && nvAddable
   function addMissingYear(p: Product) {
-    const y = parseYear(addYear)
-    if (!y.ok || !('year' in y)) { setNotice('Type a four-digit year, or NV.'); return }
+    const y = yearOf(addNvOn, addYear)
+    if (!y.ok || !('year' in y)) { setNotice(nvAddable ? 'Type a four-digit year, or tick NV.' : 'Type a four-digit year.'); return }
     const abv = abvText.trim() === '' ? undefined : Number(abvText.replace(',', '.'))
     if (abv !== undefined && !(Number.isFinite(abv) && abv >= 0 && abv <= 25)) { setNotice('Alcohol must be between 0 and 25 %.'); return }
     setNotice('')
@@ -220,7 +266,7 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
                 <div style={{fontSize:10,color:'var(--fg-faint)'}}>The first 20 of this producer&rsquo;s wines: type to narrow the list.</div>
               )}
               {products.map(p => (
-                <button key={p.id} type="button" style={rowStyle} onClick={() => setProduct(p)}>
+                <button key={p.id} type="button" style={rowStyle} onClick={() => { setProduct(p); setAddNv(false) }}>
                   {p.name}<span style={{color:'var(--fg-faint)'}}>{p.sparkling ? ' · sparkling' : p.colour ? ` · ${p.colour === 'rose' ? 'rosé' : p.colour}` : ''}</span>
                 </button>
               ))}
@@ -248,9 +294,12 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
             </div>
           </div>
           <div style={{display:'flex',gap:8}}>
-            <div className="field" style={{maxWidth:110}}>
+            <div className="field" style={{maxWidth:170}}>
               <div className="fl">year</div>
-              <input className="fi" value={yearText} onChange={e => setYearText(e.target.value)} maxLength={4} placeholder="20XX or NV" />
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <input className="fi" value={yearText} disabled={nv} onChange={e => setYearText(e.target.value)} maxLength={4} placeholder="20XX" style={{width:70,opacity:nv ? 0.5 : 1}} />
+                <NvToggle checked={nv} onChange={v => { setNv(v); if (v) setYearText('') }} />
+              </div>
             </div>
             <div className="field" style={{maxWidth:110}}>
               <div className="fl">alcohol %</div>
@@ -271,7 +320,7 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
               <CountrySelect value={country} onChange={setCountry} />
             </div>
           </div>
-          {!parseYear(yearText).ok && <p style={{fontSize:10,color:'var(--danger)',margin:'0 0 8px'}}>Type a four-digit year, or NV.</p>}
+          {!yearOf(nv, yearText).ok && <p style={{fontSize:10,color:'var(--danger)',margin:'0 0 8px'}}>Type a four-digit year, or tick NV.</p>}
         </div>
       )}
 
@@ -280,7 +329,7 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
         <div className="field">
           <div style={{display:'flex',alignItems:'center',gap:8,justifyContent:'space-between',marginBottom:6}}>
             <span style={{fontSize:13,fontWeight:700}}>{product.name}</span>
-            <button type="button" className="btn-s" onClick={() => { setProduct(null); onChange(null) }}>change</button>
+            <button type="button" className="btn-s" onClick={() => { setProduct(null); setAddNv(false); onChange(null) }}>change</button>
           </div>
           <div className="fl">year</div>
           <div className="chips">
@@ -291,9 +340,14 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
           </div>
           {canCreate && (
             <div style={{display:'flex',gap:8,alignItems:'flex-end',marginTop:8}}>
-              <div className="field" style={{maxWidth:110,marginBottom:0}}>
+              <div className="field" style={{maxWidth:170,marginBottom:0}}>
                 <div className="fl">add a year</div>
-                <input className="fi" value={addYear} onChange={e => setAddYear(e.target.value)} maxLength={4} placeholder="20XX or NV" />
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <input className="fi" value={addYear} disabled={addNvOn} onChange={e => setAddYear(e.target.value)} maxLength={4} placeholder="20XX" style={{width:70,opacity:addNvOn ? 0.5 : 1}} />
+                  {nvAddable && (
+                    <NvToggle checked={addNvOn} onChange={v => { setAddNv(v); if (v) setAddYear('') }} />
+                  )}
+                </div>
               </div>
               <div className="field" style={{maxWidth:110,marginBottom:0}}>
                 <div className="fl">alcohol %</div>

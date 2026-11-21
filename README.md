@@ -9,11 +9,12 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Rate privately on each phone with stars, a structure radar (sweetness, acidity, smell, taste, funk, tannin, body, finish — 0–5 intensities; + bubbles for sparkling), and notes
 - Sign up for an account to keep your history, or stay anonymous
 - Compare participants or overlay profiles per bottle
+- Add bottles from a shared wine catalogue: find the producer, then the wine, then its year (or add a missing year, or a new wine, when signed in; a guest picks from what exists). A non-vintage release has its own NV checkbox beside the year
 - Attach bottle photos for the session list, detail view, and export
 - Edit wines after creation and reorder the lineup during the tasting
 - Share a join link or QR code for fast session entry
 - Guest (anonymous) sessions last 48 hours; a session anyone signed in has touched is kept for good
-- Save wines you liked across sessions, with full ratings and notes preserved
+- Save wines you liked: Saved shows each wine once, with the vintages you saved and your ratings of it. A save made during a blind tasting shows up after its reveal
 - Earn badges and XP across all your tastings
 - Blind tasting mode for hosts (pro)
 - Co-host roles to delegate wine management; Provider role for someone bringing their own bottles without full host powers
@@ -32,7 +33,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 Optional label scan:
 - Bottle photos always work without AI
 - Label reading is optional and user-provided
-- On this branch, a participant can store their own `OpenAI` or `Claude` API key locally on their device and use it to prefill bottle fields
+- On this branch, a participant can store their own `OpenAI` or `Claude` API key locally on their device and use it to prefill the catalogue search (producer, wine, year, type)
 - Keys are not stored in Redis or sent through the Verre backend on this branch
 
 ## Architecture
