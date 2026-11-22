@@ -327,6 +327,12 @@ async function guests() {
   check('(5c) the guest host searches producers inside the moment', gs.status === 200 && ((gs.json?.results as { id: string }[] | undefined) ?? []).some(x => x.id === e.producerId), [gs.status, gs.json])
   const gp = await momentSearchGet(g.code, { anon: g.anon }, `kind=product&producerId=${e.producerId}&q=${encodeURIComponent(`${TAG} Guest`)}`)
   check('(5c) …products under it (same shape as the public search: no status)', gp.status === 200 && ((gp.json?.results as Record<string, unknown>[] | undefined) ?? []).some(x => x.id === e.productId && !('status' in x)), [gp.status, gp.json])
+  // The one-field bottle search (step 7b) through the guest's moment route: the
+  // wine with the carried year, no status, the whole envelope.
+  const gb = await momentSearchGet(g.code, { anon: g.anon }, `kind=bottle&q=${encodeURIComponent(`${TAG} Guest Wine 2018`)}`)
+  check('(5c) …the one-field bottle search: the wine, the carried year, no status, `more` / `tooLong`',
+    gb.status === 200 && ((gb.json?.results as Record<string, unknown>[] | undefined) ?? []).some(x => x.id === e.productId && x.year === 2018 && !('status' in x))
+    && typeof gb.json?.more === 'boolean' && typeof gb.json?.tooLong === 'boolean', [gb.status, gb.json])
   const gv = await momentSearchGet(g.code, { anon: g.anon }, `kind=vintages&productId=${e.productId}`)
   check('(5c) …and its vintages (ids + years only)', gv.status === 200 && JSON.stringify(gv.json?.results) === JSON.stringify([{ id: e.vintageId, year: 2018 }]), [gv.status, gv.json])
   // A plain taster may not search (the wine POST's power test).

@@ -9,6 +9,7 @@ import { readLiveRow, type SessionRow } from '@/lib/sessionRecord'
 import type { Identity } from '@/lib/identity'
 import { authInvalid, authRemoved } from '@/lib/authResponses'
 import type { SessionMeta } from '@/lib/session'
+import { publishSearchWords } from '@/lib/catalogWrite'
 
 // The session mutation contract (docs/dev/proposals/redis-rehydration.md § 5.4;
 // release-B plan § 1.2). EVERY durable writer of a session participates:
@@ -190,7 +191,9 @@ async function attemptMutation<T>(
   const fence = token ? makeFence(code, token) : null
   try {
     let ctx!: MutationCtx
+    let txRef: Prisma.TransactionClient | null = null
     const result = await prisma.$transaction(async (tx) => {
+      txRef = tx
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${advisoryLockKey(code)}))`
       if (token && !(await sessionLockHeld(code, token))) throw new LockLost(code)
       const row = await readLiveRow(tx, code, opts.bumpLineup ? 'bump' : 'update')
@@ -226,6 +229,10 @@ async function attemptMutation<T>(
       return out
     }, { timeout: opts.timeoutMs ?? 10_000, maxWait: 5_000 })
     await mutationHooks.at('afterCommit', code, opts.label)
+    // A bottle write that minted a catalogue entry: its new search words, after
+    // the COMMIT (lib/catalogWrite.ts; best effort, never fails the request, NOT
+    // awaited: it must not hold the lease before the projection).
+    void publishSearchWords(txRef)
     if (ctx.after.dropKeys.length && ctx.fence) {
       const keys = ctx.after.dropKeys
       await ctx.fence.exec(m => { m.del(keys) }).catch(err => console.error('[contract] old rating keys of re-minted bottles not deleted (under a bottle id the line-up lacks)', { code, label: opts.label, err }))

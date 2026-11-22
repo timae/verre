@@ -16,7 +16,7 @@ import { validateScore, decimalToNumber } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
 import { viewerCanSeePosts } from '@/lib/profileVisibility'
-import { CatalogValidationError } from '@/lib/catalogWrite'
+import { CatalogValidationError, publishSearchWords } from '@/lib/catalogWrite'
 import { isClientOccurrenceId } from '@/lib/occurrences'
 import { prepareLink, applyLink, linkRequired, type AppliedLink } from '@/lib/catalogLink'
 import { linkableLink, loadEntries, entryKey } from '@/lib/catalogEntries'
@@ -275,8 +275,10 @@ export async function POST(req: NextRequest) {
   const EXISTS = Symbol('exists')
   const BAD_LINK = 'BAD_LINK'
   let ratingFlavors: Record<string, number> = {}
+  let mintTx: Prisma.TransactionClient | null = null
   try {
     await prisma.$transaction(async (tx) => {
+    mintTx = tx
     // Pull the user's display name INSIDE the txn so a concurrent account-
     // deletion can't slip between the lookup and the rating insert (which
     // would leave a successful S3 upload orphan with no reclaim path).
@@ -365,6 +367,8 @@ export async function POST(req: NextRequest) {
     //    would re-add tags the owner removed since).
     await writeTags(tx, fi.id, userId, taggedUserIds)
     })
+    // A create's new search words, after the COMMIT (lib/catalogWrite.ts).
+    void publishSearchWords(mintTx)
   } catch (err) {
     if (err === EXISTS) {
       if (imageUrl) reclaimImage(imageUrl)

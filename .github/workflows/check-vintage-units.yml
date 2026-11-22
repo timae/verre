@@ -83,5 +83,11 @@ jobs:
       - name: Bottle picker pins (app)
         run: npx tsx scripts/tests/catalog-choice-units.ts
 
+      # The bottle picker's search controller (step 7b, ADR-0010): a request
+      # GENERATION identifies the current search (A → B → A, a late answer, a
+      # scope change), and "+ New Wine" only follows a successful answer for it.
+      - name: Bottle search controller pins (app)
+        run: npx tsx scripts/tests/bottle-search-units.ts
+
       - name: Vintage surface wiring
         run: node scripts/check-vintage-wiring.mjs

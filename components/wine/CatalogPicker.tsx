@@ -143,7 +143,9 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
     if (producer || producerQ.trim().length < 3) { setProducers([]); return }
     const n = ++seq.current
     const t = setTimeout(async () => {
-      const r = await ask<Producer>(`kind=producer&q=${encodeURIComponent(producerQ.trim())}`)
+      // `similar=1`: the forgiving list when every word finds nothing (a label
+      // scan's text often holds words the stored name lacks; step 7b ruling).
+      const r = await ask<Producer>(`kind=producer&similar=1&q=${encodeURIComponent(producerQ.trim())}`)
       if (r && n === seq.current) setProducers(r)
     }, 300)
     return () => clearTimeout(t)

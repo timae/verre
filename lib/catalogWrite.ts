@@ -249,12 +249,19 @@ function normalizeGrapes(raw: unknown): string[] {
 //   anything else (pre-1900, implausible future, legacy junk) → PRESERVE the
 //                         encounter string, default to PRODUCT-grain linkage +
 //                         manual disposition; never auto-mint a vintage
+// 🔒 THE one year range (1900 to next year): the write boundary below AND the
+// bottle search's year detection (lib/catalogSearch.ts: a typed word in this
+// range is the year; plan 7b review r1 P1 found two definitions).
+export const YEAR_MIN = 1900
+export function yearMax(): number { return new Date().getUTCFullYear() + 1 }
+export function isCatalogYear(n: number): boolean { return Number.isInteger(n) && n >= YEAR_MIN && n <= yearMax() }
+
 export function validateYear(year: number | null): number | null {
   if (year === null) return null
   if (!Number.isInteger(year)) throw new CatalogValidationError('year must be an integer')
-  const max = new Date().getUTCFullYear() + 1
-  if (year < 1900 || year > max) {
-    throw new CatalogValidationError(`year must be between 1900 and ${max}`)
+  const max = yearMax()
+  if (year < YEAR_MIN || year > max) {
+    throw new CatalogValidationError(`year must be between ${YEAR_MIN} and ${max}`)
   }
   return year
 }
@@ -313,6 +320,7 @@ export async function createProducer(
   // silent drift (prisma/CLAUDE.md). Never add them here.
   await client.producer.create({ data, select: { id: true } })
   await recordUserMint(tx, 'producer', data.id, addedBy)
+  await indexProducer(tx, data.id)
   return { id: data.id }
 }
 
@@ -352,6 +360,16 @@ export async function createProduct(
   const collaborators = [...new Set(collaboratorIds)].filter(p => p && p !== input.producerId)
 
   const run = async (t: Prisma.TransactionClient) => {
+    // The adder's user row FIRST (the key the product's `added_by` takes anyway,
+    // FOR KEY SHARE): before the producer lock below, an account deletion of
+    // the adder (users row, then its producers' `added_by` SET NULL) and this
+    // mint could each hold what the other waits for (40P01; review 2026-11-21).
+    if (addedBy !== null) await t.$queryRaw`SELECT 1 FROM users WHERE id = ${addedBy} FOR KEY SHARE`
+    // The search doc's row rule (lockForSearchDoc): the lead's chain FOR SHARE
+    // BEFORE the source rows, so a concurrent rename of the lead serialises with
+    // this mint and the later of the two computes the doc from what the first
+    // committed. The product row is new, so it needs no lock.
+    await lockForSearchDoc(t, [input.producerId], [])
     await t.wineProduct.create({
       data: {
         id,
@@ -380,6 +398,8 @@ export async function createProduct(
       })
     }
     await recordUserMint(t, 'product', id, addedBy)
+    // Findable the moment this mint commits (in its own transaction already).
+    await indexProduct(t, id)
     return { id }
   }
   // An outer transaction is reused rather than nested: the lead link must
@@ -726,5 +746,185 @@ async function purgeReferences(tx: Prisma.TransactionClient, productId: string |
   if (productId) {
     await tx.$executeRaw`DELETE FROM catalog_review_items WHERE entity_type = 'product' AND entity_id = ${productId}`
     await tx.$executeRaw`DELETE FROM wine_products WHERE id = ${productId}`
+    // Its search doc goes with it (the DELETE above holds the product row; a
+    // purge writes no other doc). A rebuild racing this re-writes nothing it
+    // keeps: its "source gone" delete runs after its upserts.
+    await tx.$executeRaw`DELETE FROM catalog_search_docs WHERE product_id = ${productId}`
   }
+}
+
+// ── The search docs (catalogue model change step 7b) ───────────────────────
+//
+// 🔒 OUR writes keep `catalog_search_docs` / `catalog_search_producer_docs`
+// current (migration 20261121180000_catalog_search; the read is
+// lib/catalogSearch.ts `searchBottles` / `searchProducers`), inside the SAME
+// transaction as the catalogue row they describe, so a wine is findable the
+// moment its mint commits. Outside writers (a catalogue load, psql) are what the
+// rebuild and its drift report are for (scripts/rebuild-catalog-search.mts). CI
+// census: scripts/check-catalog-writes.mjs.
+//
+// 🔒 THE ROW RULE, every doc write, in ONE order taken BEFORE any source
+// mutation (plan 7b, Codex r4 P1: a product edit holding its product and
+// wanting its producer, against a producer rename holding the producer and
+// wanting the product, deadlocked): (1) the producer rows involved (each lead
+// and its effective chain), sorted by id; (2) the product rows involved, sorted
+// by id; (3) the source mutations; (4) the doc computed in a NEW statement, so
+// its snapshot is taken after any wait. A mint locks its lead's chain FOR SHARE
+// (its product row is new); a purge locks its product row (its DELETE does) and
+// writes no other doc. Phase 3's writers (rename, region, lead, merge, unmerge)
+// follow it too, and also take the SHARED catalog-search advisory lock as the
+// FIRST statement of their transaction (the rebuild takes the exclusive one):
+// `CATALOG_SEARCH_LOCK`. Mints take no advisory lock: a mint only INSERTS a new
+// key, which a rebuild either sees committed (the same doc) or not at all.
+export const CATALOG_SEARCH_LOCK = 'verre:catalog-search'
+
+// (1) + (2) of the row rule. `producers`: the leads (and any producer the
+// writer changes); their effective chains (links_to followed like
+// resolveEffectiveIds: at most 10 hops, MERGE_DEPTH_CAP, stop on a revisit) are
+// read, then every row is locked in id order, then the chains are read again:
+// a chain that moved meanwhile is locked again (a merge in phase 3). A producer
+// the writer CHANGES (`changing`) FOR UPDATE, every other one FOR SHARE; the
+// products FOR NO KEY UPDATE (a writer changing a product, or re-indexing it,
+// passes it here: two re-index writers feeding one doc both lock its product,
+// so they serialise).
+// A merge chain moved under the lock (phase 3): locking a newly found row
+// now could take it out of the id order every writer keeps, so the caller
+// restarts its transaction (Codex 2026-11-21, r1 + r2). Unreachable before
+// phase 3 (no writer merges); a mint that meets it fails once and its retry
+// (the same client id) runs again.
+export class SearchLockRetry extends Error {}
+
+export async function lockForSearchDoc(
+  tx: Prisma.TransactionClient,
+  producers: string[], products: string[], changing: string[] = [],
+): Promise<void> {
+  const seeds = [...new Set([...producers, ...changing])]
+  const chain = async () => (await tx.$queryRaw<{ id: string }[]>`
+    WITH RECURSIVE walk(id, links_to, depth, path) AS (
+      SELECT id, links_to, 0, ARRAY[id::text] FROM producers WHERE id = ANY(${seeds}::text[])
+      UNION ALL
+      SELECT p.id, p.links_to, w.depth + 1, w.path || p.id::text
+        FROM walk w JOIN producers p ON p.id = w.links_to
+       WHERE w.depth < 10 AND p.id::text <> ALL(w.path)
+    ) SELECT DISTINCT id FROM walk ORDER BY id`).map(r => r.id)
+  // ONE pass in the database's id order (the chain query's ORDER BY), then
+  // the chain read again: a row it holds that is not locked yet (the chain
+  // moved during a wait) could only be locked out of order now (a concurrent
+  // writer may hold it and wait on one of ours: 40P01), so the transaction
+  // restarts instead. A locked row that LEFT the chain is harmless.
+  const locked = new Set<string>()
+  for (const id of seeds.length ? await chain() : []) {
+    if (changing.includes(id)) await tx.$queryRaw`SELECT id FROM producers WHERE id = ${id} FOR UPDATE`
+    else await tx.$queryRaw`SELECT id FROM producers WHERE id = ${id} FOR SHARE`
+    locked.add(id)
+  }
+  if (seeds.length && !(await chain()).every(id => locked.has(id))) {
+    throw new SearchLockRetry('a merge chain moved while its rows were being locked: retry the transaction')
+  }
+  if (products.length) {
+    await tx.$queryRaw`SELECT id FROM wine_products WHERE id = ANY(${[...new Set(products)].sort()}::text[]) ORDER BY id FOR NO KEY UPDATE`
+  }
+}
+
+// The words a transaction's docs brought, published after its COMMIT
+// (`publishSearchWords`). Keyed by the transaction client, so a rolled-back
+// transaction's words are simply never published.
+const pendingWords = new WeakMap<object, Set<string>>()
+function noteWords(tx: Prisma.TransactionClient, words: string[]): void {
+  if (!words.length) return
+  const set = pendingWords.get(tx) ?? new Set<string>()
+  for (const w of words) set.add(w)
+  pendingWords.set(tx, set)
+}
+
+// (4) of the row rule: ONE statement each, computed from the rows as this
+// transaction now sees them. Upserts, so a re-index (phase 3) is the same call.
+export async function indexProducer(tx: Prisma.TransactionClient, producerId: string): Promise<void> {
+  const rows = await tx.$queryRaw<{ words: string[] }[]>`
+    INSERT INTO catalog_search_producer_docs (producer_id, tsv)
+    SELECT p.id, array_to_tsvector(public.catalog_search_words_v1(p.name_folded)) FROM producers p WHERE p.id = ${producerId}
+    ON CONFLICT (producer_id) DO UPDATE SET tsv = EXCLUDED.tsv
+    RETURNING tsvector_to_array(tsv) AS words`
+  noteWords(tx, rows[0]?.words ?? [])
+}
+
+export async function indexProduct(tx: Prisma.TransactionClient, productId: string): Promise<void> {
+  const rows = await tx.$queryRaw<{ words: string[] }[]>`
+    WITH RECURSIVE lead AS (
+      SELECT pr.id, pr.name_folded, pr.links_to FROM product_producers pp JOIN producers pr ON pr.id = pp.producer_id
+       WHERE pp.product_id = ${productId} AND pp.role = 'lead'
+    ), walk(id, links_to, depth, path) AS (
+      SELECT id, links_to, 0, ARRAY[id::text] FROM lead
+      UNION ALL
+      SELECT p.id, p.links_to, w.depth + 1, w.path || p.id::text
+        FROM walk w JOIN producers p ON p.id = w.links_to
+       WHERE w.depth < 10 AND p.id::text <> ALL(w.path)
+    ), eff AS (SELECT id FROM walk ORDER BY depth DESC LIMIT 1),
+    doc AS (
+      SELECT wp.id AS product_id,
+             public.catalog_search_words_v1(lead.name_folded) AS producer_words,
+             CASE WHEN eff.id IS NULL OR eff.id = lead.id THEN ARRAY[]::text[]
+                  ELSE public.catalog_search_words_v1(sv.name_folded) END AS survivor_words,
+             public.catalog_search_words_v1(wp.name_folded) AS name_words,
+             public.catalog_search_words_v1(wp.region_folded) AS region_words
+        FROM wine_products wp CROSS JOIN lead LEFT JOIN eff ON true LEFT JOIN producers sv ON sv.id = eff.id
+       WHERE wp.id = ${productId}
+    )
+    INSERT INTO catalog_search_docs (product_id, producer_words, survivor_words, name_words, region_words, tsv_name, tsv)
+    SELECT product_id, producer_words, survivor_words, name_words, region_words,
+           array_to_tsvector(producer_words || survivor_words || name_words),
+           array_to_tsvector(producer_words || survivor_words || name_words || region_words)
+      FROM doc
+    ON CONFLICT (product_id) DO UPDATE SET
+      producer_words = EXCLUDED.producer_words, survivor_words = EXCLUDED.survivor_words, name_words = EXCLUDED.name_words,
+      region_words = EXCLUDED.region_words, tsv_name = EXCLUDED.tsv_name, tsv = EXCLUDED.tsv
+    RETURNING tsvector_to_array(tsv) AS words`
+  noteWords(tx, rows[0]?.words ?? [])
+}
+
+// 🔒 The word list is kept LOOSELY: it never decides whether a wine is found,
+// only whether a typo lookup runs (lib/catalogSearch.ts: a typed word is always
+// its own alternative). So a mint's words are added AFTER its COMMIT, best
+// effort, in ONE statement: sorted in byte order (the rebuild inserts in the
+// same order), ndoc 1, never updating an
+// existing word (no hot row, no lock held through a bottle's transaction)
+// EXCEPT one at 0 (no live doc held it: a purged or rejected entry's word),
+// which is lifted to 1, or the typo lookup (it skips 0) would not offer the new
+// wine's word until the next rebuild (found by the review's mutation run,
+// 2026-11-21). A failure is logged and costs at most a typo lookup until the
+// next rebuild.
+// 🔒 It takes the SHARED catalog-search advisory lock (the rebuild holds the
+// exclusive one), so a publication never runs inside a rebuild: one that did
+// could have its new word zeroed by the rebuild's orphan step, or deadlock with
+// the rebuild's two word passes (re-review 2026-11-21). Bounded by a 2 s
+// `lock_timeout`: during a rebuild (about 10 s) it gives up, and the words wait
+// for the next rebuild (the wine is found by its words meanwhile). Only words
+// that are new or at 0 reach the INSERT's conflict path, so a common word's row
+// is never locked by a mint.
+export async function addWords(words: string[]): Promise<void> {
+  if (!words.length) return
+  await prisma.$transaction([
+    prisma.$executeRaw`SET LOCAL lock_timeout = '2s'`,
+    prisma.$executeRaw`SELECT pg_advisory_xact_lock_shared(hashtext(${CATALOG_SEARCH_LOCK}))`,
+    prisma.$executeRaw`
+      INSERT INTO catalog_search_words (word, ndoc)
+      SELECT w, 1 FROM unnest(${[...new Set(words)]}::text[]) AS x(w)
+       WHERE NOT EXISTS (SELECT 1 FROM catalog_search_words e WHERE e.word = x.w COLLATE "C" AND e.ndoc > 0)
+       ORDER BY w COLLATE "C"
+      ON CONFLICT (word) DO UPDATE SET ndoc = 1 WHERE catalog_search_words.ndoc = 0`,
+  ])
+}
+
+// Called by every transaction that can mint, right after its COMMIT: the
+// session mutation contract (bottle adds and edits), the check-in POST and
+// PATCH, and `mintEntries` when it runs its own transaction. A transaction that
+// rolled back never gets here, so its words are never published. 🔒 Not
+// awaited by the request paths (`void`): it never fails a request, and inside
+// the session contract it must not hold the lease before the projection.
+export async function publishSearchWords(tx: Prisma.TransactionClient | null | undefined): Promise<void> {
+  if (!tx) return
+  const set = pendingWords.get(tx)
+  if (!set) return
+  pendingWords.delete(tx)
+  await addWords([...set]).catch(err => console.error('[catalog-search] new words not published (a typo lookup until the next rebuild)', err))
 }

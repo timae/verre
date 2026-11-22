@@ -66,6 +66,9 @@ const CALL_SITES = [
   { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the NV info popover beside the chip', must: /<NvInfo \/>[\s\S]*Non-vintage: a release without a year\./ },
   { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the picked wine\'s year read through the NV chip', must: /pickedChoice\(product, vintages, nv, yearText, abvText\)/ },
   { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the new wine\'s year read through the NV chip', must: /newWineChoice\(\{ producer, name: wineQ, colour, sparkling, nv, year: yearText,/ },
+  // Step 7b review: the new wine's name is its own state, never the wine search's
+  // text (typing it there sent a catalogue search on every pause).
+  { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: a new wine\'s name field sends no search', must: /<TextField label="Wine" placeholder="Its name" value=\{wineQ\} onChangeText=\{setWineQ\}/ },
   { file: 'apps/mobile/src/lib/catalogChoice.ts', label: 'app choice: NV ticked → year: null', must: /if \(nv\) return \{ ok: true, year: null \};/ },
   { file: 'apps/mobile/src/lib/catalogChoice.ts', label: 'app choice: the typed year canonicalized', must: /const v = normalizeVintageText\(t\);/ },
   { file: 'apps/mobile/src/lib/catalogChoice.ts', label: 'app choice: the added year sends the resolved year as is', must: /body: \{ productId: product\.id, year: f\.year,/ },

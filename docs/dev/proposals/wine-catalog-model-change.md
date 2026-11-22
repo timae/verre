@@ -1198,6 +1198,9 @@ planned in its own proposal):
   gap is minutes; old builds see the update screen meanwhile) → the warm-up
   reconciliation (§ 8a.0) → the conversion (§ 6) → MV's go-live runbook and flag, later.
   The version number is Simon's call.
+- **Search rebuild on release day** (step 7b): once no server of the previous release is
+  left (they add bottles without search entries), run `scripts/rebuild-catalog-search.mts`
+  (report first, then `--apply`). It runs again after every later catalogue load.
 - 🔒 **The fence opens WITH the code** (review r1): every new bottle must link, and while
   search is staff-only nobody else could add one. So the new code's gate defaults to
   OPEN (`lib/catalogGate.ts`), and `CATALOG_PUBLIC_ENABLED=false` becomes the kill switch
@@ -2230,7 +2233,7 @@ pour-order paragraph. All in § 5, § 8a and the build plan.
 
 ## 12. Build order (2026-11-18)
 
-Ten steps plus 1b (slid in 2026-11-18). The detailed plan (scope per step, tests, what is irreversible, release
+Ten steps plus 1b (slid in 2026-11-18) and 7b (slid in 2026-11-21). The detailed plan (scope per step, tests, what is irreversible, release
 conditions carried) is kept locally with the planning notes; this list is the order of
 record. Every step leaves the branch green (build, lint, every `check-schema.yml` suite,
 mobile `tsc`); the web adapts in the same step where its wire changes; the app follows
@@ -2247,5 +2250,6 @@ in step 7 and its build is cut once.
 | 5 | Reads and cravings: one craving per wine with its first source, the blind rules of § 5 (hidden while the source is hidden, neutral button, re-point, delete / orphan / re-link rules), Cravings keyed on the bookmark id, Saved, profile lists and tiles, feed, outside view, D8, purge, account deletion; the web's Saved and crave button in this step | release day |
 | 6 | Web closing pass: the NV checkbox in both modals, a headless browser pass over add / save / blind (the wire changes landed with their server steps; `WEB_WIRE_GENERATION` is bumped in step 3) | release day |
 | 7 | App: design first (ADRs), then the picker, check-in create / edit, NV checkbox, saves and Cravings, client ids, image attach | the build |
+| 7b | One search field for the app's bottle picker (slid in 2026-11-21): Verre's own search tables (rebuilt after every catalogue load, a CI check on who writes them), every typed word must match (producer, wine name, region; words like Weingut / Domaine optional; small typos; a typed year carried onto the row), the producer field inside "Add Wine to Catalogue" and the web's producer step on the same rule | release day, with the app build |
 | 8 | Release, shared with Moment Visibility: rehearsal, announcement, build, deploy order, floor, reconciliation, conversion, data side told (the fence opens with the code) | operator |
 | 9 | Contract migration, a later release: `origin` NOT NULL, drop `style` and `category` (the content columns stay as history), the old `(user, wine_id)` unique, retire the old `category_styles` pairs (announced) | later |

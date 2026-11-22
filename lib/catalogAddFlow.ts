@@ -8,6 +8,7 @@ import {
   denyCatalogRef,
   assertAbv,
   CatalogValidationError,
+  publishSearchWords,
 } from '@/lib/catalogWrite'
 
 // ── The add-flow BRANCH DISPATCHER — the five RFC branches ─────────────────
@@ -29,7 +30,12 @@ type MintResult = { producerId: string; productId: string; vintageId: string | n
 // runs in its own.
 export async function mintEntries(body: Record<string, unknown>, userId: number, tx?: Prisma.TransactionClient): Promise<MintResult> {
   if (tx) return mintIn(body, userId, tx)
-  return prisma.$transaction(t => mintIn(body, userId, t))
+  // Our own transaction: its new search words are ours to publish after the
+  // COMMIT (the caller's transaction publishes them otherwise, lib/catalogWrite.ts).
+  let own: Prisma.TransactionClient | null = null
+  const minted = await prisma.$transaction(t => { own = t; return mintIn(body, userId, t) })
+  void publishSearchWords(own)
+  return minted
 }
 
 async function mintIn(body: Record<string, unknown>, userId: number, tx: Prisma.TransactionClient): Promise<MintResult> {

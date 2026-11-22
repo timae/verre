@@ -56,3 +56,13 @@ jobs:
       # control.
       - name: Check catalogue reads go through the merge resolver
         run: node scripts/check-catalog-reads.mjs
+
+      # Every WRITE of the rows the bottle search indexes (producers,
+      # wine_products, product_producers) and of the search tables themselves
+      # goes through lib/catalogWrite.ts, which keeps the search docs current in
+      # the same transaction (catalogue model change step 7b). Outside writers
+      # (a catalogue load, psql) are what the rebuild's drift report is for
+      # (scripts/rebuild-catalog-search.mts). A census with its own negative
+      # control, like the reads one.
+      - name: Check catalogue writes keep the search docs current
+        run: node scripts/check-catalog-writes.mjs

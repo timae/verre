@@ -155,6 +155,17 @@ jobs:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
           REDIS_URL: redis://localhost:6379
 
+      # The every-word bottle search (catalogue model change step 7b): the one
+      # field's matching, the tiers under saturation, merges resolved at read
+      # time, the writers keeping the search docs current (paused schedules for
+      # the row rule), the rebuild's drift report, plans on a 30k fixture and
+      # statement counts. Seeds and deletes its own marked rows; runs the rebuild.
+      - name: Catalogue bottle search (catalogue model change step 7b)
+        run: npx tsx scripts/tests/catalog-bottle-search.mts
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+
       # Native session lifetime (lib/betterAuth.ts expiresIn/updateAge + hooks,
       # lib/resolveUser.ts disableRefresh, identityStore revoke + prune). Drives the
       # REAL Better Auth instance over both stores: sign-in stamps 365d, the

@@ -1615,3 +1615,49 @@ model CatalogReviewItem {
   @@map("catalog_review_items")
 }
 
+
+// ── Catalogue search (catalogue model change step 7b) ─────────────────────
+//
+// 🔒 VERRE-OWNED, not catalogue tables: the every-word search's documents
+// (`20261121180000_catalog_search`, lib/catalogSearch.ts). One doc per product
+// and per producer, their words from `catalog_search_words_v1` (folded text →
+// words, the ONE tokeniser for docs and queries), and the word list the typo
+// lookup reads. 🔒 NO foreign keys: a stale doc is never served (the read joins
+// the catalogue live), and a key would join the catalogue's FK contract. Written
+// only by lib/catalogWrite.ts (the mints, the purge) and the rebuild
+// (`rebuildCatalogSearch`, the migration's @recipe); CI census
+// scripts/check-catalog-writes.mjs. A table holding catalogue ids without a key
+// is one the catalogue-maintenance side is told about (prisma/CLAUDE.md).
+model CatalogSearchDoc {
+  productId     String                  @id @map("product_id") @db.VarChar(21)
+  producerWords String[]                @map("producer_words")
+  // The lead's effective survivor's words when the lead is a merge tombstone.
+  survivorWords String[]                @default([]) @map("survivor_words")
+  nameWords     String[]                @map("name_words")
+  regionWords   String[]                @map("region_words")
+  tsvName       Unsupported("tsvector") @map("tsv_name")
+  tsv           Unsupported("tsvector")
+
+  @@index([tsvName], type: Gin, map: "catalog_search_docs_tsv_name_idx")
+  @@index([tsv], type: Gin, map: "catalog_search_docs_tsv_idx")
+  @@map("catalog_search_docs")
+}
+
+model CatalogSearchProducerDoc {
+  producerId String                  @id @map("producer_id") @db.VarChar(21)
+  tsv        Unsupported("tsvector")
+
+  @@index([tsv], type: Gin, map: "catalog_search_producer_docs_tsv_idx")
+  @@map("catalog_search_producer_docs")
+}
+
+// ⚠️ `word` is `COLLATE "C"` in the migration (the prefix range on the primary
+// key needs byte order); Prisma has no collation attribute and its differ does
+// not compare collations (verified 2026-11-21: `migrate diff` is clean).
+model CatalogSearchWord {
+  word String @id
+  ndoc Int
+
+  @@index([word(ops: raw("gist_trgm_ops"))], type: Gist, map: "catalog_search_words_word_gist_idx")
+  @@map("catalog_search_words")
+}

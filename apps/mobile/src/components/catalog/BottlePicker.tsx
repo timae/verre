@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, View, type TextInputInstance } from 'react-native';
 import { countryName } from '@verre/core';
 import { AnchoredMenu, AnchorButton, type MenuAnchor } from '@/components/ui/AnchoredMenu';
@@ -8,17 +8,25 @@ import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { CountrySheet, Disclosure, FieldGroup, SelectField } from '@/components/moments/momentForm';
-import { CatalogSearchError, listVintages, searchProducers, searchProducts, type CatalogScope, type ProducerHit, type ProductHit, type VintageHit } from '@/lib/api/catalog';
+import {
+  CatalogSearchError, listVintages, searchBottles, searchProducers, searchProducts,
+  type BottleHit, type CatalogScope, type ProducerHit, type ProductHit, type SearchAnswer, type VintageHit,
+} from '@/lib/api/catalog';
+import { initialSearch, offersAddProducer, offersNew, pendingRequest, pickRow, searchNotice, searchReducer, visibleRows, type SearchEvent, type SearchState } from '@/lib/bottleSearch';
 import { COLOURS, newWineChoice, pickedChoice, readYear, yearFate, yearLine, type BottleLabel, type CatalogChoice, type Colour } from '@/lib/catalogChoice';
 import { kindLabel } from '@/lib/momentFormat';
 import { radius, useTheme } from '@/theme';
 
-// The bottle picker (ADR-0009): inline in the form, producer first, then its
-// wines, then the year. A wine that isn't there opens its fields in place.
-// It reports its state to the form on every change; the form sends it with
-// the save. The rules (the bodies, the year's fate, the errors) are pure in
-// lib/catalogChoice.ts. The web's components/wine/CatalogPicker.tsx is the
-// behaviour reference.
+// The bottle picker (ADR-0010, which supersedes ADR-0009's "producer first"):
+// inline in the form, ONE field (producer, wine, region and year in any order,
+// every typed word must match), one row per wine with its producer under it and
+// the typed year; a tap picks it and the year field gets that year. Nothing fits
+// → "Add Wine to Catalogue": the producer field (the same every-word search;
+// pick one, or "Add Producer" when none is exactly the typed name), that
+// producer's wines, then a new wine's fields. It reports
+// its state to the form on every change; the form sends it with the save. The
+// rules (the bodies, the year's fate, the errors) are pure in
+// lib/catalogChoice.ts, the searches' state in lib/bottleSearch.ts.
 // 🔒 Nothing links until the person picks: no top hit is ever taken.
 
 export type PickerState =
@@ -29,6 +37,26 @@ export type PickerState =
   | { status: 'ok'; choice: CatalogChoice };
 
 type NewProducer = { id: null; name: string };
+
+// One search field's state, driven by the pure controller: one request per
+// pause in typing (300 ms), its answer kept only for the generation it was
+// asked for.
+function useCatalogSearch<T>(min: number, run: (q: string) => Promise<SearchAnswer<T>>) {
+  const [state, dispatch] = useReducer((s: SearchState<T>, e: SearchEvent<T>) => searchReducer(s, e), min, (m: number) => initialSearch<T>(m));
+  const runRef = useRef(run);
+  runRef.current = run;
+  const req = pendingRequest(state);
+  useEffect(() => {
+    if (!req) return;
+    const t = setTimeout(() => {
+      runRef.current(req.q)
+        .then((answer) => dispatch({ type: 'answer', gen: req.gen, answer }))
+        .catch((e) => dispatch({ type: 'fail', gen: req.gen, failure: e instanceof CatalogSearchError ? e.reason : 'failed' }));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [req?.gen]); // eslint-disable-line react-hooks/exhaustive-deps
+  return [state, dispatch] as const;
+}
 
 export function BottlePicker({
   scope: scopeIn, current, frozen, showErrors, onChange,
@@ -50,12 +78,13 @@ export function BottlePicker({
   const scopeCode = scopeIn?.code ?? null;
   const scope: CatalogScope = useMemo(() => (scopeCode ? { code: scopeCode } : null), [scopeCode]);
   const [changing, setChanging] = useState(!current);
-  const [producerQ, setProducerQ] = useState('');
-  const [producers, setProducers] = useState<ProducerHit[]>([]);
+  // 'find' = the one field; 'new' = "Add Wine to Catalogue": producer → its wines → a new wine.
+  const [mode, setMode] = useState<'find' | 'new'>('find');
+  const [bottle, bottleDo] = useCatalogSearch<BottleHit>(3, (q) => searchBottles(scope, q));
+  const [producerS, producerDo] = useCatalogSearch<ProducerHit>(3, (q) => searchProducers(scope, q));
   const [producer, setProducer] = useState<ProducerHit | NewProducer | null>(null);
-  const [wineQ, setWineQ] = useState('');
-  const [products, setProducts] = useState<ProductHit[]>([]);
-  const [more, setMore] = useState(false);
+  const producerIdRef = useRef<string | null>(null);
+  const [wineS, wineDo] = useCatalogSearch<ProductHit>(0, (q) => searchProducts(scope, producerIdRef.current ?? '', q));
   const [product, setProduct] = useState<ProductHit | null>(null);
   const [creating, setCreating] = useState(false);
   const [vintages, setVintages] = useState<VintageHit[] | null>(null);
@@ -71,60 +100,27 @@ export function BottlePicker({
   const [grapes, setGrapes] = useState('');
   const [region, setRegion] = useState('');
   const [country, setCountry] = useState('');
+  // A new wine's name: its OWN field (review 2026-11-21: typing it into the
+  // wine search's state sent a catalogue search on every pause, spending the
+  // search budget for a list nobody sees). Seeded from that search's text when
+  // "Add Wine “…”" is tapped.
+  const [wineQ, setWineQ] = useState('');
   const [moreOpen, setMoreOpen] = useState(false);
   const [countryOpen, setCountryOpen] = useState(false);
-  // One sequence and one spinner flag PER search (review r2: a shared one let
-  // the wine search's early return drop the producer search's answer on Change).
-  const [producerSearching, setProducerSearching] = useState(false);
-  const [wineSearching, setWineSearching] = useState(false);
-  const searching = producerSearching || wineSearching;
-  const [notice, setNotice] = useState<string | null>(null);
-  // The catalogue is switched off (a search 404): no "+ New" rows then, since a
-  // new wine would be refused at the save.
-  const [off, setOff] = useState(false);
-  const producerSeq = useRef(0);
-  const wineSeq = useRef(0);
+  const [yearNotice, setYearNotice] = useState<string | null>(null);
+  const producerRef = useRef<TextInputInstance>(null);
   const wineRef = useRef<TextInputInstance>(null);
 
-  const fail = (e: unknown) => {
-    setNotice(e instanceof CatalogSearchError ? e.message : 'Search failed. Try again.');
-    if (e instanceof CatalogSearchError && e.reason === 'off') setOff(true);
-  };
+  // A new scope (another moment) starts every search over.
+  useEffect(() => { bottleDo({ type: 'reset' }); producerDo({ type: 'reset' }); wineDo({ type: 'reset' }); }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // One search per pause in typing; a late answer to an older query is dropped.
-  useEffect(() => {
-    if (producer || producerQ.trim().length < 3) { producerSeq.current++; setProducers([]); setProducerSearching(false); return; }
-    const n = ++producerSeq.current;
-    setProducerSearching(true);
-    const t = setTimeout(() => {
-      searchProducers(scope, producerQ.trim())
-        .then((r) => { if (n === producerSeq.current) { setProducers(r); setNotice(null); setOff(false); } })
-        .catch((e) => { if (n === producerSeq.current) fail(e); })
-        .finally(() => { if (n === producerSeq.current) setProducerSearching(false); });
-    }, 300);
-    return () => clearTimeout(t);
-  }, [producerQ, producer, scope]);
-  // A picked producer's wines: under 3 characters the server lists them A to Z.
-  useEffect(() => {
-    if (!producer?.id || product || creating) { wineSeq.current++; setProducts([]); setWineSearching(false); return; }
-    const id = producer.id;
-    const n = ++wineSeq.current;
-    setWineSearching(true);
-    const t = setTimeout(() => {
-      searchProducts(scope, id, wineQ.trim())
-        .then((r) => { if (n === wineSeq.current) { setProducts(r.results); setMore(r.more); setNotice(null); setOff(false); } })
-        .catch((e) => { if (n === wineSeq.current) fail(e); })
-        .finally(() => { if (n === wineSeq.current) setWineSearching(false); });
-    }, 300);
-    return () => clearTimeout(t);
-  }, [wineQ, producer, product, creating, scope]);
   useEffect(() => {
     if (!product) { setVintages(null); setVintagesFailed(false); return; }
     let live = true;
     setVintagesFailed(false);
     listVintages(scope, product.id)
-      .then((r) => { if (live) { setVintages(r); setNotice(null); } })
-      .catch((e) => { if (live) { setVintagesFailed(true); fail(e); } });
+      .then((r) => { if (live) { setVintages(r); setYearNotice(null); } })
+      .catch((e) => { if (live) { setVintagesFailed(true); setYearNotice(e instanceof CatalogSearchError ? e.message : 'Search failed. Try again.'); } });
     return () => { live = false; };
   }, [product, scope, vintagesTry]);
   const retryYears = () => { if (vintagesFailed) setVintagesTry((n) => n + 1); };
@@ -149,62 +145,104 @@ export function BottlePicker({
   onChangeRef.current = onChange;
   useEffect(() => { onChangeRef.current(JSON.parse(stateKey) as PickerState); }, [stateKey]);
 
-  const resetYear = () => { setYearText(''); setNv(false); setAbvText(''); };
+  const resetYear = () => { setYearText(''); setNv(false); setAbvText(''); setYearNotice(null); };
   // A new wine's facts never carry over to another producer or wine (review r1:
   // a hidden "More" kept the old grapes for a new permanent entry).
-  const resetNew = () => { setColour(null); setSparkling(false); setGrapes(''); setRegion(''); setCountry(''); setMoreOpen(false); };
-  const backToProducer = () => { setProducer(null); setProduct(null); setCreating(false); setWineQ(''); resetYear(); resetNew(); setNotice(null); };
-  const backToWine = () => { setProduct(null); setCreating(false); resetYear(); resetNew(); setNotice(null); };
+  const resetNew = () => { setWineQ(''); setColour(null); setSparkling(false); setGrapes(''); setRegion(''); setCountry(''); setMoreOpen(false); };
+  const choose = (p: ProducerHit | NewProducer) => {
+    setProducer(p);
+    producerIdRef.current = p.id;
+    if (p.id) { wineDo({ type: 'reset' }); wineDo({ type: 'text', text: '' }); setTimeout(() => wineRef.current?.focus(), 50); } else setCreating(true);
+  };
+  const backToProducer = () => { setProducer(null); producerIdRef.current = null; setProduct(null); setCreating(false); wineDo({ type: 'reset' }); resetYear(); resetNew(); };
+  const backToWine = () => { setProduct(null); setCreating(false); resetYear(); resetNew(); };
+  // From a picked wine: back to wherever it was picked from.
+  const unpick = () => { if (mode === 'new') backToWine(); else { setProduct(null); resetYear(); } };
+  const toFind = () => { backToProducer(); producerDo({ type: 'reset' }); setMode('find'); };
+  const toNew = () => { setMode('new'); producerDo({ type: 'reset' }); setTimeout(() => producerRef.current?.focus(), 50); };
+  const pickBottle = (id: string) => {
+    const r = pickRow(bottle, id);
+    if (!r) return;
+    // The typed year goes into the year field (ruling 4): the wine that lacks it
+    // shows it as "added on save", one that has it as "in the catalogue".
+    setProduct(r.hit); resetYear(); setYearText(r.yearText);
+  };
 
   if (frozen) return <Summary label={frozen.label} isNew={frozen.isNew} />;
   if (current && !changing) return <Summary label={current} onChange={() => setChanging(true)} />;
 
-  const q = producerQ.trim();
   const fate = product ? yearFate(vintages, readYear(nv, yearText)) : null;
+  const waiting = (s: SearchState<unknown>) => s.status === 'waiting';
+  const bottleRows = visibleRows(bottle);
+  const producerRows = visibleRows(producerS);
+  const wineRows = visibleRows(wineS);
 
   return (
     <View style={{ marginBottom: 16 }}>
       {current ? (
-        <Pressable accessibilityRole="button" onPress={() => { backToProducer(); setProducerQ(''); setChanging(false); }} style={{ alignSelf: 'flex-start', marginBottom: 10 }}>
+        <Pressable accessibilityRole="button" onPress={() => { toFind(); bottleDo({ type: 'reset' }); setChanging(false); }} style={{ alignSelf: 'flex-start', marginBottom: 10 }}>
           <VText variant="small" style={{ color: theme.accent, fontFamily: 'InstrumentSans_600SemiBold' }}>{`Keep “${labelLine(current)}”`}</VText>
         </Pressable>
       ) : null}
 
-      {/* 1 — the producer */}
-      {!producer ? (
+      {/* 1 — the one field: producer, wine, region, year, any order */}
+      {mode === 'find' && !product ? (
         <View>
-          <TextField label="Producer" placeholder="Search producers" value={producerQ} onChangeText={setProducerQ} autoCorrect={false} returnKeyType="search" />
-          {q.length >= 3 ? (
+          <TextField label="Wine" placeholder="Search wines" value={bottle.text} onChangeText={(text) => bottleDo({ type: 'text', text })} autoCorrect={false} returnKeyType="search" accessibilityHint="Producer, wine, region or year, in any order." />
+          {bottle.status !== 'idle' ? (
             <ResultList>
-              {producers.map((p) => (
-                <ResultRow key={p.id} title={p.name} sub={[p.region, p.country ? countryName(p.country) || p.country : null].filter(Boolean).join(', ')} onPress={() => { setProducer(p); setNotice(null); setTimeout(() => wineRef.current?.focus(), 50); }} />
+              {bottleRows.rows.map((b) => (
+                <ResultRow key={b.id} title={b.name} sub={b.producerName} trailing={b.year === null ? null : String(b.year)} disabled={!bottleRows.selectable} onPress={() => pickBottle(b.id)} />
               ))}
-              {!off ? <ResultRow add title={`New Producer “${q}”`} onPress={() => { setProducer({ id: null, name: q }); setCreating(true); setNotice(null); }} /> : null}
+              {offersNew(bottle) ? <ResultRow add title="Add Wine to Catalogue" onPress={toNew} /> : null}
             </ResultList>
           ) : null}
-        </View>
-      ) : (
-        <ChosenLine title={producer.name} sub={producer.id ? null : 'New producer'} onChange={backToProducer} />
-      )}
-
-      {/* 2 — the wine under it */}
-      {producer && !product && !creating ? (
-        <View style={{ marginTop: 12 }}>
-          <TextField ref={wineRef} label="Wine" placeholder="Search its wines" value={wineQ} onChangeText={setWineQ} autoCorrect={false} returnKeyType="search" />
-          <ResultList>
-            {more && wineQ.trim().length < 3 ? <VText variant="caption" color="inkFaint" style={{ paddingHorizontal: 12, paddingVertical: 4 }}>The first 20. Type to narrow the list.</VText> : null}
-            {products.map((p) => (
-              <ResultRow key={p.id} title={p.name} sub={kindLabel(p)} onPress={() => { setProduct(p); resetYear(); }} />
-            ))}
-            {wineQ.trim() && !off ? <ResultRow add title={`New Wine “${wineQ.trim()}”`} onPress={() => setCreating(true)} /> : null}
-          </ResultList>
+          {waiting(bottle) ? <Spinner /> : null}
+          <StatusLine text={searchNotice(bottle)} error={bottle.status === 'failed'} />
         </View>
       ) : null}
 
-      {/* 3 — a picked wine's year (one field: listed, or added) */}
-      {product ? (
+      {/* "Add Wine to Catalogue" — 1: the producer */}
+      {mode === 'new' && !producer ? (
+        <View>
+          <Pressable accessibilityRole="button" onPress={toFind} style={{ alignSelf: 'flex-start', marginBottom: 10 }}>
+            <VText variant="small" style={{ color: theme.accent, fontFamily: 'InstrumentSans_600SemiBold' }}>Back to Search</VText>
+          </Pressable>
+          <TextField ref={producerRef} label="Producer" placeholder="Search producers" value={producerS.text} onChangeText={(text) => producerDo({ type: 'text', text })} autoCorrect={false} returnKeyType="search" />
+          {producerS.status !== 'idle' ? (
+            <ResultList>
+              {producerRows.rows.map((p) => (
+                <ResultRow key={p.id} title={p.name} sub={[p.region, p.country ? countryName(p.country) || p.country : null].filter(Boolean).join(', ')} disabled={!producerRows.selectable} onPress={() => { if (producerRows.selectable) choose(p); }} />
+              ))}
+              {offersAddProducer(producerS) ? <ResultRow add title={`Add Producer “${producerS.text.trim()}”`} onPress={() => choose({ id: null, name: producerS.text.trim() })} /> : null}
+            </ResultList>
+          ) : null}
+          {waiting(producerS) ? <Spinner /> : null}
+          <StatusLine text={searchNotice(producerS, 'producers')} error={producerS.status === 'failed'} />
+        </View>
+      ) : null}
+      {mode === 'new' && producer ? <ChosenLine title={producer.name} sub={producer.id ? null : 'New producer'} onChange={backToProducer} /> : null}
+
+      {/* "Add Wine to Catalogue" — 2: the wines under it */}
+      {mode === 'new' && producer?.id && !product && !creating ? (
         <View style={{ marginTop: 12 }}>
-          <ChosenLine title={product.name} sub={kindLabel(product)} onChange={backToWine} />
+          <TextField ref={wineRef} label="Wine" placeholder="Search its wines" value={wineS.text} onChangeText={(text) => wineDo({ type: 'text', text })} autoCorrect={false} returnKeyType="search" />
+          <ResultList>
+            {wineS.more && wineS.text.trim().length < 3 && wineRows.selectable ? <VText variant="caption" color="inkFaint" style={{ paddingHorizontal: 12, paddingVertical: 4 }}>The first 20. Type to narrow the list.</VText> : null}
+            {wineRows.rows.map((p) => (
+              <ResultRow key={p.id} title={p.name} sub={kindLabel(p)} disabled={!wineRows.selectable} onPress={() => { if (wineRows.selectable) { setProduct(p); resetYear(); } }} />
+            ))}
+            {wineS.text.trim() && offersNew(wineS) ? <ResultRow add title={`Add Wine “${wineS.text.trim()}”`} onPress={() => { setWineQ(wineS.text.trim()); setCreating(true); }} /> : null}
+          </ResultList>
+          {waiting(wineS) ? <Spinner /> : null}
+          {wineS.status === 'failed' ? <StatusLine text={searchNotice(wineS)} error /> : null}
+        </View>
+      ) : null}
+
+      {/* A picked wine's year (one field: listed, or added) */}
+      {product ? (
+        <View style={{ marginTop: mode === 'new' ? 12 : 0 }}>
+          <ChosenLine title={product.name} sub={[mode === 'find' ? product.producerName : null, kindLabel(product)].filter(Boolean).join(' · ') || null} onChange={unpick} />
           <YearRow
             nv={nv} onNv={(v) => { setNv(v); if (v) setYearText(''); retryYears(); }}
             yearText={yearText} onYear={onYear}
@@ -212,11 +250,12 @@ export function BottlePicker({
           />
           <StatusLine text={fate ? yearLine(fate) : null} />
           {showErrors && state.status === 'error' ? <StatusLine text={state.error} error /> : null}
-          {fate?.fate === 'pending' && !vintagesFailed && (yearText.trim() || nv) ? <ActivityIndicator size="small" color={theme.inkSoft} style={{ alignSelf: 'flex-start', marginTop: 6 }} /> : null}
+          {fate?.fate === 'pending' && !vintagesFailed && (yearText.trim() || nv) ? <Spinner /> : null}
+          <StatusLine text={yearNotice} error />
         </View>
       ) : null}
 
-      {/* 2b — a new wine's facts, in place */}
+      {/* "Add Wine to Catalogue" — 3: a new wine's facts, in place */}
       {creating && producer ? (
         <View style={{ marginTop: 12, padding: 14, borderRadius: radius.md, backgroundColor: theme.surface, gap: 12 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -254,11 +293,13 @@ export function BottlePicker({
           <CountrySheet open={countryOpen} selected={country} onSelect={(c) => { setCountry(c); setCountryOpen(false); }} onClose={() => setCountryOpen(false)} />
         </View>
       ) : null}
-
-      {searching && !notice ? <ActivityIndicator size="small" color={theme.inkSoft} style={{ alignSelf: 'flex-start', marginTop: 8 }} /> : null}
-      {notice ? <StatusLine text={notice} error /> : null}
     </View>
   );
+}
+
+function Spinner() {
+  const { theme } = useTheme();
+  return <ActivityIndicator size="small" color={theme.inkSoft} style={{ alignSelf: 'flex-start', marginTop: 8 }} />;
 }
 
 const labelLine = (l: BottleLabel) => [l.name, l.year].filter(Boolean).join(' ');
@@ -340,20 +381,25 @@ function ResultList({ children }: { children: React.ReactNode }) {
   return <View style={{ marginTop: 6, gap: 2 }}>{children}</View>;
 }
 
-function ResultRow({ title, sub, add, onPress }: { title: string; sub?: string | null; add?: boolean; onPress: () => void }) {
+// A search row. `trailing`: the carried year, at the end. `disabled`: a row of
+// an older answer while the next one is awaited (shown, not selectable).
+function ResultRow({ title, sub, trailing, add, disabled, onPress }: { title: string; sub?: string | null; trailing?: string | null; add?: boolean; disabled?: boolean; onPress: () => void }) {
   const { theme } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={sub ? `${title}, ${sub}` : title}
+      accessibilityLabel={[title, sub, trailing].filter(Boolean).join(', ')}
+      accessibilityState={{ disabled: !!disabled }}
+      disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, paddingHorizontal: 12, borderRadius: radius.sm, backgroundColor: pressed ? theme.surfaceSunk : 'transparent' })}
+      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, paddingHorizontal: 12, borderRadius: radius.sm, opacity: disabled ? 0.5 : 1, backgroundColor: pressed ? theme.surfaceSunk : 'transparent' })}
     >
       {add ? <Icon name="plus" size={16} color={theme.accent} /> : null}
       <View style={{ flex: 1, minWidth: 0 }}>
         <VText variant="body" numberOfLines={1} style={{ fontFamily: add ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', color: add ? theme.accent : theme.ink }}>{title}</VText>
         {sub ? <VText variant="caption" color="inkSoft" numberOfLines={1}>{sub}</VText> : null}
       </View>
+      {trailing ? <VText variant="small" color="inkSoft">{trailing}</VText> : null}
     </Pressable>
   );
 }

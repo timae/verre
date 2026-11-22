@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { searchProducers, searchProducts, browseProducts } from '@/lib/catalogSearch'
+import { searchBottles, searchProducers, similarProducers, searchProducts, browseProducts } from '@/lib/catalogSearch'
 import { productVintages } from '@/lib/catalogEntries'
 import { denyCatalogRef } from '@/lib/catalogWrite'
 import { scrub } from '@/lib/textSafe'
@@ -14,7 +14,11 @@ const ID = /^[A-Za-z0-9_-]{1,21}$/
 // queries, the same response shape, the same generic denials. Each route runs
 // its own gates and budget first.
 //
-//   ?kind=producer&q=…
+//   ?kind=bottle&q=…                  (step 7b, the app's one field: producer, wine,
+//                                      region and year in any order, one row per
+//                                      wine with the carried `year`; every typed word
+//                                      must match, lib/catalogSearch.ts searchBottles)
+//   ?kind=producer&q=…                (the same every-word rule over producers)
 //   ?kind=product&q=…&producerId=…   (🔒 producerId REQUIRED: capacity, see below;
 //                                      q under 3 characters = that producer's wines, A to Z)
 //   ?kind=vintages&productId=…        (ids + years only, NV included)
@@ -31,8 +35,21 @@ export async function answerCatalogSearch(params: URLSearchParams): Promise<Next
   // Scrubbed like every free text from a request (a NUL byte would 500 in
   // Postgres, review r3).
   const q = scrub(params.get('q') ?? '') ?? ''
+  // 🔒 Both every-word kinds answer the whole envelope: `more` (the server
+  // stopped early: type more) and `tooLong` (over 16 words or 200 characters:
+  // refused, never cut; the app says so instead of offering "Add Wine to Catalogue" on a
+  // list that never searched). The clients keep both (Codex r2 P2).
+  if (kind === 'bottle') return NextResponse.json(await searchBottles(q), { headers: NO_STORE })
   if (kind === 'producer') {
-    return NextResponse.json({ results: await searchProducers(q) }, { headers: NO_STORE })
+    const answer = await searchProducers(q)
+    // `similar=1` (the website's producer step, ruled 2026-11-21): when every
+    // word finds nothing (a label scan fills the field with "Weingut Dr. Loosen
+    // GmbH"), the forgiving trigram list instead, so the website does not offer
+    // "+ new producer" over an existing one. The app never sends it.
+    if (!answer.results.length && !answer.tooLong && params.get('similar') === '1') {
+      return NextResponse.json({ results: await similarProducers(q), more: false, tooLong: false, exact: false, similar: true }, { headers: NO_STORE })
+    }
+    return NextResponse.json(answer, { headers: NO_STORE })
   }
   if (kind === 'product') {
     // 🔒 `producerId` IS REQUIRED ON THE PUBLIC PRODUCT PATH, and this is a
@@ -69,5 +86,5 @@ export async function answerCatalogSearch(params: URLSearchParams): Promise<Next
     }
     return NextResponse.json({ results }, { headers: NO_STORE })
   }
-  return NextResponse.json({ error: 'kind must be producer, product or vintages' }, { status: 400, headers: NO_STORE })
+  return NextResponse.json({ error: 'kind must be bottle, producer, product or vintages' }, { status: 400, headers: NO_STORE })
 }

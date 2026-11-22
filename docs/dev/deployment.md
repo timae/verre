@@ -379,7 +379,26 @@ node scripts/catalog-columns-update.mjs --manifest m.json --file f.copy --apply 
 ```
 
 - **`backfill-model-change.mjs`** re-runs the expand migration's backfill block (read from the migration; it refuses unless the file's sha256 is the checksum `_prisma_migrations` recorded, so check out the release commit). Fill-only except the colour / sparkling re-derive. It locks `wines` and `bookmarks` against writes for its transaction (milliseconds on prod). It reports and never changes unlinked bottles whose abv contradicts their type and bookmarks left unlinked by a collision (the conversion merges those). A second `--apply` reports 0 in every step.
-- **`catalog-columns-update.mjs`** loads the catalogue flush's columns file (origin country, description, vinification). The dry run reads only (no lock, no UPDATE). `--apply` locks `wine_products` against writes (reads and search go on) for about 16 s for a full file (rehearsal, sandbox), so run it in the quiet window, then `VACUUM (FULL, ANALYZE) wine_products` (the UPDATE rewrites every row it fills). Refusals are listed in its header; a re-run after an apply is refused.
+- **`catalog-columns-update.mjs`** loads the catalogue flush's columns file (origin country, description, vinification). The dry run reads only (no lock, no UPDATE). `--apply` locks `wine_products` against writes (reads and search go on) for about 16 s for a full file (rehearsal, sandbox), so run it in the quiet window, then `VACUUM (FULL, ANALYZE) wine_products` (the UPDATE rewrites every row it fills). Refusals are listed in its header; a re-run after an apply is refused. It writes no searched column (not a name, not the region), so it needs no search rebuild.
+- **Release day, step 7b**: once no instance of the previous release is left (they mint without search docs), run the catalogue search's drift report and rebuild (§ Catalogue search below).
+
+## Catalogue search — the rebuild after every catalogue load (model change step 7b)
+
+The app's one-field bottle search and the every-word producer search read Verre's own search docs (`20261121180000_catalog_search`; `lib/CLAUDE.md`, `prisma/CLAUDE.md`). Our writers keep them current; anything that writes `producers` / `wine_products` / `product_producers` behind them (a catalogue load, the flush, psql) leaves new wines unfindable (and renamed ones findable only by their old words) until the rebuild. So run it **after every catalogue load** and **on release day** once the previous release's instances are gone. TypeScript, so `npx tsx`; the same guards as the two scripts above (`scripts/lib/operatorGuard.mjs`), and it refuses unless the migration file's sha256 is the checksum the database recorded (check out the release commit).
+
+```bash
+export DATABASE_URL='…' DATABASE_CA_CERT='…'
+npx tsx scripts/rebuild-catalog-search.mts                                   # the drift report: missing / stale / different docs, ids only
+npx tsx scripts/rebuild-catalog-search.mts --apply --expect-db <host>/<db>   # the rebuild, then ANALYZE
+```
+
+⚠️ Run `--apply` after every load WHATEVER the report says: a load that only changes statuses (an entry rejected or archived) changes no doc, only which words may steer a typo lookup, and the report shows that only as `staleWordCounts`.
+
+- The rebuild is the migration's `@recipe:catalog-search-build` block (one copy), in ONE transaction under the exclusive catalog-search advisory lock: it never truncates (searches go on, not blocked), upserts only docs whose words differ, deletes docs whose product or producer is gone, inserts missing words and refreshes their counts, and never deletes a word. Measured on the full catalogue (257,019 products, 49,180 producers; dev DB, from the sandbox, 2026-11-21): the drift report plus a no-op rebuild 12.4 s. A second `--apply` reports 0 docs changed.
+- A first fill of the catalogue on an EMPTY database (the release migration on prod builds from the flushed catalogue) is done by the migration itself; the release migration's build ran in about 9 s end to end on the same data (dev DB, `prisma migrate deploy`, 2026-11-21).
+- The catalogue-maintenance side's own loads run this afterwards (the phase 4 import path will call it in its own transaction, under the exclusive lock).
+- ⚠️ Every app mint holds its lead producer `FOR SHARE` for the length of its bottle transaction (the search doc's row rule), so a load that UPDATEs `producers` rows in ONE long transaction makes every mint under those producers wait for it (inside the moment's lock). Keep such updates short or batched, in the quiet window.
+- 🔔 Release-day gate (review 2026-11-21): until this runs after the old instances are gone, producers and wines they minted during the rolling deploy are found only by their exact folded name (the producer search's exact arm) or not at all. Read the drift report (`missingDocs` 0) before saying the release is done.
 
 ## Session-row cleanup (bounded retention)
 

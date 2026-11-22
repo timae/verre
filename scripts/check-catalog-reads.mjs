@@ -43,7 +43,15 @@ const EXPECTED = {
   // The hard purge's reference clearing (catalogue model change § 5a, step
   // 5): the purged entity's own rows deleted and the product's vintages
   // listed to purge them first; nothing shown or counted.
-  'lib/catalogWrite.ts': 5,
+  // The search docs (step 7b): the row rule's locks (a lead's chain FOR SHARE,
+  // products FOR NO KEY UPDATE) and the doc built from the rows it describes
+  // (indexProducer / indexProduct). A doc keeps a tombstone lead's own name AND
+  // its effective survivor's (both searchable; the read resolves the match),
+  // so it reads the chain raw on purpose; nothing shown or counted.
+  'lib/catalogWrite.ts': 16,
+  // The search rebuild's drift report (step 7b): whether a doc's source row
+  // still exists; existence only, nothing shown or counted.
+  'scripts/lib/catalogSearchRebuild.mjs': 3,
   // The add flow's branch checks before a mint (the product of branch 2, its
   // existing year, the producer of branch 3, the collaborators): status
   // checks that refuse a tombstone; nothing displayed.

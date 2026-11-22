@@ -36,6 +36,7 @@
 import { createPrismaClient } from '../lib/prismaClient.mjs'
 import {
   searchProducers,
+  similarProducers,
   searchProducts,
   WORD_SIMILARITY_THRESHOLD,
   trgmOrderWith,
@@ -51,6 +52,7 @@ import {
   CatalogValidationError,
 } from '../../lib/catalogWrite.ts'
 import { redactWine } from '../../lib/wineRedaction.ts'
+import { rebuildCatalogSearch } from '../lib/catalogSearchRebuild.mjs'
 import { scrub } from '../../lib/textSafe.ts'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -156,6 +158,11 @@ const createVintage = (productId, year, addedBy, abv = null, tx, opts) =>
 
 const TEST_USER = 970001
 
+// Raw seeds and raw merges bypass lib/catalogWrite.ts, like a catalogue load:
+// the search docs follow by the rebuild (step 7b; the every-word search reads
+// them, the trigram one does not).
+const reindex = () => prisma.$transaction(tx => rebuildCatalogSearch(tx), { timeout: 120_000 })
+
 // Prisma's $executeRawUnsafe rejects multiple commands in one call (42601), so
 // each statement runs separately. Order matters: children before parents, since
 // eight of the nine forward catalog FKs are NoAction/Restrict by design.
@@ -234,6 +241,7 @@ async function main() {
   // autovacuum. ANALYZE alone does NOT do this — it refreshes statistics, not
   // the pending list.
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
+  await reindex()
 
   // No transaction and no GUC: a KNN order reads no setting, which is precisely
   // why the interactive transaction (and the pool connection it pinned for the
@@ -302,14 +310,16 @@ async function main() {
     VALUES ('p2thresh000000000000', 'P2TEST Chateau Margaux', 'confirmed', '{}', now(), now())
   `)
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
-  const exact = await searchProducers('Chateau Margaux')
+  // These pins are the TRIGRAM matcher's (similarity, kept as similarProducers
+  // for duplicate finding since step 7b); the every-word twins follow each.
+  const exact = await similarProducers('Chateau Margaux')
   ok(exact.some(r => r.id === 'p2thresh000000000000'), 'exact-ish query finds the producer')
   // 🔒 TYPO TOLERANCE IS THE PROPERTY THE WHOLE FUZZY DESIGN EXISTS FOR, and it
   // survives the GIN→GiST swap because `<->>` is exactly `1 - word_similarity`
   // — the identical metric. Verified numerically: 'chateu margux' vs 'Château
   // Margaux' gives word_similarity 0.5294 and distance 0.4706, and the real
   // producer ranks FIRST (0.529) ahead of the noise (0.357).
-  const typo = await searchProducers('Chateu Margeaux')
+  const typo = await similarProducers('Chateu Margeaux')
   ok(typo.some(r => r.id === 'p2thresh000000000000'),
     'typo tolerance still works after the KNN swap')
 
@@ -317,7 +327,7 @@ async function main() {
   // without the post-filter a query matching NOTHING would still return its 20
   // least-bad rows. This is the "no bad matches" guarantee the old `<%`
   // threshold provided as a WHERE clause.
-  const nonsense = await searchProducers('zzzqqqxxvvwwjj')
+  const nonsense = await similarProducers('zzzqqqxxvvwwjj')
   eq(nonsense, [], 'a query matching nothing returns NOTHING, not the 20 least-bad rows')
 
   // Accent folding: the generated column is lower(f_unaccent(name)), and the
@@ -327,9 +337,16 @@ async function main() {
     INSERT INTO producers (id, name, status, curator_locked, created_at, updated_at)
     VALUES ('p2accent000000000000', 'P2TEST Châteauneuf Réserve', 'confirmed', '{}', now(), now())
   `)
-  const unaccented = await searchProducers('Chateauneuf Reserve')
+  const unaccented = await similarProducers('Chateauneuf Reserve')
   ok(unaccented.some(r => r.id === 'p2accent000000000000'),
     'an unaccented query matches an accented name (one fold path, no drift)')
+  // The every-word twins (step 7b), over the docs the rebuild wrote for the two
+  // raw inserts: the same fold, so the same answers.
+  await reindex()
+  ok((await searchProducers('Chateau Margaux')).results.some(r => r.id === 'p2thresh000000000000'), 'every-word: the exact-ish query finds it')
+  ok((await searchProducers('Chateu Margeaux')).results.some(r => r.id === 'p2thresh000000000000'), 'every-word: a typo in each word still finds it (chateu → the filler chateau, margeaux → margaux)')
+  eq((await searchProducers('zzzqqqxxvvwwjj')).results, [], 'every-word: nonsense finds nothing')
+  ok((await searchProducers('Chateauneuf Reserve')).results.some(r => r.id === 'p2accent000000000000'), 'every-word: an unaccented query matches the accented name')
 
   // 🔒 THE FOLD LOWERCASES LAST, NOT FIRST. `f_unaccent` is `unaccent` with no
   // `lower()`, and some unaccent expansions PRODUCE CAPITALS — so
@@ -653,6 +670,7 @@ async function main() {
   }, { timeout: 60_000 })
   await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
   await prisma.$executeRawUnsafe('VACUUM ANALYZE product_producers')
+  await reindex()
 
   const pTerm = (await prisma.$queryRawUnsafe(
     `SELECT name FROM wine_products WHERE name LIKE 'P2TEST Cuvee %' ORDER BY id LIMIT 1`))[0]
@@ -816,7 +834,8 @@ async function main() {
     VALUES ('p2rej000000000000000', 'P2TEST Survivor Estate Junk', 'rejected', '{}', now(), now())
   `)
   await prisma.$executeRawUnsafe('ANALYZE producers')
-  const surv = await searchProducers('Survivor Estate')
+  await reindex()
+  const surv = (await searchProducers('Survivor Estate')).results
   ok(surv.some(r => r.id === survivor.id), 'a live producer IS offered (the paired accept)')
   ok(!surv.some(r => r.id === 'p2tomb00000000000000'), 'a merge tombstone (linked) is NOT offered')
   ok(!surv.some(r => r.id === 'p2rej000000000000000'), 'a rejected producer is NOT offered')
@@ -841,8 +860,11 @@ async function main() {
     VALUES ('${archivedId}', 'P2TEST Survivor Estate Archived', 'archived', '{}', now(), now())
   `)
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
-  const addScope = await searchProducers('Survivor Estate')
-  const reviewScope = await searchProducers('Survivor Estate', { scope: 'review' })
+  await reindex()
+  // The review scope is the trigram matcher's (phase 3's curator surfaces).
+  const addScope = await similarProducers('Survivor Estate')
+  const reviewScope = await similarProducers('Survivor Estate', { scope: 'review' })
+  ok(!(await searchProducers('Survivor Estate')).results.some(r => r.id === archivedId), 'every-word: an archived producer is excluded too')
   ok(!addScope.some(r => r.id === archivedId),
     'an archived producer is EXCLUDED from add-time suggestions')
   ok(reviewScope.some(r => r.id === archivedId),
@@ -867,7 +889,8 @@ async function main() {
   await prisma.$executeRawUnsafe(
     `UPDATE producers SET status = 'linked', links_to = '${mSurv.id}' WHERE id = '${mLoser.id}'`)
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
-  const aliasHits = await searchProducers('Distinctive Alias Spelling')
+  await reindex()
+  const aliasHits = (await searchProducers('Distinctive Alias Spelling')).results
   // Asserts the survivor is present and the TOMBSTONE is not — rather than a
   // total count, which would break the moment an unrelated fixture happens to
   // fuzzy-match the query.
@@ -920,13 +943,15 @@ async function main() {
   await prisma.$executeRawUnsafe(
     `UPDATE producers SET status = 'linked', links_to = '${mFinal.id}' WHERE id = '${mSurv.id}'`)
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
-  const chained = await searchProducers('Distinctive Alias Spelling')
+  await reindex()
+  const chained = (await searchProducers('Distinctive Alias Spelling')).results
   ok(chained.some(r => r.id === mFinal.id)
      && !chained.some(r => r.id === mSurv.id || r.id === mLoser.id),
     `a merge CHAIN (A→B→C) resolves transitively to the END, skipping both intermediates (got ${JSON.stringify(chained.map(r => r.name))})`)
   // Unwind so later sections see a clean fixture set.
   await prisma.$executeRawUnsafe(
     `UPDATE producers SET status = 'provisional', links_to = NULL WHERE id IN ('${mLoser.id}','${mSurv.id}')`)
+  await reindex()
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 2c — ranking among ties, and statements per search')
@@ -948,10 +973,13 @@ async function main() {
     await createProduct({ name: `P2TEST ${n}`, producerId: tieHouse.id }, TEST_USER)
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
   await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
-  const weil = await searchProducers('P2TEST Robert Weil')
+  // Re-expressed on the every-word cascade (step 7b): every typed word matches
+  // in all eleven names, so FEWER UNTYPED WORDS decides (the exact name has
+  // none, "Junior" one, the long one five); the exact arm keeps it first.
+  const weil = (await searchProducers('P2TEST Robert Weil')).results
   eq(weil[0]?.id, weilExact.id, 'an EXACT name ranks first among the names that contain it')
   ok(weil.every(r => !('exact' in r) && !('sim' in r)), 'the ranking columns never reach the result shape')
-  const weilNoExact = await searchProducers('Robert Weil')
+  const weilNoExact = (await searchProducers('Robert Weil')).results
   eq(weilNoExact[0]?.id, weilExact.id, 'with no exact match, the closest of the containing names ranks first')
   const iJunior = weilNoExact.findIndex(r => r.name === 'P2TEST Robert Weil Junior')
   const iLong = weilNoExact.findIndex(r => r.name === 'P2TEST Robert Weil Kiedricher Grafenberg Erste Lage')
@@ -977,7 +1005,8 @@ async function main() {
   const nScoped = await statements(() => searchProducts('Cuvee', { producerId: tieHouse.id }))
   const nUnscoped = await statements(() => searchProducts('P2TEST Cuvee'))
   ok(nProducer >= 1, `the statement counter sees the search (producer sent ${nProducer})`)
-  eq(nProducer, 1, 'a producer search with no merged row is ONE statement')
+  eq(nProducer, 2, 'a producer search with no merged row is TWO statements (step 7b: words, then candidates; it was one before, deliberate)')
+  eq(await statements(() => similarProducers('Robert Weil')), 1, 'the trigram producer search (similarProducers) stays ONE statement')
   ok(nScoped <= 2, `a scoped product search with no merged row is at most TWO statements (sent ${nScoped})`)
   eq(nUnscoped, 1, 'an unscoped product search with no merged row is ONE statement')
 
@@ -990,6 +1019,7 @@ async function main() {
     SELECT 'p2tie' || lpad(g::text, 6, '0'), 'P2TEST Tenutaq Cellar ' || g, 'confirmed', '{}', now(), now()
       FROM generate_series(1, 200) g`)
   const tenutaExact = await createProducer({ name: 'P2TEST Tenutaq' }, TEST_USER)
+  await reindex()
   // 🔒 A MERGED ALIAS LENDS ITS RANK TO ITS SURVIVOR, whichever of the two the
   // index returns first. Per pair: the alias is the CLOSEST name (not exact), a
   // competitor comes next, the survivor is far longer; all three contain the
@@ -1016,15 +1046,16 @@ async function main() {
   }
   await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
-  const tenuta = await searchProducers('P2TEST Tenutaq')
+  const tenuta = (await searchProducers('P2TEST Tenutaq')).results
   eq(tenuta[0]?.id, tenutaExact.id, 'an exact name is offered first even when more than 60 names contain it')
+  eq((await similarProducers('P2TEST Tenutaq'))[0]?.id, tenutaExact.id, '… by the trigram search too (its exact arm)')
   const pairTops = []
-  for (const { k, surv } of mergePairs) pairTops.push((await searchProducers(`P2TEST Quillard${k}`))[0]?.id === surv.id)
+  for (const { k, surv } of mergePairs) pairTops.push((await searchProducers(`P2TEST Quillard${k}`)).results[0]?.id === surv.id)
   ok(pairTops.every(Boolean), `producers: a merged alias's rank carries to its survivor, above a closer competitor (${pairTops.filter(Boolean).length}/6)`)
   const prodTops = []
   for (const { k, surv } of prodPairs) prodTops.push((await searchProducts(`P2TEST Brunell${k}`, { producerId: prodHouse.id }))[0]?.id === surv.id)
   ok(prodTops.every(Boolean), `products: a merged alias's rank carries to its survivor, above a closer competitor (${prodTops.filter(Boolean).length}/6)`)
-  const quill = await searchProducers('P2TEST Quillarda')
+  const quill = (await searchProducers('P2TEST Quillarda')).results
   const keys = o => (o ? Object.keys(o).sort().join(',') : '(no result)')
   eq(keys(weil[0]), 'country,id,name,region,score', 'a producer result carries exactly its public fields')
   eq(keys(quill[0]), 'country,id,name,region,score', 'so does a producer resolved through a merge')
@@ -1035,18 +1066,27 @@ async function main() {
   for (const { alias } of prodPairs)
     await prisma.$executeRawUnsafe(`UPDATE wine_products SET status = 'provisional', links_to = NULL WHERE id = '${alias.id}'`)
 
-  // The REAL producer statement, EXPLAINed (§ 1 explains a literal of the form):
-  // the exact arm on the covering B-tree, the KNN arm on GiST, no seq scan.
+  // The REAL trigram producer statement, EXPLAINed (§ 1 explains a literal of
+  // the form): the exact arm on the covering B-tree, the KNN arm on GiST, no seq scan.
   let captured = null
   const unsafe0 = appPrisma.$queryRawUnsafe
   appPrisma.$queryRawUnsafe = (sql, ...args) => { captured ??= { sql, args }; return unsafe0.call(appPrisma, sql, ...args) }
-  try { await searchProducers('P2TEST Robert Weil') } finally { appPrisma.$queryRawUnsafe = unsafe0 }
+  try { await similarProducers('P2TEST Robert Weil') } finally { appPrisma.$queryRawUnsafe = unsafe0 }
   const realPlan = captured
     ? JSON.stringify((await appPrisma.$queryRawUnsafe(`EXPLAIN (FORMAT JSON) ${captured.sql}`, ...captured.args))[0]['QUERY PLAN'])
     : ''
   ok(realPlan.includes('producers_name_folded_gist_idx'), 'the real producer statement orders through the GiST KNN index')
   ok(realPlan.includes('"producers_name_folded_idx"'), 'its exact arm uses the covering B-tree (the range spelling)')
   ok(realPlan !== '' && !seqScansTable(realPlan, 'producers'), 'and it does not sequentially scan producers')
+  // The every-word producer search's candidates statement (its SECOND): the
+  // exact-name arm on the same covering B-tree (step 7b keeps it, plan § 2).
+  const sent = []
+  appPrisma.$queryRawUnsafe = (sql, ...args) => { sent.push({ sql, args }); return unsafe0.call(appPrisma, sql, ...args) }
+  try { await searchProducers('P2TEST Robert Weil') } finally { appPrisma.$queryRawUnsafe = unsafe0 }
+  const candPlan = sent[1]
+    ? JSON.stringify((await appPrisma.$queryRawUnsafe(`EXPLAIN (FORMAT JSON) ${sent[1].sql}`, ...sent[1].args))[0]['QUERY PLAN'])
+    : ''
+  ok(candPlan.includes('"producers_name_folded_idx"'), 'the every-word producer search\'s exact arm uses the covering B-tree (the range spelling)')
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 3 — a product cannot be created without its lead producer')
@@ -1381,10 +1421,13 @@ async function main() {
     `a bare domain gets https:// prepended rather than silently dropped (got ${JSON.stringify(site[sites.bare.id])})`)
   // Query guards on the trigram scan: sub-trigram queries return nothing rather
   // than an arbitrary slice of the catalog, and the limit is hard-capped.
-  eq(await searchProducers('ab'), [], 'a query shorter than one trigram returns nothing')
-  eq(await searchProducers('   '), [], 'a blank query returns nothing')
-  ok((await searchProducers('P2TEST', { limit: 9999 })).length <= 20,
+  eq(await similarProducers('ab'), [], 'a query shorter than one trigram returns nothing')
+  eq(await similarProducers('   '), [], 'a blank query returns nothing')
+  ok((await similarProducers('P2TEST', { limit: 9999 })).length <= 20,
     'the result limit is hard-capped regardless of the requested value')
+  eq((await searchProducers('ab')).results, [], 'every-word: under 3 characters returns nothing')
+  eq((await searchProducers('   ')).results, [], 'every-word: a blank query returns nothing')
+  ok((await searchProducers('P2TEST', { limit: 9999 })).results.length <= 20, 'every-word: the limit is hard-capped too')
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 8 — the blank-name / empty-string trap')

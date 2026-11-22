@@ -17,7 +17,7 @@ import { withSessionMutation, ContractRefused, ContractBusy, ContractNeedsLease,
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
-import { CatalogValidationError } from '@/lib/catalogWrite'
+import { CatalogValidationError, publishSearchWords } from '@/lib/catalogWrite'
 import { relinkOccurrence, editOccurrenceNotes } from '@/lib/occurrences'
 import { afterRelink } from '@/lib/cravings'
 import { prepareLink, applyRelink, type AppliedLink } from '@/lib/catalogLink'
@@ -266,8 +266,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   }
 
   let txResult: { updatedWine: Awaited<ReturnType<typeof prisma.wine.update>>; updatedRating: Awaited<ReturnType<typeof prisma.rating.update>>; updatedFeedItem: Awaited<ReturnType<typeof prisma.feedItem.update>>; updatedImageUrl: string | null }
+  let mintTx: Prisma.TransactionClient | null = null
   try {
     txResult = await prisma.$transaction(async (tx) => {
+    mintTx = tx
     // 🔒 The rating and its bottle as they stand NOW, locked (Codex r1, r2):
     // every value this edit derives (the flavour shape for the kind) comes
     // from these rows, never from the request's pre-read.
@@ -373,6 +375,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
     return { updatedWine, updatedRating, updatedFeedItem, updatedImageUrl: resolvedImageUrl }
     })
+    // A re-link `create`'s new search words, after the COMMIT (lib/catalogWrite.ts).
+    void publishSearchWords(mintTx)
   } catch (err) {
     // If the txn failed AND we just uploaded a fresh S3 object, reclaim it
     // — otherwise the upload becomes orphan bytes with no recovery path.
