@@ -7,7 +7,7 @@
 
 import { clientIdFromUuids } from '../../apps/mobile/src/lib/clientIdFormat';
 import {
-  backStep, linkBody, newWineChoice, pickedChoice, readAbv, readYear, shownAbv, writeOutcome, yearFate, yearLine,
+  backStep, lineupDuplicate, linkBody, newWineChoice, pickedChoice, readAbv, readYear, shownAbv, writeOutcome, yearFate, yearLine,
   ABV_INVALID, KIND_MISSING, maxYear, NAME_MISSING, yearInvalid, type NewWineDraft,
 } from '../../apps/mobile/src/lib/catalogChoice';
 import { alcoholText, bottleGrapes, bottleOrigin } from '../../apps/mobile/src/lib/bottleFacts';
@@ -31,6 +31,23 @@ const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
   check('abv: a NEW year shows none (its field is editable instead)', at(false, '2016', 12.5) === null);
   check('abv: nothing while the years load, or for an invalid year', shownAbv(yearFate(null, readYear(false, '2019')), null, 12.5) === null && at(false, '1850', 12.5) === null);
   check('abv: the field\'s own text (a number, at most two decimals)', shownAbv(yearFate([{ id: 'a', year: 2020, abv: 12.345 }], readYear(false, '2020')), [{ id: 'a', year: 2020, abv: 12.345 }], null) === '12.35');
+}
+
+// ── A duplicate in the line-up: asked on save (ruled 2026-11-22) ──
+{
+  const L = [
+    { id: 'a', entry: { productId: 'p1', vintageId: 'v19' } },
+    { id: 'b', entry: null }, // a bottle hidden from the viewer: no entry
+    { id: 'c', entry: { productId: 'p1', vintageId: null } },
+  ];
+  const pick = (productId: string, vintageId: string | null) => ({ kind: 'pick' as const, productId, vintageId, label: { name: 'W', producer: 'P', year: '', colour: null, sparkling: false } });
+  check('dup: the same wine in the same year → its position (Impression 1)', eq(lineupDuplicate(L, pick('p1', 'v19'), null), { position: 1 }));
+  check('dup: both without a year → a duplicate too (Impression 3)', eq(lineupDuplicate(L, pick('p1', null), null), { position: 3 }));
+  check('dup: another year of the wine (a vertical) is not', lineupDuplicate(L, pick('p1', 'v18'), null) === null);
+  check('dup: another wine is not', lineupDuplicate(L, pick('p2', 'v19'), null) === null);
+  check('dup: a hidden bottle never matches (it carries no entry)', lineupDuplicate([{ id: 'b', entry: null }], pick('p1', 'v19'), null) === null);
+  check('dup: the bottle being edited is never its own duplicate', lineupDuplicate(L, pick('p1', 'v19'), 'a') === null);
+  check('dup: a new wine (a create) never asks', lineupDuplicate(L, { kind: 'create', body: { productId: 'p1', year: 2016 }, label: pick('p1', null).label } as never, null) === null);
 }
 
 // ── The screen's back steps through the picker first (ruled 2026-11-22) ──

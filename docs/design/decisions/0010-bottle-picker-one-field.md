@@ -91,5 +91,22 @@ the year. Server side: `GET …/catalog/search?kind=bottle` (README; `lib/catalo
   nothing when that year has none (the wine's figure is one number for every year, so
   it never stands in for a year's: "why does it fall back to 13%?"); the wine's while
   no year is typed. Only a year that is added gets the editable field. An entry's
-  missing alcohol is not filled from here.
+  missing alcohol is not filled from here.- **The form waits for the bottle** ("the add photo should only show when an impression is
+  selected"): on Add Impression and Check In the photo and the bottle's own fields appear
+  once a bottle is chosen (picked, or a new one being added), and the fields (Process,
+  Description, Purchase Link) are plain, no "Add More Details" fold.
+- **Add rows look like the line-up's Add Impression**: "Add Wine to Catalogue", "Add
+  Producer “…”" and "Add Wine “…”" are the same dashed full-width row (`DashedAddRow`).
+- **Sparkling is a switch of its own** under the colours ("it is not clear, that it is
+  settable in combination with the colours"): "Sparkling", "With any colour, or on its
+  own."
+- **The same wine twice is asked, not refused** ("we should at least warn about it"):
+  saving the same wine in the same year (or both without a year) as a bottle already in
+  the line-up asks "Already in the Line-Up" with Add Again / Cancel; another year of the
+  wine (a vertical) doesn't ask. Only bottles the person can see count, so a hidden blind
+  bottle never triggers it.
+- **Back inside "Add Wine to Catalogue" will be real pages** ("that swipe back and back
+  button behave differently is bad UX"): the producer search, its wines and the new
+  wine's fields move to pages of their own, so the arrow and the swipe go back alike. To
+  be planned and built; until then the arrow steps back as above.
 

@@ -10,7 +10,7 @@ import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { Disclosure, MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
+import { MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
 import { BottlePicker, usePickerBack, type PickerState } from '@/components/catalog/BottlePicker';
 import { authClient } from '@/lib/authClient';
 import { getCheckinEditMeta, setCheckinEditMeta } from '@/lib/checkinEdit';
@@ -51,9 +51,6 @@ export default function EditCheckinDetails() {
   const [city, setCity] = useState(meta?.city ?? '');
   // Open the fold when any of its fields carries a value — an edit must not
   // hide filled fields behind a closed disclosure.
-  const [moreOpen, setMoreOpen] = useState(
-    !!(meta?.vinification || meta?.description || meta?.purchaseUrl),
-  );
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<ScrollViewInstance>(null);
   const cityRef = useRef<TextInputInstance>(null);
@@ -156,12 +153,8 @@ export default function EditCheckinDetails() {
           </View>
         </View>
 
-        <Disclosure
-          label="Add More Details"
-          open={moreOpen}
-          onToggle={() => setMoreOpen((o) => !o)}
-          onExpanded={() => scrollRef.current?.scrollToEnd({ animated: true })}
-        >
+        {/* The bottle's own fields, plain (no fold, ruled 2026-11-22). */}
+        <View style={{ gap: 14, marginTop: 14 }}>
           <TextField label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} growLines={3} />
           <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} />
           <TextField
@@ -175,7 +168,7 @@ export default function EditCheckinDetails() {
             returnKeyType="done"
             keyboardType="url"
           />
-        </Disclosure>
+        </View>
       </ScrollView>
 
       <View

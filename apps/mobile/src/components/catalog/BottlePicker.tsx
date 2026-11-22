@@ -5,10 +5,11 @@ import { countryName } from '@verre/core';
 import { AnchoredMenu, AnchorButton, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
 import { ChoiceChip } from '@/components/ui/ChoiceChip';
-import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { CountrySheet, Disclosure, FieldGroup, SelectField } from '@/components/moments/momentForm';
+import { ToggleRow } from '@/components/moments/settingsParts';
+import { DashedAddRow } from '@/components/ui/DashedAddRow';
 import {
   CatalogSearchError, listVintages, searchBottles, searchProducers, searchProducts,
   type BottleHit, type CatalogScope, type ProducerHit, type ProductHit, type SearchAnswer, type VintageHit,
@@ -239,7 +240,7 @@ export function BottlePicker({
               {bottleRows.rows.map((b) => (
                 <ResultRow key={b.id} title={b.name} sub={b.producerName} trailing={b.year === null ? null : String(b.year)} disabled={!bottleRows.selectable} onPress={() => pickBottle(b.id)} />
               ))}
-              {offersNew(bottle) ? <ResultRow add title="Add Wine to Catalogue" onPress={toNew} /> : null}
+              {offersNew(bottle) ? <DashedAddRow title="Add Wine to Catalogue" onPress={toNew} /> : null}
             </ResultList>
           ) : null}
           {waiting(bottle) ? <Spinner /> : null}
@@ -259,7 +260,7 @@ export function BottlePicker({
               {producerRows.rows.map((p) => (
                 <ResultRow key={p.id} title={p.name} sub={[p.region, p.country ? countryName(p.country) || p.country : null].filter(Boolean).join(', ')} disabled={!producerRows.selectable} onPress={() => { if (producerRows.selectable) choose(p); }} />
               ))}
-              {offersAddProducer(producerS) ? <ResultRow add title={`Add Producer “${producerS.text.trim()}”`} onPress={() => choose({ id: null, name: producerS.text.trim() })} /> : null}
+              {offersAddProducer(producerS) ? <DashedAddRow title={`Add Producer “${producerS.text.trim()}”`} onPress={() => choose({ id: null, name: producerS.text.trim() })} /> : null}
             </ResultList>
           ) : null}
           {waiting(producerS) ? <Spinner /> : null}
@@ -277,7 +278,7 @@ export function BottlePicker({
             {wineRows.rows.map((p) => (
               <ResultRow key={p.id} title={p.name} sub={kindLabel(p)} disabled={!wineRows.selectable} onPress={() => { if (wineRows.selectable) { setProduct(p); resetYear(); } }} />
             ))}
-            {wineS.text.trim() && offersNew(wineS) ? <ResultRow add title={`Add Wine “${wineS.text.trim()}”`} onPress={() => { setWineQ(wineS.text.trim()); setCreating(true); }} /> : null}
+            {wineS.text.trim() && offersNew(wineS) ? <DashedAddRow title={`Add Wine “${wineS.text.trim()}”`} onPress={() => { setWineQ(wineS.text.trim()); setCreating(true); }} /> : null}
           </ResultList>
           {waiting(wineS) ? <Spinner /> : null}
           {wineS.status === 'failed' ? <StatusLine text={searchNotice(wineS)} error /> : null}
@@ -314,9 +315,11 @@ export function BottlePicker({
               {COLOURS.map((c) => (
                 <ChoiceChip key={c.code} label={c.label} on={colour === c.code} onPress={() => setColour((v) => (v === c.code ? null : c.code))} />
               ))}
-              <ChoiceChip tick label="Sparkling" on={sparkling} onPress={() => setSparkling((v) => !v)} />
             </View>
           </FieldGroup>
+          {/* Sparkling on a row of its own (ruled 2026-11-22: beside the colours
+              it read as a fourth colour; it combines with any of them). */}
+          <ToggleRow title="Sparkling" subtitle="With any colour, or on its own." value={sparkling} onChange={setSparkling} flush />
           <YearRow
             nv={nv} onNv={(v) => { setNv(v); if (v) setYearText(''); }}
             yearText={yearText} onYear={setYearText}
@@ -451,8 +454,8 @@ function ResultList({ children }: { children: React.ReactNode }) {
 // padding every list row grows by. `trailing`: the carried year at the end of
 // the row (ADR-0010), drawn like a list's vintage (the name's size, ink-soft,
 // medium). `disabled`: a row of an older answer while the next one is awaited
-// (shown, not selectable).
-function ResultRow({ title, sub, trailing, add, disabled, onPress }: { title: string; sub?: string | null; trailing?: string | null; add?: boolean; disabled?: boolean; onPress: () => void }) {
+// (shown, not selectable). The add rows are `DashedAddRow`.
+function ResultRow({ title, sub, trailing, disabled, onPress }: { title: string; sub?: string | null; trailing?: string | null; disabled?: boolean; onPress: () => void }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const surface = phone.surface('compactList');
@@ -465,9 +468,8 @@ function ResultRow({ title, sub, trailing, add, disabled, onPress }: { title: st
       onPress={onPress}
       style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: surface.paddingY(phone.lerp(10, 14)), paddingHorizontal: 12, borderRadius: radius.sm, opacity: disabled ? 0.5 : 1, backgroundColor: pressed ? theme.surfaceSunk : 'transparent' })}
     >
-      {add ? <Icon name="plus" size={16} color={theme.accent} /> : null}
       <View style={{ flex: 1, minWidth: 0, gap: surface.gap(phone.lerp(2, 4)) }}>
-        <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', color: add ? theme.accent : theme.ink }}>{title}</VText>
+        <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.ink }}>{title}</VText>
         {sub ? <VText surface="compactList" variant="small" color="inkSoft" numberOfLines={1}>{sub}</VText> : null}
       </View>
       {trailing ? <VText surface="compactList" color="inkSoft" style={{ fontFamily: 'InstrumentSans_500Medium' }}>{trailing}</VText> : null}

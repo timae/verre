@@ -16,12 +16,12 @@ import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { Disclosure, FieldGroup, MAX_WINE_IMAGE_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
+import { FieldGroup, MAX_WINE_IMAGE_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
 import { BottlePicker, usePickerBack, type PickerState } from '@/components/catalog/BottlePicker';
 import { buildImpressionPayload } from '@/lib/impressionPayload';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
-import { ApiError, addWine, deleteWineImage, getSessionState, putWineImage, reassignBroughtBy, reorderWines, updateWine, type SessionParticipant, type WireWine } from '@/lib/api/sessions';
-import { asColour, linkBody, writeOutcome, type BottleLabel, type CatalogChoice } from '@/lib/catalogChoice';
+import { ApiError, addWine, deleteWineImage, getSessionState, putWineImage, reassignBroughtBy, reorderWines, updateWine, type SessionParticipant, type SessionState, type WireWine } from '@/lib/api/sessions';
+import { asColour, lineupDuplicate, linkBody, writeOutcome, type BottleLabel, type CatalogChoice } from '@/lib/catalogChoice';
 import { newClientId } from '@/lib/clientId';
 import { authClient } from '@/lib/authClient';
 import { sessionHref, useSessionTab } from '@/lib/sessionStack';
@@ -121,6 +121,17 @@ export default function AddImpression() {
   return <ImpressionForm code={code} wineCount={wineCount} canPosition={canPosition} />;
 }
 
+// "Already in the line-up": Add Again (or Change Anyway) / Cancel. Resolves
+// false on Cancel or a dismiss.
+function confirmDuplicate(label: BottleLabel, position: number, mode: 'add' | 'edit'): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert('Already in the Line-Up', `“${[label.name, label.year].filter(Boolean).join(' ')}” is already Impression ${position}.`, [
+      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+      { text: mode === 'edit' ? 'Change Anyway' : 'Add Again', onPress: () => resolve(true) },
+    ], { cancelable: true, onDismiss: () => resolve(false) });
+  });
+}
+
 // The bottle as it is (edit): its summary in the picker until Change.
 function currentLabel(w: WireWine | undefined): BottleLabel | null {
   if (!w) return null;
@@ -199,15 +210,6 @@ export function ImpressionForm({
   const shownBringerAnon = bringer
     ? lookOf(bringer.id) === 'guest'
     : initialWine?.addedByUserId == null || lookOf(`u:${initialWine.addedByUserId}`) === 'guest';
-  // Start the "Add more details" fold OPEN when editing a bottle that already
-  // has one of its own fields set — otherwise pre-existing values sit
-  // invisibly behind a collapsed fold. Add mode always starts closed.
-  const [moreOpen, setMoreOpen] = useState(
-    () => !!(initialWine && (initialWine.vinification || initialWine.description || initialWine.purchaseUrl)),
-  );
-  // True only for the edit-mode auto-open above — consumed once to suppress the
-  // initial scroll-to-end so an editor lands at the top, not the bottom.
-  const autoOpenedRef = useRef(moreOpen);
   const [posOpen, setPosOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -243,6 +245,8 @@ export function ImpressionForm({
   // (or sends only the photo), so an edit made now would be dropped silently.
   // While a save is in flight too (Codex r2): an edit made then is not in it.
   const locked = frozen !== null || photoPending || saving;
+  // A bottle is chosen: picked, being added (its draft), or the edit's own.
+  const chosen = picker.status !== 'none' || frozen !== null;
   const pickerBack = usePickerBack(!locked);
   // A photo upload was tried: a photo cleared since must be removed on the
   // server too (the PUT may have landed without its answer, Codex r1).
@@ -330,6 +334,14 @@ export function ImpressionForm({
     if (!choice && !(mode === 'edit' && picker.status === 'unchanged')) {
       setError(picker.status === 'error' ? picker.error : picker.status === 'pending' ? 'One moment, the years are still loading.' : 'Choose the bottle first.');
       return;
+    }
+    // The same wine in the same year already in the line-up: asked, never
+    // refused (ruled 2026-11-22). Not on a retry of a save that may have landed.
+    if (!frozen && choice) {
+      const lineup = queryClient.getQueriesData<SessionState>({ queryKey: ['session-state', code] })
+        .map(([, d]) => d?.wines).find((w): w is WireWine[] => Array.isArray(w)) ?? [];
+      const dup = lineupDuplicate(lineup, choice, mode === 'edit' ? wineId ?? null : null);
+      if (dup && !(await confirmDuplicate(choice.label, dup.position, mode))) return;
     }
     setSaving(true);
     // 🔒 ADD and EDIT need DIFFERENT payload shapes and the split is TESTED, not
@@ -442,8 +454,10 @@ export function ImpressionForm({
           onChange={setPicker}
         />
 
-        <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} />
-        {photoError ? (
+        {/* The photo and the details only once a bottle is chosen (picked,
+            being added, or the edit's own; ruled 2026-11-22). */}
+        {chosen ? <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} /> : null}
+        {chosen && photoError ? (
           <VText variant="small" style={{ marginTop: -8, marginBottom: 8, color: theme.critical }}>{photoError}</VText>
         ) : null}
 
@@ -468,19 +482,11 @@ export function ImpressionForm({
           </FieldGroup>
         ) : null}
 
-        {/* .disclosure Add more details — the bottle's own fields (its origin
-            and grapes are the catalogue wine's, ADR-0009). Body expands DOWN
-            from the bar (Disclosure owns the height animation); scroll into view
-            once open. Skip the scroll on the edit-mode AUTO-open. */}
-        <Disclosure
-          label="Add More Details"
-          open={moreOpen}
-          onToggle={() => setMoreOpen((o) => !o)}
-          onExpanded={() => {
-            if (autoOpenedRef.current) { autoOpenedRef.current = false; return; }
-            scrollRef.current?.scrollToEnd({ animated: true });
-          }}
-        >
+        {/* The bottle's own fields (its origin and grapes are the catalogue
+            wine's, ADR-0009), plain once a bottle is chosen: no fold (ruled
+            2026-11-22). */}
+        {chosen ? (
+        <View style={{ gap: 14, marginTop: 14 }}>
           <TextField label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} growLines={3} editable={!locked} />
           <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} editable={!locked} />
           <TextField
@@ -495,7 +501,8 @@ export function ImpressionForm({
             keyboardType="url"
             editable={!locked}
           />
-        </Disclosure>
+        </View>
+        ) : null}
       </ScrollView>
 
       {/* Sticky "Add to line-up" — SOLID theme.bg fill, no gradient fade (Simon's

@@ -1,4 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
+import { DashedAddRow } from '@/components/ui/DashedAddRow';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
@@ -2267,25 +2268,7 @@ function EmptyLineup({ canAdd, onAdd }: { canAdd: boolean; onAdd: () => void }) 
 // accent pill instead (above); this dashed variant matches the design's
 // in-list affordance.
 function AddImpressionRow({ onPress }: { onPress: () => void }) {
-  const { theme } = useTheme();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel="Add Impression"
-      onPress={onPress}
-      style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
-        marginTop: 8, paddingVertical: 14, borderRadius: radius.md,
-        borderWidth: 1, borderStyle: 'dashed', borderColor: theme.accentLine,
-        opacity: pressed ? 0.6 : 1,
-      })}
-    >
-      <Icon name="plus" size={17} color={theme.accent} />
-      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color="accent">
-        Add Impression
-      </VText>
-    </Pressable>
-  );
+  return <DashedAddRow title="Add Impression" onPress={onPress} />;
 }
 
 // .lurow: idx · thumb · name/vintage + maker + style · score/rated column.

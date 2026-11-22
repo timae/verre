@@ -99,6 +99,22 @@ export function shownAbv(f: YearFate, vintages: VintageHit[] | null, wineAbv: nu
   return typeof abv === 'number' && Number.isFinite(abv) ? String(Number(abv.toFixed(2))) : null;
 }
 
+// The line-up bottle a pick would duplicate (ruled 2026-11-22: asked on save,
+// never refused, since two bottles of one wine can be an ageing comparison):
+// the SAME wine in the SAME year, or both without a year; another year of the
+// wine (a vertical) doesn't count. Its position = "Impression N". Only bottles
+// whose catalogue entry the viewer sees can match (a bottle hidden from them
+// carries none), so the question never gives a hidden one away. `selfId`: the
+// bottle being edited, never its own duplicate.
+export function lineupDuplicate(
+  lineup: { id: string; entry: { productId: string; vintageId: string | null } | null }[],
+  choice: CatalogChoice, selfId: string | null,
+): { position: number } | null {
+  if (choice.kind !== 'pick') return null;
+  const i = lineup.findIndex((w) => w.id !== selfId && !!w.entry && w.entry.productId === choice.productId && (w.entry.vintageId ?? null) === (choice.vintageId ?? null));
+  return i < 0 ? null : { position: i + 1 };
+}
+
 // The choice for a picked wine. The alcohol % only travels with a year that
 // will be added (an existing entry is never edited from here, spec § 3).
 export function pickedChoice(product: ProductHit, vintages: VintageHit[] | null, nv: boolean, yearInput: string, abvInput: string): { choice: CatalogChoice } | { error: string } | { pending: true } {

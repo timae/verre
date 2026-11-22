@@ -9,7 +9,7 @@ import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { Disclosure, MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
+import { MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
 import { BottlePicker, usePickerBack, type PickerState } from '@/components/catalog/BottlePicker';
 import { newClientId } from '@/lib/clientId';
 import type { BottleLabel } from '@/lib/catalogChoice';
@@ -50,6 +50,9 @@ export default function CheckinDetails() {
   const [picker, setPicker] = useState<PickerState>({ status: 'none' });
   const pickerBack = usePickerBack();
   const [frozen, setFrozen] = useState<{ label: BottleLabel; isNew: boolean } | null>(null);
+  // A bottle is chosen: picked or being added (its draft). The photo and the
+  // details wait for it (ruled 2026-11-22).
+  const chosen = picker.status !== 'none' || frozen !== null;
   const [showErrors, setShowErrors] = useState(false);
   const [photo, setPhoto] = useState<PhotoState>(null);
   const [photoError, setPhotoError] = useState<string | null>(null);
@@ -58,7 +61,6 @@ export default function CheckinDetails() {
   const [purchaseUrl, setPurchaseUrl] = useState('');
   const [venue, setVenue] = useState('');
   const [city, setCity] = useState('');
-  const [moreOpen, setMoreOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<ScrollViewInstance>(null);
   const cityRef = useRef<TextInputInstance>(null);
@@ -139,8 +141,8 @@ export default function CheckinDetails() {
         {/* The bottle first (ADR-0009): a catalogue wine, picked inline. */}
         <BottlePicker {...pickerBack.pickerProps} scope={null} frozen={frozen} showErrors={showErrors} onChange={setPicker} />
 
-        <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} />
-        {photoError ? (
+        {chosen ? <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} /> : null}
+        {chosen && photoError ? (
           <VText variant="small" style={{ marginTop: -8, marginBottom: 8, color: theme.critical }}>{photoError}</VText>
         ) : null}
 
@@ -157,15 +159,11 @@ export default function CheckinDetails() {
           </View>
         </View>
 
-        {/* .disclosure Add More Details — the bottle's own fields (process ·
-            description · purchase link); its origin and grapes are the
-            catalogue wine's (ADR-0009). */}
-        <Disclosure
-          label="Add More Details"
-          open={moreOpen}
-          onToggle={() => setMoreOpen((o) => !o)}
-          onExpanded={() => scrollRef.current?.scrollToEnd({ animated: true })}
-        >
+        {/* The bottle's own fields (process · description · purchase link),
+            plain once a bottle is chosen, no fold (ruled 2026-11-22); its
+            origin and grapes are the catalogue wine's (ADR-0009). */}
+        {chosen ? (
+        <View style={{ gap: 14, marginTop: 14 }}>
           <TextField label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} growLines={3} />
           <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} />
           <TextField
@@ -179,7 +177,8 @@ export default function CheckinDetails() {
             returnKeyType="done"
             keyboardType="url"
           />
-        </Disclosure>
+        </View>
+        ) : null}
 
       </ScrollView>
 
