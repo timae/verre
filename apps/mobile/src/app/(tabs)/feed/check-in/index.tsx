@@ -278,9 +278,8 @@ function PhotoPicker({
     >
       <Icon name="cam" size={24} color={theme.inkSoft} />
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add Photo</VText>
-      {/* Warmer than add.tsx's "a label or pour" — Simon: the caption should
-          feel connected to the moment, not like a spec of accepted subjects. */}
-      <VText variant="caption" color="inkSoft">Optional. Capture the moment.</VText>
+      {/* No line under it (ruled 2026-11-22: not "Optional.", nothing wine-only,
+          and not "moment": a check-in is an impression, not a moment). */}
     </Pressable>
   );
 }

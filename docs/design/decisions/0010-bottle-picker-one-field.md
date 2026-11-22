@@ -122,5 +122,12 @@ the year. Server side: `GET …/catalog/search?kind=bottle` (README; `lib/catalo
   to the line-up. Editing keeps its form first: Change opens the search as a page and a
   pick comes back with its year. The "Add More Details" fold is back ("i think we put the
   process / description / purchace links behind the details thingy again"), which
-  reverses the plain fields above.
+  reverses the plain fields above.- **The photo field has no line under "Add Photo"** on Add Impression, Check In and the
+  check-in edit ("Dont like the optional. also dont like the label or pour"; then "it is
+  not capture the moment. an impression is not a moment.").
+- **The year's line is green with a tick**: "2019 is in the catalogue." / "2019 is added on
+  save." in the positive colour with the check glyph (the username's "Available").- **Sparkling sits on the colours' line, at its right end** ("why a new line. Just put it on
+  the same line like color, on the very right side"): the title "Sparkling" over a switch,
+  like "Colour" over its chips, no description. This replaces the separate switch row
+  above.
 

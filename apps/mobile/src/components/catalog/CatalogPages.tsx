@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { View } from 'react-native';
+import { Switch, View } from 'react-native';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { countryName } from '@verre/core';
 import { Button } from '@/components/ui/Button';
@@ -9,7 +9,6 @@ import { DashedAddRow } from '@/components/ui/DashedAddRow';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { CountrySheet, Disclosure, FieldGroup, SelectField } from '@/components/moments/momentForm';
-import { ToggleRow } from '@/components/moments/settingsParts';
 import { Gone, ListNote, PageShell, ResultList, ResultRow, Spinner, StatusLine, useCatalogSearch, usePageFlow, YearRow } from '@/components/catalog/pickerParts';
 import { searchProducers, searchProducts, type ProducerHit, type ProductHit } from '@/lib/api/catalog';
 import { offersAddProducer, offersNew, searchNotice, visibleRows } from '@/lib/bottleSearch';
@@ -18,6 +17,8 @@ import { kindLabel } from '@/lib/momentFormat';
 import { finishFlow, setFlowChoice, setFlowDraft, setFlowProducer, type FlowProducer } from '@/lib/pickerFlow';
 import { catalogHref, pickedHref, type FlowDest } from '@/lib/sessionStack';
 import { usePushGuard } from '@/lib/usePushGuard';
+import { useTheme } from '@/theme';
+import { alpha } from '@/theme/color';
 
 // The "Add Wine to Catalogue" pages (ruled 2026-11-22: "that swipe back and back
 // button behave differently is bad UX" → real pages; Codex: on the host's own
@@ -112,6 +113,9 @@ export function WinesPage() {
 // which sends it with its own save. Seeded from the flow: the name typed on the
 // wines page, or the draft the form holds (its Edit).
 export function NewWinePage() {
+  const { theme } = useTheme();
+  // The OFF track ToggleRow uses (settingsParts.tsx): a neutral ink at 18%.
+  const offTrack = alpha(theme.ink, 0.18);
   const { key, flow } = usePageFlow();
   const router = useRouter();
   const guard = usePushGuard();
@@ -148,16 +152,37 @@ export function NewWinePage() {
       <View style={{ gap: 12 }}>
         <VText variant="small" color="inkSoft">{producer.id ? producer.name : `${producer.name}, a new producer`}</VText>
         <TextField label="Wine" placeholder="Its name" value={wineQ} onChangeText={setWineQ} autoCorrect={false} />
-        <FieldGroup label="Colour">
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>
-            {COLOURS.map((c) => (
-              <ChoiceChip key={c.code} label={c.label} on={colour === c.code} onPress={() => setColour((v) => (v === c.code ? null : c.code))} />
-            ))}
+        {/* Colour and Sparkling on one line (ruled 2026-11-22): the colours on
+            the left, Sparkling at the right end under a title of its own, a
+            switch (not a fourth chip: it combines with any colour). */}
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+          {/* Content width (it shrinks and wraps only when the line is short),
+              so Sparkling sits right after the colours, not at the far end. */}
+          <View style={{ flexShrink: 1 }}>
+            <FieldGroup label="Colour">
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>
+                {COLOURS.map((c) => (
+                  <ChoiceChip key={c.code} label={c.label} on={colour === c.code} onPress={() => setColour((v) => (v === c.code ? null : c.code))} />
+                ))}
+              </View>
+            </FieldGroup>
           </View>
-        </FieldGroup>
-        {/* Sparkling on a row of its own (ruled 2026-11-22: beside the colours
-            it read as a fourth colour; it combines with any of them). */}
-        <ToggleRow title="Sparkling" subtitle="With any colour, or on its own." value={sparkling} onChange={setSparkling} flush />
+          {/* The rest of the line, Sparkling CENTRED in it (between the last
+              colour chip and the edge, ruled 2026-11-22): FieldGroup's label
+              and gap, the switch centred under its title. */}
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <View style={{ alignItems: 'center', gap: 7, marginBottom: 14 }}>
+              <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Sparkling</VText>
+              <Switch
+                value={sparkling}
+                onValueChange={setSparkling}
+                trackColor={{ false: offTrack, true: theme.accent }}
+                ios_backgroundColor={offTrack}
+                accessibilityLabel="Sparkling"
+              />
+            </View>
+          </View>
+        </View>
         <YearRow
           nv={nv} onNv={(v) => { setNv(v); if (v) setYearText(''); }}
           yearText={yearText} onYear={setYearText}

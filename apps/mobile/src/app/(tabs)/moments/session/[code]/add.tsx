@@ -688,7 +688,8 @@ function PhotoPicker({
     >
       <Icon name="cam" size={24} color={theme.inkSoft} />
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add Photo</VText>
-      <VText variant="caption" color="inkSoft">Optional. A label or pour.</VText>
+      {/* No line under it (ruled 2026-11-22: not "Optional.", nothing wine-only,
+          and not "moment": an impression is not a moment). */}
     </Pressable>
   );
 }

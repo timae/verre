@@ -6,6 +6,7 @@ import { VBar } from '@/components/VBar';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { AnchoredMenu, AnchorButton, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
+import { Icon } from '@/components/ui/Icon';
 import { ChoiceChip } from '@/components/ui/ChoiceChip';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
@@ -102,6 +103,20 @@ export function StatusLine({ text, error }: { text: string | null; error?: boole
   const { theme } = useTheme();
   if (!text) return null;
   return <VText variant="small" style={{ marginTop: 8, color: error ? theme.critical : theme.inkSoft }}>{text}</VText>;
+}
+
+// What the typed year will be ("2019 is in the catalogue." / "2019 is added on
+// save."): green with a tick (ruled 2026-11-22), the app's positive colour and
+// check glyph (the username's "Available", a friend row's badge).
+export function YearLine({ text }: { text: string | null }) {
+  const { theme } = useTheme();
+  if (!text) return null;
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8 }}>
+      <Icon name="check" size={14} color={theme.positive} />
+      <VText variant="small" color="positive" style={{ flexShrink: 1 }}>{text}</VText>
+    </View>
+  );
 }
 
 // A quiet line inside a result list ("The first 20", the close matches' line):

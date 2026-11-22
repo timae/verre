@@ -392,7 +392,7 @@ function CoverPicker({
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>
         Add a cover photo
       </VText>
-      <VText variant="caption" color="inkSoft">Optional. Gives your moment a face.</VText>
+      <VText variant="caption" color="inkSoft">Gives your moment a face.</VText>
     </Pressable>
   );
 }

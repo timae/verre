@@ -3,7 +3,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Pressable, View } from 'react-native';
 import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
-import { ChosenLine, labelLine, Spinner, StatusLine, YearRow, type CatalogTarget } from '@/components/catalog/pickerParts';
+import { ChosenLine, labelLine, Spinner, StatusLine, YearLine, YearRow, type CatalogTarget } from '@/components/catalog/pickerParts';
 import { CatalogSearchError, listVintages, type CatalogScope, type ProductHit, type VintageHit } from '@/lib/api/catalog';
 import { newWineChoice, pickedChoice, readYear, shownAbv, yearFate, yearLine, type BottleLabel, type CatalogChoice, type NewWineDraft } from '@/lib/catalogChoice';
 import { kindLabel } from '@/lib/momentFormat';
@@ -171,7 +171,7 @@ export function BottlePicker({
             showAbv={fate?.fate === 'added'} abvText={abvText} onAbv={setAbvText}
             knownAbv={fate ? shownAbv(fate, vintages, wineAbv) : null}
           />
-          <StatusLine text={fate ? yearLine(fate) : null} />
+          <YearLine text={fate ? yearLine(fate) : null} />
           {showErrors && state.status === 'error' ? <StatusLine text={state.error} error /> : null}
           {fate?.fate === 'pending' && !vintagesFailed && (yearText.trim() || nv) ? <Spinner /> : null}
           <StatusLine text={yearNotice} error />

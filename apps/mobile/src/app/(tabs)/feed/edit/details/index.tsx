@@ -138,7 +138,6 @@ export default function EditCheckinDetails() {
           >
             <Icon name="cam" size={24} color={theme.inkSoft} />
             <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add Photo</VText>
-            <VText variant="caption" color="inkSoft">Optional. Capture the moment.</VText>
           </Pressable>
         )}
         {photoError ? (
