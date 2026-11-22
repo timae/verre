@@ -227,6 +227,31 @@ export function settingsHref(mount: SessionMount, page?: SettingsPage): Href {
   return `/you/${tail}` as Href;
 }
 
+// The "Add Wine to Catalogue" pages (ruled 2026-11-22: real pages, so the
+// bar's back and the edge swipe go back alike). They live beside their host on
+// the host's OWN stack: an opened post's stack (`[id]/catalog/…`), or the tab
+// stack (`catalog/…`), except the check-in edit's details, a `fullScreenModal`
+// on a tab stack, whose pages live INSIDE its own boundary
+// (`edit/details/catalog/…`: a card above a modal would be pushed behind it).
+export type CatalogPage = 'search' | 'producer' | 'wines' | 'new';
+export function catalogHref(mount: SessionMount, inDetails: boolean, page: CatalogPage, key: string): Href {
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/catalog/${page}`, params: { id: mount.post, key } } as Href;
+  if (inDetails) return { pathname: `/(tabs)/${mount.tab}/edit/details/catalog/${page}`, params: { key } } as Href;
+  return { pathname: `/(tabs)/${mount.tab}/catalog/${page}`, params: { key } } as Href;
+}
+
+// Where a pick goes while ADDING (ruled 2026-11-22: the details are a screen
+// of their own, pushed on top of the search or of the page the pick was made
+// on): Add Impression's details beside its search (`session/[code]/add-wine`,
+// on the moment's stack, an opened post's included), Check In's beside its own
+// (`check-in/wine`).
+export type FlowDest = { kind: 'impression'; code: string } | { kind: 'checkin' };
+export function pickedHref(mount: SessionMount, dest: FlowDest, key: string): Href {
+  if (dest.kind === 'checkin') return { pathname: `/(tabs)/${mount.tab}/check-in/wine`, params: { key } } as Href;
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/session/[code]/add-wine`, params: { id: mount.post, code: dest.code, key } } as Href;
+  return { pathname: `/(tabs)/${mount.tab}/session/[code]/add-wine`, params: { code: dest.code, key } } as Href;
+}
+
 // Edit Profile (your own profile's ⋯ → Edit Profile, ruling D1): like
 // Settings, mirrored onto an opened post's stack when called from inside it.
 export function profileEditHref(mount: SessionMount): Href {

@@ -89,5 +89,10 @@ jobs:
       - name: Bottle search controller pins (app)
         run: npx tsx scripts/tests/bottle-search-units.ts
 
+      # The "Add Wine to Catalogue" pages' handoff (2026-11-22): one key per
+      # invocation, the result taken once, a dead flow refuses, the pop depth.
+      - name: Catalogue pages handoff pins (app)
+        run: npx tsx scripts/tests/picker-flow-units.ts
+
       - name: Vintage surface wiring
         run: node scripts/check-vintage-wiring.mjs

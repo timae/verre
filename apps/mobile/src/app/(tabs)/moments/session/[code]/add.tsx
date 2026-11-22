@@ -1,7 +1,7 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Image, Pressable, ScrollView, TextInput, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
+import { Alert, BackHandler, Image, Pressable, ScrollView, TextInput, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider, BottomSheetScrollView } from '@gorhom/bottom-sheet';
@@ -16,15 +16,19 @@ import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { FieldGroup, MAX_WINE_IMAGE_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
-import { BottlePicker, usePickerBack, type PickerState } from '@/components/catalog/BottlePicker';
+import { Disclosure, FieldGroup, MAX_WINE_IMAGE_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
+import { BottlePicker, type PickerState } from '@/components/catalog/BottlePicker';
+import { AddSearchScreen } from '@/components/catalog/BottleSearch';
+import { Gone } from '@/components/catalog/pickerParts';
+import { flowClientId, getFlow, holdFlow, popsPast, type FlowResult } from '@/lib/pickerFlow';
+import type { ProductHit } from '@/lib/api/catalog';
 import { buildImpressionPayload } from '@/lib/impressionPayload';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { ApiError, addWine, deleteWineImage, getSessionState, putWineImage, reassignBroughtBy, reorderWines, updateWine, type SessionParticipant, type SessionState, type WireWine } from '@/lib/api/sessions';
 import { asColour, lineupDuplicate, linkBody, writeOutcome, type BottleLabel, type CatalogChoice } from '@/lib/catalogChoice';
 import { newClientId } from '@/lib/clientId';
 import { authClient } from '@/lib/authClient';
-import { sessionHref, useSessionTab } from '@/lib/sessionStack';
+import { sessionHref, useSessionTab, type FlowDest } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { elevation, radius, useTheme } from '@/theme';
 
@@ -32,6 +36,14 @@ type PhotoState =
   | { kind: 'new'; dataUrl: string; previewUri: string }
   | { kind: 'existing'; uri: string }
   | null;
+
+// Add: the form held on the flow once a save may have landed (lib/pickerFlow.ts).
+type AddHold = {
+  choice: CatalogChoice;
+  process: string; description: string; purchaseUrl: string;
+  position: number | null;
+  photo: PhotoState; photoPending: boolean; photoTried: boolean;
+};
 
 type ImpressionFormProps = {
   code: string;
@@ -61,6 +73,9 @@ type ImpressionFormProps = {
   myIdentityId?: string;
   blocksOut?: readonly string[] | null;
   blocksIn?: readonly string[] | null;
+  /** Add (the details screen): the pick it opened with, and its flow (a save that may have landed is held there). */
+  initial?: FlowResult<ProductHit> | null;
+  flowKey?: string;
 };
 
 // A participant's session role — drives the picker's role tag + the "won't be
@@ -74,51 +89,61 @@ type SessionRoleTag = 'host' | 'cohost' | 'provider' | 'taster';
 // the bottle's own fields follow (Process→vinification, Description, the
 // purchase link). POST /api/session/:code/wines (host/cohost/provider), the
 // photo its own call after it.
-export default function AddImpression() {
-  const { code: raw } = useLocalSearchParams<{ code: string }>();
-  const code = String(raw ?? '');
+// The moment as Add Impression's two screens need it: the line-up's cached
+// state (the same query the line-up polls, deduped by TanStack), the bounce to
+// the line-up on a cold deep link or a gone moment, and who may position.
+function useAddSession(code: string) {
   const router = useRouter();
   const sessionTab = useSessionTab();
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
-
-  // Read the SAME cached query the parent line-up polls (same key) — deduped by
-  // TanStack, so this gets the live wines + meta for free without a second
-  // interval. We only need the line-up length (position range) and the host
-  // check (whether to offer the position picker). The form mounts immediately;
-  // add-rights are enforced by the entry control + the server, so an unresolved
-  // cache just means "append at end, no picker yet".
+  // Normally pushed from the line-up (which already POSTed /visit), so the cache
+  // is warm. A cold deep-link has no prior /visit, so /state 401s (`invalid`):
+  // bounce to the line-up, which owns the visit + rejoin flow (same idiom as
+  // useSettingsSession). not-found / removed / rate-limited bounce there too.
   const state = useQuery({
     queryKey: ['session-state', code, myIdentityId],
     queryFn: () => getSessionState(code),
   });
   const meta = state.data?.meta ?? null;
   const wineCount = state.data?.wines?.length ?? 0;
-
-  // Normally this screen is pushed from the line-up (which already POSTed
-  // /visit), so the cache is warm and this query just serves it. But the route
-  // is URL-addressable: a cold deep-link has no prior /visit, so /state 401s
-  // (`invalid`). Rather than let the user fill out a form that will fail on
-  // submit, bounce to the line-up — it owns the visit + rejoin flow (same idiom
-  // as useSettingsSession). not-found/removed bounce there too, and so does
-  // rate-limited (a spent wrong-code budget: the line-up shows it with Try Again).
   const fatal =
     state.error instanceof ApiError &&
     (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found' || state.error.kind === 'rate-limited');
   useEffect(() => {
     if (fatal) router.replace(sessionHref(sessionTab, '', { code }));
   }, [fatal, code, router, sessionTab]);
-
-  // Position is host-only server-side (providers always append). Offer the
-  // picker only to a host/cohost — same check as the line-up's isHostViewer —
-  // so a provider isn't shown a control the server ignores.
+  // Position is host-only server-side (providers always append): offered only
+  // to a host / cohost, the line-up's isHostViewer check.
   const canPosition =
     !!meta &&
     (meta.hostIdentityId === myIdentityId ||
       (meta.hostUserId !== null && `u:${meta.hostUserId}` === myIdentityId) ||
       (meta.coHostIds ?? []).includes(myIdentityId));
+  return { wineCount, canPosition };
+}
 
-  return <ImpressionForm code={code} wineCount={wineCount} canPosition={canPosition} />;
+// Add Impression's FIRST screen: the one field (ruled 2026-11-22: a pick opens
+// its details on a screen of their own, `./add-wine`, so back returns here).
+export default function AddImpression() {
+  const { code: raw } = useLocalSearchParams<{ code: string }>();
+  const code = String(raw ?? '');
+  useAddSession(code);
+  const dest = useMemo<FlowDest>(() => ({ kind: 'impression', code }), [code]);
+  return <AddSearchScreen title="Add Impression" scope={{ code }} dest={dest} />;
+}
+
+// Add Impression's details (`./add-wine`): the pick the search (or the
+// catalogue pages) put on the flow, then the form. A cold link without its
+// flow reads "This isn't available any more".
+export function AddImpressionDetails() {
+  const { code: raw, key: rawKey } = useLocalSearchParams<{ code: string; key?: string }>();
+  const code = String(raw ?? '');
+  const key = typeof rawKey === 'string' ? rawKey : '';
+  const { wineCount, canPosition } = useAddSession(code);
+  const [initial] = useState(() => getFlow<unknown, unknown, ProductHit>(key)?.choice ?? null);
+  if (!initial) return <Gone />;
+  return <ImpressionForm code={code} wineCount={wineCount} canPosition={canPosition} initial={initial} flowKey={key} />;
 }
 
 // "Already in the line-up": Add Again (or Change Anyway) / Cancel. Resolves
@@ -155,32 +180,43 @@ export function ImpressionForm({
   myIdentityId = '',
   blocksOut,
   blocksIn,
+  initial,
+  flowKey,
 }: ImpressionFormProps) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const navigation = useNavigation();
   const queryClient = useQueryClient();
+  // Add: a save that may have landed on an earlier visit of this details screen
+  // (back to the search and here again) is resumed WHOLE, the freeze rule
+  // across screens: the same choice, the form as it was sent, the photo's retry
+  // state (lib/pickerFlow.ts holdFlow; Codex 2026-11-22: a reopened form with
+  // empty fields would have retried without them). The id is the flow's.
+  const [held] = useState(() => (flowKey && mode === 'add' ? (getFlow(flowKey)?.hold as AddHold | null) ?? null : null));
 
-  const [photo, setPhoto] = useState<PhotoState>(() => initialWine?.imageUrl ? { kind: 'existing', uri: initialWine.imageUrl } : null);
+  const [photo, setPhoto] = useState<PhotoState>(() => held ? held.photo : initialWine?.imageUrl ? { kind: 'existing', uri: initialWine.imageUrl } : null);
   const [photoError, setPhotoError] = useState<string | null>(null);
   // The bottle (ADR-0009): the picker's live state; `frozen` once a save MAY
   // have landed (the freeze rule: a retry re-sends the same id and choice).
   const [picker, setPicker] = useState<PickerState>({ status: mode === 'edit' ? 'unchanged' : 'none' });
-  const [frozen, setFrozen] = useState<CatalogChoice | null>(null);
+  const [frozen, setFrozenState] = useState<CatalogChoice | null>(held?.choice ?? null);
   const [showErrors, setShowErrors] = useState(false);
-  // One client id per open add screen (catalogue model change § 8a).
-  const [clientId, setClientId] = useState(() => newClientId());
+  // One client id per add (catalogue model change § 8a): the FLOW's, so every
+  // visit of these details shares it (Codex 2026-11-22).
+  const [clientId, setClientId] = useState(() => (flowKey && mode === 'add' ? flowClientId(flowKey, newClientId) : newClientId()));
+  const setFrozen = (c: CatalogChoice | null) => setFrozenState(c);
   // The bottle landed (or the details saved) but its photo didn't: the screen
   // stays with Try Again (ADR-0009), and only the photo is sent again.
-  const [photoPending, setPhotoPending] = useState(false);
-  const [process, setProcess] = useState(initialWine?.vinification ?? '');
-  const [description, setDescription] = useState(initialWine?.description ?? '');
-  const [purchaseUrl, setPurchaseUrl] = useState(initialWine?.purchaseUrl ?? '');
+  const [photoPending, setPhotoPending] = useState(held?.photoPending ?? false);
+  const [process, setProcess] = useState(held?.process ?? initialWine?.vinification ?? '');
+  const [description, setDescription] = useState(held?.description ?? initialWine?.description ?? '');
+  const [purchaseUrl, setPurchaseUrl] = useState(held?.purchaseUrl ?? initialWine?.purchaseUrl ?? '');
   // null = "append" (follow the live count) — the user hasn't chosen a slot.
   // Kept null rather than seeded to wineCount+1 so a count that resolves AFTER
   // mount (cold deep-link before the parent poll lands) doesn't leave a stale
   // default: the pill + picker read the live maxPosition until the user picks.
-  const [position, setPosition] = useState<number | null>(null);
+  const [position, setPosition] = useState<number | null>(held?.position ?? null);
   // "Brought By" reassign (host/cohost, edit only). null = unchanged — the
   // form shows the current bringer and sends nothing. Picking stores the full
   // participant (id + name + avatar) so the resting field shows the avatar and
@@ -237,7 +273,14 @@ export function ImpressionForm({
     if (left.current) return;
     left.current = true;
     queryClient.invalidateQueries({ queryKey: ['session-state', code] });
-    pickerBack.allowLeave();
+    // Adding leaves the whole flow (the details, any catalogue pages and the
+    // search) back to the line-up (ruled 2026-11-22: they are screens of
+    // their own); an edit leaves its own screen.
+    if (mode === 'add') {
+      const st = navigation.getState();
+      const n = st ? popsPast(st.routes.map((r) => r.name), st.index, 'session/[code]/add') : null;
+      if (n) { router.dismiss(n); return; }
+    }
     router.back();
   };
   // 🔒 Once a save MAY have landed, or only the photo is left, the bottle's own
@@ -245,12 +288,33 @@ export function ImpressionForm({
   // (or sends only the photo), so an edit made now would be dropped silently.
   // While a save is in flight too (Codex r2): an edit made then is not in it.
   const locked = frozen !== null || photoPending || saving;
-  // A bottle is chosen: picked, being added (its draft), or the edit's own.
-  const chosen = picker.status !== 'none' || frozen !== null;
-  const pickerBack = usePickerBack(!locked);
+  // Frozen (a save may have landed): the form as it is, held on the add flow
+  // for a later visit of these details, kept current (the photo's retry).
+  useEffect(() => {
+    if (mode !== 'add' || !flowKey || !frozen) return;
+    holdFlow(flowKey, { choice: frozen, process, description, purchaseUrl, position, photo, photoPending, photoTried: photoTried.current } satisfies AddHold);
+  }, [mode, flowKey, frozen, process, description, purchaseUrl, position, photo, photoPending]);
+  // No back while a save is in flight (Codex 2026-11-22: back and here again
+  // mid-save made a second form; the save's own exit then popped one screen
+  // too many): the arrow is hidden, the swipe and Android's back are off.
+  useEffect(() => {
+    navigation.setOptions({ gestureEnabled: !saving });
+    if (!saving) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [saving, navigation]);
+  // Start the "Add More Details" fold OPEN when editing a bottle that already
+  // has one of its own fields set, otherwise its values sit behind a closed
+  // fold; adding starts it closed (ruled 2026-11-22: the fold is back).
+  const [moreOpen, setMoreOpen] = useState(
+    () => !!(initialWine && (initialWine.vinification || initialWine.description || initialWine.purchaseUrl)),
+  );
+  // True only for the edit-mode auto-open above: consumed once to suppress the
+  // initial scroll-to-end so an editor lands at the top.
+  const autoOpenedRef = useRef(moreOpen);
   // A photo upload was tried: a photo cleared since must be removed on the
   // server too (the PUT may have landed without its answer, Codex r1).
-  const photoTried = useRef(false);
+  const photoTried = useRef(held?.photoTried ?? false);
   const failText = (e: unknown, fallback: string) => {
     const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
     return msg && msg !== 'http' ? msg : fallback;
@@ -389,7 +453,7 @@ export function ImpressionForm({
         return;
       }
       // Someone else's id (practically never): the next try gets a new one.
-      if (e instanceof ApiError && e.status === 409) setClientId(newClientId());
+      if (e instanceof ApiError && e.status === 409) setClientId(flowKey && mode === 'add' ? flowClientId(flowKey, newClientId, true) : newClientId());
       setError(failText(e, 'Couldn’t add it. Check your connection and try again.'));
       return;
     }
@@ -408,7 +472,7 @@ export function ImpressionForm({
           the form below. */}
       <View style={{ paddingHorizontal: GUTTER, flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', zIndex: 20 }}>
         <View style={{ flex: 1 }}>
-          <VBar title={mode === 'edit' ? 'Edit Impression' : 'Add Impression'} />
+          <VBar title={mode === 'edit' ? 'Edit Impression' : 'Add Impression'} back={!saving} />
         </View>
         {canPosition && !locked && (mode === 'edit' ? wineCount > 1 : wineCount > 0) ? (
           <PositionPicker
@@ -442,8 +506,9 @@ export function ImpressionForm({
       >
         {/* The bottle first (ADR-0009): picked from the catalogue, inline. */}
         <BottlePicker
-          {...pickerBack.pickerProps}
           scope={{ code }}
+          locked={saving}
+          initial={mode === 'add' ? initial ?? null : null}
           current={mode === 'edit' ? currentLabel(initialWine) : null}
           frozen={frozen ? { label: frozen.label, isNew: frozen.kind === 'create' }
             // Edit with only the photo left: the details are saved, the bottle
@@ -456,8 +521,8 @@ export function ImpressionForm({
 
         {/* The photo and the details only once a bottle is chosen (picked,
             being added, or the edit's own; ruled 2026-11-22). */}
-        {chosen ? <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} /> : null}
-        {chosen && photoError ? (
+        <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} />
+        {photoError ? (
           <VText variant="small" style={{ marginTop: -8, marginBottom: 8, color: theme.critical }}>{photoError}</VText>
         ) : null}
 
@@ -482,11 +547,19 @@ export function ImpressionForm({
           </FieldGroup>
         ) : null}
 
-        {/* The bottle's own fields (its origin and grapes are the catalogue
-            wine's, ADR-0009), plain once a bottle is chosen: no fold (ruled
-            2026-11-22). */}
-        {chosen ? (
-        <View style={{ gap: 14, marginTop: 14 }}>
+        {/* .disclosure Add More Details: the bottle's own fields (its origin
+            and grapes are the catalogue wine's, ADR-0009). Body expands DOWN
+            from the bar (Disclosure owns the height animation); scroll into view
+            once open, except on the edit-mode AUTO-open. */}
+        <Disclosure
+          label="Add More Details"
+          open={moreOpen}
+          onToggle={() => setMoreOpen((o) => !o)}
+          onExpanded={() => {
+            if (autoOpenedRef.current) { autoOpenedRef.current = false; return; }
+            scrollRef.current?.scrollToEnd({ animated: true });
+          }}
+        >
           <TextField label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} growLines={3} editable={!locked} />
           <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} editable={!locked} />
           <TextField
@@ -501,8 +574,7 @@ export function ImpressionForm({
             keyboardType="url"
             editable={!locked}
           />
-        </View>
-        ) : null}
+        </Disclosure>
       </ScrollView>
 
       {/* Sticky "Add to line-up" — SOLID theme.bg fill, no gradient fade (Simon's

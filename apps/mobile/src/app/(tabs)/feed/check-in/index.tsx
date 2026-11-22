@@ -1,4 +1,4 @@
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,12 +9,16 @@ import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
-import { BottlePicker, usePickerBack, type PickerState } from '@/components/catalog/BottlePicker';
+import { Disclosure, MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
+import { BottlePicker, type PickerState } from '@/components/catalog/BottlePicker';
+import { AddSearchScreen } from '@/components/catalog/BottleSearch';
+import { Gone } from '@/components/catalog/pickerParts';
+import { getFlow } from '@/lib/pickerFlow';
+import type { ProductHit } from '@/lib/api/catalog';
 import { newClientId } from '@/lib/clientId';
 import type { BottleLabel } from '@/lib/catalogChoice';
 import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
-import { checkinHref, useSessionTab } from '@/lib/sessionStack';
+import { checkinHref, useSessionTab, type FlowDest } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 
@@ -38,7 +42,35 @@ import { radius, useTheme } from '@/theme';
 
 type PhotoState = { dataUrl: string; previewUri: string } | null;
 
-export default function CheckinDetails() {
+const CHECKIN_DEST: FlowDest = { kind: 'checkin' };
+
+// Check In's FIRST screen: the one field (ruled 2026-11-22: a pick opens its
+// details on a screen of their own, `./wine`, so back returns here).
+export default function CheckinSearch() {
+  const mount = useSessionTab();
+  // A mount of the search IS a new check-in (the details and the rate stage
+  // sit above it). Clear a draft left by an ABANDONED earlier one: backing out
+  // at the rate stage leaves the old rating in the store, and the details'
+  // preserve-prev read would inherit it into the next check-in (codex P1).
+  useEffect(() => {
+    clearCheckinDraft(mount.tab);
+  }, [mount.tab]);
+  return <AddSearchScreen title="Check In" scope={null} dest={CHECKIN_DEST} />;
+}
+
+// Check In's details (`./wine`): the pick the search (or the catalogue pages)
+// put on the flow, then the photo, where you had it and the bottle's own
+// fields; "Rate It" hands off to the rate stage. A cold link without its flow
+// reads "This isn't available any more".
+export function CheckinDetails() {
+  const { key: rawKey } = useLocalSearchParams<{ key?: string }>();
+  const key = typeof rawKey === 'string' ? rawKey : '';
+  const [initial] = useState(() => getFlow<unknown, unknown, ProductHit>(key)?.choice ?? null);
+  if (!initial) return <Gone />;
+  return <CheckinForm initial={initial} />;
+}
+
+function CheckinForm({ initial }: { initial: NonNullable<ReturnType<typeof getFlow<unknown, unknown, ProductHit>>>['choice'] }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -48,34 +80,29 @@ export default function CheckinDetails() {
   // One client id per flow (this screen stays mounted under the rate stage).
   const [occurrenceId] = useState(() => newClientId());
   const [picker, setPicker] = useState<PickerState>({ status: 'none' });
-  const pickerBack = usePickerBack();
   const [frozen, setFrozen] = useState<{ label: BottleLabel; isNew: boolean } | null>(null);
-  // A bottle is chosen: picked or being added (its draft). The photo and the
-  // details wait for it (ruled 2026-11-22).
-  const chosen = picker.status !== 'none' || frozen !== null;
   const [showErrors, setShowErrors] = useState(false);
-  const [photo, setPhoto] = useState<PhotoState>(null);
+  // These details opened AGAIN (back to the search, a pick): the check-in's
+  // draft (the search cleared any older one) seeds every field, so a retry
+  // after a post that may have landed never sends them empty (Codex
+  // 2026-11-22: "Rate It" overwrote the draft with blank fields and no photo).
+  const [seed] = useState(() => getCheckinDraft(mount.tab));
+  const [photo, setPhoto] = useState<PhotoState>(seed?.photo ?? null);
   const [photoError, setPhotoError] = useState<string | null>(null);
-  const [process, setProcess] = useState('');
-  const [description, setDescription] = useState('');
-  const [purchaseUrl, setPurchaseUrl] = useState('');
-  const [venue, setVenue] = useState('');
-  const [city, setCity] = useState('');
+  const [process, setProcess] = useState(seed?.vinification ?? '');
+  const [description, setDescription] = useState(seed?.description ?? '');
+  const [purchaseUrl, setPurchaseUrl] = useState(seed?.purchaseUrl ?? '');
+  const [venue, setVenue] = useState(seed?.venue ?? '');
+  const [city, setCity] = useState(seed?.city ?? '');
+  const [moreOpen, setMoreOpen] = useState(!!(seed?.vinification || seed?.description || seed?.purchaseUrl));
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<ScrollViewInstance>(null);
   const cityRef = useRef<TextInputInstance>(null);
   const purchaseRef = useRef<TextInputInstance>(null);
 
-  // A mount of this screen IS a new flow (it stays mounted beneath stage 2,
-  // so a back-swipe from the rate stage does NOT re-run this). Clear any
-  // leftover draft from an ABANDONED earlier flow — without this, backing out
-  // at stage 2 leaves the old rating in the store and onRate's preserve-prev
-  // read would silently inherit it into the next check-in (codex P1).
-  useEffect(() => {
-    clearCheckinDraft(mount.tab);
-  }, [mount.tab]);
   // Back from the rate stage after a post that MAY have landed: the choice is
-  // frozen (ADR-0009), so the retry sends the same wine.
+  // frozen (ADR-0009), so the retry sends the same wine, also when these
+  // details were opened again from the search (the draft outlives them).
   useFocusEffect(useCallback(() => {
     const d = getCheckinDraft(mount.tab);
     if (d?.frozen) setFrozen({ label: d.choice.label, isNew: d.choice.kind === 'create' });
@@ -138,11 +165,11 @@ export default function CheckinDetails() {
         automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
-        {/* The bottle first (ADR-0009): a catalogue wine, picked inline. */}
-        <BottlePicker {...pickerBack.pickerProps} scope={null} frozen={frozen} showErrors={showErrors} onChange={setPicker} />
+        {/* The bottle first (ADR-0009): the pick these details opened with. */}
+        <BottlePicker scope={null} initial={initial} frozen={frozen} showErrors={showErrors} onChange={setPicker} />
 
-        {chosen ? <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} /> : null}
-        {chosen && photoError ? (
+        <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} />
+        {photoError ? (
           <VText variant="small" style={{ marginTop: -8, marginBottom: 8, color: theme.critical }}>{photoError}</VText>
         ) : null}
 
@@ -159,11 +186,15 @@ export default function CheckinDetails() {
           </View>
         </View>
 
-        {/* The bottle's own fields (process · description · purchase link),
-            plain once a bottle is chosen, no fold (ruled 2026-11-22); its
-            origin and grapes are the catalogue wine's (ADR-0009). */}
-        {chosen ? (
-        <View style={{ gap: 14, marginTop: 14 }}>
+        {/* .disclosure Add More Details: the bottle's own fields (process ·
+            description · purchase link); its origin and grapes are the
+            catalogue wine's (ADR-0009). The fold is back (ruled 2026-11-22). */}
+        <Disclosure
+          label="Add More Details"
+          open={moreOpen}
+          onToggle={() => setMoreOpen((o) => !o)}
+          onExpanded={() => scrollRef.current?.scrollToEnd({ animated: true })}
+        >
           <TextField label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} growLines={3} />
           <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} />
           <TextField
@@ -177,8 +208,7 @@ export default function CheckinDetails() {
             returnKeyType="done"
             keyboardType="url"
           />
-        </View>
-        ) : null}
+        </Disclosure>
 
       </ScrollView>
 

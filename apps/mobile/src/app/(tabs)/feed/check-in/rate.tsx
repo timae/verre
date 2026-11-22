@@ -1,4 +1,4 @@
-import { Stack, useRouter } from 'expo-router';
+import { useNavigation, Stack, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { ScrollView, View, type ScrollViewInstance } from 'react-native';
@@ -17,6 +17,7 @@ import { newClientId } from '@/lib/clientId';
 import { authClient } from '@/lib/authClient';
 import { dropUnmountedFeedCaches, invalidateProfileHeader, refetchFeedCaches } from '@/lib/feedCache';
 import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
+import { popsPast } from '@/lib/pickerFlow';
 import { checkinHref, useSessionTab } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
 import { kindLabel } from '@/lib/momentFormat';
@@ -41,6 +42,7 @@ export default function CheckinRate() {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const navigation = useNavigation();
   // The flow's own stack (Feed, or You from your Impressions: lists plan D8).
   const mount = useSessionTab();
   const queryClient = useQueryClient();
@@ -109,7 +111,9 @@ export default function CheckinRate() {
   // Done: surface the new post via refetch()-in-place — NEVER invalidate the
   // feed key (resets the infinite query toward page 1: the scroll-creep bug —
   // see lib/feedCache.ts). Clear the draft BEFORE dismissing so the unmount
-  // write-back no-ops. dismiss(2) pops both stages back to the feed.
+  // write-back no-ops. Then pop the whole check-in (the search, any catalogue
+  // pages, the details and this stage: ruled 2026-11-22, they are screens of
+  // their own) back to where it started.
   // Leaving happens once (Codex r1: Done during a retry's upload, then the
   // upload's own finish, would dismiss twice and pop past the list).
   const left = useRef(false);
@@ -122,7 +126,8 @@ export default function CheckinRate() {
     dropUnmountedFeedCaches(queryClient);
     // Your header's counts (impressions, tile photo, average) changed too.
     invalidateProfileHeader(queryClient, meId);
-    router.dismiss(2);
+    const st = navigation.getState();
+    router.dismiss((st ? popsPast(st.routes.map((r) => r.name), st.index, 'check-in/index') : null) ?? 2);
   };
   // The photo, its own call after the post (a check-in's first photo alone in
   // a PATCH). False = it failed: the screen stays with Try Again.

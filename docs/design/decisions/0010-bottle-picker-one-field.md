@@ -105,8 +105,22 @@ the year. Server side: `GET …/catalog/search?kind=bottle` (README; `lib/catalo
   the line-up asks "Already in the Line-Up" with Add Again / Cancel; another year of the
   wine (a vertical) doesn't ask. Only bottles the person can see count, so a hidden blind
   bottle never triggers it.
-- **Back inside "Add Wine to Catalogue" will be real pages** ("that swipe back and back
-  button behave differently is bad UX"): the producer search, its wines and the new
-  wine's fields move to pages of their own, so the arrow and the swipe go back alike. To
-  be planned and built; until then the arrow steps back as above.
+- **"Add Wine to Catalogue" is real pages** ("that swipe back and back button behave
+  differently is bad UX"; built 2026-11-22, supersedes the step-back above): Producer →
+  the producer's wines (titled with its name) → New Wine with "Use" in the bar, pushed on
+  the screen's own stack, so the arrow and the swipe go back alike, one page at a time. A
+  wine tapped on its producer's page comes back to the form picked, its year set there; a
+  new wine comes back folded ("New wine", Edit reopens it, Remove drops it). Codex
+  weighed a sheet with its own stack (one component, no route files) and recommended the
+  pages: the sheet's stack breaks on Android and would make the picker its own navigator.- **Picking a wine opens its details on a screen of their own** ("when clicking on a wine
+  you get to the screen where you can edit the year, add photo, process, description etc.
+  why is this not a new screen? back just goes onto the line up screen again."): Add
+  Impression and Check In open on the search; a pick (there, on a producer's wines page,
+  or "Use" on New Wine) pushes the details screen on top (the bottle fixed at the top,
+  its year and alcohol, the photo, Brought By, "Add More Details", Save). Back goes one
+  page at a time (details → that page → … → the search); Save leaves the whole flow back
+  to the line-up. Editing keeps its form first: Change opens the search as a page and a
+  pick comes back with its year. The "Add More Details" fold is back ("i think we put the
+  process / description / purchace links behind the details thingy again"), which
+  reverses the plain fields above.
 

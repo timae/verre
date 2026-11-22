@@ -86,7 +86,7 @@ export default function TabsLayout() {
     pathname.endsWith('/moments/create') ||
     // both check-in create stages (sticky Rate It / Check In bars), on Feed
     // and on You (your Impressions' "+ Check In", lists plan D8): suffix-based.
-    /\/check-in(\/rate)?\/?$/.test(pathname) ||
+    /\/check-in(\/rate|\/wine)?\/?$/.test(pathname) ||
     pathname.includes('/feed/edit') || // feed-post edit screens (sticky Save/Done bars)
     pathname.includes('/you/edit') || // the same edit screens mounted on the You stack
     pathname.includes('/moments/edit/') || // … and on the Moments stack (never /moments/edit-…)
@@ -95,6 +95,10 @@ export default function TabsLayout() {
     // match neither OPENED_POST_PATH nor the two prefixes above.
     pathname.endsWith('/edit-profile') ||
     pathname.endsWith('/add') ||
+    pathname.endsWith('/add-wine') ||
+    // the "Add Wine to Catalogue" pages, beside every host and inside the
+    // check-in edit details' boundary (lib/sessionStack.ts catalogHref)
+    /\/catalog\/(search|producer|wines|new)\/?$/.test(pathname) ||
     pathname.endsWith('/settings/details') ||
     pathname.endsWith('/settings/reveal') ||
     // You → Settings: Change Email + Change Password (sticky Discard / Save) and Appearance
