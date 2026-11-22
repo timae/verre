@@ -54,13 +54,18 @@ const CALL_SITES = [
   // field beside an NV tick chip (ruled 2026-07-26: ticking it clears and
   // disables the year and sends a real `year: null`). The three screens hold
   // the picker and send its link; the year rules are pure in catalogChoice.
-  { file: 'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', label: 'app add / edit impression: the bottle picker', must: /<BottlePicker\b/ },
+  { file: 'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', label: 'app add / edit impression: the bottle picker, its back stepping through it', must: /<BottlePicker\s+\{\.\.\.pickerBack\.pickerProps\}/ },
   { file: 'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', label: 'app add impression: the picked link on the wire', must: /\.\.\.linkBody\(choice!\)/ },
   { file: 'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', label: 'app edit impression: a re-link on the wire', must: /\.\.\.\(choice \? linkBody\(choice\) : \{\}\)/ },
-  { file: 'apps/mobile/src/app/(tabs)/feed/check-in/index.tsx', label: 'app check-in create: the bottle picker', must: /<BottlePicker\b/ },
+  { file: 'apps/mobile/src/app/(tabs)/feed/check-in/index.tsx', label: 'app check-in create: the bottle picker, its back stepping through it', must: /<BottlePicker\s+\{\.\.\.pickerBack\.pickerProps\}/ },
   { file: 'apps/mobile/src/app/(tabs)/feed/check-in/rate.tsx', label: 'app check-in create: the picked link on the wire', must: /\.\.\.linkBody\(draft\.choice\)/ },
-  { file: 'apps/mobile/src/app/(tabs)/feed/edit/details.tsx', label: 'app check-in edit: the bottle picker', must: /<BottlePicker\b/ },
+  { file: 'apps/mobile/src/app/(tabs)/feed/edit/details.tsx', label: 'app check-in edit: the bottle picker, its back stepping through it', must: /<BottlePicker\s+\{\.\.\.pickerBack\.pickerProps\}/ },
   { file: 'apps/mobile/src/app/(tabs)/feed/edit/[id].tsx', label: 'app check-in edit: a re-link on the wire', must: /\.\.\.\(m\.choice \? linkBody\(m\.choice\) : \{\}\)/ },
+  // The screen's back steps through the picker first (ruled 2026-11-22): a
+  // save's own back must not be caught as a step back, and only a BACK is.
+  { file: 'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', label: 'app add impression: a save leaves past the picker\'s back', must: /pickerBack\.allowLeave\(\);\s*router\.back\(\);/ },
+  { file: 'apps/mobile/src/app/(tabs)/feed/edit/details.tsx', label: 'app check-in edit details: Done leaves past the picker\'s back', must: /pickerBack\.allowLeave\(\);\s*router\.back\(\);/ },
+  { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: only a back steps back, only while in front', must: /usePreventRemove\(enabled && focused && can, [\s\S]{0,120}?if \(\(t === 'GO_BACK' \|\| t === 'POP'\) && ref\.current\) ref\.current\.stepBack\(\);\s*else repeat\(\);/ },
   { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the NV tick chip beside the year', must: /<ChoiceChip tick label="NV" on=\{nv\} onPress=\{\(\) => onNv\(!nv\)\}/ },
   { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the year field disabled while NV', must: /<TextField label="Year"[\s\S]{0,300}?editable=\{!nv\}/ },
   { file: 'apps/mobile/src/components/catalog/BottlePicker.tsx', label: 'app picker: the NV info popover beside the chip', must: /<NvInfo \/>[\s\S]*Non-vintage: a release without a year\./ },

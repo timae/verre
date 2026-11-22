@@ -154,3 +154,22 @@ export function writeOutcome(status: number | null): WriteOutcome {
   if (status !== null && status >= 400 && status < 500) return 'refused';
   return 'unknown';
 }
+
+// Where the screen's back (the bar's arrow, the edge swipe, Android's back)
+// goes while the picker is past its first step (ruled 2026-11-22: back steps
+// through the picker before it leaves the page). One step at a time: a new
+// wine's fields → that producer's wines (a NEW producer: the producer search)
+// → the producer search → the one search field; a picked wine → the list it
+// was picked from; an edit's search → the bottle kept as it was. 'none' = the
+// back leaves the page.
+export type BackStep = 'none' | 'keep' | 'unpick' | 'wines' | 'producer' | 'search';
+export function backStep(p: {
+  frozen: boolean; editing: boolean; changing: boolean; mode: 'find' | 'new';
+  picked: boolean; producer: 'listed' | 'new' | null; creating: boolean;
+}): BackStep {
+  if (p.frozen || (p.editing && !p.changing)) return 'none';
+  if (p.mode === 'find') return p.picked ? 'unpick' : p.editing ? 'keep' : 'none';
+  if (p.creating && p.producer) return p.producer === 'listed' ? 'wines' : 'producer';
+  if (p.picked) return 'wines';
+  return p.producer ? 'producer' : 'search';
+}

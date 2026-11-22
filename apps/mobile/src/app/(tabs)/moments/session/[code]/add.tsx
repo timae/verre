@@ -17,7 +17,7 @@ import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { Disclosure, FieldGroup, MAX_WINE_IMAGE_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
-import { BottlePicker, type PickerState } from '@/components/catalog/BottlePicker';
+import { BottlePicker, usePickerBack, type PickerState } from '@/components/catalog/BottlePicker';
 import { buildImpressionPayload } from '@/lib/impressionPayload';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { ApiError, addWine, deleteWineImage, getSessionState, putWineImage, reassignBroughtBy, reorderWines, updateWine, type SessionParticipant, type WireWine } from '@/lib/api/sessions';
@@ -235,6 +235,7 @@ export function ImpressionForm({
     if (left.current) return;
     left.current = true;
     queryClient.invalidateQueries({ queryKey: ['session-state', code] });
+    pickerBack.allowLeave();
     router.back();
   };
   // 🔒 Once a save MAY have landed, or only the photo is left, the bottle's own
@@ -242,6 +243,7 @@ export function ImpressionForm({
   // (or sends only the photo), so an edit made now would be dropped silently.
   // While a save is in flight too (Codex r2): an edit made then is not in it.
   const locked = frozen !== null || photoPending || saving;
+  const pickerBack = usePickerBack(!locked);
   // A photo upload was tried: a photo cleared since must be removed on the
   // server too (the PUT may have landed without its answer, Codex r1).
   const photoTried = useRef(false);
@@ -428,6 +430,7 @@ export function ImpressionForm({
       >
         {/* The bottle first (ADR-0009): picked from the catalogue, inline. */}
         <BottlePicker
+          {...pickerBack.pickerProps}
           scope={{ code }}
           current={mode === 'edit' ? currentLabel(initialWine) : null}
           frozen={frozen ? { label: frozen.label, isNew: frozen.kind === 'create' }

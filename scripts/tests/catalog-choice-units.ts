@@ -7,7 +7,7 @@
 
 import { clientIdFromUuids } from '../../apps/mobile/src/lib/clientIdFormat';
 import {
-  linkBody, newWineChoice, pickedChoice, readAbv, readYear, writeOutcome, yearFate, yearLine,
+  backStep, linkBody, newWineChoice, pickedChoice, readAbv, readYear, writeOutcome, yearFate, yearLine,
   ABV_INVALID, KIND_MISSING, maxYear, NAME_MISSING, yearInvalid, type NewWineDraft,
 } from '../../apps/mobile/src/lib/catalogChoice';
 import { alcoholText, bottleGrapes, bottleOrigin } from '../../apps/mobile/src/lib/bottleFacts';
@@ -18,6 +18,22 @@ const check = (name: string, ok: boolean, detail: unknown = '') => {
   console.log(`${ok ? '✓' : '✗'} ${name}${ok || detail === '' ? '' : ` — ${JSON.stringify(detail)}`}`);
 };
 const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+// ── The screen's back steps through the picker first (ruled 2026-11-22) ──
+{
+  const base = { frozen: false, editing: false, changing: true, mode: 'find' as const, picked: false, producer: null, creating: false };
+  check('back: on the one search field it leaves the page', backStep(base) === 'none');
+  check('back: a picked wine goes back to the list', backStep({ ...base, picked: true }) === 'unpick');
+  check('back: an edit\'s search keeps the bottle as it was', backStep({ ...base, editing: true }) === 'keep');
+  check('back: an edit not being changed leaves the page', backStep({ ...base, editing: true, changing: false }) === 'none');
+  check('back: a frozen choice (a save may have landed) leaves the page', backStep({ ...base, frozen: true, picked: true }) === 'none');
+  const add = { ...base, mode: 'new' as const };
+  check('back: "Add Wine to Catalogue"\'s producer search → the one search field', backStep(add) === 'search');
+  check('back: a listed producer\'s wines → the producer search', backStep({ ...add, producer: 'listed' }) === 'producer');
+  check('back: a wine picked under a producer → its wines', backStep({ ...add, producer: 'listed', picked: true }) === 'wines');
+  check('back: a new wine under a listed producer → that producer\'s wines', backStep({ ...add, producer: 'listed', creating: true }) === 'wines');
+  check('back: a new wine of a NEW producer ("Add Producer") → the producer search', backStep({ ...add, producer: 'new', creating: true }) === 'producer');
+}
 
 // ── The client id: 21 characters of the server's alphabet ─────────────────
 {

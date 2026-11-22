@@ -1,5 +1,4 @@
 import { Pressable } from 'react-native';
-import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { radius, useTheme } from '@/theme';
 
@@ -7,8 +6,9 @@ import { radius, useTheme } from '@/theme';
 // extraction): on = accent fill + accent ink, off = the page fill with the
 // rule outline (a control affordance, not a surface edge) and soft ink. One of
 // a set (the line-up reveal timings, a new wine's colour) or, with `tick`, a
-// tick of its own (ADR-0009: Sparkling, NV), drawn with a check that is faint
-// while off so it never reads as one more option of the set beside it.
+// toggle of its own (ADR-0009: Sparkling, NV): the same look, on = the fill,
+// announced as a checkbox. No check glyph (ruled 2026-11-22: "that is not how
+// it works").
 export function ChoiceChip({
   label, on, onPress, tick, disabled, accessibilityLabel,
 }: {
@@ -30,7 +30,7 @@ export function ChoiceChip({
       style={{
         flexDirection: 'row', alignItems: 'center', gap: 4,
         paddingVertical: 7,
-        paddingHorizontal: tick ? 11 : 13,
+        paddingHorizontal: 13,
         borderRadius: radius.pill,
         borderWidth: 1,
         borderColor: on ? 'transparent' : theme.rule,
@@ -38,7 +38,6 @@ export function ChoiceChip({
         opacity: disabled ? 0.45 : 1,
       }}
     >
-      {tick ? <Icon name="check" size={14} color={on ? theme.accentInk : theme.inkFaint} /> : null}
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: on ? theme.accentInk : theme.inkSoft }}>
         {label}
       </VText>

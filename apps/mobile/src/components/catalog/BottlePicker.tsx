@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useEffect, useImperativeHandle, useMemo, useReducer, useRef, useState } from 'react';
+import { useIsFocused, usePreventRemove } from 'expo-router';
 import { ActivityIndicator, Pressable, View, type TextInputInstance } from 'react-native';
 import { countryName } from '@verre/core';
 import { AnchoredMenu, AnchorButton, type MenuAnchor } from '@/components/ui/AnchoredMenu';
@@ -13,7 +14,7 @@ import {
   type BottleHit, type CatalogScope, type ProducerHit, type ProductHit, type SearchAnswer, type VintageHit,
 } from '@/lib/api/catalog';
 import { initialSearch, offersAddProducer, offersNew, pendingRequest, pickRow, searchNotice, searchReducer, visibleRows, type SearchEvent, type SearchState } from '@/lib/bottleSearch';
-import { COLOURS, newWineChoice, pickedChoice, readYear, yearFate, yearLine, type BottleLabel, type CatalogChoice, type Colour } from '@/lib/catalogChoice';
+import { backStep, COLOURS, newWineChoice, pickedChoice, readYear, yearFate, yearLine, type BottleLabel, type CatalogChoice, type Colour } from '@/lib/catalogChoice';
 import { kindLabel } from '@/lib/momentFormat';
 import { radius, useTheme } from '@/theme';
 
@@ -38,6 +39,28 @@ export type PickerState =
 
 type NewProducer = { id: null; name: string };
 
+export type BottlePickerHandle = { stepBack: () => void };
+
+// The screen's back steps through the picker first (ruled 2026-11-22): while
+// the picker is past its first step, a BACK (the bar's arrow = GO_BACK, the
+// edge swipe = POP: the native stack snaps the screen back and reports it,
+// Android's back) goes one picker step back instead of leaving the page. Any
+// other removal (a replace, a pop to the tab's root, a redirect) goes through.
+// Only while the screen is in front: Check In's first stage stays mounted under
+// its rate stage, whose exit removes both. A screen's own exits (a save, "this
+// is gone") call `allowLeave()` before they go back.
+export function usePickerBack(enabled = true) {
+  const ref = useRef<BottlePickerHandle>(null);
+  const [can, setCan] = useState(false);
+  const focused = useIsFocused();
+  const allowLeave = usePreventRemove(enabled && focused && can, ({ data, repeat }) => {
+    const t = data.action.type;
+    if ((t === 'GO_BACK' || t === 'POP') && ref.current) ref.current.stepBack();
+    else repeat();
+  });
+  return { pickerProps: { ref, onCanStepBack: setCan }, allowLeave };
+}
+
 // One search field's state, driven by the pure controller: one request per
 // pause in typing (300 ms), its answer kept only for the generation it was
 // asked for.
@@ -59,7 +82,7 @@ function useCatalogSearch<T>(min: number, run: (q: string) => Promise<SearchAnsw
 }
 
 export function BottlePicker({
-  scope: scopeIn, current, frozen, showErrors, onChange,
+  scope: scopeIn, current, frozen, showErrors, onChange, ref, onCanStepBack,
 }: {
   scope: CatalogScope;
   /** Edit: the bottle as it is. Its summary shows with Change; until then the state is `unchanged`. */
@@ -69,6 +92,9 @@ export function BottlePicker({
   /** After a save attempt: a draft's error shows under it. */
   showErrors?: boolean;
   onChange: (s: PickerState) => void;
+  /** `usePickerBack`: the screen's back steps through the picker. */
+  ref?: React.Ref<BottlePickerHandle>;
+  onCanStepBack?: (can: boolean) => void;
 }) {
   const { theme } = useTheme();
   // 🔒 Keyed on the moment's CODE: a caller passing `{ code }` inline makes a new
@@ -160,6 +186,22 @@ export function BottlePicker({
   const unpick = () => { if (mode === 'new') backToWine(); else { setProduct(null); resetYear(); } };
   const toFind = () => { backToProducer(); producerDo({ type: 'reset' }); setMode('find'); };
   const toNew = () => { setMode('new'); producerDo({ type: 'reset' }); setTimeout(() => producerRef.current?.focus(), 50); };
+  const keep = () => { toFind(); bottleDo({ type: 'reset' }); setChanging(false); };
+  const step = backStep({
+    frozen: !!frozen, editing: !!current, changing, mode, picked: !!product,
+    producer: producer ? (producer.id ? 'listed' : 'new') : null, creating,
+  });
+  const back = { keep, unpick, wines: backToWine, producer: backToProducer, search: toFind, none: null }[step];
+  const backRef = useRef(back);
+  backRef.current = back;
+  useImperativeHandle(ref, () => ({ stepBack: () => { backRef.current?.(); } }), []);
+  const onCanStepBackRef = useRef(onCanStepBack);
+  onCanStepBackRef.current = onCanStepBack;
+  const canBack = back !== null;
+  useEffect(() => {
+    onCanStepBackRef.current?.(canBack);
+    return () => onCanStepBackRef.current?.(false);
+  }, [canBack]);
   const pickBottle = (id: string) => {
     const r = pickRow(bottle, id);
     if (!r) return;
@@ -180,7 +222,7 @@ export function BottlePicker({
   return (
     <View style={{ marginBottom: 16 }}>
       {current ? (
-        <Pressable accessibilityRole="button" onPress={() => { toFind(); bottleDo({ type: 'reset' }); setChanging(false); }} style={{ alignSelf: 'flex-start', marginBottom: 10 }}>
+        <Pressable accessibilityRole="button" onPress={keep} style={{ alignSelf: 'flex-start', marginBottom: 10 }}>
           <VText variant="small" style={{ color: theme.accent, fontFamily: 'InstrumentSans_600SemiBold' }}>{`Keep “${labelLine(current)}”`}</VText>
         </Pressable>
       ) : null}

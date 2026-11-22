@@ -11,7 +11,7 @@ import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { Disclosure, MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
-import { BottlePicker, type PickerState } from '@/components/catalog/BottlePicker';
+import { BottlePicker, usePickerBack, type PickerState } from '@/components/catalog/BottlePicker';
 import { authClient } from '@/lib/authClient';
 import { getCheckinEditMeta, setCheckinEditMeta } from '@/lib/checkinEdit';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
@@ -58,6 +58,7 @@ export default function EditCheckinDetails() {
   const scrollRef = useRef<ScrollViewInstance>(null);
   const cityRef = useRef<TextInputInstance>(null);
   const purchaseRef = useRef<TextInputInstance>(null);
+  const pickerBack = usePickerBack();
 
   // Cold deep link / stale store — nothing to edit; bounce to the list it
   // came from (this screen is mounted under Feed AND You).
@@ -96,6 +97,7 @@ export default function EditCheckinDetails() {
       venue, city,
       photo,
     });
+    pickerBack.allowLeave();
     router.back();
   };
 
@@ -119,7 +121,7 @@ export default function EditCheckinDetails() {
         showsVerticalScrollIndicator={false}
       >
         {/* The bottle first (ADR-0009): its wine, or Change to re-link it. */}
-        <BottlePicker scope={null} current={meta.choice?.label ?? meta.label} showErrors={showErrors} onChange={setPicker} />
+        <BottlePicker {...pickerBack.pickerProps} scope={null} current={meta.choice?.label ?? meta.label} showErrors={showErrors} onChange={setPicker} />
 
         {previewUri ? (
           <View style={{ height: 150, borderRadius: radius.md, overflow: 'hidden', marginBottom: 16 }}>

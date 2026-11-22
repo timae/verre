@@ -61,3 +61,20 @@ the year. Server side: `GET …/catalog/search?kind=bottle` (README; `lib/catalo
 - 🔒 Each search field's state is `lib/bottleSearch.ts`: a request generation, not
   the text, decides which answer is current; "Add Wine to Catalogue" and "Add
   Producer" only after a successful answer for it.
+
+## Addendum 2026-11-22 (Simon, first look on the phone)
+
+- **Back steps through the picker first.** Once "Add Wine to Catalogue", "Add
+  Producer" or "Add Wine" was tapped, or a wine picked, the screen's back (the
+  bar's arrow, the edge swipe, Android's back) goes one step back inside the
+  picker: a new wine's fields → that producer's wines (for a new producer: the
+  producer search) → the producer search → the one search field with its text;
+  a picked wine → the list again; an edit's search → the bottle as it was. Only
+  from the first step does back leave the page. ("i cannot navigate back as soon
+  as i clicked add wine or add producer.")
+- **NV and Sparkling have no check glyph.** They stay toggles of their own
+  (ADR-0009), drawn like every other choice chip: on = the fill. ("why is there
+  a tick in front of NV and Sparkling? that is not how it works.")
+- **A vintage year ends at the current year** (it was next year): a vintage is
+  the harvest year.
+

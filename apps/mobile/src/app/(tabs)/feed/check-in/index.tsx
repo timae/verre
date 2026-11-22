@@ -10,7 +10,7 @@ import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { Disclosure, MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
-import { BottlePicker, type PickerState } from '@/components/catalog/BottlePicker';
+import { BottlePicker, usePickerBack, type PickerState } from '@/components/catalog/BottlePicker';
 import { newClientId } from '@/lib/clientId';
 import type { BottleLabel } from '@/lib/catalogChoice';
 import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
@@ -48,6 +48,7 @@ export default function CheckinDetails() {
   // One client id per flow (this screen stays mounted under the rate stage).
   const [occurrenceId] = useState(() => newClientId());
   const [picker, setPicker] = useState<PickerState>({ status: 'none' });
+  const pickerBack = usePickerBack();
   const [frozen, setFrozen] = useState<{ label: BottleLabel; isNew: boolean } | null>(null);
   const [showErrors, setShowErrors] = useState(false);
   const [photo, setPhoto] = useState<PhotoState>(null);
@@ -136,7 +137,7 @@ export default function CheckinDetails() {
         showsVerticalScrollIndicator={false}
       >
         {/* The bottle first (ADR-0009): a catalogue wine, picked inline. */}
-        <BottlePicker scope={null} frozen={frozen} showErrors={showErrors} onChange={setPicker} />
+        <BottlePicker {...pickerBack.pickerProps} scope={null} frozen={frozen} showErrors={showErrors} onChange={setPicker} />
 
         <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} />
         {photoError ? (
