@@ -79,12 +79,13 @@ export async function answerCatalogSearch(params: URLSearchParams): Promise<Next
     // product search returns no vintages. ADDING a missing one is the add
     // flow's branch 2 (signed in only).
     const productId = params.get('productId') || ''
-    const results = ID.test(productId) ? await productVintages(productId) : null
-    if (!results) {
+    const found = ID.test(productId) ? await productVintages(productId) : null
+    if (!found) {
       denyCatalogRef(`vintage lookup of ${productId}`)
       return NextResponse.json({ error: 'invalid catalog reference' }, { status: 400, headers: NO_STORE })
     }
-    return NextResponse.json({ results }, { headers: NO_STORE })
+    // `abv` beside `results` (additive: the website reads `results` only).
+    return NextResponse.json({ results: found.vintages, abv: found.abv }, { headers: NO_STORE })
   }
   return NextResponse.json({ error: 'kind must be bottle, producer, product or vintages' }, { status: 400, headers: NO_STORE })
 }

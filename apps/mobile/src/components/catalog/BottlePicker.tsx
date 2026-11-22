@@ -14,7 +14,7 @@ import {
   type BottleHit, type CatalogScope, type ProducerHit, type ProductHit, type SearchAnswer, type VintageHit,
 } from '@/lib/api/catalog';
 import { closeNote, initialSearch, offersAddProducer, offersNew, pendingRequest, pickRow, searchNotice, searchReducer, visibleRows, type SearchEvent, type SearchState } from '@/lib/bottleSearch';
-import { backStep, COLOURS, newWineChoice, pickedChoice, readYear, yearFate, yearLine, type BottleLabel, type CatalogChoice, type Colour } from '@/lib/catalogChoice';
+import { backStep, COLOURS, newWineChoice, pickedChoice, readYear, shownAbv, yearFate, yearLine, type BottleLabel, type CatalogChoice, type Colour } from '@/lib/catalogChoice';
 import { kindLabel } from '@/lib/momentFormat';
 import { radius, useTheme } from '@/theme';
 import { usePhoneTokens } from '@/lib/layout';
@@ -115,6 +115,7 @@ export function BottlePicker({
   const [product, setProduct] = useState<ProductHit | null>(null);
   const [creating, setCreating] = useState(false);
   const [vintages, setVintages] = useState<VintageHit[] | null>(null);
+  const [wineAbv, setWineAbv] = useState<number | null>(null);
   // A failed year lookup is its own state (never "still loading") and is asked
   // again on the next keystroke in the year field or a tap on NV.
   const [vintagesTry, setVintagesTry] = useState(0);
@@ -142,11 +143,11 @@ export function BottlePicker({
   useEffect(() => { bottleDo({ type: 'reset' }); producerDo({ type: 'reset' }); wineDo({ type: 'reset' }); }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!product) { setVintages(null); setVintagesFailed(false); return; }
+    if (!product) { setVintages(null); setWineAbv(null); setVintagesFailed(false); return; }
     let live = true;
     setVintagesFailed(false);
     listVintages(scope, product.id)
-      .then((r) => { if (live) { setVintages(r); setYearNotice(null); } })
+      .then((r) => { if (live) { setVintages(r.vintages); setWineAbv(r.abv); setYearNotice(null); } })
       .catch((e) => { if (live) { setVintagesFailed(true); setYearNotice(e instanceof CatalogSearchError ? e.message : 'Search failed. Try again.'); } });
     return () => { live = false; };
   }, [product, scope, vintagesTry]);
@@ -291,6 +292,7 @@ export function BottlePicker({
             nv={nv} onNv={(v) => { setNv(v); if (v) setYearText(''); retryYears(); }}
             yearText={yearText} onYear={onYear}
             showAbv={fate?.fate === 'added'} abvText={abvText} onAbv={setAbvText}
+            knownAbv={fate ? shownAbv(fate, vintages, wineAbv) : null}
           />
           <StatusLine text={fate ? yearLine(fate) : null} />
           {showErrors && state.status === 'error' ? <StatusLine text={state.error} error /> : null}
@@ -349,12 +351,16 @@ function Spinner() {
 const labelLine = (l: BottleLabel) => [l.name, l.year].filter(Boolean).join(' ');
 
 // The year field, its NV tick chip with the ⓘ, and the alcohol % beside it.
+// `knownAbv`: the catalogue's alcohol for the picked wine and year, shown in
+// the same place, not editable (ruled 2026-11-22); `showAbv` (a new year) is
+// the editable field instead.
 function YearRow({
-  nv, onNv, yearText, onYear, showAbv, abvText, onAbv,
+  nv, onNv, yearText, onYear, showAbv, abvText, onAbv, knownAbv,
 }: {
   nv: boolean; onNv: (v: boolean) => void;
   yearText: string; onYear: (t: string) => void;
   showAbv: boolean; abvText: string; onAbv: (t: string) => void;
+  knownAbv?: string | null;
 }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 10, marginTop: 12 }}>
@@ -368,6 +374,10 @@ function YearRow({
       {showAbv ? (
         <View style={{ width: 96, marginLeft: 'auto' }}>
           <TextField label="Alcohol %" placeholder="e.g. 13.5" value={abvText} onChangeText={onAbv} keyboardType="decimal-pad" maxLength={5} />
+        </View>
+      ) : knownAbv ? (
+        <View style={{ width: 96, marginLeft: 'auto' }}>
+          <TextField label="Alcohol %" value={knownAbv} editable={false} accessibilityLabel={`Alcohol ${knownAbv} %, from the catalogue`} />
         </View>
       ) : null}
     </View>

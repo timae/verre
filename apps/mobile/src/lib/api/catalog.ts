@@ -22,7 +22,11 @@ export type ProductHit = { id: string; name: string; colour: string | null; spar
 // filled into the year field on a pick); null when none was typed or the wine's
 // own name holds that number.
 export type BottleHit = ProductHit & { year: number | null };
-export type VintageHit = { id: string; year: number | null };
+// `abv`: the year's OWN alcohol (null: none recorded for that year).
+export type VintageHit = { id: string; year: number | null; abv: number | null };
+// A picked wine's years and the wine's own alcohol (ruled 2026-11-22: shown
+// read-only where the Alcohol % field is: the year's, else the wine's).
+export type WineYears = { vintages: VintageHit[]; abv: number | null };
 // `exact` (kind=producer): a listed producer carries exactly the typed name, as
 // the database folds names ("Strass" = "Straß"); "Add Producer" is offered only
 // without one.
@@ -38,17 +42,23 @@ export class CatalogSearchError extends Error {
   }
 }
 
-async function ask<T>(scope: CatalogScope, qs: string): Promise<SearchAnswer<T>> {
+type Envelope<T> = { results?: T[]; more?: boolean; tooLong?: boolean; exact?: boolean; close?: boolean; abv?: unknown };
+async function askJson<T>(scope: CatalogScope, qs: string): Promise<Envelope<T> & { results: T[] }> {
   const base = scope ? `/api/session/${encodeURIComponent(scope.code)}/catalog/search` : '/api/catalog/search';
   const res = await apiFetch(`${base}?${qs}`).catch(() => null);
   if (!res) throw new CatalogSearchError('failed');
   if (res.status === 404) throw new CatalogSearchError('off');
   if (res.status === 429) throw new CatalogSearchError('busy');
   if (!res.ok) throw new CatalogSearchError('failed');
-  const j = (await res.json().catch(() => null)) as { results?: T[]; more?: boolean; tooLong?: boolean; exact?: boolean; close?: boolean } | null;
+  const j = (await res.json().catch(() => null)) as Envelope<T> | null;
   if (!j || !Array.isArray(j.results)) throw new CatalogSearchError('failed');
+  return j as Envelope<T> & { results: T[] };
+}
+async function ask<T>(scope: CatalogScope, qs: string): Promise<SearchAnswer<T>> {
+  const j = await askJson<T>(scope, qs);
   return { results: j.results, more: !!j.more, tooLong: !!j.tooLong, exact: !!j.exact, close: !!j.close };
 }
+const abvOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
 export const searchBottles = (scope: CatalogScope, q: string) =>
   ask<BottleHit>(scope, `kind=bottle&q=${encodeURIComponent(q)}`);
@@ -58,5 +68,6 @@ export const searchProducers = (scope: CatalogScope, q: string) =>
 // there are more than it sent: type to narrow).
 export const searchProducts = (scope: CatalogScope, producerId: string, q: string) =>
   ask<ProductHit>(scope, `kind=product&producerId=${encodeURIComponent(producerId)}&q=${encodeURIComponent(q)}`);
-export const listVintages = (scope: CatalogScope, productId: string) =>
-  ask<VintageHit>(scope, `kind=vintages&productId=${encodeURIComponent(productId)}`).then((r) => r.results);
+export const listVintages = (scope: CatalogScope, productId: string): Promise<WineYears> =>
+  askJson<VintageHit>(scope, `kind=vintages&productId=${encodeURIComponent(productId)}`)
+    .then((j) => ({ vintages: j.results.map((v) => ({ id: v.id, year: v.year, abv: abvOrNull(v.abv) })), abv: abvOrNull(j.abv) }));

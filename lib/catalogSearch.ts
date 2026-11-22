@@ -781,7 +781,8 @@ const YEAR_LINKABLE = ['provisional', 'confirmed', 'archived']
 type Near = { word: string; ndoc: number }
 type Token = { i: number; w: string; ndoc: number | null; pre: boolean; near: Near[] }
 type Alt = { word: string; typos: number; prefix: boolean }
-type Group = { token: Token; alts: Alt[] }
+// `filler`: the planner's verdict, AFTER typo resolution ("weingutt" is one).
+type Group = { token: Token; alts: Alt[]; filler?: boolean }
 type QueryPlan = { required: Group[]; optional: Group[]; year: number | null; typed: number; tokens: Token[]; close?: boolean }
 
 const EMPTY = <T>(tooLong = false): SearchAnswer<T> => ({ results: [], more: false, tooLong })
@@ -927,7 +928,7 @@ function planQuery(tokens: Token[], bottles: boolean): QueryPlan | null {
     const filler = FILLER_SET.has(t.w)
       || (isLast && [...t.w].length >= 3 && SEARCH_FILLERS.some(f => f.startsWith(t.w)))
       || (!literalKnown && typos.some(a => FILLER_SET.has(a.word)))
-    if (filler) { optional.push(g); fillers.push(g) }
+    if (filler) { g.filler = true; optional.push(g); fillers.push(g) }
     else if ((bottles && t.w === NV_WORD) || (j === lastI && toks.length > 1 && halfYear(t))) optional.push(g)
     else required.push(g)
   })
@@ -950,7 +951,10 @@ const tsqAllButOne = (groups: Group[]) => groups.map((_, skip) => '(' + tsq(grou
 
 // Per row: how well the MATCHED row's own words answer the query. The order of
 // the key is the ranking cascade (never one blended score).
-type Fit = { key: number[]; exact: number; yearInName: boolean }
+// `producerKey`: the same cascade without the year and region places (a
+// producer doc is its name), built from the named fields, never by position
+// (Codex 2026-11-22: adding `alt` shifted the positions the producer search read).
+type Fit = { key: number[]; producerKey: number[]; exact: number; yearInName: boolean }
 function fitRow(plan: QueryPlan, producer: string[], survivor: string[], name: string[], region: string[], hasYear: boolean): Fit {
   const named = new Set([...producer, ...survivor, ...name])
   const all = [...named, ...region.filter(w => !named.has(w))]
@@ -995,7 +999,7 @@ function fitRow(plan: QueryPlan, producer: string[], survivor: string[], name: s
   const untyped = (ws: string[]) => new Set(ws.filter(w => !used.has(w) && !FILLER_SET.has(w))).size
   const untypedP = survivor.length ? Math.min(untyped(producer), untyped(survivor)) : untyped(producer)
   const untypedPN = survivor.length ? Math.min(untyped([...producer, ...name]), untyped([...survivor, ...name])) : untyped([...producer, ...name])
-  return { key: [typos, alt, -full, -inName, yearOk ? 0 : 1, -boosts, untypedP, untypedPN], exact, yearInName }
+  return { key: [typos, alt, -full, -inName, yearOk ? 0 : 1, -boosts, untypedP, untypedPN], producerKey: [typos, alt, -full, -boosts, untypedP], exact, yearInName }
 }
 function byKey(a: number[], b: number[]): number {
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]
@@ -1157,7 +1161,7 @@ export async function searchBottles(raw: string, opts: { limit?: number } = {}):
   if (!plan) return { ...EMPTY<BottleMatch>(), close: false }
   const answer = (p: { results: BottleMatch[]; more: boolean }, close = false): BottleAnswer => ({ results: p.results, more: p.more, tooLong: false, close })
   const first = await bottlePass(plan, limit)
-  if (first.results.length >= SHORT_LIST) return answer(first)
+  if (first.results.length >= SHORT_LIST || first.more) return answer(first)
   // 🔒 THE TYPO PASS for a word that is itself some other doc's word (no
   // lookup ran for it): on an EMPTY answer (counted after merge resolution,
   // Codex r4 P2: an exact-word tombstone with an archived survivor is a raw
@@ -1168,13 +1172,26 @@ export async function searchBottles(raw: string, opts: { limit?: number } = {}):
   const words = fallbackWords(plan)
   const forced = words.length ? withForcedNear(plan, await readWords(prep.q, words), words, true) : null
   const widened = forced ? await bottlePass(forced, limit) : null
-  if (widened && widened.results.length > first.results.length) return answer(widened)
-  if (first.results.length) return answer(first)
+  // 🔒 The first pass's wines stay on top AS FOUND, the widened ones below
+  // (Codex 2026-11-22: the widened pass caps its candidates before ranking, so
+  // a common correction, "riesling" for "reisling", could crowd the one wine
+  // holding the typed word out of it).
+  if (widened && widened.results.some(w => !first.results.some(f => f.id === w.id))) {
+    const seen = new Set(first.results.map(f => f.id))
+    const merged = [...first.results, ...widened.results.filter(w => !seen.has(w.id))]
+    return { results: merged.slice(0, limit), more: widened.more || merged.length > limit, tooLong: false, close: false }
+  }
+  // A widened pass that stopped early still says so, even when every row it
+  // found resolved to one already listed (Codex 2026-11-22: 401 aliases of the
+  // one wine found).
+  if (first.results.length) return { ...answer(first), more: first.more || !!widened?.more }
   // 🔒 CLOSE MATCHES (ruled 2026-11-22): nothing holds every word and 3 or
   // more required words were typed → the wines holding all but one, flagged.
   const base = forced ?? plan
-  // Only real words count (a search of nothing but fillers promotes them).
-  if (base.required.filter(g => !FILLER_SET.has(g.token.w)).length < CLOSE_MIN_WORDS) return answer(widened ?? first)
+  // Only real words count (a search of nothing but fillers promotes them), by
+  // the planner's verdict after typo resolution (Codex 2026-11-22: "weingutt
+  // domainne chateu" are three fillers, not three words).
+  if (base.required.filter(g => !g.filler).length < CLOSE_MIN_WORDS) return answer(widened ?? first)
   const close = await bottlePass({ ...base, close: true }, limit)
   return close.results.length ? answer(close, true) : answer(widened ?? first)
 }
@@ -1212,7 +1229,7 @@ async function producerPass(q: string, plan: QueryPlan, limit: number): Promise<
   const fitted = rows.map(r => {
     const fit = fitRow(plan, r.words ? r.words.split(' ') : [], [], [], [], false)
     // The key minus the year and region places, the exact name before the name order.
-    return { row: r, key: [fit.key[0], fit.key[1], fit.key[4], fit.key[5], r.arm === 0 ? 0 : 1], score: shareOf(fit.exact, plan) }
+    return { row: r, key: [...fit.producerKey, r.arm === 0 ? 0 : 1], score: shareOf(fit.exact, plan) }
   })
   // Tombstones resolve to their survivor (read time, as today), the best match wins.
   const tomb = fitted.filter(f => f.row.status === 'linked')

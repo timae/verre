@@ -85,5 +85,11 @@ the year. Server side: `GET …/catalog/search?kind=bottle` (README; `lib/catalo
   wine holds every word and three or more real words were typed (fillers like
   "Weingut" don't count), the wines holding all but one are shown under the line
   "No wine has every word. These come closest." ("pichler kellerberg magnum": the
-  Kellerberg wines). Two words stay strict: "christoph pichler" still finds nothing.
+  Kellerberg wines). Two words stay strict: "christoph pichler" still finds nothing.- **The catalogue's alcohol shows beside the year, not editable** ("just show it there
+  where the fill is. it is just not an editable field."): a picked wine shows its
+  alcohol in the Alcohol % slot as a read-only field: a typed year's own value, and
+  nothing when that year has none (the wine's figure is one number for every year, so
+  it never stands in for a year's: "why does it fall back to 13%?"); the wine's while
+  no year is typed. Only a year that is added gets the editable field. An entry's
+  missing alcohol is not filled from here.
 

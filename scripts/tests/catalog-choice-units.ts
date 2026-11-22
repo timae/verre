@@ -7,7 +7,7 @@
 
 import { clientIdFromUuids } from '../../apps/mobile/src/lib/clientIdFormat';
 import {
-  backStep, linkBody, newWineChoice, pickedChoice, readAbv, readYear, writeOutcome, yearFate, yearLine,
+  backStep, linkBody, newWineChoice, pickedChoice, readAbv, readYear, shownAbv, writeOutcome, yearFate, yearLine,
   ABV_INVALID, KIND_MISSING, maxYear, NAME_MISSING, yearInvalid, type NewWineDraft,
 } from '../../apps/mobile/src/lib/catalogChoice';
 import { alcoholText, bottleGrapes, bottleOrigin } from '../../apps/mobile/src/lib/bottleFacts';
@@ -18,6 +18,20 @@ const check = (name: string, ok: boolean, detail: unknown = '') => {
   console.log(`${ok ? '✓' : '✗'} ${name}${ok || detail === '' ? '' : ` — ${JSON.stringify(detail)}`}`);
 };
 const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+// ── The catalogue's alcohol, shown read-only where the field is (ruled 2026-11-22) ──
+{
+  const V = [{ id: 'v19', year: 2019, abv: 13 }, { id: 'v18', year: 2018, abv: null }, { id: 'vnv', year: null, abv: null }];
+  const at = (nv: boolean, t: string, wine: number | null) => shownAbv(yearFate(V, readYear(nv, t)), V, wine);
+  check('abv: a year the wine has shows that year\'s own alcohol', at(false, '2019', 12.5) === '13');
+  check('abv: a year without its own shows NOTHING, never the wine\'s (one figure for every year)', at(false, '2018', 12.5) === null);
+  check('abv: NV listed: the NV row\'s own only', at(true, '', 12.5) === null && shownAbv(yearFate([{ id: 'n', year: null, abv: 11 }], readYear(true, '')), [{ id: 'n', year: null, abv: 11 }], 12.5) === '11');
+  check('abv: no year typed: the wine\'s', at(false, '', 12.5) === '12.5');
+  check('abv: nothing recorded: nothing shown', at(false, '2018', null) === null && at(false, '', null) === null);
+  check('abv: a NEW year shows none (its field is editable instead)', at(false, '2016', 12.5) === null);
+  check('abv: nothing while the years load, or for an invalid year', shownAbv(yearFate(null, readYear(false, '2019')), null, 12.5) === null && at(false, '1850', 12.5) === null);
+  check('abv: the field\'s own text (a number, at most two decimals)', shownAbv(yearFate([{ id: 'a', year: 2020, abv: 12.345 }], readYear(false, '2020')), [{ id: 'a', year: 2020, abv: 12.345 }], null) === '12.35');
+}
 
 // ── The screen's back steps through the picker first (ruled 2026-11-22) ──
 {

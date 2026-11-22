@@ -256,14 +256,19 @@ const LINKABLE = ['provisional', 'confirmed', 'archived']
 // § Product × vintage merges compose), so adding it again under the survivor
 // mints a second row of that year: phase 3's merge screens decide whether the
 // lookup should list the tombstones' years too.
-export async function productVintages(productId: string, db: Db = prisma): Promise<{ id: string; year: number | null }[] | null> {
+// A wine's linkable years, each with its OWN alcohol, and the wine's alcohol
+// (the picker shows the year's, else the wine's: ruled 2026-11-22, read-only).
+// 🔒 Decimal columns: coerced to numbers here (root CLAUDE.md, the wire trap).
+export async function productVintages(productId: string, db: Db = prisma): Promise<{ abv: number | null; vintages: { id: string; year: number | null; abv: number | null }[] } | null> {
   const eff = (await resolveEffectiveIds('wine_products', [productId], db)).get(productId)!
-  const p = (await db.$queryRaw<{ status: string; scope: string }[]>`SELECT status, scope FROM wine_products WHERE id = ${eff}`)[0]
+  const p = (await db.$queryRaw<{ status: string; scope: string; abv: unknown }[]>`SELECT status, scope, abv FROM wine_products WHERE id = ${eff}`)[0]
   if (!p || !LINKABLE.includes(p.status) || p.scope !== 'shared') return null
-  return db.$queryRaw<{ id: string; year: number | null }[]>`
-    SELECT id, year FROM wine_vintages
+  const rows = await db.$queryRaw<{ id: string; year: number | null; abv: unknown }[]>`
+    SELECT id, year, abv FROM wine_vintages
      WHERE product_id = ${eff} AND status = ANY(${LINKABLE}::text[])
      ORDER BY year DESC NULLS FIRST, id`
+  const num = (v: unknown) => (v === null || v === undefined ? null : Number(v))
+  return { abv: num(p.abv), vintages: rows.map(r => ({ id: r.id, year: r.year, abv: num(r.abv) })) }
 }
 
 // Is this `create` the caller's own retry on a bottle it already created this

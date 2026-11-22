@@ -334,7 +334,7 @@ async function guests() {
     gb.status === 200 && ((gb.json?.results as Record<string, unknown>[] | undefined) ?? []).some(x => x.id === e.productId && x.year === 2018 && !('status' in x))
     && typeof gb.json?.more === 'boolean' && typeof gb.json?.tooLong === 'boolean', [gb.status, gb.json])
   const gv = await momentSearchGet(g.code, { anon: g.anon }, `kind=vintages&productId=${e.productId}`)
-  check('(5c) …and its vintages (ids + years only)', gv.status === 200 && JSON.stringify(gv.json?.results) === JSON.stringify([{ id: e.vintageId, year: 2018 }]), [gv.status, gv.json])
+  check('(5c) …and its vintages (ids, years and each year\'s own alcohol: no status)', gv.status === 200 && JSON.stringify(gv.json?.results) === JSON.stringify([{ id: e.vintageId, year: 2018, abv: null }]), [gv.status, gv.json])
   // A plain taster may not search (the wine POST's power test).
   const t = await join(g.code, {}, 'Plain Taster')
   const ts = await momentSearchGet(g.code, { anon: t.anon }, `kind=producer&q=${encodeURIComponent(TAG)}`)
@@ -376,12 +376,20 @@ async function vintages() {
   section('§ 6 the vintage lookup: ids + years (NV included), the same gate and generic denials')
   const U = await mkUser('Vintage User')
   const e = await mintEntry({ producer: `${TAG} V Producer`, name: `${TAG} V Wine`, colour: 'red', year: 2015 })
+  // The year's OWN alcohol, set directly (the helper puts a typed abv on the wine).
+  await prisma.$executeRaw`UPDATE wine_vintages SET abv = 13.5 WHERE id = ${e.vintageId}`
+  await prisma.$executeRaw`UPDATE wine_products SET abv = NULL WHERE id = ${e.productId}`
   const nv = await prisma.$transaction(async tx => (await import('../../lib/catalogWrite.ts')).createVintage(e.productId, null, null, null, tx))
   const r = await globalSearch(as(U), `kind=vintages&productId=${e.productId}`)
-  const years = ((r.json?.results as { id: string; year: number | null }[] | undefined) ?? [])
+  const years = ((r.json?.results as { id: string; year: number | null; abv: unknown }[] | undefined) ?? [])
   check('(6a) the global route lists the product\'s vintages, NV included, nothing else', r.status === 200 && years.length === 2
     && years.some(v => v.id === e.vintageId && v.year === 2015) && years.some(v => v.id === nv.id && v.year === null)
-    && years.every(v => Object.keys(v).sort().join() === 'id,year'), [r.status, r.json])
+    && years.every(v => Object.keys(v).sort().join() === 'abv,id,year'), [r.status, r.json])
+  check('(6a) each year carries its OWN alcohol as a number (the Decimal trap), none for NV; the wine\'s beside them (none yet)',
+    years.find(v => v.year === 2015)?.abv === 13.5 && years.find(v => v.year === null)?.abv === null && r.json?.abv === null, r.json)
+  await prisma.$executeRaw`UPDATE wine_products SET abv = 12.5 WHERE id = ${e.productId}`
+  const r2 = await globalSearch(as(U), `kind=vintages&productId=${e.productId}`)
+  check('(6a) the wine\'s own alcohol travels beside the years, a number', r2.json?.abv === 12.5, r2.json)
   const bad = await globalSearch(as(U), 'kind=vintages&productId=noSuchProduct000001')
   const rej = await mintEntry({ producer: `${TAG} V Producer 2`, name: `${TAG} V Rejected`, colour: 'red', year: 2016 })
   await prisma.$executeRaw`UPDATE wine_products SET status = 'rejected' WHERE id = ${rej.productId}`

@@ -251,6 +251,10 @@ async function main() {
   await mint('La Picherie', 'Chateau La Picherie', { region: 'Bordeaux' })
   await mint('Pircher', 'Pinot Noir', { region: 'Eisacktal' })
   await mint('Château Domaine', 'Rouge Ancien', { region: 'Rhône' })
+  // A wine holding the misspelling as typed, next to 430+ Rieslings (Codex
+  // 2026-11-22), and a producer whose word only STARTS with "marx".
+  await mint('Fehler Hof', 'Reisling Spezial', { region: 'Pfalz' })
+  await mint('Albert MarxExtra', 'Hauswein', { region: 'Pfalz' })
   await db.$executeRawUnsafe(`UPDATE producers SET status = 'rejected' WHERE id = $1`, producers.get('Junk Haus'))
   // A linked vintage (a merged-away year) never counts as the wine having it.
   await db.$executeRawUnsafe(`INSERT INTO wine_vintages (id, product_id, year, status, links_to, curator_locked, created_at, updated_at)
@@ -399,6 +403,12 @@ async function main() {
   ok(!(await bottles('pichler kellerberg')).close, 'an answer holding every word is never `close`')
   res = await bottles('weingut domaine chateau')
   ok(res.results.length === 0 && !res.close, '"weingut domaine chateau": nothing but fillers never counts as 3 words (Château Domaine holds two)')
+  res = await bottles('weingutt domainne chateu')
+  ok(res.results.length === 0 && !res.close, '… nor do fillers found through a typo ("weingutt domainne chateu", Codex 2026-11-22)')
+  res = await bottles('reisling')
+  eq(res.results[0]?.id, P('Fehler Hof', 'Reisling Spezial'), '"reisling": the wine holding it as typed stays first, though its correction "riesling" holds more than 401 docs (Codex 2026-11-22)')
+  ok(res.results.length > 1 && res.results.slice(1).every(x => /riesling/i.test(x.name)), '… the Rieslings below it')
+  eq((await searchProducers('marx')).results[0]?.name, 'Weingut Marx', '"marx": the producer holding it as a whole word ranks first, not "Albert MarxExtra" by name (the key positions, Codex 2026-11-22)')
   res = await bottles('junk verworfen rot magnum')
   ok(res.results.length === 0, 'close matches never offer a REJECTED producer\'s wine (checked inside every arm)')
   res = await bottles('pichler kellerberg ' + Array.from({ length: 14 }, (_, k) => `zqx${'abcdefghijklmn'[k]}word`).join(' '))
@@ -477,6 +487,14 @@ async function main() {
   const linkedInB = (await db.$queryRawUnsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM wine_products WHERE id LIKE 'b7snbt%' AND status = 'linked'`))[0].n
   eq(linkedInB, 3, 'three tombstones among them')
   ok((await bottles('nebelung')).more, '`more`: the server stopped early')
+  // One wine found as typed; its typo correction is held by 405 tombstones of
+  // that same wine: the widened pass stops at its cap and adds no new row.
+  await seed('zxs', 1, { name: () => 'Zyxtrom Echt' })
+  await seed('zxt', 405, { name: g => `Zyxtram Alias${g}` })
+  await db.$executeRawUnsafe(`UPDATE wine_products SET status = 'linked', links_to = 'b7szxsw00001' WHERE id LIKE 'b7szxtw%'`)
+  await rebuild()
+  res = await bottles('zyxtrom')
+  ok(sameSet(ids(res), ['b7szxsw00001']) && res.more, '`more` survives a widened pass that stopped early with nothing new (405 aliases of the one wine, Codex 2026-11-22)')
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 6 — the writers keep the docs current')

@@ -4,7 +4,7 @@ import { normalizeVintageText } from '@verre/core';
 // full shapes): a root unit test imports this module, and the app's API types
 // pull React Native's global typings into the web build (listPost.ts's lesson).
 type ProductHit = { id: string; name: string; colour: string | null; sparkling: boolean; producerName: string };
-type VintageHit = { id: string; year: number | null };
+type VintageHit = { id: string; year: number | null; abv?: number | null };
 
 // The bottle picker's rules, pure (ADR-0009; units in
 // scripts/tests/catalog-choice-units.ts). Every new bottle is a catalogue
@@ -84,6 +84,19 @@ export function yearLine(f: YearFate): string | null {
   if (f.fate !== 'listed' && f.fate !== 'added') return null;
   const what = f.year === null ? 'Non-vintage' : String(f.year);
   return f.fate === 'listed' ? `${what} is in the catalogue.` : `${what} is added on save.`;
+}
+
+// The alcohol shown read-only where the Alcohol % field is (ruled 2026-11-22:
+// "show it there where the fill is. it is just not an editable field"): a
+// year the wine has shows that year's OWN alcohol, and nothing when it has
+// none (ruled 2026-11-22: the wine's figure is one number for every year, so
+// it never stands in for a year's); no year typed shows the wine's; a NEW year
+// shows none (its field is editable instead); nothing while the years load or
+// the year is invalid. The text is the field's own (a number, the label
+// carries the %).
+export function shownAbv(f: YearFate, vintages: VintageHit[] | null, wineAbv: number | null): string | null {
+  const abv = f.fate === 'listed' ? vintages?.find((v) => v.id === f.vintageId)?.abv ?? null : f.fate === 'unknown' ? wineAbv : null;
+  return typeof abv === 'number' && Number.isFinite(abv) ? String(Number(abv.toFixed(2))) : null;
 }
 
 // The choice for a picked wine. The alcohol % only travels with a year that
