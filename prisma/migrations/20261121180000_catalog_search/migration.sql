@@ -175,7 +175,11 @@ DELETE FROM catalog_search_producer_docs d WHERE NOT EXISTS (SELECT 1 FROM produ
 CREATE INDEX "catalog_search_docs_tsv_name_idx" ON "catalog_search_docs" USING GIN ("tsv_name");
 CREATE INDEX "catalog_search_docs_tsv_idx" ON "catalog_search_docs" USING GIN ("tsv");
 CREATE INDEX "catalog_search_producer_docs_tsv_idx" ON "catalog_search_producer_docs" USING GIN ("tsv");
-CREATE INDEX "catalog_search_words_word_gist_idx" ON "catalog_search_words" USING GIST ("word" gist_trgm_ops);
+-- siglen 256 (the default 12 bytes is too coarse for ~81k words: a typo lookup
+-- read the whole 5 MB index), with the lookup filtered on the first letter
+-- (`word LIKE first || '%'`, a typo keeps it): 8.7 → 1.0 ms a word (dev DB,
+-- 2026-11-22).
+CREATE INDEX "catalog_search_words_word_gist_idx" ON "catalog_search_words" USING GIST ("word" gist_trgm_ops(siglen=256));
 
 ANALYZE catalog_search_docs;
 ANALYZE catalog_search_producer_docs;

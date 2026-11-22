@@ -15,7 +15,7 @@
 // are never selectable.
 
 export type SearchFailure = 'off' | 'busy' | 'failed';
-export type SearchAnswer<T> = { results: T[]; more: boolean; tooLong: boolean; exact?: boolean };
+export type SearchAnswer<T> = { results: T[]; more: boolean; tooLong: boolean; exact?: boolean; close?: boolean };
 
 export type SearchState<T> = {
   text: string;
@@ -28,6 +28,10 @@ export type SearchState<T> = {
   more: boolean;
   tooLong: boolean;
   exact: boolean; // the server: a listed producer carries exactly the typed name
+  // The server: no wine holds every typed word, `results` hold all but one
+  // (ruled 2026-11-22). It describes the ROWS shown, so it stays with them
+  // while the next answer is awaited.
+  close: boolean;
   failure: SearchFailure | null;
   // The shortest text that is searched: 3 for the every-word searches (the
   // server's minimum), 0 for a chosen producer's wines (it lists them A to Z).
@@ -37,7 +41,7 @@ export type SearchState<T> = {
 export const MIN_QUERY = 3;
 
 export function initialSearch<T>(min = MIN_QUERY): SearchState<T> {
-  return { text: '', gen: 0, status: 'idle', results: [], resultsGen: -1, more: false, tooLong: false, exact: false, failure: null, min };
+  return { text: '', gen: 0, status: 'idle', results: [], resultsGen: -1, more: false, tooLong: false, exact: false, close: false, failure: null, min };
 }
 
 export type SearchEvent<T> =
@@ -52,18 +56,18 @@ export function searchReducer<T>(s: SearchState<T>, e: SearchEvent<T>): SearchSt
       const gen = s.gen + 1;
       // The rows stay on screen while the next answer is awaited (no flicker),
       // but they are no longer the current generation's: not selectable.
-      if (e.text.trim().length < s.min) return { ...s, text: e.text, gen, status: 'idle', results: [], resultsGen: -1, more: false, tooLong: false, exact: false, failure: null };
+      if (e.text.trim().length < s.min) return { ...s, text: e.text, gen, status: 'idle', results: [], resultsGen: -1, more: false, tooLong: false, exact: false, close: false, failure: null };
       return { ...s, text: e.text, gen, status: 'waiting', more: false, tooLong: false, exact: false, failure: null };
     }
     case 'reset':
       return { ...initialSearch<T>(s.min), gen: s.gen + 1 };
     case 'answer':
       if (e.gen !== s.gen || s.status !== 'waiting') return s;
-      return { ...s, status: 'answered', results: e.answer.results, resultsGen: e.gen, more: e.answer.more, tooLong: e.answer.tooLong, exact: !!e.answer.exact, failure: null };
+      return { ...s, status: 'answered', results: e.answer.results, resultsGen: e.gen, more: e.answer.more, tooLong: e.answer.tooLong, exact: !!e.answer.exact, close: !!e.answer.close && e.answer.results.length > 0, failure: null };
     case 'fail':
       if (e.gen !== s.gen || s.status !== 'waiting') return s;
       // The rows of an older answer are not this text's: gone, not just inert.
-      return { ...s, status: 'failed', results: [], resultsGen: -1, more: false, tooLong: false, exact: false, failure: e.failure };
+      return { ...s, status: 'failed', results: [], resultsGen: -1, more: false, tooLong: false, exact: false, close: false, failure: e.failure };
   }
 }
 
@@ -103,6 +107,12 @@ export function searchNotice<T>(s: SearchState<T>, noun = 'wines'): string | nul
   if (s.tooLong) return 'Too many words. Try a shorter search.';
   if (s.more) return `More ${noun} match. Type more to narrow the list.`;
   return null;
+}
+
+// The line ABOVE close matches (ruled 2026-11-22): the rows shown hold all but
+// one of the typed words.
+export function closeNote<T>(s: SearchState<T>): string | null {
+  return s.close && s.results.length ? 'No wine has every word. These come closest.' : null;
 }
 
 // A tap on a one-field row: the wine, and the year to put in the year field

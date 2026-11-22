@@ -717,6 +717,9 @@ export type SearchAnswer<T> = { results: T[]; more: boolean; tooLong: boolean }
 // so the app offers "Add Producer" only when none does (Codex 2026-11-21: a
 // fold in the app missed ß → ss, œ → oe and offered a duplicate).
 export type ProducerAnswer = SearchAnswer<ProducerMatch> & { exact: boolean }
+// `close`: no wine holds every typed word; these hold all but one (3 or more
+// required words typed, ruled 2026-11-22).
+export type BottleAnswer = SearchAnswer<BottleMatch> & { close: boolean }
 // A wine, with the typed year when it is CARRIED: shown on the row and filled
 // into the year field on a pick (null: no year typed, or the wine's own name
 // holds that number, "Cuvée 2000").
@@ -745,9 +748,12 @@ export const SEARCH_MAX_CHARS = 200
 // stopped early" is visible (`more`).
 export const SEARCH_CANDIDATES = 400
 const ARM_LIMIT = SEARCH_CANDIDATES + 1
-// Typo lookups: the 30 nearest words by trigram KNN, for at most the first
-// 3 unknown words (≥ 4 letters, not all digits); a further unknown word keeps
-// only its literal alternative. Then same first letter, OSA distance ≤ 1
+// Typo lookups: the 30 nearest words by trigram KNN AMONG THOSE WITH THE SAME
+// FIRST LETTER (a typo keeps it; `LIKE first || '%'` is an index condition of
+// the trigram GiST, 8.7 → 1.0 ms a word with siglen 256, dev DB 2026-11-22;
+// words hold only [[:alnum:]], so no LIKE wildcard can occur in one), for at
+// most the first 3 unknown words (≥ 4 letters, not all digits); a further
+// unknown word keeps only its literal alternative. Then OSA distance ≤ 1
 // (4–7 letters) / ≤ 2 (8+), at most 6 per word.
 const KNN_NEAREST = 30
 const KNN_WORDS = 3
@@ -758,6 +764,15 @@ const TYPO_ALTERNATIVES = 6
 // word the person meant is the common one). Dev DB 2026-11-21: 50.
 export const FALLBACK_NDOC = 50
 const FALLBACK_WORDS = 2
+// Ruled 2026-11-22 ("most confident first, then widen"): the same typo pass
+// also runs when the first answer is SHORT (fewer than this many wines), its
+// wines below the exact ones ("picher": La Picherie, then the Pichlers).
+export const SHORT_LIST = 5
+// Ruled 2026-11-22: when nothing holds every word and at least this many
+// REQUIRED words were typed (fillers, the year and "nv" don't count), the wines
+// holding all but one of them, flagged `close` ("pichler kellerberg magnum").
+// Two words stay strict: "christoph pichler" still finds nothing.
+export const CLOSE_MIN_WORDS = 3
 const ADD_TIME_MATCH = [...ADD_TIME_STATUSES, 'linked']
 // The vintage lookup's admissible statuses (lib/catalogEntries.ts LINKABLE):
 // a wine "has" the typed year only when a pick could name that vintage.
@@ -767,7 +782,7 @@ type Near = { word: string; ndoc: number }
 type Token = { i: number; w: string; ndoc: number | null; pre: boolean; near: Near[] }
 type Alt = { word: string; typos: number; prefix: boolean }
 type Group = { token: Token; alts: Alt[] }
-type QueryPlan = { required: Group[]; optional: Group[]; year: number | null; typed: number; tokens: Token[] }
+type QueryPlan = { required: Group[]; optional: Group[]; year: number | null; typed: number; tokens: Token[]; close?: boolean }
 
 const EMPTY = <T>(tooLong = false): SearchAnswer<T> => ({ results: [], more: false, tooLong })
 
@@ -797,7 +812,12 @@ function wordsSql(forced: boolean): string {
     k AS (
       SELECT t.i, t.w, t.i IS NOT DISTINCT FROM m.last AS is_last, e.ndoc, p.hit IS NOT NULL AS pre
         FROM t CROSS JOIN m
-        LEFT JOIN LATERAL (SELECT ndoc FROM catalog_search_words WHERE word >= t.w AND word <= t.w) e ON true
+        -- ⚠️ LIMIT 1: the range spelling (the GiST trap, below) is estimated as a
+        -- range, 9,038 of 81k words, and times the 30-word lookups that put the
+        -- statement past jit_above_cost (100,000): every search was JIT-compiled
+        -- first, 215 ms for a 1.3 ms statement (dev DB, 2026-11-22). The word is
+        -- the primary key: one row at most.
+        LEFT JOIN LATERAL (SELECT ndoc FROM catalog_search_words WHERE word >= t.w AND word <= t.w LIMIT 1) e ON true
         LEFT JOIN LATERAL (SELECT true AS hit FROM catalog_search_words
                             WHERE word >= t.w AND word < (t.w || chr(1114111)) COLLATE "C" LIMIT 1) p ON true
     ), r AS (
@@ -807,6 +827,7 @@ function wordsSql(forced: boolean): string {
       FROM s LEFT JOIN LATERAL (
         SELECT word, ndoc, word <-> s.w AS d FROM catalog_search_words
          WHERE ${forced ? 's.w = ANY($2::text[])' : `s.unknown AND s.urank <= ${KNN_WORDS}`} AND ndoc > 0
+           AND word LIKE left(s.w, 1) || '%'
          ORDER BY word <-> s.w LIMIT ${KNN_NEAREST}) n ON true
      ORDER BY s.i, n.d`
 }
@@ -923,6 +944,9 @@ function planQuery(tokens: Token[], bottles: boolean): QueryPlan | null {
 
 const lexeme = (w: string) => `'${w.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
 const tsq = (groups: Group[]) => groups.map(g => '(' + g.alts.map(a => lexeme(a.word) + (a.prefix ? ':*' : '')).join(' | ') + ')').join(' & ')
+// All but one of the groups: one AND per left-out group, OR'ed (16 groups at
+// most: 16 terms of 15).
+const tsqAllButOne = (groups: Group[]) => groups.map((_, skip) => '(' + tsq(groups.filter((_, j) => j !== skip)) + ')').join(' | ')
 
 // Per row: how well the MATCHED row's own words answer the query. The order of
 // the key is the ranking cascade (never one blended score).
@@ -930,22 +954,27 @@ type Fit = { key: number[]; exact: number; yearInName: boolean }
 function fitRow(plan: QueryPlan, producer: string[], survivor: string[], name: string[], region: string[], hasYear: boolean): Fit {
   const named = new Set([...producer, ...survivor, ...name])
   const all = [...named, ...region.filter(w => !named.has(w))]
-  let typos = 0, full = 0, inName = 0, boosts = 0, exact = 0
+  let typos = 0, alt = 0, full = 0, inName = 0, boosts = 0, exact = 0
   const used = new Set<string>()
   for (const g of plan.required) {
     // Every word of the row this typed word matches, at its fewest typos; a
     // full word and a match in the name count INDEPENDENTLY (review 2026-11-21:
     // picking one match first let "wachauer" in the name hide a full "wachau"
     // in the region).
-    let least = Infinity
+    // The alternatives are in confidence order (the literal, then fewer typos,
+    // then the word more docs hold: `typoAlternatives`): at equal typos the row
+    // holding the MORE COMMON correction ranks first (ruled 2026-11-22, "most
+    // confident first": "picher" → the Pichlers, 105 docs, before Pircher, 6).
+    let least = Infinity, bestAlt = Infinity
     const hits: { full: boolean; word: string; named: boolean }[] = []
-    for (const a of g.alts) for (const w of all) {
+    g.alts.forEach((a, ai) => { for (const w of all) {
       if (!(a.prefix ? w.startsWith(a.word) : w === a.word)) continue
-      if (a.typos < least) { least = a.typos; hits.length = 0 }
-      if (a.typos === least) hits.push({ full: w === a.word, word: w, named: named.has(w) })
-    }
+      if (a.typos < least) { least = a.typos; hits.length = 0; bestAlt = ai }
+      if (a.typos === least) { hits.push({ full: w === a.word, word: w, named: named.has(w) }); bestAlt = Math.min(bestAlt, ai) }
+    } })
     if (!hits.length) { typos += 9; continue }
     typos += least
+    alt += bestAlt
     if (hits.some(h => h.full)) full++
     if (hits.some(h => h.named)) inName++
     if (least === 0 && hits.some(h => h.full)) exact++
@@ -966,7 +995,7 @@ function fitRow(plan: QueryPlan, producer: string[], survivor: string[], name: s
   const untyped = (ws: string[]) => new Set(ws.filter(w => !used.has(w) && !FILLER_SET.has(w))).size
   const untypedP = survivor.length ? Math.min(untyped(producer), untyped(survivor)) : untyped(producer)
   const untypedPN = survivor.length ? Math.min(untyped([...producer, ...name]), untyped([...survivor, ...name])) : untyped([...producer, ...name])
-  return { key: [typos, -full, -inName, yearOk ? 0 : 1, -boosts, untypedP, untypedPN], exact, yearInName }
+  return { key: [typos, alt, -full, -inName, yearOk ? 0 : 1, -boosts, untypedP, untypedPN], exact, yearInName }
 }
 function byKey(a: number[], b: number[]): number {
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]
@@ -1030,7 +1059,9 @@ const splitWords = (col: string): string[][] => col.split(WORDS_SEP).map(f => (f
 // limit: the server stopped early (tombstones included), never "there are more
 // live results".
 function bottleCandidatesSql(plan: QueryPlan): { sql: string; args: unknown[] } {
-  const args: unknown[] = [tsq(plan.required), ADD_TIME_MATCH, plan.year, YEAR_LINKABLE]
+  // `close`: the required words become "all but one" in every arm.
+  const req = plan.close ? `(${tsqAllButOne(plan.required)})` : tsq(plan.required)
+  const args: unknown[] = [req, ADD_TIME_MATCH, plan.year, YEAR_LINKABLE]
   // 🔒 A product whose lead producer is REJECTED (a junk verdict) is never
   // offered, nor found by that producer's name (security review 2026-11-21:
   // the one field made a rejected producer's name searchable through its
@@ -1044,11 +1075,11 @@ function bottleCandidatesSql(plan: QueryPlan): { sql: string; args: unknown[] } 
        WHERE d.${col} @@ ${param}::tsquery LIMIT ${ARM_LIMIT})`
   const ctes: string[] = [], arms: string[] = []
   if (plan.year !== null) {
-    args.push(`${tsq(plan.required)} & ${lexeme(String(plan.year))}`)
+    args.push(`${req} & ${lexeme(String(plan.year))}`)
     ctes.push(arm('y', 0, 'tsv_name', `$${args.length}`)); arms.push('y')
   }
   if (plan.optional.length) {
-    args.push(tsq([...plan.required, ...plan.optional]))
+    args.push(`${req} & ${tsq(plan.optional)}`)
     ctes.push(arm('a', 1, 'tsv_name', `$${args.length}`)); arms.push('a')
   }
   ctes.push(arm('b', 2, 'tsv_name', '$1')); arms.push('b')
@@ -1115,26 +1146,37 @@ async function bottlePass(plan: QueryPlan, limit: number): Promise<{ results: Bo
 
 // One field: producer, wine name, region and year, any order (the app's bottle
 // picker; ruling 7: the web keeps producer → wine → year). Scrubbed input.
-export async function searchBottles(raw: string, opts: { limit?: number } = {}): Promise<SearchAnswer<BottleMatch>> {
+export async function searchBottles(raw: string, opts: { limit?: number } = {}): Promise<BottleAnswer> {
   const prep = prepareEveryWord(raw)
-  if (!prep) return EMPTY()
-  if ('refuse' in prep) return prep.refuse
+  if (!prep) return { ...EMPTY<BottleMatch>(), close: false }
+  if ('refuse' in prep) return { ...prep.refuse, close: false }
   const limit = clampLimit(opts.limit)
   const tokens = await readWords(prep.q, null)
-  if (tokens.length > SEARCH_MAX_WORDS) return EMPTY(true)
+  if (tokens.length > SEARCH_MAX_WORDS) return { ...EMPTY<BottleMatch>(true), close: false }
   const plan = planQuery(tokens, true)
-  if (!plan) return EMPTY()
+  if (!plan) return { ...EMPTY<BottleMatch>(), close: false }
+  const answer = (p: { results: BottleMatch[]; more: boolean }, close = false): BottleAnswer => ({ results: p.results, more: p.more, tooLong: false, close })
   const first = await bottlePass(plan, limit)
-  if (first.results.length) return { results: first.results, more: first.more, tooLong: false }
-  // 🔒 EMPTY FALLBACK, only when NO surfaceable match remains after merge
-  // resolution (Codex r4 P2: an exact-word tombstone with an archived survivor
-  // is a raw candidate that resolution drops).
+  if (first.results.length >= SHORT_LIST) return answer(first)
+  // 🔒 THE TYPO PASS for a word that is itself some other doc's word (no
+  // lookup ran for it): on an EMPTY answer (counted after merge resolution,
+  // Codex r4 P2: an exact-word tombstone with an archived survivor is a raw
+  // candidate that resolution drops), and on a SHORT one (ruled 2026-11-22).
+  // Every word keeps its own spelling as an alternative, so the widened list
+  // holds the first one, and a wine found only through a fixed typo ranks after
+  // them (fewer typos first).
   const words = fallbackWords(plan)
-  if (!words.length) return { results: [], more: first.more, tooLong: false }
-  const forced = withForcedNear(plan, await readWords(prep.q, words), words, true)
-  if (!forced) return { results: [], more: first.more, tooLong: false }
-  const second = await bottlePass(forced, limit)
-  return { results: second.results, more: second.more, tooLong: false }
+  const forced = words.length ? withForcedNear(plan, await readWords(prep.q, words), words, true) : null
+  const widened = forced ? await bottlePass(forced, limit) : null
+  if (widened && widened.results.length > first.results.length) return answer(widened)
+  if (first.results.length) return answer(first)
+  // 🔒 CLOSE MATCHES (ruled 2026-11-22): nothing holds every word and 3 or
+  // more required words were typed → the wines holding all but one, flagged.
+  const base = forced ?? plan
+  // Only real words count (a search of nothing but fillers promotes them).
+  if (base.required.filter(g => !FILLER_SET.has(g.token.w)).length < CLOSE_MIN_WORDS) return answer(widened ?? first)
+  const close = await bottlePass({ ...base, close: true }, limit)
+  return close.results.length ? answer(close, true) : answer(widened ?? first)
 }
 
 type ProducerRow = { arm: number; nx: number; na: number; nb: number; id: string; name: string; country: string | null; region: string | null; status: string; words: string }

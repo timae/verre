@@ -13,10 +13,11 @@ import {
   CatalogSearchError, listVintages, searchBottles, searchProducers, searchProducts,
   type BottleHit, type CatalogScope, type ProducerHit, type ProductHit, type SearchAnswer, type VintageHit,
 } from '@/lib/api/catalog';
-import { initialSearch, offersAddProducer, offersNew, pendingRequest, pickRow, searchNotice, searchReducer, visibleRows, type SearchEvent, type SearchState } from '@/lib/bottleSearch';
+import { closeNote, initialSearch, offersAddProducer, offersNew, pendingRequest, pickRow, searchNotice, searchReducer, visibleRows, type SearchEvent, type SearchState } from '@/lib/bottleSearch';
 import { backStep, COLOURS, newWineChoice, pickedChoice, readYear, yearFate, yearLine, type BottleLabel, type CatalogChoice, type Colour } from '@/lib/catalogChoice';
 import { kindLabel } from '@/lib/momentFormat';
 import { radius, useTheme } from '@/theme';
+import { usePhoneTokens } from '@/lib/layout';
 
 // The bottle picker (ADR-0010, which supersedes ADR-0009's "producer first"):
 // inline in the form, ONE field (producer, wine, region and year in any order,
@@ -233,6 +234,7 @@ export function BottlePicker({
           <TextField label="Wine" placeholder="Search wines" value={bottle.text} onChangeText={(text) => bottleDo({ type: 'text', text })} autoCorrect={false} returnKeyType="search" accessibilityHint="Producer, wine, region or year, in any order." />
           {bottle.status !== 'idle' ? (
             <ResultList>
+              {closeNote(bottle) ? <ListNote text={closeNote(bottle)!} /> : null}
               {bottleRows.rows.map((b) => (
                 <ResultRow key={b.id} title={b.name} sub={b.producerName} trailing={b.year === null ? null : String(b.year)} disabled={!bottleRows.selectable} onPress={() => pickBottle(b.id)} />
               ))}
@@ -270,7 +272,7 @@ export function BottlePicker({
         <View style={{ marginTop: 12 }}>
           <TextField ref={wineRef} label="Wine" placeholder="Search its wines" value={wineS.text} onChangeText={(text) => wineDo({ type: 'text', text })} autoCorrect={false} returnKeyType="search" />
           <ResultList>
-            {wineS.more && wineS.text.trim().length < 3 && wineRows.selectable ? <VText variant="caption" color="inkFaint" style={{ paddingHorizontal: 12, paddingVertical: 4 }}>The first 20. Type to narrow the list.</VText> : null}
+            {wineS.more && wineS.text.trim().length < 3 && wineRows.selectable ? <ListNote text="The first 20. Type to narrow the list." /> : null}
             {wineRows.rows.map((p) => (
               <ResultRow key={p.id} title={p.name} sub={kindLabel(p)} disabled={!wineRows.selectable} onPress={() => { if (wineRows.selectable) { setProduct(p); resetYear(); } }} />
             ))}
@@ -392,13 +394,21 @@ function StatusLine({ text, error }: { text: string | null; error?: boolean }) {
   return <VText variant="small" style={{ marginTop: 8, color: error ? theme.critical : theme.inkSoft }}>{text}</VText>;
 }
 
-// A chosen step: its name (and a quiet line) with Change.
+// A quiet line inside a result list ("The first 20", the close matches' line):
+// the app's list notes (`small`, ink-soft), at the rows' inset.
+function ListNote({ text }: { text: string }) {
+  return <VText surface="compactList" variant="small" color="inkSoft" style={{ paddingHorizontal: 12, paddingVertical: 4 }}>{text}</VText>;
+}
+
+// A chosen step: its name (and a quiet line) with Change. The app's list-row
+// type (ListRow / RecentRow / PeopleRow, ruled 2026-11-22: "the font sizes are
+// quite random there"): name body semibold, the line under it `small` ink-soft.
 function ChosenLine({ title, sub, onChange }: { title: string; sub: string | null; onChange: () => void }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
       <View style={{ flex: 1, minWidth: 0 }}>
-        <VText variant="body" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{title}</VText>
-        {sub ? <VText variant="caption" color="inkSoft" numberOfLines={1}>{sub}</VText> : null}
+        <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{title}</VText>
+        {sub ? <VText surface="compactList" variant="small" color="inkSoft" numberOfLines={1}>{sub}</VText> : null}
       </View>
       <Button title="Change" variant="tertiary" size="sm" onPress={onChange} />
     </View>
@@ -411,8 +421,11 @@ function Summary({ label, isNew, onChange }: { label: BottleLabel; isNew?: boole
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14, borderRadius: radius.md, backgroundColor: theme.surface, marginBottom: 16 }}>
       <View style={{ flex: 1, minWidth: 0 }}>
-        <VText variant="body" numberOfLines={2} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{labelLine(label)}</VText>
-        <VText variant="caption" color="inkSoft" numberOfLines={1}>{[label.producer, kindLabel(label), isNew ? 'New' : null].filter(Boolean).join(' · ')}</VText>
+        <VText surface="compactList" numberOfLines={2} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
+          {label.name}
+          {label.year ? <VText surface="compactList" color="inkSoft" style={{ fontFamily: 'InstrumentSans_500Medium' }}>{` ${label.year}`}</VText> : null}
+        </VText>
+        <VText surface="compactList" variant="small" color="inkSoft" numberOfLines={1}>{[label.producer, kindLabel(label), isNew ? 'New' : null].filter(Boolean).join(' · ')}</VText>
       </View>
       {onChange ? <Button title="Change" variant="tertiary" size="sm" onPress={onChange} /> : null}
     </View>
@@ -423,10 +436,16 @@ function ResultList({ children }: { children: React.ReactNode }) {
   return <View style={{ marginTop: 6, gap: 2 }}>{children}</View>;
 }
 
-// A search row. `trailing`: the carried year, at the end. `disabled`: a row of
-// an older answer while the next one is awaited (shown, not selectable).
+// A search row, on the app's list-row type (ListRow / RecentRow / PeopleRow):
+// the name body semibold, the line under it `small` ink-soft, the comfort
+// padding every list row grows by. `trailing`: the carried year at the end of
+// the row (ADR-0010), drawn like a list's vintage (the name's size, ink-soft,
+// medium). `disabled`: a row of an older answer while the next one is awaited
+// (shown, not selectable).
 function ResultRow({ title, sub, trailing, add, disabled, onPress }: { title: string; sub?: string | null; trailing?: string | null; add?: boolean; disabled?: boolean; onPress: () => void }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const surface = phone.surface('compactList');
   return (
     <Pressable
       accessibilityRole="button"
@@ -434,14 +453,14 @@ function ResultRow({ title, sub, trailing, add, disabled, onPress }: { title: st
       accessibilityState={{ disabled: !!disabled }}
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, paddingHorizontal: 12, borderRadius: radius.sm, opacity: disabled ? 0.5 : 1, backgroundColor: pressed ? theme.surfaceSunk : 'transparent' })}
+      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: surface.paddingY(phone.lerp(10, 14)), paddingHorizontal: 12, borderRadius: radius.sm, opacity: disabled ? 0.5 : 1, backgroundColor: pressed ? theme.surfaceSunk : 'transparent' })}
     >
       {add ? <Icon name="plus" size={16} color={theme.accent} /> : null}
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <VText variant="body" numberOfLines={1} style={{ fontFamily: add ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', color: add ? theme.accent : theme.ink }}>{title}</VText>
-        {sub ? <VText variant="caption" color="inkSoft" numberOfLines={1}>{sub}</VText> : null}
+      <View style={{ flex: 1, minWidth: 0, gap: surface.gap(phone.lerp(2, 4)) }}>
+        <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', color: add ? theme.accent : theme.ink }}>{title}</VText>
+        {sub ? <VText surface="compactList" variant="small" color="inkSoft" numberOfLines={1}>{sub}</VText> : null}
       </View>
-      {trailing ? <VText variant="small" color="inkSoft">{trailing}</VText> : null}
+      {trailing ? <VText surface="compactList" color="inkSoft" style={{ fontFamily: 'InstrumentSans_500Medium' }}>{trailing}</VText> : null}
     </Pressable>
   );
 }

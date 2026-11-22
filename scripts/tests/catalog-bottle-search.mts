@@ -28,7 +28,7 @@ import { prisma as app } from '../../lib/prisma.ts'
 import type { Prisma } from '@prisma/client'
 type Tx = Prisma.TransactionClient
 // EXPLAIN (FORMAT JSON) nodes.
-type PlanNode = { 'Node Type'?: string; 'Index Name'?: string; 'Relation Name'?: string; 'Order By'?: string; 'Actual Loops'?: number; Plans?: PlanNode[] }
+type PlanNode = { 'Node Type'?: string; 'Index Name'?: string; 'Relation Name'?: string; 'Order By'?: string; 'Actual Loops'?: number; 'Index Cond'?: string; 'Total Cost'?: number; Plans?: PlanNode[] }
 // The drift report (scripts/lib/catalogSearchRebuild.mjs).
 type Drift = { missingDocs: number; differentDocs: number; staleDocs: number; missingProducerDocs: number; differentProducerDocs: number; staleProducerDocs: number; staleWordCounts: number; sample: string[] }
 
@@ -246,6 +246,11 @@ async function main() {
   await mint('Lindenhof', 'Kabinett Alt', { region: 'Wachau' })
   await mint('Lindenhof', 'Wachauer Kabinett', { region: 'Wachau' })
   await mint('Junk Haus', 'Verworfen Rot', { region: 'Nirgendwo' })
+  // "picher" is the start of a real word (La Picherie): no typo lookup runs
+  // for it on the first pass; Pircher is a rarer correction than Pichler.
+  await mint('La Picherie', 'Chateau La Picherie', { region: 'Bordeaux' })
+  await mint('Pircher', 'Pinot Noir', { region: 'Eisacktal' })
+  await mint('Château Domaine', 'Rouge Ancien', { region: 'Rhône' })
   await db.$executeRawUnsafe(`UPDATE producers SET status = 'rejected' WHERE id = $1`, producers.get('Junk Haus'))
   // A linked vintage (a merged-away year) never counts as the wine having it.
   await db.$executeRawUnsafe(`INSERT INTO wine_vintages (id, product_id, year, status, links_to, curator_locked, created_at, updated_at)
@@ -373,6 +378,32 @@ async function main() {
   ok(toks.slice(0, 3).every(t => t.near.length <= 30), '… at most 30 nearest words each')
 
   // ══════════════════════════════════════════════════════════════════════
+  console.log('\n§ 3f — exact first, then widen (ruled 2026-11-22)')
+  r = await counted(() => bottles('picher'))
+  eq(r.r.results[0]?.id, P('La Picherie', 'Chateau La Picherie'), '"picher": the wine holding it as typed comes first')
+  ok(sameSet(ids(r.r), [P('La Picherie', 'Chateau La Picherie'), P('Pircher', 'Pinot Noir'), ...PICHLER_WINES]), '… a SHORT list is widened by the typo pass: the Pichlers (and Pircher) below it')
+  eq(r.n, 4, '… 4 statements (words, candidates, then both again)')
+  const order = ids(r.r)
+  ok(PICHLER_WINES.every(id => order.indexOf(id) < order.indexOf(P('Pircher', 'Pinot Noir'))), '… at equal typos the MORE COMMON correction first: every Pichler wine before Pircher\'s')
+  ok(sameSet(ids(await bottles('rudi picher')), [P('Rudi Pichler', 'Riesling Federspiel')]), '"rudi picher": still corrected when nothing holds both words')
+  r = await counted(() => bottles('pichler kellerberg magnum'))
+  ok(sameSet(ids(r.r), KELLERBERG) && r.r.close, '"pichler kellerberg magnum": nothing holds every word, so the wines holding all but one, flagged `close`')
+  eq(r.r.results.map(x => x.score), [0.667, 0.667, 0.667], '… `score` 2 of 3')
+  ok(r.n <= 5, `… in at most 5 statements (sent ${r.n})`)
+  ok(sameSet(ids(await bottles('pichlr kellerberg magnum')), KELLERBERG), '… with a typo in one of the words held')
+  eq((await bottles('pichler kellerberg magnum 2019')).results.find(x => x.id === KELLERBERG[0])?.year, 2019, '… the typed year is carried onto close matches too')
+  res = await bottles('christoph pichler')
+  ok(res.results.length === 0 && !res.close, '"christoph pichler": two words stay strict (no close matches)')
+  res = await bottles('weingut pichler magnum')
+  ok(res.results.length === 0 && !res.close, '"weingut pichler magnum": a filler does not count toward the 3 words')
+  ok(!(await bottles('pichler kellerberg')).close, 'an answer holding every word is never `close`')
+  res = await bottles('weingut domaine chateau')
+  ok(res.results.length === 0 && !res.close, '"weingut domaine chateau": nothing but fillers never counts as 3 words (Château Domaine holds two)')
+  res = await bottles('junk verworfen rot magnum')
+  ok(res.results.length === 0, 'close matches never offer a REJECTED producer\'s wine (checked inside every arm)')
+  res = await bottles('pichler kellerberg ' + Array.from({ length: 14 }, (_, k) => `zqx${'abcdefghijklmn'[k]}word`).join(' '))
+  ok(Array.isArray(res.results) && !res.tooLong, '16 required words: the all-but-one query runs (16 terms of 15)')
+
   console.log('\n§ 4 — live eligibility, saturation, the arms')
   res = await bottles('quarzit')
   ok(sameSet(ids(res), [P('Fels Kellerei', 'Quarzit Echt'), P('Fels Kellerei', 'Fels Weiss')]),
@@ -789,8 +820,19 @@ async function main() {
   ok(knnNodes.length > 0 && knnNodes.every(n => n['Actual Loops'] === 0), 'the typo KNN is planned but NEVER EXECUTED for known words (a one-time filter)')
   const wplan2 = JSON.parse(await planOf(T.wordsSql(false), ['planwein qzvxqzv']))[0]
   ok(find(wplan2.Plan).some(n => (n['Actual Loops'] ?? 0) > 0), '… and executed for an unknown one')
+  // 2026-11-22: the exact lookup's range spelling was estimated as a range
+  // (11% of the words), and times the 30-word lookups the statement passed
+  // jit_above_cost: every search was JIT-compiled first (215 ms on the dev DB).
+  ok((wplan2.Plan['Total Cost'] ?? Infinity) < 1000, `the words statement's estimate stays far below jit_above_cost (${Math.round(wplan2.Plan['Total Cost'] ?? NaN)} < 1,000)`)
+  const fplan = JSON.parse(await planOf(T.wordsSql(true), ['planwein qzvxqzv', ['planwein']]))[0]
+  ok((fplan.Plan['Total Cost'] ?? Infinity) < 1000, `… the typo pass's too (${Math.round(fplan.Plan['Total Cost'] ?? NaN)})`)
+  ok(find(wplan2.Plan).some(n => /~~/.test(n['Index Cond'] ?? '') && n['Index Name'] === 'catalog_search_words_word_gist_idx'), 'the typo lookup keeps the first letter as an INDEX condition of the trigram GiST')
+  const gidx = (await db.$queryRawUnsafe<{ d: string }[]>(`SELECT indexdef AS d FROM pg_indexes WHERE indexname = 'catalog_search_words_word_gist_idx'`))[0].d
+  ok(/siglen='256'/.test(gidx), '… with 256-byte signatures (in the migration only: Prisma cannot express operator-class parameters)')
+  r = await counted(() => bottles('planwein'))
+  eq(r.n, 2, 'a search with a full answer (5 or more wines): 2 statements')
   r = await counted(() => bottles(`planwein ${rare}`))
-  eq(r.n, 2, 'a search with an answer: 2 statements')
+  eq(r.n, 4, '… a SHORT answer holding a rare word: 4 (the typo pass widens it, ruled 2026-11-22)')
   r = await counted(() => bottles('planwein qqqqzzzz'))
   ok(r.n <= 4 && r.r.results.length === 0, `an empty answer: at most 4 statements (sent ${r.n})`)
   r = await counted(() => searchProducers('planhaus'))

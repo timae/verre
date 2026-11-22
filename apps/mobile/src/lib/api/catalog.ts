@@ -26,7 +26,7 @@ export type VintageHit = { id: string; year: number | null };
 // `exact` (kind=producer): a listed producer carries exactly the typed name, as
 // the database folds names ("Strass" = "Straß"); "Add Producer" is offered only
 // without one.
-export type SearchAnswer<T> = { results: T[]; more: boolean; tooLong: boolean; exact?: boolean };
+export type SearchAnswer<T> = { results: T[]; more: boolean; tooLong: boolean; exact?: boolean; close?: boolean };
 
 // A search that didn't answer. `off` = the catalogue is switched off (a 404:
 // the kill switch, ADR-0009); the message is the line shown at the search.
@@ -45,9 +45,9 @@ async function ask<T>(scope: CatalogScope, qs: string): Promise<SearchAnswer<T>>
   if (res.status === 404) throw new CatalogSearchError('off');
   if (res.status === 429) throw new CatalogSearchError('busy');
   if (!res.ok) throw new CatalogSearchError('failed');
-  const j = (await res.json().catch(() => null)) as { results?: T[]; more?: boolean; tooLong?: boolean; exact?: boolean } | null;
+  const j = (await res.json().catch(() => null)) as { results?: T[]; more?: boolean; tooLong?: boolean; exact?: boolean; close?: boolean } | null;
   if (!j || !Array.isArray(j.results)) throw new CatalogSearchError('failed');
-  return { results: j.results, more: !!j.more, tooLong: !!j.tooLong, exact: !!j.exact };
+  return { results: j.results, more: !!j.more, tooLong: !!j.tooLong, exact: !!j.exact, close: !!j.close };
 }
 
 export const searchBottles = (scope: CatalogScope, q: string) =>

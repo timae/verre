@@ -76,5 +76,14 @@ the year. Server side: `GET …/catalog/search?kind=bottle` (README; `lib/catalo
   (ADR-0009), drawn like every other choice chip: on = the fill. ("why is there
   a tick in front of NV and Sparkling? that is not how it works.")
 - **A vintage year ends at the current year** (it was next year): a vintage is
-  the harvest year.
+  the harvest year.- **Exact first, then wider** (Simon: "we are looking most confident first and then
+  widen up?"). Wines holding the words as typed come first. When they are fewer than
+  five, the search also tries typo fixes for the words it took as real ("picher" is
+  the start of "Picherie": La Picherie first, then the Pichlers), and among typo
+  fixes the more common correction comes first.
+- **Close matches from three words** ("if there is a word or two too much"): when no
+  wine holds every word and three or more real words were typed (fillers like
+  "Weingut" don't count), the wines holding all but one are shown under the line
+  "No wine has every word. These come closest." ("pichler kellerberg magnum": the
+  Kellerberg wines). Two words stay strict: "christoph pichler" still finds nothing.
 

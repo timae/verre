@@ -7,7 +7,7 @@
 //   npx tsx scripts/tests/bottle-search-units.ts
 
 import {
-  initialSearch, offersAddProducer, offersNew, pendingRequest, pickRow, searchNotice, searchReducer, visibleRows,
+  closeNote, initialSearch, offersAddProducer, offersNew, pendingRequest, pickRow, searchNotice, searchReducer, visibleRows,
   type SearchAnswer, type SearchEvent, type SearchFailure, type SearchState,
 } from '../../apps/mobile/src/lib/bottleSearch';
 
@@ -182,6 +182,36 @@ const ids = (s: SearchState<Hit>) => visibleRows(s).rows.map((r) => r.id);
   let x = prod('weingut strass', ['Weingut Straß'], true);
   x = searchReducer(x, { type: 'text', text: 'weingut strasse' });
   check('… a new text clears the previous answer\'s exact verdict', !x.exact);
+}
+
+// Close matches (ruled 2026-11-22): no wine holds every word, the server sends
+// those holding all but one, flagged; the line above them says so.
+{
+  const d = driver();
+  d.type('pichler kellerberg magnum');
+  d.answer(d.s.gen, { ...ans(['a', 'b']), close: true });
+  check('close: the flag comes with the rows', d.s.close && visibleRows(d.s).rows.length === 2);
+  check('close: the line above them', closeNote(d.s) === 'No wine has every word. These come closest.');
+  check('close: "Add Wine to Catalogue" still offered under them', offersNew(d.s));
+  d.type('pichler kellerberg magnu');
+  check('close: the line stays with the rows while the next answer is awaited', closeNote(d.s) !== null && !visibleRows(d.s).selectable);
+  d.answer(d.s.gen, ans(['c']));
+  check('close: an answer holding every word clears it', !d.s.close && closeNote(d.s) === null);
+  d.type('pichler kellerberg magnum');
+  d.answer(d.s.gen, { ...ans([]), close: true });
+  check('close: never on an empty list', !d.s.close && closeNote(d.s) === null);
+  d.type('pichler kellerberg magnums');
+  d.answer(d.s.gen, { ...ans(['a']), close: true });
+  d.fail(d.s.gen + 0, 'failed');
+  d.type('pi');
+  check('close: gone when the text is too short to search', !d.s.close && closeNote(d.s) === null);
+  d.type('pichler kellerberg magnum');
+  d.fail(d.s.gen, 'busy');
+  check('close: gone after a failure', !d.s.close);
+  d.type('pichler kellerberg magnum');
+  d.answer(d.s.gen, { ...ans(['a']), close: true });
+  d.reset();
+  check('close: gone after a reset', !d.s.close);
 }
 
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
