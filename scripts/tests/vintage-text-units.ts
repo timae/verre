@@ -121,11 +121,11 @@ check('matrix: "vintage 2019" → empty', normalizeVintageText('vintage 2019') =
 //
 // Any four-digit value therefore ROUND-TRIPS. Range plausibility is enforced only
 // at catalog promotion (`validateYear`), where a value becomes shared identity.
-const nextYear = new Date().getUTCFullYear() + 1;
-for (const legacy of ['1780', '3000', '1799', '0001', '9999', String(nextYear + 1)]) {
+const thisYear = new Date().getUTCFullYear();
+for (const legacy of ['1780', '3000', '1799', '0001', '9999', String(thisYear + 1)]) {
   check(`matrix: out-of-range ${legacy} is PRESERVED, not blanked`, normalizeVintageText(legacy) === legacy);
 }
-check('matrix: current+1 preserved', normalizeVintageText(String(nextYear)) === String(nextYear));
+check('matrix: the current year preserved', normalizeVintageText(String(thisYear)) === String(thisYear));
 check('matrix: 1800 preserved', normalizeVintageText('1800') === '1800');
 // The circa form, now EXPLICIT rather than an extraction accident.
 for (const c of ['c. 2019', 'c.2019', 'ca 2019', 'ca. 2019', 'circa 2019', 'C. 2019']) {
@@ -194,7 +194,7 @@ check('filter: length capped (no unbounded growth)', filterVintageInput('n'.repe
 
 // ── 🔒 THE GRAIN BOUNDARY IS EXECUTABLE, NOT JUST A COMMENT ────────────────
 // The encounter string accepts ANY structurally valid four-digit value (no
-// plausibility range at all); catalog promotion accepts only 1900..current+1.
+// plausibility range at all); catalog promotion accepts only 1900..the current year.
 // The asymmetry is deliberate (catalog review, 2026-07-26): input validation is
 // per-encounter and must never invalidate stored data, while promotion mints
 // permanent shared identity and can afford to be strict.
@@ -210,7 +210,7 @@ check('filter: length capped (no unbounded growth)', filterVintageInput('n'.repe
 // field is touched, and the comparator then reads ''-vs-'' as unchanged and
 // keeps the catalog link.
 {
-  const nextYear = new Date().getUTCFullYear() + 1;
+  const thisYear = new Date().getUTCFullYear();
   // The encounter field accepts ANY four-digit value (structural grammar only,
   // so a legacy row round-trips unharmed)...
   check('boundary: encounter string ACCEPTS 1800', normalizeVintageText('1800') === '1800');
@@ -226,10 +226,10 @@ check('filter: length capped (no unbounded growth)', filterVintageInput('n'.repe
   }
   // Both agree from 1900 up, and on the same moving upper bound.
   check('boundary: both accept 1900', normalizeVintageText('1900') === '1900' && validateYear(1900) === 1900);
-  check('boundary: both accept current+1', normalizeVintageText(String(nextYear)) === String(nextYear) && validateYear(nextYear) === nextYear);
+  check('boundary: both accept the current year', normalizeVintageText(String(thisYear)) === String(thisYear) && validateYear(thisYear) === thisYear);
   let over = false;
-  try { validateYear(nextYear + 1); } catch { over = true; }
-  check('boundary: catalog rejects current+2 (the encounter string does not)', over && normalizeVintageText(String(nextYear + 1)) === String(nextYear + 1));
+  try { validateYear(thisYear + 1); } catch { over = true; }
+  check('boundary: catalog rejects next year (no bottle carries it; the encounter string keeps it)', over && normalizeVintageText(String(thisYear + 1)) === String(thisYear + 1));
   // And NV is null at catalog grain but the literal string at encounter grain —
   // the other asymmetry that gets conflated.
   check('boundary: catalog NV is year=null', validateYear(null) === null);

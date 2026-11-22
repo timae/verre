@@ -40,12 +40,13 @@ export function readYear(nv: boolean, text: string): YearRead {
   if (!t) return { ok: true };
   const v = normalizeVintageText(t);
   if (v === 'NV') return { ok: true, year: null };
-  // The server's range (lib/catalogWrite.ts validateYear): 1900 to next year.
-  if (/^\d{4}$/.test(v) && Number(v) >= 1900 && Number(v) <= MAX_YEAR) return { ok: true, year: Number(v) };
+  // The server's range (lib/catalogWrite.ts validateYear): 1900 to the current year.
+  if (/^\d{4}$/.test(v) && Number(v) >= 1900 && Number(v) <= maxYear()) return { ok: true, year: Number(v) };
   return { ok: false };
 }
-export const MAX_YEAR = new Date().getUTCFullYear() + 1;
-export const YEAR_INVALID = `Type a year between 1900 and ${MAX_YEAR}, or tap NV.`;
+// Read at each check, not at load: an app left open over New Year takes the new year.
+export const maxYear = (): number => new Date().getUTCFullYear();
+export const yearInvalid = (): string => `Type a year between 1900 and ${maxYear()}, or tap NV.`;
 
 // The optional alcohol %: '' = none; a comma is a decimal point; 0 to 25.
 export type AbvRead = { ok: true; abv?: number } | { ok: false };
@@ -90,7 +91,7 @@ export function yearLine(f: YearFate): string | null {
 export function pickedChoice(product: ProductHit, vintages: VintageHit[] | null, nv: boolean, yearInput: string, abvInput: string): { choice: CatalogChoice } | { error: string } | { pending: true } {
   const f = yearFate(vintages, readYear(nv, yearInput));
   const label = (year: string): BottleLabel => ({ name: product.name, producer: product.producerName, year, colour: asColour(product.colour), sparkling: product.sparkling });
-  if (f.fate === 'invalid') return { error: YEAR_INVALID };
+  if (f.fate === 'invalid') return { error: yearInvalid() };
   if (f.fate === 'pending') return { pending: true };
   if (f.fate === 'unknown') return { choice: { kind: 'pick', productId: product.id, vintageId: null, label: label('') } };
   if (f.fate === 'listed') return { choice: { kind: 'pick', productId: product.id, vintageId: f.vintageId, label: label(yearText(f.year)) } };
@@ -122,7 +123,7 @@ export function newWineChoice(d: NewWineDraft): { choice: CatalogChoice } | { er
   if (!name || !producerName) return { error: NAME_MISSING };
   if (!d.colour && !d.sparkling) return { error: KIND_MISSING };
   const y = readYear(d.nv, d.year);
-  if (!y.ok) return { error: YEAR_INVALID };
+  if (!y.ok) return { error: yearInvalid() };
   const abv = readAbv(d.abv);
   if (!abv.ok) return { error: ABV_INVALID };
   const grapes = d.grapes.split(',').map((g) => g.trim()).filter(Boolean);

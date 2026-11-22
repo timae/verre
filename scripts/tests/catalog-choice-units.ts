@@ -8,7 +8,7 @@
 import { clientIdFromUuids } from '../../apps/mobile/src/lib/clientIdFormat';
 import {
   linkBody, newWineChoice, pickedChoice, readAbv, readYear, writeOutcome, yearFate, yearLine,
-  ABV_INVALID, KIND_MISSING, MAX_YEAR, NAME_MISSING, YEAR_INVALID, type NewWineDraft,
+  ABV_INVALID, KIND_MISSING, maxYear, NAME_MISSING, yearInvalid, type NewWineDraft,
 } from '../../apps/mobile/src/lib/catalogChoice';
 import { alcoholText, bottleGrapes, bottleOrigin } from '../../apps/mobile/src/lib/bottleFacts';
 
@@ -46,7 +46,8 @@ check('year: NV ticked wins over a typed year (the field is cleared and disabled
 check('year: four digits → the year', eq(readYear(false, '2019'), { ok: true, year: 2019 }));
 check('year: a typed "NV" still reads as NV (habit)', eq(readYear(false, 'nv'), { ok: true, year: null }));
 check('year: three digits are invalid', eq(readYear(false, '201'), { ok: false }));
-check('year: the server\'s range, 1900 to next year (else refused on the phone, never a raw server line)', eq(readYear(false, '1900'), { ok: true, year: 1900 }) && eq(readYear(false, String(MAX_YEAR)), { ok: true, year: MAX_YEAR }) && eq(readYear(false, '1899'), { ok: false }) && eq(readYear(false, String(MAX_YEAR + 1)), { ok: false }));
+check('year: the server\'s range, 1900 to the current year (else refused on the phone, never a raw server line)', maxYear() === new Date().getUTCFullYear() && eq(readYear(false, '1900'), { ok: true, year: 1900 }) && eq(readYear(false, String(maxYear())), { ok: true, year: maxYear() }) && eq(readYear(false, '1899'), { ok: false }) && eq(readYear(false, String(maxYear() + 1)), { ok: false }));
+check('year: the message names the current year', yearInvalid() === `Type a year between 1900 and ${new Date().getUTCFullYear()}, or tap NV.`);
 
 // ── The alcohol % ──────────────────────────────────────────────────────────
 check('abv: empty = none', eq(readAbv(''), { ok: true }));
@@ -82,7 +83,7 @@ check('line: nothing while empty, loading or invalid', [{ fate: 'unknown' }, { f
   const nvAdded = pickedChoice(P, [V[0]], true, '', '');
   check('pick: NV it lacks → create { productId, year: null } (a real null, never "NV")', 'choice' in nvAdded && eq(linkBody(nvAdded.choice), { create: { productId: 'prod_1', year: null } }), nvAdded);
   check('pick: while the years load the choice waits (never a guess)', 'pending' in pickedChoice(P, null, false, '2019', ''));
-  check('pick: an invalid year names the fix', eq(pickedChoice(P, V, false, '20', ''), { error: YEAR_INVALID }));
+  check('pick: an invalid year names the fix', eq(pickedChoice(P, V, false, '20', ''), { error: yearInvalid() }));
   check('pick: a bad abv on an added year names the fix', eq(pickedChoice(P, V, false, '2017', '40'), { error: ABV_INVALID }));
   check('pick: the label carries the wine and its kind', 'choice' in listed && eq(listed.choice.label, { name: 'Oslavje', producer: 'Radikon', year: '2019', colour: 'white', sparkling: false }));
 }
@@ -101,7 +102,7 @@ check('line: nothing while empty, loading or invalid', [{ fate: 'unknown' }, { f
   const more = newWineChoice({ ...base, colour: 'white', grapes: ' Ribolla, , Chardonnay ', region: ' Collio ', country: 'IT' });
   check('new: grapes split on commas, region trimmed, country as picked', 'choice' in more && eq((linkBody(more.choice).create as { product: unknown }).product, { name: 'Oslavje', colour: 'white', grapes: ['Ribolla', 'Chardonnay'], region: 'Collio', country: 'IT' }), more);
   check('new: never an alcohol-free choice (the abv is the fact)', 'choice' in red && !JSON.stringify(red.choice).includes('nonalc'));
-  check('new: an invalid year / abv names the fix', eq(newWineChoice({ ...base, colour: 'red', year: '99' }), { error: YEAR_INVALID }) && eq(newWineChoice({ ...base, colour: 'red', abv: 'x' }), { error: ABV_INVALID }));
+  check('new: an invalid year / abv names the fix', eq(newWineChoice({ ...base, colour: 'red', year: '99' }), { error: yearInvalid() }) && eq(newWineChoice({ ...base, colour: 'red', abv: 'x' }), { error: ABV_INVALID }));
 }
 
 // ── The freeze rule's outcome ──────────────────────────────────────────────

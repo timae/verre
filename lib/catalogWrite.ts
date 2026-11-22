@@ -225,7 +225,7 @@ function normalizeGrapes(raw: unknown): string[] {
 //   • The free-text ENCOUNTER string (`@verre/core` `normalizeVintageText`)
 //     applies a STRUCTURAL grammar only — any four-digit value, or an NV token.
 //     No plausibility range whatsoever.
-//   • THIS function, at CATALOG PROMOTION, accepts only 1900..current+1, because
+//   • THIS function, at CATALOG PROMOTION, accepts only 1900..the current year, because
 //     a promoted value becomes permanent shared identity that every later taster
 //     inherits.
 //
@@ -245,15 +245,17 @@ function normalizeGrapes(raw: unknown): string[] {
 //
 // The backfill's promotion rule (the handoff contract):
 //   recognized NV token → the NV row (year = null)
-//   1900..current+1     → that dated vintage row
+//   1900..current year  → that dated vintage row
 //   anything else (pre-1900, implausible future, legacy junk) → PRESERVE the
 //                         encounter string, default to PRODUCT-grain linkage +
 //                         manual disposition; never auto-mint a vintage
-// 🔒 THE one year range (1900 to next year): the write boundary below AND the
+// 🔒 THE one year range (1900 to the current year, UTC; a vintage is the harvest
+// year, so no bottle carries next year's: ruled 2026-11-22, was current + 1):
+// the write boundary below AND the
 // bottle search's year detection (lib/catalogSearch.ts: a typed word in this
 // range is the year; plan 7b review r1 P1 found two definitions).
 export const YEAR_MIN = 1900
-export function yearMax(): number { return new Date().getUTCFullYear() + 1 }
+export function yearMax(): number { return new Date().getUTCFullYear() }
 export function isCatalogYear(n: number): boolean { return Number.isInteger(n) && n >= YEAR_MIN && n <= yearMax() }
 
 export function validateYear(year: number | null): number | null {

@@ -1362,9 +1362,9 @@ async function main() {
   ok(nv !== null, 'the NV row was the one that was kept')
 
   // The plausible-year fence (route-level, tighter than the DB CHECK).
-  const nextYear = new Date().getUTCFullYear() + 1
-  ok(validateYear(nextYear) === nextYear, `current year + 1 (${nextYear}) is accepted`)
-  await rejects('a far-future year is rejected', async () => validateYear(nextYear + 1), 'year must be between')
+  const thisYear = new Date().getUTCFullYear()
+  ok(validateYear(thisYear) === thisYear, `the current year (${thisYear}) is accepted`)
+  await rejects('next year is rejected (a vintage is the harvest year)', async () => validateYear(thisYear + 1), 'year must be between')
   await rejects('a pre-1900 year is rejected', async () => validateYear(1899), 'year must be between')
   ok(validateYear(1900) === 1900, '1900 is accepted (the paired boundary accept)')
   ok(validateYear(null) === null, 'null (the NV row) passes through validateYear')
