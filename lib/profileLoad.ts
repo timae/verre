@@ -15,6 +15,7 @@ import { entryKey, loadEntriesSoft } from '@/lib/catalogEntries'
 import { entryYear } from '@/lib/wineDisplay'
 import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
 import { impressionsCount } from '@/lib/profileLists'
+import { decideMoments, type MomentDecision } from '@/lib/momentAudience'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 
 export type LoadedCheckin = {
@@ -52,7 +53,7 @@ export type LoadedSessionPost = {
   id: number              // feed_items.id
   sessionId: number | null
   sessionName: string | null  // null when deleted (scrubbed) or unnamed
-  hostName: string | null     // null when deleted (scrubbed) or anon-host
+  hostName: string | null     // null when deleted (scrubbed), anon-host, or the host is hidden from the viewer
   deleted: boolean
   blind: boolean
   wines: SessionFeedWine[]    // empty when deleted (collapse rule)
@@ -239,7 +240,18 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   // one SQL rule decides what each bottle shows, lib/outsideView.ts).
   const sessionPairs: SessionFeedPair[] = sessionFeedItems.flatMap(f =>
     f.session ? [{ authorId: userId, sessionId: f.session.id }] : [])
-  const sessionWines = await loadSessionFeedWines(sessionPairs, viewerId)
+  // 🔒 The host's name only to a viewer in the moment or one the host is named
+  // to (the feed's rule, lib/momentAudience.ts; a signed-out viewer included;
+  // a failure hides every host, never the page).
+  const [sessionWines, moments] = await Promise.all([
+    loadSessionFeedWines(sessionPairs, viewerId),
+    decideMoments(viewerId, sessionFeedItems.flatMap(f => (f.session && !f.session.deletedAt ? [f.session.id] : [])))
+      .catch((err: unknown) => { console.error('[profile] moment audience unavailable:', err); return new Map<number, MomentDecision>() }),
+  ])
+  const hostNameFor = (s: { id: number; hostName: string | null }) => {
+    const d = moments.get(s.id)
+    return d && (d.member || d.hostNamed) ? s.hostName : null
+  }
 
   // Hydrate viewer's "liked" state across BOTH standalone and session
   // feed_items in one batch lookup.
@@ -346,7 +358,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
         // are scrubbed (NULL). Renderer collapses to "[deleted session]"
         // without a link or per-wine enumeration.
         sessionName: deleted ? null : (f.session?.name ?? null),
-        hostName: deleted ? null : (f.session?.hostName ?? null),
+        hostName: f.session && !deleted ? hostNameFor(f.session) : null,
         deleted,
         blind: !!f.session?.blind,
         wines,

@@ -20,6 +20,8 @@ import { parsePathId } from '@/lib/parsePathId'
 import { entryKey, loadEntriesSoft } from '@/lib/catalogEntries'
 import { entryYear } from '@/lib/wineDisplay'
 import { savedFlags } from '@/lib/cravings'
+import { decideMoments, type MomentDecision } from '@/lib/momentAudience'
+import { momentLookInEnabled } from '@/lib/momentGate'
 import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 const PAGE = 20
@@ -222,7 +224,17 @@ export async function GET(req: NextRequest) {
   // still scrubbed at the payload layer below.
   const sessionPairs: SessionFeedPair[] = feedItems.flatMap(f =>
     f.kind === 'session' && f.session ? [{ authorId: f.user.id, sessionId: f.session.id }] : [])
-  const sessionWines = await loadSessionFeedWines(sessionPairs, userId)
+  // Moment Visibility (lib/momentAudience.ts), ONE batch for the page's live
+  // moments, beside the bottles: 🔒 `hostName` only to a viewer in the moment
+  // or one the host is named to (live, not behind the flag); `momentId` (flag
+  // on) to a member (the by-moment read needs it) or a viewer who may look in.
+  // A failure hides every host and every momentId (fails closed), never the page.
+  const [sessionWines, moments] = await Promise.all([
+    loadSessionFeedWines(sessionPairs, userId),
+    decideMoments(userId, feedItems.flatMap(f => (f.kind === 'session' && f.session && !f.session.deletedAt ? [f.session.id] : [])))
+      .catch((err: unknown) => { console.error('[feed] moment audience unavailable:', err); return new Map<number, MomentDecision>() }),
+  ])
+  const lookIn = momentLookInEnabled()
   // A check-in's bottle: shown from its catalogue entry (merges followed), else
   // its snapshot; the viewer's save state (a check-in is never blind).
   const checkinWines = feedItems.flatMap(f => (f.kind === 'standalone' && f.rating ? [f.rating.wine] : []))
@@ -332,6 +344,7 @@ export async function GET(req: NextRequest) {
         // posts pass through regardless: their ratings survive the session
         // scrub and the "[deleted session]" render is deliberate.
         if (!deleted && wines.length === 0) return []
+        const d = s && !deleted ? moments.get(s.id) : undefined
         return [{
           type: 'session' as const,
           createdAt: f.createdAt,
@@ -339,11 +352,12 @@ export async function GET(req: NextRequest) {
           session: {
             id: f.id,
             sessionId: s?.id ?? null,
+            ...(lookIn && d && (d.member || d.open) ? { momentId: d.publicId } : {}),
             // §8 contract: when soft-deleted, name + hostName + code are
             // scrubbed. Renderer shows the "[deleted session]" header in
             // place of the live name; the wine list still renders.
             sessionName: deleted ? null : (s?.name ?? null),
-            hostName: deleted ? null : (s?.hostName ?? null),
+            hostName: d && (d.member || d.hostNamed) ? (s?.hostName ?? null) : null,
             deleted,
             blind: !!s?.blind,
             wines,

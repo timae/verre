@@ -75,7 +75,12 @@ export type SessionFeedWine = {
 export type SessionFeedPayload = {
   id: number              // feed_items.id
   sessionId: number | null
+  // The moment's PUBLIC id (Moment Visibility, flag on): only to a member or a
+  // viewer who may look in. Never the code.
+  momentId?: string
   sessionName: string | null
+  // 🔒 Only to a viewer in the moment or one the host is NAMED to
+  // (lib/momentAudience.ts); null otherwise, and for a deleted moment.
   hostName: string | null
   deleted: boolean
   blind: boolean

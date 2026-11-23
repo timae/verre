@@ -81,6 +81,12 @@
 //        the secret failing closed, the shared limiter), the scrub gate on
 //        both delete paths, the migration's one-off statements run for real,
 //        guests' `shown`, blind rows without a wine id
+//   Moment Visibility, step 1b, scripts/tests/moment-lookin-section.mts:
+//   § 24 decideMoments' naming against the single-profile gate, the audience
+//        table and the cap, the look-in (one 404, the limiter first, the link
+//        vs the audience, the leak matrix, the guest reader), the by-moment
+//        read, someone's Moments' open rows and their filters, the tile, the
+//        feed's momentId and hostName (flag off too), the code / token canary
 //   + the CANARY over every response of the run (no user integer leaves)
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
@@ -199,8 +205,9 @@ const { outsideViewMatrix } = await import('./outside-view-matrix.mts')
 const { leakFixes } = await import('./leak-fixes-section.mts')
 // § 21 usernames (docs/dev/proposals/usernames.md § 12)
 const { usernames } = await import('./usernames-section.mts')
-// § 23 Moment Visibility, step 1a
+// § 23 Moment Visibility, step 1a; § 24 step 1b
 const { momentVisibility } = await import('./moment-visibility-section.mts')
+const { momentLookIn } = await import('./moment-lookin-section.mts')
 // § 18 public user ids
 const stateRoute = await import('../../app/api/session/[code]/state/route.ts')
 const visitRoute = await import('../../app/api/session/[code]/visit/route.ts')
@@ -536,7 +543,7 @@ try {
   await holder.query('BEGIN')
   await holder.query('INSERT INTO bookmarks (user_id, wine_id) VALUES ($1, $2)', [P.id, vis.id])
   await holder.query('UPDATE users SET tile_cravings_url = $1 WHERE id = $2', [replaced, P.id])
-  const read = resolveTilePhotos(P.id, ['impressions', 'moments', 'cravings'])
+  const read = resolveTilePhotos(P.id, ['impressions', 'moments', 'cravings'], P.id)
   check('the profile read blocks on the re-pick\'s row lock', await blockedOnLock(read))
   await holder.query('COMMIT')
   await holder.end()
@@ -2450,6 +2457,7 @@ try {
 
   // ── § 23 Moment Visibility, step 1a ──────────────────────────────────────
   await momentVisibility({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
+  await momentLookIn({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
 
   section('canary: no response carried a user integer')
   check('🔒 no response body or header carried a fixture user integer, a u:<digit>, or a public id inside a URL', canaryViolations.length === 0, [...new Set(canaryViolations)].slice(0, 20))

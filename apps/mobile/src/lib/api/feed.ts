@@ -97,7 +97,9 @@ export type CheckinPayload = {
 // A session-aggregate post ("<name> shared a moment") — mirrors
 // lib/feedTypes.ts SessionFeedPayload. Tombstoned sessions ship
 // sessionName/hostName === null + deleted === true; the wine list still
-// renders ("[deleted session]" header).
+// renders ("[deleted session]" header). `hostName` is also null on a live
+// post when the viewer wasn't in the moment and its host is hidden from them
+// (Moment Visibility step 1b); the app doesn't render it.
 export type SessionFeedPayload = {
   id: number; // feed_items.id
   sessionId: number | null;

@@ -1003,7 +1003,7 @@ async function tilePin() {
   await reveal(code, as(H), b)
   check('(28a) revealed: pickable', (await tiles.isPickable('cravings', T.id, url)) === true)
   await prisma.$executeRaw`UPDATE users SET tile_cravings_url = ${url} WHERE id = ${T.id}`
-  const got = await tiles.resolveTilePhotos(T.id, ['cravings'])
+  const got = await tiles.resolveTilePhotos(T.id, ['cravings'], T.id)
   check('(28b) the pin is read as live (not cleared)', got.cravings?.imageUrl === url && got.cravings?.pinned === true
     && (await prisma.$queryRaw<{ u: string | null }[]>`SELECT tile_cravings_url AS u FROM users WHERE id = ${T.id}`)[0].u === url, got)
 }

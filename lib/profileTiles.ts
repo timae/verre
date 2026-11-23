@@ -43,6 +43,8 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { lineupHiddenNowSql } from '@/lib/outsideView'
 import { ownerCravingsSql, ownerWasThereSql } from '@/lib/cravings'
+import { sharedMomentSql } from '@/lib/momentAudience'
+import { momentLookInEnabled } from '@/lib/momentGate'
 
 export const TILE_KEYS = ['impressions', 'moments', 'cravings'] as const
 export type TileKey = (typeof TILE_KEYS)[number]
@@ -97,8 +99,24 @@ const COLUMN: Record<TileKey, Prisma.Sql> = {
 export const SAFE_PHOTO = Prisma.sql`((s.id IS NULL OR s.deleted_at IS NOT NULL OR s.blind IS NOT TRUE OR w.revealed_at IS NOT NULL)
   AND NOT ${lineupHiddenNowSql('s')})`
 
+// 🔒 A cover whose URL carries the moment's code (`sessions/<code>_…`, the
+// create path until 2026-11-08 and the settings path until 2026-11-11): a code
+// joins, so it is never served outside the moment. ONE predicate for the tile
+// pools, the look-in and someone's Moments' open rows (step-1 plan C4). Alias
+// `s` = a LIVE sessions row (its code is set).
+export function legacyCoverSql(sName: 's'): Prisma.Sql {
+  return Prisma.sql`strpos(${Prisma.raw(sName)}.cover_photo_url, 'sessions/' || ${Prisma.raw(sName)}.code || '_') > 0`
+}
+// The cover as it may be shown outside the moment: NULL for a code-bearing one,
+// and NULL when the predicate can't be evaluated (fails closed).
+export function coverOutsideSql(sName: 's'): Prisma.Sql {
+  return Prisma.sql`CASE WHEN NOT (${legacyCoverSql(sName)}) THEN ${Prisma.raw(sName)}.cover_photo_url END`
+}
+
 // Every pool yields (url, at): the photo and the recency it sorts by.
-function pool(tile: TileKey, profileId: number, pick: boolean): Prisma.Sql {
+// `sharedWith` (the moments PICK pool for someone else's automatic cover only,
+// T12): only moments that viewer is in; null = nobody's.
+function pool(tile: TileKey, profileId: number, pick: boolean, sharedWith?: number | null): Prisma.Sql {
   if (tile === 'impressions') return Prisma.sql`
     SELECT COALESCE(ri.image_url, w.image_url) AS url, r.rated_at AS at
     FROM ratings r
@@ -117,7 +135,8 @@ function pool(tile: TileKey, profileId: number, pick: boolean): Prisma.Sql {
     WHERE sm.user_id = ${profileId} AND s.deleted_at IS NULL
       AND sm.removed_state IS DISTINCT FROM 'kicked'
       AND s.cover_photo_url IS NOT NULL
-      AND strpos(s.cover_photo_url, 'sessions/' || s.code || '_') = 0`
+      AND NOT (${legacyCoverSql('s')})
+      ${sharedWith === undefined ? Prisma.empty : sharedWith === null ? Prisma.sql`AND FALSE` : Prisma.sql`AND ${sharedMomentSql(sharedWith)}`}`
   // A craving's photo is its bottle's (lib/cravings.ts: the owner's shown set,
   // real cravings and the blind saves that count as one). A source-less craving
   // gives none. A picked photo (shown to every visitor) also needs a moment that
@@ -155,10 +174,12 @@ async function inPool(db: Db, tile: TileKey, profileId: number, url: string, pic
 
 export const isPickable = (tile: TileKey, profileId: number, url: string) => inPool(prisma, tile, profileId, url, true)
 
-// Step 1's automatic photo: the latest PICK photo.
-async function autoLatest(tile: TileKey, profileId: number): Promise<string | null> {
+// Step 1's automatic photo: the latest PICK photo. For someone else's Moments
+// tile (Moment Visibility on, T12) only from the moments the viewer is in: an
+// open moment's cover never feeds it (one cheap condition on a hot read).
+async function autoLatest(tile: TileKey, profileId: number, sharedWith?: number | null): Promise<string | null> {
   const rows = await prisma.$queryRaw<{ url: string }[]>`
-    SELECT url FROM (${pool(tile, profileId, true)}) p ORDER BY at DESC LIMIT 1`
+    SELECT url FROM (${pool(tile, profileId, true, tile === 'moments' ? sharedWith : undefined)}) p ORDER BY at DESC LIMIT 1`
   return rows[0]?.url ?? null
 }
 
@@ -214,8 +235,13 @@ export type TilePhoto = { imageUrl: string | null; pinned: boolean }
 // `tiles` is REQUIRED (no "all" default) and the result holds only those
 // keys: a tile hidden from the viewer (lib/profileHeader.ts) is never
 // requested, so its photo query never runs and its stored pin is kept.
-export async function resolveTilePhotos(profileId: number, tiles: readonly TileKey[]): Promise<Partial<Record<TileKey, TilePhoto>>> {
+// `viewerId` is who is looking (null = signed out). 🔒 It restricts the
+// AUTOMATIC Moments cover only (T12, Moment Visibility on, someone else's
+// profile): the pin's liveness and the owner's picker keep the full pool, or a
+// stranger's view would read the owner's pin as dead and erase it for everyone.
+export async function resolveTilePhotos(profileId: number, tiles: readonly TileKey[], viewerId: number | null): Promise<Partial<Record<TileKey, TilePhoto>>> {
   if (tiles.length === 0) return {}
+  const sharedWith = viewerId === profileId || !momentLookInEnabled() ? undefined : viewerId
   const pins = await readPins(profileId)
   const entries = await Promise.all(tiles.map(async (tile): Promise<[TileKey, TilePhoto]> => {
     const { url: pin, own } = pins[tile]
@@ -223,7 +249,7 @@ export async function resolveTilePhotos(profileId: number, tiles: readonly TileK
       const live = own || (await inPool(prisma, tile, profileId, pin, false)) || (await clearDeadPin(tile, profileId, pin)) !== null
       if (live) return [tile, { imageUrl: pin, pinned: true }]
     }
-    return [tile, { imageUrl: await autoLatest(tile, profileId), pinned: false }]
+    return [tile, { imageUrl: await autoLatest(tile, profileId, sharedWith), pinned: false }]
   }))
   return Object.fromEntries(entries)
 }

@@ -326,6 +326,12 @@ jobs:
       # two one-off statements run verbatim through psql on fixture rows
       # (psql is on ubuntu-latest, as the catalog suite relies on), guests'
       # `shown`, blind rows without a wine id.
+      # § 24 Moment Visibility, step 1b (scripts/tests/moment-lookin-section.mts):
+      # who is named and who may look in against the single-profile gate, the
+      # look-in's one 404 and its limiter before any lookup, the leak matrix,
+      # the guest reader bound to the incarnation, the by-moment read, open
+      # rows on someone's Moments and their filters, the tile, the feed's
+      # momentId and hostName, the code / link-token canary.
       - name: You profile (tiles, retention, profile images, settings, public ids, moment visibility)
         run: npx tsx scripts/tests/you-profile-integration.mts
         timeout-minutes: 12

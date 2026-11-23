@@ -26,7 +26,10 @@ import type { ProfileGateOk } from '@/lib/profileVisibility'
 import { encodeKeyCursor, parseKeyCursor, usKeySql } from '@/lib/keyCursor'
 import { encodeImpressionsCursor, isScoreSort, parseImpressionsCursor, type ImpressionSort, type ImpressionsCursor } from '@/lib/impressionsCursor'
 import { openCravingsCursor, sealCravingsCursor, type CravingsCursor, type CravingsSort } from '@/lib/cravingsCursor'
-import { momentFacetWhere, type MomentFacets } from '@/lib/momentFacets'
+import { momentFacetWhere, resolveFacets, type MomentFacets, type OpenRowsNaming } from '@/lib/momentFacets'
+import { decideMoments, sharedMomentSql } from '@/lib/momentAudience'
+import { momentLookInEnabled } from '@/lib/momentGate'
+import { coverOutsideSql } from '@/lib/profileTiles'
 
 const PAGE = 30
 const SIMILARITY = 0.3
@@ -441,18 +444,20 @@ export async function loadCravings(
 
 // ── Someone's Moments (D5) ──────────────────────────────────────────────────
 
-// 🔒 Join safety: ONLY moments you share (both member rows, neither kicked,
-// the moment live, upcoming included) and, as a belt, no ban of yours. A
-// moment you're not in (or were kicked from) is never a row, a name or a code;
-// it is only counted in `otherCount`. Aliases s / sm (theirs) / mine.
-const sharedSql = (viewerId: number) => Prisma.sql`(
-  EXISTS (SELECT 1 FROM session_members mine
-           WHERE mine.session_code = s.code AND mine.user_id = ${viewerId} AND mine.removed_state IS DISTINCT FROM 'kicked')
-  AND NOT EXISTS (SELECT 1 FROM session_bans vb WHERE vb.session_code = s.code AND vb.identity_id = ${`u:${viewerId}`}))`
+// 🔒 Join safety: a SHARED row is a moment you are in (lib/momentAudience.ts
+// `sharedMomentSql`: your member row, not kicked, no ban of yours), and only it
+// carries the code. With Moment Visibility on, an OPEN row is one of their
+// moments you may look into (step-1 plan § 4.5): no code, its public id, and
+// only where the profile's OWNER is named to you there (Show Moments alone is
+// weaker: a host the look-in hides would still be listed one tap away). Every
+// other moment is only counted in `otherCount`. Aliases s / sm (theirs).
 const theirMemberships = (ownerId: number) => Prisma.sql`
   FROM session_members sm
   JOIN sessions s ON s.code = sm.session_code
   WHERE sm.user_id = ${ownerId} AND s.deleted_at IS NULL AND sm.removed_state IS DISTINCT FROM 'kicked'`
+// The candidates for open rows: their most recent memberships you're not in
+// (the list's own order). Past it a moment is counted, never an open row.
+const OPEN_CANDIDATES = 100
 
 // The app's SessionRole (RoleChip), mapped exactly as /api/me/sessions does.
 export type MomentRole = 'host' | 'cohost' | 'provider' | null
@@ -467,54 +472,100 @@ export type SharedMomentRow = {
   category: string | null
   role: MomentRole
 }
+// `address` only with the moment's Show Place; the cover never a code-bearing one.
+export type OpenMomentRow = {
+  momentId: string
+  name: string | null
+  dateFrom: string | null
+  dateTo: string | null
+  createdAt: string | null
+  address?: string | null
+  coverPhotoUrl: string | null
+  category: string | null
+  role: MomentRole
+}
+
+const NO_OPEN = { ids: [] as number[], naming: { hostNamed: [], namedFor: () => [] } as OpenRowsNaming }
+
+// Which of their moments you may look into AND they are named to you in,
+// decided once per request (lib/momentAudience.ts), with who else is named
+// there for the filters (the host, the filter's friends).
+async function openMoments(ownerId: number, viewerId: number, peopleIds: number[]): Promise<typeof NO_OPEN> {
+  if (!momentLookInEnabled()) return NO_OPEN
+  const cand = await prisma.$queryRaw<{ id: number }[]>`
+    SELECT s.id ${theirMemberships(ownerId)} AND NOT ${sharedMomentSql(viewerId)}
+     ORDER BY COALESCE(s.date_from, s.created_at) DESC, s.id DESC LIMIT ${OPEN_CANDIDATES}`
+  const decided = await decideMoments(viewerId, cand.map(r => r.id), { also: [ownerId, ...peopleIds] })
+  const open = [...decided.values()].filter(d => d.open && d.named.has(ownerId))
+  return {
+    ids: open.map(d => d.sessionId),
+    naming: {
+      hostNamed: open.filter(d => d.hostNamed).map(d => d.sessionId),
+      namedFor: (userId: number) => open.filter(d => d.named.has(userId)).map(d => d.sessionId),
+    },
+  }
+}
 
 export async function loadSharedMoments(
   ownerId: number, gate: ProfileGateOk, viewerId: number,
   opts: { facets: MomentFacets; blockedUserIds: Set<number>; cursor: string | null; limit: number },
-): Promise<{ items: SharedMomentRow[]; nextCursor: string | null; otherCount?: number }> {
+): Promise<{ items: (SharedMomentRow | OpenMomentRow)[]; nextCursor: string | null; otherCount?: number }> {
   if (!gate.sees.moments) return { items: [], nextCursor: null }
-  const where: Prisma.Sql[] = [sharedSql(viewerId)]
-  where.push(...await momentFacetWhere(opts.facets, { subjectId: ownerId, viewerId, blockedUserIds: opts.blockedUserIds }))
   const cursor = parseKeyCursor(opts.cursor)
   if (opts.cursor && !cursor) return { items: [], nextCursor: null }
+  const resolved = await resolveFacets(opts.facets, viewerId, opts.blockedUserIds)
+  const open = await openMoments(ownerId, viewerId, resolved.people)
+  const ctx = { subjectId: ownerId, viewerId, blockedUserIds: opts.blockedUserIds, resolved }
+  const shared = [sharedMomentSql(viewerId), ...await momentFacetWhere(opts.facets, ctx)]
+  const which = open.ids.length === 0
+    ? Prisma.join(shared, ' AND ')
+    : Prisma.sql`((${Prisma.join(shared, ' AND ')}) OR (${Prisma.join([
+        Prisma.sql`s.id = ANY(${open.ids}::int[])`, ...await momentFacetWhere(opts.facets, { ...ctx, open: open.naming }),
+      ], ' AND ')}))`
+  const where: Prisma.Sql[] = [which]
   const eff = Prisma.sql`COALESCE(s.date_from, s.created_at)`
   if (cursor) where.push(Prisma.sql`(${eff}, s.id) < (${cursor.key}::timestamptz, ${cursor.id})`)
+  // An open row whose host is not named to you: no fallback to the host's name.
+  const hostHidden = open.ids.filter(id => !open.naming.hostNamed.includes(id))
   const rows = await prisma.$queryRaw<{
-    id: number; code: string; name: string | null; date_from: Date | null; date_to: Date | null; created_at: Date | null
-    address: string | null; cover_photo_url: string | null; category: string | null; member_role: string
-    host_user_id: number | null; eff_key: string
+    id: number; code: string; public_id: string; open: boolean; name: string | null; date_from: Date | null; date_to: Date | null
+    created_at: Date | null; address: string | null; show_place: boolean | null; cover_photo_url: string | null; outside_cover: string | null
+    category: string | null; member_role: string; host_user_id: number | null; eff_key: string
   }[]>`
-    SELECT s.id, s.code,
+    SELECT s.id, s.code, s.public_id, (s.id = ANY(${open.ids}::int[])) AS open,
            -- A nameless moment (before the required-name rule) reads as its
-           -- host's name, as your own list does (r.name || r.host_name).
-           COALESCE(NULLIF(s.name, ''), s.host_name) AS name,
-           s.date_from, s.date_to, s.created_at, s.address, s.cover_photo_url, s.category,
+           -- host's name, as your own list does (r.name || r.host_name), except
+           -- on an open row whose host is hidden from you.
+           CASE WHEN s.id = ANY(${hostHidden}::int[]) THEN NULLIF(s.name, '') ELSE COALESCE(NULLIF(s.name, ''), s.host_name) END AS name,
+           s.date_from, s.date_to, s.created_at, s.address, s.show_place, s.cover_photo_url, ${coverOutsideSql('s')} AS outside_cover, s.category,
            sm.role AS member_role, s.host_user_id, ${usKeySql(eff)} AS eff_key
     ${theirMemberships(ownerId)} AND ${Prisma.join(where, ' AND ')}
     ORDER BY ${eff} DESC, s.id DESC
     LIMIT ${opts.limit + 1}`
   const more = rows.length > opts.limit
   const page = more ? rows.slice(0, opts.limit) : rows
-  const items = page.map((r): SharedMomentRow => ({
-    code: r.code,
-    name: r.name,
-    dateFrom: r.date_from?.toISOString() ?? null,
-    dateTo: r.date_to?.toISOString() ?? null,
-    createdAt: r.created_at?.toISOString() ?? null,
-    address: r.address,
-    coverPhotoUrl: r.cover_photo_url,
-    category: r.category,
-    role: r.member_role === 'host' ? 'host'
+  const items = page.map((r): SharedMomentRow | OpenMomentRow => {
+    const role: MomentRole = r.member_role === 'host' ? 'host'
       : r.member_role === 'co_host' ? 'cohost'
       : r.member_role === 'provider' ? 'provider'
       : r.host_user_id === ownerId ? 'host'
-      : null,
-  }))
+      : null
+    const common = {
+      name: r.name,
+      dateFrom: r.date_from?.toISOString() ?? null,
+      dateTo: r.date_to?.toISOString() ?? null,
+      createdAt: r.created_at?.toISOString() ?? null,
+    }
+    if (r.open) {
+      return { momentId: r.public_id, ...common, ...(r.show_place === true ? { address: r.address } : {}), coverPhotoUrl: r.outside_cover, category: r.category, role }
+    }
+    return { code: r.code, ...common, address: r.address, coverPhotoUrl: r.cover_photo_url, category: r.category, role }
+  })
   const last = page[page.length - 1]
   const nextCursor = more && last ? encodeKeyCursor(last.eff_key, last.id) : null
   if (opts.cursor) return { items, nextCursor }
-  // Their memberships minus the shared ones, unfiltered (the closing line).
+  // Their memberships minus the shared and the open ones, unfiltered (the closing line).
   const other = await prisma.$queryRaw<{ n: number }[]>`
-    SELECT COUNT(*)::int AS n ${theirMemberships(ownerId)} AND NOT ${sharedSql(viewerId)}`
-  return { items, nextCursor, otherCount: other[0]?.n ?? 0 }
+    SELECT COUNT(*)::int AS n ${theirMemberships(ownerId)} AND NOT ${sharedMomentSql(viewerId)}`
+  return { items, nextCursor, otherCount: Math.max(0, (other[0]?.n ?? 0) - open.ids.length) }
 }
