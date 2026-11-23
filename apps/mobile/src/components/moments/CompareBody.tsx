@@ -5,10 +5,7 @@ import { Animated, Easing, LayoutAnimation, Platform, Pressable, useWindowDimens
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   aggregateFlavourAxes,
-  consensusFromRatings,
-  fillFlavourZeros,
   formatScore,
-  groupScoreAverage,
   resolveAxes,
   type ConsensusKey,
 } from '@verre/core';
@@ -16,7 +13,6 @@ import {
   aromaTasteSummary,
   buildCompareAromaModel,
   compareAromaInputSignature,
-  hasResolvableAroma,
   viewContributorsRoute,
   type Tier3Route,
 } from '@/components/moments/aromaCompareView';
@@ -42,6 +38,7 @@ import { GUTTER, usePhoneTokens } from '@/lib/layout';
 import { kindLabel } from '@/lib/momentFormat';
 import { fuzzyIncludes } from '@/lib/search';
 import { intensityWord } from '@/lib/scoreWords';
+import { buildItems as buildItemsFor, rosterIndexOf, SORT_FNS, type CmpItem as CmpItemOf, type CompareSort, type GroupStats, type Rater as RaterOf } from '@/lib/compareItems';
 import { motion, radius, useTheme } from '@/theme';
 import { useFlavourColors, usePersonColors } from '@/theme/flavourColors';
 
@@ -92,41 +89,17 @@ export type ComparePerson = {
   personIndex: number;
 };
 
-type Rater = {
-  id: string;
-  displayName: string;
-  rating: RatingMeta;
-  /** fillFlavourZeros-normalized flavours; {} ⟺ no flavour engagement. */
-  filled: Record<string, number>;
-  personIndex: number;
-};
-
-type CmpItem = {
-  wine: WireWine;
-  index: number;
-  /** SELECTED raters of this impression (the rail's hidden set already applied). */
-  raters: Rater[];
-  scored: Rater[];
-  avg: number | null;
-  /** Score span (max−min) across scored raters; null under 2 scores. Feeds the agreement sorts. */
-  spread: number | null;
-  consensus: ConsensusKey | null;
-};
-
-// Roster position drives person colours + rail order: participants first, then
-// any raters no longer in the roster (kicked/tombstoned) in rating-map order.
-function rosterIndexOf(ratings: RatingsView | null, meta: SessionMetaView | null): Map<string, number> {
-  const rosterIndex = new Map<string, number>();
-  (meta?.participants ?? []).forEach((p, i) => rosterIndex.set(p.id, i));
-  let overflow = rosterIndex.size;
-  for (const id of Object.keys(ratings ?? {})) {
-    if (!rosterIndex.has(id)) rosterIndex.set(id, overflow++);
-  }
-  return rosterIndex;
-}
+// The cards and their sorts are lib/compareItems.ts (pure, unit-tested).
+type Rater = RaterOf<RatingMeta>;
+type CmpItem = CmpItemOf<WireWine, RatingMeta>;
+// Compare reads only the roster off the moment's meta (a look-in passes just that).
+type CompareRoster = Pick<SessionMetaView, 'participants'>;
+const buildItems = (wines: WireWine[] | null, ratings: RatingsView | null, meta: CompareRoster | null, hidden: Set<string>, groupStats?: GroupStats): CmpItem[] =>
+  buildItemsFor(wines, ratings, meta, hidden, groupStats);
+export type { CompareSort };
 
 /** The rail/picker roster: participants (avatars included) + tombstoned raters. */
-export function buildComparePeople(ratings: RatingsView | null, meta: SessionMetaView | null): ComparePerson[] {
+export function buildComparePeople(ratings: RatingsView | null, meta: CompareRoster | null): ComparePerson[] {
   const rosterIndex = rosterIndexOf(ratings, meta);
   const byId = new Map<string, ComparePerson>();
   for (const p of meta?.participants ?? []) {
@@ -138,64 +111,8 @@ export function buildComparePeople(ratings: RatingsView | null, meta: SessionMet
   return [...byId.values()].sort((a, b) => a.personIndex - b.personIndex);
 }
 
-// Items over the SELECTION: hidden raters are dropped before anything is
-// computed, so avg/consensus/rows/charts/ranking all follow the rail.
-function buildItems(
-  wines: WireWine[] | null,
-  ratings: RatingsView | null,
-  meta: SessionMetaView | null,
-  hidden: Set<string>,
-): CmpItem[] {
-  if (!wines || !ratings) return [];
-  const rosterIndex = rosterIndexOf(ratings, meta);
-  // Sorted by roster position: Object.entries follows the server's Redis SCAN
-  // order, which is NOT stable across polls — unsorted, radar layering, axis
-  // rows, and tied score rows would flicker between refreshes.
-  const raterBuckets = Object.entries(ratings)
-    .filter(([id]) => !hidden.has(id))
-    .map(([id, bucket]) => ({ id, ...bucket }))
-    .sort((a, b) => rosterIndex.get(a.id)! - rosterIndex.get(b.id)!);
-
-  const items = wines
-    .map((wine, index): CmpItem => {
-      const raters: Rater[] = raterBuckets
-        .filter((b) => b.ratings[wine.id])
-        .map((b) => ({
-          id: b.id,
-          displayName: b.displayName,
-          rating: b.ratings[wine.id],
-          filled: fillFlavourZeros(b.ratings[wine.id].flavors, 'wine', wine),
-          personIndex: rosterIndex.get(b.id)!,
-        }))
-        // Compare renders score, structure, OR aromas — an aroma-only rating is
-        // real compare input (the Aroma-agreement strip needs it); only a
-        // notes-only (or stale cleared) rating has none of the three and would
-        // make a dead-end card ("No structure detail" + "No scores yet").
-        .filter((r) =>
-          (r.rating.score || 0) > 0
-          || Object.keys(r.filled).length > 0
-          || hasResolvableAroma(r.rating.aromas));
-      const scores = raters.map((r) => r.rating.score || 0);
-      const scoredScores = scores.filter((v) => v > 0);
-      return {
-        wine,
-        index,
-        raters,
-        scored: raters.filter((r) => (r.rating.score || 0) > 0).sort((a, b) => b.rating.score - a.rating.score),
-        avg: groupScoreAverage(scores),
-        spread: scoredScores.length >= 2 ? Math.max(...scoredScores) - Math.min(...scoredScores) : null,
-        consensus: consensusFromRatings(raters.map((r) => ({ score: r.rating.score || 0, flavors: r.rating.flavors })), 'wine', wine),
-      };
-    })
-    .filter((it) => it.raters.length > 0);
-  // Line-up order (Simon's ruling 2026-07-03, supersedes the score-ranked
-  // list) — the default; the toolbar's sort menu reorders in CompareBody.
-  return items;
-}
-
 // ── toolbar sort + search (Simon's 2026-07-03 spec) ─────────────────────────
 
-export type CompareSort = 'lineup' | 'top' | 'bottom' | 'agree' | 'split' | 'most';
 // 'lineup' is the DEFAULT state, not a menu row: tapping the active sort
 // again toggles it off, back to line-up order (Simon's ruling; the line-up
 // toolbar's sort menu behaves the same).
@@ -206,18 +123,6 @@ export const COMPARE_SORTS: { key: Exclude<CompareSort, 'lineup'>; label: string
   { key: 'split', label: 'Least agreement' },
   { key: 'most', label: 'Most ratings' },
 ];
-// Sentinels (not Infinity — Infinity−Infinity is NaN and breaks sort): items
-// missing the sort signal (no score avg / <2 scores for a spread) go LAST in
-// every mode, line-up order as the universal tiebreak.
-const SORT_FNS: Record<CompareSort, (a: CmpItem, b: CmpItem) => number> = {
-  lineup: (a, b) => a.index - b.index,
-  top: (a, b) => (b.avg ?? -1) - (a.avg ?? -1) || a.index - b.index,
-  bottom: (a, b) => (a.avg ?? 999) - (b.avg ?? 999) || a.index - b.index,
-  agree: (a, b) => (a.spread ?? 999) - (b.spread ?? 999) || a.index - b.index,
-  split: (a, b) => (b.spread ?? -1) - (a.spread ?? -1) || a.index - b.index,
-  most: (a, b) => b.raters.length - a.raters.length || a.index - b.index,
-};
-
 // Search haystack — the impression's detail fields EXCEPT link, vinification
 // and description (Simon's ruling 2026-07-03). Type matches on both the code
 // and the written-out label ("non" finds Non-alcoholic). A blind stub matches
@@ -344,7 +249,7 @@ export function CompareToolbar({
 // sheet opens; rows carry the mock's small "Friend" tag. ────────────────────
 
 export function ComparePickerSheet({
-  open, onClose, people, hidden, myIdentityId, blocksOut, blocksIn, onToggle, onAll, onJustMe, onMeAndFriends,
+  open, onClose, people, hidden, myIdentityId, blocksOut, blocksIn, onToggle, onAll, onJustMe, onMeAndFriends, lookIn,
 }: {
   open: boolean;
   onClose: () => void;
@@ -359,6 +264,9 @@ export function ComparePickerSheet({
   onJustMe: () => void;
   /** Receives the friend identity-id set resolved by the sheet's lazy fetch. */
   onMeAndFriends: (friendIds: Set<string>) => void;
+  /** A look-in (Moment Visibility T13): the viewer is not in the roster, so the
+   *  presets are Everyone + My Friends, and the foot counts who isn't shown. */
+  lookIn?: { more: number };
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -369,7 +277,7 @@ export function ComparePickerSheet({
   const friendsQ = useQuery({
     queryKey: ['my-friends'],
     queryFn: getMyFriends,
-    enabled: open && !!myIdentityId,
+    enabled: open && (!!myIdentityId || !!lookIn),
     staleTime: 60_000,
   });
   const friendIds = useMemo(
@@ -444,7 +352,7 @@ export function ComparePickerSheet({
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingTop: 12 }}>
           {preset('Everyone', isAll, onAll)}
           {myIdentityId ? preset('Just me', isMe, onJustMe) : null}
-          {myIdentityId && friendsQ.data !== undefined ? preset('Me + friends', isMeFriends, () => onMeAndFriends(friendIds)) : null}
+          {(myIdentityId || lookIn) && friendsQ.data !== undefined ? preset(lookIn ? 'My Friends' : 'Me + friends', isMeFriends, () => onMeAndFriends(friendIds)) : null}
         </View>
         <View style={{ paddingVertical: 12 }}>
           <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search tasters" />
@@ -511,6 +419,11 @@ export function ComparePickerSheet({
               No matches
             </VText>
           ) : null}
+          {lookIn && lookIn.more > 0 ? (
+            <VText variant="small" color="inkSoft" style={{ paddingTop: 12 }}>
+              {`${lookIn.more} more ${lookIn.more === 1 ? 'taster isn’t' : 'tasters aren’t'} shown to you.`}
+            </VText>
+          ) : null}
         </View>
   );
   return (
@@ -549,16 +462,26 @@ export function CompareBody({
   hidden,
   sort,
   query,
+  groupStats,
+  emptyCopy,
+  onOpenChange,
 }: {
   wines: WireWine[] | null;
   ratings: RatingsView | null;
-  meta: SessionMetaView | null;
+  meta: CompareRoster | null;
   locked: boolean;
   hidden: Set<string>;
   sort: CompareSort;
   query: string;
+  // The look-in's seams (Moment Visibility step-2 plan T13); the moment's own
+  // Compare passes none. `groupStats`: lib/compareItems.ts. `emptyCopy`: the
+  // "No ratings yet" state's words. `onOpenChange`: a card opened or closed (by
+  // its wine id), so the screen can fetch the open cards' aromas.
+  groupStats?: GroupStats;
+  emptyCopy?: { title: string; body: string };
+  onOpenChange?: (wineId: string, open: boolean) => void;
 }) {
-  const items = useMemo(() => buildItems(wines, ratings, meta, hidden), [wines, ratings, meta, hidden]);
+  const items = useMemo(() => buildItems(wines, ratings, meta, hidden, groupStats), [wines, ratings, meta, hidden, groupStats]);
   const q = query.trim();
   const shown = useMemo(() => {
     const base = q ? items.filter((it) => fuzzyIncludes(searchHay(it), q)) : items;
@@ -585,13 +508,13 @@ export function CompareBody({
     // excludes every rater" — via the SAME comparable predicate buildItems
     // applies (a session holding only notes-only ratings is empty, not a
     // selection failure).
-    const anyComparable = hidden.size > 0 && buildItems(wines, ratings, meta, EMPTY_HIDDEN).length > 0;
+    const anyComparable = hidden.size > 0 && buildItems(wines, ratings, meta, EMPTY_HIDDEN, groupStats).length > 0;
     return (
       <View style={{ paddingVertical: 72 }}>
         {anyComparable ? (
           <CenteredMessage title="Nobody selected" body="Pick people with the People button above to compare their ratings." />
         ) : (
-          <CenteredMessage title="No ratings yet" body="Rate some impressions and they'll show up here to compare." />
+          <CenteredMessage title={emptyCopy?.title ?? 'No ratings yet'} body={emptyCopy?.body ?? "Rate some impressions and they'll show up here to compare."} />
         )}
       </View>
     );
@@ -607,7 +530,7 @@ export function CompareBody({
   return (
     <View style={{ paddingHorizontal: GUTTER, paddingTop: 8, gap: 10 }}>
       {shown.map((item) => (
-        <CmpAccItem key={item.wine.id} item={item} />
+        <CmpAccItem key={item.wine.id} item={item} onOpenChange={onOpenChange} />
       ))}
     </View>
   );
@@ -616,7 +539,7 @@ export function CompareBody({
 // ── accordion item (.cmp-acc) — owns its open/drill/person-detail/sheet state
 // so cards are fully independent (multi-open). All data is selection-scoped. ─
 
-function CmpAccItem({ item }: { item: CmpItem }) {
+function CmpAccItem({ item, onOpenChange }: { item: CmpItem; onOpenChange?: (wineId: string, open: boolean) => void }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   // Fixed ACROSS cards, but large enough for the widest capped score label.
@@ -625,6 +548,16 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   const scoreBoxWidth = Math.max(60, Math.round(60 * phone.surface('score').fontScale));
   const { wine } = item;
   const [open, setOpen] = useState(false);
+  // The look-in fetches an open card's aromas (lib/lookInDetails.ts): it
+  // reports the card opening, closing, and leaving the list.
+  const wineId = wine.id;
+  useEffect(() => {
+    if (!onOpenChange) return;
+    onOpenChange(wineId, open);
+    return () => { if (open) onOpenChange(wineId, false); };
+  }, [onOpenChange, wineId, open]);
+  // Only people the viewer can't see rated it (a look-in): ★ and the count, no rows; it doesn't open.
+  const hiddenOnly = !!item.hiddenOnly;
   const [selAxis, setSelAxis] = useState(-1);
   const [selPerson, setSelPerson] = useState<string | null>(null);
   // The Tier 3 aroma detail sheet (tabbed since slice 3d) — opened from the
@@ -763,10 +696,11 @@ function CmpAccItem({ item }: { item: CmpItem }) {
       }}
     >
       <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
+        accessibilityRole={hiddenOnly ? undefined : 'button'}
+        accessibilityState={hiddenOnly ? undefined : { expanded: open }}
         accessibilityLabel={`${displayName}${item.avg !== null ? `, group average ${item.avg}` : ''}`}
-        onPress={toggleOpen}
+        onPress={hiddenOnly ? undefined : toggleOpen}
+        disabled={hiddenOnly}
         style={({ pressed }) => ({
           flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), padding: phone.lerp(12, 16),
           backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
@@ -815,13 +749,20 @@ function CmpAccItem({ item }: { item: CmpItem }) {
                 <StarScore value={item.avg} size={17} />
               </View>
             ) : null}
-            <Animated.View style={{ transform: [{ rotate: chev.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] }) }] }}>
-              <Icon name="chevrondown" size={18} color={theme.inkSoft} />
-            </Animated.View>
+            {hiddenOnly ? null : (
+              <Animated.View style={{ transform: [{ rotate: chev.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] }) }] }}>
+                <Icon name="chevrondown" size={18} color={theme.inkSoft} />
+              </Animated.View>
+            )}
           </View>
+          {hiddenOnly ? (
+            <VText surface="compactList" color="inkSoft" numberOfLines={1} style={{ ...phone.text('small'), marginTop: 2 }}>
+              {`${item.count} ${item.count === 1 ? 'rating' : 'ratings'} from people you can’t see`}
+            </VText>
+          ) : null}
         </View>
       </Pressable>
-      {open ? (
+      {open && !hiddenOnly ? (
         <View style={{ paddingHorizontal: 14 }}>
           <CmpChart
             item={item}

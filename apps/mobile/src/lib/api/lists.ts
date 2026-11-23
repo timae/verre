@@ -55,18 +55,24 @@ export type CravingRow = {
 export type CravingsPage = { items: CravingRow[]; nextCursor: string | null };
 export type CravingsSort = 'recent' | 'score';
 
-// Someone's moment you share (D5): the moment's own fields + THEIR role.
-export type SharedMomentRow = {
-  code: string;
+// Someone's Moments (D5; Moment Visibility step 1b + step-2 plan § 4.3): a
+// moment you SHARE (you were there: its code, you open the moment itself), or,
+// with the feature on, one you may only LOOK INTO (its public id, no code: you
+// open the look-in). Both: the moment's own fields + THEIR role. An open row's
+// `name` is null for a nameless moment whose host is hidden from you, and it
+// carries `address` only when the host shows the place.
+type MomentRowFields = {
   name: string | null;
   dateFrom: string | null;
   dateTo: string | null;
   createdAt: string | null;
-  address: string | null;
   coverPhotoUrl: string | null;
   category: string | null;
   role: 'host' | 'cohost' | 'provider' | null;
 };
+export type SharedMomentRow =
+  | (MomentRowFields & { code: string; momentId?: never; address: string | null })
+  | (MomentRowFields & { momentId: string; code?: never; address?: string | null });
 export type SharedMomentsPage = { items: SharedMomentRow[]; nextCursor: string | null; otherCount?: number };
 
 // A 404 = the list is no longer yours to see (gone, private, a block): the

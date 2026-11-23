@@ -4,7 +4,7 @@ import { resolveUser } from '@/lib/resolveUser'
 import { checkRates, getClientIp } from '@/lib/rateLimit'
 import { momentLookInEnabled } from '@/lib/momentGate'
 import { decideMoments } from '@/lib/momentAudience'
-import { buildLookIn, lookInJson, lookInLinkValid, lookInNotFound, NO_STORE, readLookInRow } from '@/lib/momentLookIn'
+import { buildLookIn, buildLookInDetails, lookInJson, lookInLinkValid, lookInNotFound, NO_STORE, parseBottleKeys, readLookInRow } from '@/lib/momentLookIn'
 
 // GET /api/moments/:publicId — look into a moment without its code (Moment
 // Visibility, step-1 plan § 4.1; app only). Optional `X-Verre-Link: <32 hex>`:
@@ -15,6 +15,9 @@ import { buildLookIn, lookInJson, lookInLinkValid, lookInNotFound, NO_STORE, rea
 // 🔒 ONE refusal (`lookInNotFound`) for everything that is not an answer.
 // Answers: `{ member: true }` (the record's rule, as the moment itself) or the
 // look-in (lib/momentLookIn.ts). Every answer `private, no-store`.
+// `?bottles=<key>,…` (1 to 30 stable bottle keys) asks for the DETAILS read
+// instead (step-2 plan § 3.2): the same order, admission, link rule, limiter
+// and refusal; a malformed list is the one 404 like a malformed token.
 const TOKEN = /^[0-9a-f]{32}$/
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ publicId: string }> }) {
@@ -31,7 +34,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ publ
   }
   const publicId = normalizePublicUserId((await params).publicId)
   const token = req.headers.get('x-verre-link')
-  if (!publicId || (token !== null && !TOKEN.test(token))) return lookInNotFound()
+  const asked = parseBottleKeys(req.nextUrl.searchParams)
+  if (!publicId || (token !== null && !TOKEN.test(token)) || asked === null) return lookInNotFound()
   const row = await readLookInRow(publicId)
   const linked = token !== null && lookInLinkValid(publicId, row, token)
   if (!row || (token !== null && !linked)) return lookInNotFound()
@@ -41,6 +45,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ publ
   // block with the host included (review r1). A banned person is no member.
   if (d.member) return lookInJson({ member: true })
   if (d.refused || (!linked && !d.open)) return lookInNotFound()
-  const body = await buildLookIn(row, d)
+  const body = asked === undefined ? await buildLookIn(row, d) : await buildLookInDetails(row, d, asked)
   return body ? lookInJson(body) : lookInNotFound()
 }

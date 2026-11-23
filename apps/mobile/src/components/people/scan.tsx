@@ -129,7 +129,10 @@ export function useVerreScanner(active: boolean, onCode: (code: VerreCode) => vo
 // (tappable), when, where; Join, or Open Moment when you're in it).
 // `leaveTo` closes the host sheet, then pushes (a profile, the moment), on
 // the caller's own stack (Moments has its own profile mount since 2026-11-15).
-export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId: string | null; leaveTo: (push: () => void) => void }) {
+// `onOpenMoment`: where a scanned moment you joined (or were already in) opens;
+// absent, it is pushed on this mount (a look-in's Join sheet replaces itself
+// with it instead, Moment Visibility step 2).
+export function ScanResult({ result, meId, leaveTo, onOpenMoment }: { result: VerreCode; meId: string | null; leaveTo: (push: () => void) => void; onOpenMoment?: (code: string) => void }) {
   const router = useRouter();
   const mount = useSessionTab();
   const queryClient = useQueryClient();
@@ -170,7 +173,7 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
     leaveTo(push);
   };
   const openProfile = (id: string) => go(() => router.push(feedHref(mount, 'profile', { id })));
-  const openMoment = (code: string) => go(() => router.push(sessionHref(mount, '', { code })));
+  const openMoment = (code: string) => go(() => (onOpenMoment ? onOpenMoment(code) : router.push(sessionHref(mount, '', { code }))));
   const join = async (code: string) => {
     if (joining) return;
     setJoining(true);

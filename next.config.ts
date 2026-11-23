@@ -42,7 +42,21 @@ const config: NextConfig = {
     serverActions: { allowedOrigins: ['localhost:8080', ...extraOrigins] },
   },
   async headers() {
-    return [{ source: '/:path*', headers: securityHeaders }]
+    return [
+      { source: '/:path*', headers: securityHeaders },
+      // The look-in link's page (Moment Visibility step-2 plan § 5): the token
+      // is in its path, so no Referer ever carries it (this LATER entry wins
+      // for the same key), nothing caches it, nothing indexes it. Pinned
+      // against the built server: scripts/tests/moment-link-web.mts.
+      {
+        source: '/l/:path*',
+        headers: [
+          { key: 'Referrer-Policy', value: 'no-referrer' },
+          { key: 'Cache-Control', value: 'private, no-store' },
+          { key: 'X-Robots-Tag', value: 'noindex' },
+        ],
+      },
+    ]
   },
   // `/@<username>` → the profile page (usernames § 5). A rewrite because an
   // `@folder` in app/ is a parallel-routes slot, never a URL segment. The

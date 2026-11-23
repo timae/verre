@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Keyboard, Platform } from 'react-native';
 import { PillTabBar } from '@/components/PillTabBar';
 import { useTabBarOverlayHidden } from '@/lib/sheetVisibility';
+import { PendingLookInOpener } from '@/lib/usePendingLookIn';
 import { useTheme } from '@/theme';
 
 // The brand floating-pill bottom nav (ADR-0006, supersedes the bottom-nav
@@ -101,6 +102,7 @@ export default function TabsLayout() {
     /\/catalog\/(search|producer|wines|new)\/?$/.test(pathname) ||
     pathname.endsWith('/settings/details') ||
     pathname.endsWith('/settings/reveal') ||
+    pathname.endsWith('/settings/visibility') || // Moment Visibility (its Discard / Save footer)
     // You → Settings: Change Email + Change Password (sticky Discard / Save) and Appearance
     // (its own buttons over a full-screen theme preview), incl. their mirrors
     // on an opened post's stack. The hub and its list pages keep the pill.
@@ -109,6 +111,11 @@ export default function TabsLayout() {
     pathname.endsWith('/settings/appearance');
 
   return (
+    <>
+    {/* A look-in that arrived by link (Moment Visibility step-2 plan § 4.3):
+        here, so it only runs signed in and past the username screen; its own
+        component, so its re-renders stay out of this layout. */}
+    <PendingLookInOpener />
     <Tabs
       // The pill floats over content (absolute) — hiding it is just not
       // rendering it; scenes never resize (no layout jump on hide/show).
@@ -124,5 +131,6 @@ export default function TabsLayout() {
       <Tabs.Screen name="soon" options={{ title: 'Soon' }} />
       <Tabs.Screen name="you" options={{ title: 'You' }} />
     </Tabs>
+    </>
   );
 }

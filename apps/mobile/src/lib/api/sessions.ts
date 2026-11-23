@@ -153,6 +153,9 @@ export type RatingMeta = {
   score: number;
   flavors: Record<string, number>;
   aromas?: { a: string; m: string | null; p?: boolean }[];
+  // A look-in's light rating (Moment Visibility, lib/lookInCompare.ts): it has
+  // aromas, which arrive with the details read. Never on a moment's own rating.
+  hasAromas?: true;
   notes: string;
   at: number;
 };

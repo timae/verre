@@ -15,7 +15,8 @@ import { firstName } from '@/lib/initials';
 import { GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
 import { useMeId } from '@/lib/meId';
 import { recentMeta } from '@/lib/momentFormat';
-import { sessionHref, useSessionTab } from '@/lib/sessionStack';
+import { momentEntry, momentRowKey } from '@/lib/momentEntry';
+import { lookHref, sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { usePushGuard } from '@/lib/usePushGuard';
 import { useTheme } from '@/theme';
 import { ListNote, ListRow, MonthHeader, ToolRow, groupByMonth } from './ListParts';
@@ -27,15 +28,19 @@ import { useScreenReaderEnabled } from '@/lib/screenReader';
 // by month (the moment's date, else when it was made), newest first, both
 // tenses. Yours read /api/me/sessions (`tense` omitted, `limit` sent) with
 // "+ New" in the bar (moment create on this stack, D8; not on an opened post's
-// stack); someone's read /api/users/:id/moments: 🔒 ONLY the moments you
-// share (every row is one you can open from your own Moments; nothing else is
-// a row, a name or a code), then "Mara joined 12 other moments." while no
-// search or filter is on. The filter is the shared moments filter (D14): your
-// role on yours, THEIR role on theirs; hosts = You (+ them) + your friends.
-// Deviations (flagged, plan D5): no "Only Moments We Shared" switch and no
-// "You were there" chip (every row is shared); the Invite pill is later.
+// stack); someone's read /api/users/:id/moments: the moments you SHARE (a
+// code: the moment itself, and a "You were there" line, Moment Visibility R7)
+// and, with Moment Visibility on, those you may only LOOK INTO (a moment id,
+// no code: the look-in; no line), then "Mara joined 12 other moments." while
+// no search or filter is on. The filter is the shared moments filter (D14):
+// your role on yours, THEIR role on theirs; hosts = You (+ them) + your
+// friends. Deviation (flagged, plan D5): no "Only Moments We Shared" switch;
+// the Invite pill is later.
 
-type Row = { key: string; code: string; name: string; when: string | null; dateFrom: string | null; address: string | null; cover: string | null; role: SessionRole };
+type Row = {
+  key: string; code?: string; momentId?: string; shared: boolean; name: string; when: string | null
+  dateFrom: string | null; address: string | null; cover: string | null; role: SessionRole
+};
 
 export function MomentsPane({ userId, active: shown }: { userId: string; active: boolean }) {
   const screenReader = useScreenReaderEnabled();
@@ -68,10 +73,18 @@ export function MomentsPane({ userId, active: shown }: { userId: string; active:
     queryFn: async ({ pageParam }) => {
       if (own) {
         const p = await getMomentsPage({ ...params, cursor: pageParam, limit: 30 });
-        return { rows: p.rows.map((r): Row => ({ key: r.code, code: r.code, name: r.name || r.host_name, when: r.date_from ?? r.created_at, dateFrom: r.date_from, address: r.address, cover: r.cover_photo_url, role: r.role })), nextCursor: p.nextCursor, otherCount: undefined as number | undefined };
+        return { rows: p.rows.map((r): Row => ({ key: r.code, code: r.code, shared: false, name: r.name || r.host_name, when: r.date_from ?? r.created_at, dateFrom: r.date_from, address: r.address, cover: r.cover_photo_url, role: r.role })), nextCursor: p.nextCursor, otherCount: undefined as number | undefined };
       }
       const p = await getSharedMomentsPage(userId, params, pageParam);
-      return { rows: p.items.map((r): Row => ({ key: r.code, code: r.code, name: r.name ?? '', when: r.dateFrom ?? r.createdAt, dateFrom: r.dateFrom, address: r.address, cover: r.coverPhotoUrl, role: r.role })), nextCursor: p.nextCursor, otherCount: p.otherCount };
+      return {
+        rows: p.items.map((r): Row => ({
+          key: momentRowKey(r), code: r.code, momentId: r.momentId, shared: r.code != null,
+          // An open moment's name is null when it has none and its host is hidden from you.
+          name: r.name ?? (r.code ? '' : 'Untitled Moment'),
+          when: r.dateFrom ?? r.createdAt, dateFrom: r.dateFrom, address: r.address ?? null, cover: r.coverPhotoUrl, role: r.role,
+        })),
+        nextCursor: p.nextCursor, otherCount: p.otherCount,
+      };
     },
     initialPageParam: null as string | null,
     getNextPageParam: (p) => p.nextCursor,
@@ -127,7 +140,11 @@ export function MomentsPane({ userId, active: shown }: { userId: string; active:
         }
         renderItem={({ item: g }) => g.kind === 'month'
           ? <MonthHeader label={g.label} first={g.first} />
-          : <MomentListRow row={g.row} onPress={() => guard(() => router.push(sessionHref(mount, '', { code: g.row.code })))} />}
+          : <MomentListRow row={g.row} onPress={() => guard(() => {
+              const to = momentEntry(g.row);
+              if (to.kind === 'moment') router.push(sessionHref(mount, '', { code: to.code }));
+              else if (to.kind === 'look') router.push(lookHref(mount, '', { momentId: to.momentId }));
+            })} />}
       />
     );
   }
@@ -166,7 +183,13 @@ function MomentListRow({ row, onPress }: { row: Row; onPress: () => void }) {
       meta={meta}
       chevron
       onPress={onPress}
-      below={row.role ? <View style={{ marginTop: phone.lerp(5, 8), flexDirection: 'row' }}><RoleChip role={row.role} /></View> : null}
+      below={row.role || row.shared ? (
+        <View style={{ marginTop: phone.lerp(5, 8), flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          {row.role ? <RoleChip role={row.role} /> : null}
+          {/* Someone's list: a moment you were in (Moment Visibility R7). */}
+          {row.shared ? <VText variant="small" color="inkSoft">You were there</VText> : null}
+        </View>
+      ) : null}
     />
   );
 }

@@ -77,6 +77,16 @@ jobs:
       - name: List row → post row pins (app)
         run: npx tsx scripts/tests/list-post-units.ts
 
+      # Moment Visibility step 2 (the app): the entry rule, the look-in link's
+      # matcher on the RAW URL + its in-memory store (the token never in a
+      # route), the details scheduler and its fetch gate (≤ 42 requests a
+      # minute), the link opener's decision; Compare in a look-in (buildItems
+      # unchanged without the new props, R4, the adapter, a bottle's stars).
+      - name: Look-in pins (app)
+        run: npx tsx scripts/tests/look-in-units.ts
+      - name: Look-in Compare pins (app)
+        run: npx tsx scripts/tests/look-in-compare-units.ts
+
       # The app's bottle picker rules (catalogue model change step 7, ADR-0009):
       # the client id, the year field + NV chip, the pick / create bodies, the
       # freeze rule's outcome, the details' alcohol and origin.

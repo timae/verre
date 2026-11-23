@@ -17,6 +17,13 @@ import { momentLookInEnabled } from '@/lib/momentGate'
 // 🔒 The token never enters meta, any cache, a log line or an error report.
 
 const CONTEXT = 'verre-moment-link-v1'
+
+// The app's own address, which the `/l/` page's "Open in Verre" button uses
+// (step-2 plan T12). The SAME value as the app's `APP_SCHEME`
+// (apps/mobile/src/lib/config.ts), a release placeholder: a change before
+// TestFlight changes both. The page builds the button per request, so links
+// already shared keep working.
+export const APP_LINK_SCHEME = 'io.verre.app'
 const TOKEN_RE = /^[0-9a-f]{32}$/
 
 function secret(): string | null {

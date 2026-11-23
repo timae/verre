@@ -74,6 +74,7 @@ type SessionSub =
   | 'settings'
   | 'settings/details'
   | 'settings/reveal'
+  | 'settings/visibility'
   | 'impression/[wineId]'
   | 'edit-impression/[wineId]';
 
@@ -90,6 +91,19 @@ export function sessionHref(
     return { pathname: `/(tabs)/${mount.tab}/[id]/${tail}`, params: { id: mount.post, ...params } } as Href;
   }
   return { pathname: `/(tabs)/${mount.tab}/${tail}`, params } as Href;
+}
+
+// The LOOK-IN (Moment Visibility step-2 plan § 4.1): a moment seen from
+// outside, by its public id, never its code. Owned by Moments
+// (`moments/look/[momentId]/…`), mirrored on Feed, You and every opened post's
+// stack, like the session sub-tree. `via: 'link'` + `h` (a handle of
+// lib/lookInLinks.ts, never the token) = opened by a look-in link.
+export type LookSub = '' | 'bottle/[key]';
+export function lookHref(mount: SessionMount, sub: LookSub, params: { momentId: string; key?: string; via?: 'link'; h?: string }): Href {
+  const tail = `look/[momentId]${sub ? `/${sub}` : ''}`;
+  const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v != null)) as Record<string, string>;
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/${tail}`, params: { id: mount.post, ...clean } } as Href;
+  return { pathname: `/(tabs)/${mount.tab}/${tail}`, params: clean } as Href;
 }
 
 // The TAB ROOT (Moments / Feed / You home). Deliberately not "the mount's
@@ -218,8 +232,8 @@ export function momentCreateHref(mount: SessionMount): Href {
 // Settings: the hub (no page) and its pages. Inside an opened post every one
 // is mirrored onto the post's stack: pushing /you/settings/… there would
 // present on the outer You stack, over the post (see 'edit' above). No page
-// may be named `details` / `reveal`: the tabs layout hides the pill on those
-// suffixes for the moment settings.
+// may be named `details` / `reveal` / `visibility`: the tabs layout hides the
+// pill on those suffixes for the moment settings.
 export type SettingsPage = 'privacy' | 'blocked' | 'muted' | 'account' | 'change-email' | 'change-password' | 'appearance';
 export function settingsHref(mount: SessionMount, page?: SettingsPage): Href {
   const tail = page ? `settings/${page}` : 'settings';

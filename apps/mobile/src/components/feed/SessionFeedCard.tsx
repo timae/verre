@@ -79,9 +79,10 @@ export function SessionFeedCard({
   const axisColor = useFlavourColors();
   const { width: screenW } = useWindowDimensions();
   const photoW = screenW; // full-bleed at x=0
-  // The moment name is tappable → open the moment, but ONLY if the viewer was a
-  // member (code resolved from their own sessions; never on the feed wire).
-  const { code: momentCode, enter: enterMoment } = useEnterableMoment(session.sessionId);
+  // The moment name is tappable → open the moment if the viewer was a member
+  // (code resolved from their own sessions; never on the feed wire), else the
+  // look-in when the post carries a momentId (Moment Visibility).
+  const { enterable: momentEnterable, enter: enterMoment } = useEnterableMoment(session.sessionId, session.momentId);
 
   const [rawActiveIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
@@ -272,8 +273,8 @@ export function SessionFeedCard({
             {session.deleted ? (
               '[deleted moment]'
             ) : session.sessionName ? (
-              // Tappable when the viewer was a member (momentCode resolved).
-              momentCode ? (
+              // Tappable when the viewer was a member, or may look in.
+              momentEnterable ? (
                 <VText variant="caption" color="accent" style={styles.bold} onPress={enterMoment}>
                   {session.sessionName}
                 </VText>

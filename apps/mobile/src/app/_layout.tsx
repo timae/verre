@@ -22,6 +22,8 @@ import { useForwardedStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { useFullscreenViewerOpen } from '@/lib/fullscreenViewer';
 import { dismissKeyboardOnOutsideTouch } from '@/lib/keyboardDismiss';
 import { QueryProvider, clearViewerCache } from '@/lib/query';
+import { clearLookInLinks } from '@/lib/lookInLinks';
+import { clearLookInGates } from '@/lib/lookInDetails';
 import { bootScreen, bootState, marksResolved, needsUsername, sessionConfirmed, shouldRetryStale, staleRetryDelayMs } from '@/lib/bootGate';
 import { getPendingUpdate, markUpdateNavigationReady, subscribePendingUpdate } from '@/lib/updateGate';
 import { UpdateRequiredView } from './update-required';
@@ -92,7 +94,9 @@ function RootNavigator() {
   const userId = viewerId;
   const lastUserId = useRef(userId);
   useEffect(() => {
-    if (lastUserId.current !== null && lastUserId.current !== userId) clearViewerCache();
+    // The look-in links' tokens and a pending link go with the viewer too
+    // (lib/lookInLinks.ts); a sign-in (null → X) keeps a pending link (R13).
+    if (lastUserId.current !== null && lastUserId.current !== userId) { clearViewerCache(); clearLookInLinks(); clearLookInGates(); }
     lastUserId.current = userId;
   }, [userId]);
   // 🔒 `isPending` is NOT boot-only: Better Auth's session query sets it true

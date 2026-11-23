@@ -376,6 +376,20 @@ jobs:
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-usernames-web-secret-0123456789
 
+      # Moment Visibility step 2: the look-in link's page (`/l/<id>.<token>`)
+      # against the BUILT server: its headers come from next.config.ts (a later
+      # `headers()` entry overriding the site-wide Referrer-Policy), no
+      # route-module test can see them. Flag on: no-referrer, no-store,
+      # noindex, the "Open in Verre" href exactly `io.verre.app://l/<link>`, no
+      # other-origin URL, no Set-Cookie; malformed: no button; flag off: 404.
+      - name: Moment Visibility (the /l/ page against the built server)
+        run: npx tsx scripts/tests/moment-link-web.mts
+        timeout-minutes: 5
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-moment-link-web-secret-0123456789
+
     services:
       # The add-flow suite drives lib/session.ts's real Redis→Postgres wine
       # writers (mirrorLineup / reassignProvenance) and addWineToSession.

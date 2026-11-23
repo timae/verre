@@ -99,10 +99,14 @@ export type CheckinPayload = {
 // sessionName/hostName === null + deleted === true; the wine list still
 // renders ("[deleted session]" header). `hostName` is also null on a live
 // post when the viewer wasn't in the moment and its host is hidden from them
-// (Moment Visibility step 1b); the app doesn't render it.
+// (Moment Visibility step 1b); the app doesn't render it. `momentId` (the
+// moment's public id, never its code) only while Moment Visibility is on and
+// the viewer is in the moment or may look in: the place line opens the look-in
+// for a moment the viewer's own sessions don't hold (step-2 plan § 4.3).
 export type SessionFeedPayload = {
   id: number; // feed_items.id
   sessionId: number | null;
+  momentId?: string;
   sessionName: string | null;
   hostName: string | null;
   deleted: boolean;
@@ -416,6 +420,7 @@ export function detailFromItem(item: FeedItem): {
   // against the viewer's own sessions (never a join code on the wire).
   momentName: string | null;
   sessionId: number | null;
+  momentId: string | null;
 } {
   if (item.type === 'session') {
     const momentName = item.session.deleted ? null : item.session.sessionName;
@@ -428,6 +433,7 @@ export function detailFromItem(item: FeedItem): {
       place: item.session.deleted ? '[deleted moment]' : momentName,
       momentName,
       sessionId: item.session.sessionId,
+      momentId: item.session.deleted ? null : item.session.momentId ?? null,
     };
   }
   const c = item.checkin;
@@ -441,6 +447,7 @@ export function detailFromItem(item: FeedItem): {
     place: [c.venueName, c.city].filter(Boolean).join(', ') || null,
     momentName: null,
     sessionId: null,
+    momentId: null,
   };
 }
 

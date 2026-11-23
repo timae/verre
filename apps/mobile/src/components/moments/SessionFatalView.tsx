@@ -13,13 +13,15 @@ import { usePhoneTokens } from '@/lib/layout';
 import { type ApiError } from '@/lib/api/sessions';
 
 export function SessionFatalView({
-  fatal, removedKind, sessionLabel, onRetry, onBack,
+  fatal, removedKind, sessionLabel, onRetry, onBack, copy,
 }: {
   fatal: ApiError;
   removedKind: 'banned' | 'kicked' | null;
   sessionLabel: string | null;
   onRetry: () => void;
   onBack: () => void;
+  /** A look-in's own words for its refusal (Moment Visibility § 4.4); the moment passes none. */
+  copy?: { title: string; body: string };
 }) {
   const phone = usePhoneTokens();
   let title = 'Something went wrong';
@@ -48,6 +50,7 @@ export function SessionFatalView({
     body = "We couldn't verify you in this moment. Try joining again with the code.";
     title = 'Not part of this moment';
   }
+  if (copy) { title = copy.title; body = copy.body; }
   const retryable = fatal.kind === 'http' || fatal.kind === 'rate-limited';
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 8 }}>

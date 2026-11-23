@@ -46,6 +46,7 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
   const rateRoute = await import('../../app/api/session/[code]/rate/route.ts')
   const codeRoute = await import('../../app/api/session/[code]/route.ts')
   const linkRoute = await import('../../app/api/session/[code]/look-in-link/route.ts')
+  const wineDelRoute = await import('../../app/api/session/[code]/wines/[wineId]/route.ts')
   const feedRoute = await import('../../app/api/feed/route.ts')
   const usersRoute = await import('../../app/api/users/[id]/route.ts')
   const momentsListRoute = await import('../../app/api/users/[id]/moments/route.ts')
@@ -99,6 +100,13 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
     await resetLimits()
     const r = await call(lookInRoute.GET, 'GET', `/api/moments/${pid}`, a, undefined, { publicId: pid }, token !== undefined ? { 'x-verre-link': token } : {})
     if (!o.member) seen(`look-in ${pid}`, r)
+    if (r.status === 200 && r.wire?.member === false) lookBodies.push(r.wire)
+    return r
+  }
+  const details = async (pid: string, a: Actor, keys: string, token?: string, o: { member?: boolean } = {}) => {
+    await resetLimits()
+    const r = await call(lookInRoute.GET, 'GET', `/api/moments/${pid}?bottles=${keys}`, a, undefined, { publicId: pid }, token !== undefined ? { 'x-verre-link': token } : {})
+    if (!o.member) seen(`details ${pid}`, r)
     if (r.status === 200 && r.wire?.member === false) lookBodies.push(r.wire)
     return r
   }
@@ -434,17 +442,22 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
     check('averages: every counted rater above 0 (hidden people and the hidden guest included; the kick-keep rater out)', row1?.avg === avg1 && row1.count === 8, row1)
     check('a score of 0 is not a rating (an empty average)', row2?.avg === null && row2.count === 0, row2)
     check('Brought By: the named bringer shows; a hidden bringer is null', row1?.broughtBy?.id === Pn.pid && row1.broughtBy.name === 'Nora Named' && row2?.broughtBy === null, [row1?.broughtBy, row2?.broughtBy])
-    check('🔒 the unrevealed bottle is a blind row: no name, producer, photo or catalogue field', row3?.blind === true && JSON.stringify(Object.keys(row3).sort()) === JSON.stringify(['avg', 'blind', 'colour', 'count', 'position', 'sparkling']), row3)
+    check('🔒 the unrevealed bottle is a blind row: no name, producer, photo or catalogue field', row3?.blind === true && JSON.stringify(Object.keys(row3).sort()) === JSON.stringify(['avg', 'blind', 'colour', 'count', 'key', 'position', 'sparkling']), row3)
     check('positions are this output\'s indexes', (b.lineup as J[]).map((r: J) => r.position).join() === '0,1,2')
     const mine = (b.ratings as J[])
-    check('ratings: only the named people\'s (Nora on all three, the shown guest on two), keyed by person and position',
-      mine.length === 5 && mine.every(r => ['p0', 'g0'].includes(r.person)) && mine.filter(r => r.person === 'g0').length === 2, mine)
-    const nora0 = mine.find(r => r.person === 'p0' && r.position === 0), nora2 = mine.find(r => r.person === 'p0' && r.position === 2)
-    check('a named person\'s rating photo shows on a revealed bottle', typeof nora0?.imageUrl === 'string' && nora0.imageUrl.endsWith('_nora.png'), nora0)
-    check('🔒 a rating on the blind row carries its score and notes but no photo (Nora has one there)',
-      !!nora2 && typeof nora2.score === 'number' && typeof nora2.notes === 'string' && mine.filter(r => r.position === 2).every(r => !('imageUrl' in r)), nora2)
+    const gKey = (b.people.named as J[]).find(p => p.guest)?.key as string
+    const bKeys = (b.lineup as J[]).map(r => r.key as string)
+    check('ratings: only the named people\'s (Nora on all three, the shown guest on two), keyed by person (a public id, a guest key) and bottle key',
+      mine.length === 5 && mine.every(r => [Pn.pid, gKey].includes(r.person) && bKeys.includes(r.bottle)) && mine.filter(r => r.person === gKey).length === 2, mine)
+    // The aromas are the details read's (§ 24 k); notes and rating photos are in neither (R15).
+    const dt = (await details(sRow0.public_id, Vm, bKeys.join(','))).wire
+    const dRatings = (i: number) => ((dt.bottles as J[]).find(x => x.key === bKeys[i])?.ratings ?? []) as J[]
+    const nora0 = dRatings(0).find(r => r.person === Pn.pid), nora2l = mine.find(r => r.person === Pn.pid && r.bottle === bKeys[2]), nora0l = mine.find(r => r.person === Pn.pid && r.bottle === bKeys[0])
+    check('🔒 no rating photo in either read (Nora has one on a revealed and on the blind bottle; a moment\'s rating has none of its own, R15)',
+      !JSON.stringify(b).includes('_nora.png') && !JSON.stringify(dt).includes('_nora.png') && mine.every(r => !('imageUrl' in r)) && (dt.bottles as J[]).every(x => (x.ratings as J[]).every(r => !('imageUrl' in r))))
+    check('🔒 a rating on the blind row carries its score, no note', !!nora2l && typeof nora2l.score === 'number' && !('notes' in nora2l), nora2l)
     check('🔒 stored aromas and structure are projected to their known fields (an extra field, a stray entry, a non-number value: out)',
-      JSON.stringify(nora0?.aromas) === JSON.stringify([{ a: 'fruity', m: null }, { a: 'spicy.pepper', m: 'fresh', p: true }]) && JSON.stringify(nora0?.flavors) === '{"body":3}' && !JSON.stringify(b).includes('leak-marker'), nora0)
+      JSON.stringify(nora0?.aromas) === JSON.stringify([{ a: 'fruity', m: null }, { a: 'spicy.pepper', m: 'fresh', p: true }]) && JSON.stringify(nora0l?.flavors) === '{"body":3}' && !JSON.stringify(dt).includes('leak-marker') && !JSON.stringify(b).includes('leak-marker'), [nora0, nora0l])
     check('place and details off: no timezone, address, description or link key', !['timezone', 'address', 'description', 'link'].some(f => f in b.moment), b.moment)
     await prisma.$executeRaw`UPDATE sessions SET show_place = true, show_details = true, address = 'Somewhere 1', description = 'About', link = 'https://example.test' WHERE id = ${sRow0.id}`
     const lk2 = (await look(sRow0.public_id, Vm)).wire
@@ -670,6 +683,169 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
     check('…a host who shows to everyone: named to a signed-out visitor too', (await webPost(null))?.hostName === 'Hugo Feedhost')
     flag(true)
 
+    // ── § 24 k step 2: the light first read, stable keys, the details read ──
+    section('§ 24 k step 2: the light first read, stable keyed keys, ?bottles= (the details read)')
+    const { lookInKeys, LOOKIN_DETAILS_MAX } = await import('../../lib/momentLookIn.ts')
+    const guestUuids = new Set<string>([String(g1.wire.id), String(g2.wire.id), ...flood, ...hundred].map(id => id.replace(/^a:/, '')))
+    const fixtureWines = new Set<string>([...wineIds, fw.id])
+    // (a) the first read is light.
+    const k1 = (await look(sRow0.public_id, Vm)).wire
+    const lineKeys = (k1.lineup as J[]).map(r => r.key as string)
+    check('🔒 the first read\'s ratings: person, bottle, score, structure (hasAromas when there are aromas); no notes, aromas, photo or position',
+      (k1.ratings as J[]).length >= 5 && (k1.ratings as J[]).every(r => Object.keys(r).every(x => ['person', 'bottle', 'score', 'flavors', 'hasAromas'].includes(x)) && 'score' in r && 'flavors' in r && lineKeys.includes(r.bottle)),
+      k1.ratings)
+    check('…and nothing heavy anywhere in the first read (no "notes", "aromas" or a rating photo key)', !/"(notes|aromas)"/.test(JSON.stringify(k1)) && !JSON.stringify(k1.ratings).includes('imageUrl'))
+    await prisma.$executeRaw`UPDATE sessions SET hide_lineup = true, hide_lineup_minutes_before = 30, date_from = date_trunc('second', now()) + interval '2 hours' WHERE id = ${sRow0.id}`
+    const expectAt = ((await prisma.$queryRaw`SELECT date_from - interval '30 minutes' AS t FROM sessions WHERE id = ${sRow0.id}` as J[])[0].t as Date).toISOString()
+    const hk = (await look(sRow0.public_id, Vm)).wire
+    check('a hidden line-up: lineupRevealsAt = date_from − the minutes before (ISO)', hk.lineupHidden === true && hk.moment.lineupRevealsAt === expectAt, [hk.moment.lineupRevealsAt, expectAt])
+    const hkd = (await details(sRow0.public_id, Vm, lineKeys.join(','))).wire
+    check('…and the details read of a hidden line-up: no bottle', JSON.stringify(hkd) === '{"member":false,"bottles":[]}', hkd)
+    await prisma.$executeRaw`UPDATE sessions SET date_from = now() - interval '1 hour' WHERE id = ${sRow0.id}`
+    const past = (await look(sRow0.public_id, Vm)).wire
+    check('…Hide Line-up on but its time passed: shown, and no lineupRevealsAt key', past.lineupHidden === false && !('lineupRevealsAt' in past.moment) && past.lineup.length === lineKeys.length, past.moment)
+    await prisma.$executeRaw`UPDATE sessions SET hide_lineup = false WHERE id = ${sRow0.id}`
+    const uk = (await look(sRow0.public_id, Vm)).wire
+    check('…Hide Line-up off: no lineupRevealsAt key at all', uk.lineupHidden === false && !('lineupRevealsAt' in uk.moment), uk.moment)
+    // (b) stable keys.
+    const gk1 = (k1.people.named as J[]).find(p => p.guest)?.key, gk2 = (uk.people.named as J[]).find(p => p.guest)?.key
+    check('stable: the same bottle and guest keys across two reads', JSON.stringify((uk.lineup as J[]).map(r => r.key)) === JSON.stringify(lineKeys) && gk1 === gk2 && /^g[0-9a-f]{15}$/.test(String(gk1)), [lineKeys, gk1, gk2])
+    check('a named registered person\'s key is their public id', (uk.people.named as J[]).filter(p => !p.guest).every(p => p.key === p.id && PIDRE.test(p.key)) && (uk.people.named as J[]).some(p => !p.guest))
+    check('every bottle key is 16 hex', lineKeys.every(x => /^[0-9a-f]{16}$/.test(x)))
+    const kf = lookInKeys()!
+    check('the same wine id under two moments: two keys', kf.bottle(sRow0.public_id, w1.id) !== kf.bottle(lRow.public_id, w1.id) && kf.bottle(sRow0.public_id, w1.id) === lineKeys[0])
+    const blindKey = lineKeys[2]
+    await prisma.$executeRaw`UPDATE wines SET revealed_at = now() WHERE id = ${w3.id}`
+    const rv = (await look(sRow0.public_id, Vm)).wire
+    await prisma.$executeRaw`UPDATE wines SET revealed_at = NULL WHERE id = ${w3.id}`
+    check('a reveal keeps the bottle\'s key (the blind row and its revealed self share it)', (rv.lineup as J[])[2]?.key === blindKey && (rv.lineup as J[])[2]?.blind !== true && (await look(sRow0.public_id, Vm)).wire.lineup[2].blind === true, rv.lineup?.[2])
+    // (c) hasAromas.
+    await prisma.$executeRaw`UPDATE ratings SET score = 0, flavors = '{}'::jsonb, aromas = '[{"a":"fruity","m":null}]'::jsonb WHERE session_id = ${sRow0.id} AND user_id = ${Pn.id} AND wine_id = ${w2.id}`
+    await prisma.$executeRaw`UPDATE ratings SET aromas = '["junk",{"x":1},{"a":7}]'::jsonb WHERE session_id = ${sRow0.id} AND user_id = ${Pn.id} AND wine_id = ${w3.id}`
+    const gRateKey = k.rating(S, String(g1.wire.id), w1.id)
+    const gVal = JSON.parse((await redis.get(gRateKey))!)
+    await redis.set(gRateKey, JSON.stringify({ ...gVal, aromas: [{ a: 'floral', m: null, extra: 'leak-marker' }] }), { KEEPTTL: true })
+    const ar = (await look(sRow0.public_id, Vm)).wire
+    const arOf = (person: string, i: number) => (ar.ratings as J[]).find(r => r.person === person && r.bottle === lineKeys[i])
+    check('hasAromas on an aroma-only rating (score 0, no structure): the row is there, flagged', arOf(Pn.pid, 1)?.hasAromas === true && arOf(Pn.pid, 1)?.score === 0, arOf(Pn.pid, 1))
+    const noAr = arOf(String(gk1), 2), junkAr = arOf(Pn.pid, 2)
+    check('…absent without aromas, and absent when the stored aromas are all junk (the projection\'s rule, in SQL)', !!noAr && !('hasAromas' in noAr) && !!junkAr && !('hasAromas' in junkAr), [noAr, junkAr])
+    check('…a shown guest\'s aromas flag it too (the cache\'s rating)', arOf(String(gk1), 0)?.hasAromas === true, arOf(String(gk1), 0))
+    // (d) the details read. A HIDDEN person (Show Moments off) with aromas on
+    // the first bottle: their aromas must never come back.
+    await prisma.$executeRaw`UPDATE ratings SET aromas = '[{"a":"earthy","m":null}]'::jsonb WHERE session_id = ${sRow0.id} AND user_id = ${Ps.id} AND wine_id = ${w1.id}`
+    const d1 = (await details(sRow0.public_id, Vm, lineKeys[0])).wire
+    check('details: only the asked bottle, by key, with nothing but the named people\'s aromas', d1.member === false && d1.bottles.length === 1 && d1.bottles[0].key === lineKeys[0]
+      && JSON.stringify(Object.keys(d1).sort()) === '["bottles","member"]' && JSON.stringify(Object.keys(d1.bottles[0]).sort()) === '["key","ratings"]', d1)
+    const d1r = d1.bottles[0].ratings as J[]
+    check('🔒 …aromas for the NAMED only (Nora, the shown guest; a hidden person\'s aromas never), each row { person, aromas }',
+      d1r.length === 2 && d1r.map(r => r.person).sort().join() === [Pn.pid, String(gk1)].sort().join() && d1r.every(r => JSON.stringify(Object.keys(r).sort()) === '["aromas","person"]' && r.aromas.length > 0), d1r)
+    const gd = d1r.find(r => r.person === gk1)
+    check('…a shown guest\'s aromas (projected: the extra field dropped)', JSON.stringify(gd?.aromas) === '[{"a":"floral","m":null}]', gd)
+    const d2 = (await details(sRow0.public_id, Vm, lineKeys[1])).wire
+    check('…a bottle still in the line-up is answered even when nobody shown has aromas there (Nora\'s aroma-only rating is)', d2.bottles.length === 1 && (d2.bottles[0].ratings as J[]).length === 1 && d2.bottles[0].ratings[0].person === Pn.pid, d2)
+    const d3 = (await details(sRow0.public_id, Vm, lineKeys[2])).wire
+    check('🔒 a blind bottle in details: answered by key; only stored junk aromas there, so no row (Nora\'s were junk), and nothing from its label or a photo',
+      d3.bottles.length === 1 && (d3.bottles[0].ratings as J[]).length === 0 && !JSON.stringify(d3).includes(`${TAG} Blind Label`) && !JSON.stringify(d3).includes('_nora.png'), d3)
+    const dAll = (await details(sRow0.public_id, Vm, [lineKeys[2], lineKeys[0]].join(','))).wire
+    check('several keys: in the line-up\'s order, whatever the asked order', (dAll.bottles as J[]).map(x => x.key).join() === [lineKeys[0], lineKeys[2]].join())
+    const empty = '{"member":false,"bottles":[]}'
+    const foreign = kf.bottle(lRow.public_id, w1.id), random16 = randomUUID().replace(/-/g, '').slice(0, 16)
+    const fd = [(await details(sRow0.public_id, Vm, foreign)).wire, (await details(sRow0.public_id, Vm, random16)).wire]
+    check('🔒 a foreign key (another moment\'s) and an unknown one: dropped, the empty answer', fd.every(x => JSON.stringify(x) === empty), fd)
+    // Malformed: the one 404, byte for byte.
+    const k31 = Array.from({ length: LOOKIN_DETAILS_MAX + 1 }, (_, i) => i.toString(16).padStart(16, '0')).join(',')
+    const k30 = Array.from({ length: LOOKIN_DETAILS_MAX }, (_, i) => i.toString(16).padStart(16, '0')).join(',')
+    const bad: [string, string][] = [['empty', ''], ['bad hex', 'zzzzzzzzzzzzzzzz'], ['upper case', lineKeys[0].toUpperCase()], ['15 hex', lineKeys[0].slice(1)],
+      ['a duplicate', `${lineKeys[0]},${lineKeys[0]}`], ['31 keys', k31], ['a trailing comma', `${lineKeys[0]},`], ['two parameters', `${lineKeys[0]}&bottles=${lineKeys[1]}`]]
+    const badAns: [string, Res][] = []
+    for (const [label, q] of bad) badAns.push([label, await details(sRow0.public_id, Vm, q)])
+    check(`🔒 malformed ?bottles= (${bad.map(b => b[0]).join(', ')}): the look-in's one 404, byte for byte`, badAns.every(([, r]) => shape(r) === ref), badAns.filter(([, r]) => shape(r) !== ref).map(([l, r]) => [l, r.status, r.wire]))
+    check('…30 keys is the bound, not a refusal', (await details(sRow0.public_id, Vm, k30)).status === 200)
+    const memD = await details(sRow0.public_id, Pn, lineKeys[0], undefined, { member: true })
+    check('a member asking for details: { member: true } and nothing else', JSON.stringify(memD.wire) === '{"member":true}', memD.wire)
+    const strangerD = await details(lRow.public_id, Sl, kf.bottle(lRow.public_id, 'x'))
+    check('🔒 not admitted (a stranger, Friends): the one 404, whatever the keys', shape(strangerD) === ref)
+    const deadD = await details(lRow.public_id, Ol, kf.bottle(lRow.public_id, 'x'), randomUUID().replace(/-/g, ''))
+    check('🔒 a dead link: the one 404, even for someone the audience admits (a link read sends no audience)', shape(deadD) === ref)
+    const liveD = await details(lRow.public_id, Sl, kf.bottle(lRow.public_id, 'x'), tok3)
+    check('…the valid link admits the stranger the audience refuses', liveD.status === 200 && JSON.stringify(liveD.wire) === empty, liveD.wire)
+    await resetLimits()
+    await call(lookInRoute.GET, 'GET', `/api/moments/${sRow0.public_id}`, Vm, undefined, { publicId: sRow0.public_id })
+    await call(lookInRoute.GET, 'GET', `/api/moments/${sRow0.public_id}?bottles=${lineKeys[0]}`, Vm, undefined, { publicId: sRow0.public_id })
+    const used = await redis.get(`rl:lookin:u:${Vm.id}:1m`)
+    await redis.set(`rl:lookin:u:${Vm.id}:1m`, '60', { EX: 60 })
+    const spentD = await call(lookInRoute.GET, 'GET', `/api/moments/${sRow0.public_id}?bottles=${lineKeys[0]}`, Vm, undefined, { publicId: sRow0.public_id })
+    check('🔒 the limiter is shared: a first read and a details read are 2 on rl:lookin:u, and a spent budget refuses details (429)', used === '2' && spentD.status === 429 && !!spentD.headers.get('retry-after'), [used, spentD.status])
+    await resetLimits()
+    // The guest SET is the first read's: planned over the whole line-up.
+    const Gc = await createSession(Hl, 'Lena Lookhost'); codes.add(Gc)
+    const gcRow = await rowOf(Gc)
+    await prisma.$executeRaw`UPDATE sessions SET visibility = 'verre' WHERE id = ${gcRow.id}`
+    const gcWines: string[] = []
+    for (let i = 0; i < 21; i++) gcWines.push((await addWine(Gc, Hl, `${TAG} Cap Bottle ${i}`)).id)
+    gcWines.forEach(w => fixtureWines.add(w))
+    const capGuests = fake(100)
+    capGuests.forEach(id => guestUuids.add(id.slice(2)))
+    await redis.hSet(k.identities(Gc), Object.fromEntries(capGuests.map((id, i) => [id, `Capguest ${i}`])))
+    await redis.sAdd(k.shown(Gc), capGuests)
+    for (const id of capGuests) await redis.set(k.rating(Gc, id, gcWines[0]), JSON.stringify({ score: 3, notes: 'cap', flavors: {}, aromas: [{ a: 'fruity', m: null }] }), { EX: 3600 })
+    const gcFirst = (await look(gcRow.public_id, Sl)).wire
+    const gcKey0 = (gcFirst.lineup as J[])[0].key
+    const gcD = (await details(gcRow.public_id, Sl, gcKey0)).wire
+    const readN = Math.floor(2000 / 21)
+    check(`🔒 past the guest cap (21 bottles: ${readN} of 100 guests read), the details read of ONE bottle names and counts the SAME guests as the first read`,
+      (gcFirst.people.named as J[]).filter(p => p.guest).length === readN && (gcFirst.lineup as J[])[0].count === readN
+        && JSON.stringify((gcD.bottles[0].ratings as J[]).map(r => r.person).sort()) === JSON.stringify((gcFirst.people.named as J[]).filter(p => p.guest).map(p => p.key).sort()),
+      { first: (gcFirst.people.named as J[]).filter(p => p.guest).length, count: (gcFirst.lineup as J[])[0].count, details: (gcD.bottles?.[0]?.ratings ?? []).length })
+    // A removed bottle's key: the same answer as a foreign one.
+    const gcKey1 = (gcFirst.lineup as J[])[1].key
+    await resetLimits()
+    const del = await call(wineDelRoute.DELETE, 'DELETE', `/api/session/${Gc}/wines/${gcWines[1]}`, Hl, undefined, { code: Gc, wineId: gcWines[1] })
+    const removed = (await details(gcRow.public_id, Sl, gcKey1)).wire
+    check('a removed bottle\'s key: dropped (the empty answer, as for a foreign key)', del.status === 200 && JSON.stringify(removed) === empty, [del.status, removed])
+    // (f) keyed, not a plain hash: a LEGACY 13-digit id in a blind moment.
+    const createdMs = (await prisma.$queryRaw`SELECT created_at FROM sessions WHERE id = ${sRow0.id}` as J[])[0].created_at.getTime() as number
+    const legacyId = String(createdMs + 4242)
+    fixtureWines.add(legacyId)
+    await prisma.$executeRaw`INSERT INTO wines (id, session_id, name, position, created_at, colour) VALUES (${legacyId}, ${sRow0.id}, ${`${TAG} Legacy Label`}, 99, now(), 'red')`
+    const lg = (await look(sRow0.public_id, Vm)).wire
+    const lgRow = (lg.lineup as J[]).find(r => r.position === (lg.lineup as J[]).length - 1)
+    const { createHash } = await import('node:crypto')
+    const plain = (id: string) => [`bottle\0${sRow0.public_id}\0${id}`, id, `${sRow0.public_id}\0${id}`, `${sRow0.public_id}${id}`]
+      .map(m => createHash('sha256').update(m).digest('hex').slice(0, 16))
+    let hits = 0, tried = 0
+    for (let t = createdMs - 60_000; t <= createdMs + 60_000; t++) for (const h16 of plain(String(t))) { tried++; if (h16 === lgRow?.key) hits++ }
+    check(`🔒 a legacy 13-digit blind bottle\'s key is KEYED: it equals no plain SHA-256 of its id, nor of any id within ±60 s of the moment\'s creation (${tried} hashes)`,
+      lgRow?.blind === true && /^[0-9a-f]{16}$/.test(lgRow.key) && hits === 0 && !plain(legacyId).includes(lgRow.key) && !JSON.stringify(lg).includes(legacyId), { key: lgRow?.key, hits })
+    const savedSecret = process.env.AUTH_SECRET
+    process.env.AUTH_SECRET = `${savedSecret}-rotated`
+    const rot = (await look(sRow0.public_id, Vm)).wire
+    check('another auth secret: other keys (an open card closes on the next read)', (rot.lineup as J[]).every((r, i) => r.key !== (lg.lineup as J[])[i].key) && (rot.lineup as J[]).length === (lg.lineup as J[]).length)
+    const chain = { a: process.env.AUTH_SECRET, n: process.env.NEXTAUTH_SECRET, j: process.env.JWT_SECRET }
+    delete process.env.AUTH_SECRET; delete process.env.NEXTAUTH_SECRET; delete process.env.JWT_SECRET
+    const noSec = [await look(sRow0.public_id, Vm), await details(sRow0.public_id, Vm, lineKeys[0])]
+    const noSecMember = await look(sRow0.public_id, Pn, undefined, { member: true })
+    if (chain.n !== undefined) process.env.NEXTAUTH_SECRET = chain.n
+    if (chain.j !== undefined) process.env.JWT_SECRET = chain.j
+    process.env.AUTH_SECRET = savedSecret
+    check('🔒 no auth secret at all: the first read and the details read are the one 404 (fails closed; a member is still { member: true })',
+      noSec.every(r => shape(r) === ref) && JSON.stringify(noSecMember.wire) === '{"member":true}', noSec.map(r => [r.status, r.wire]))
+    await prisma.$executeRaw`DELETE FROM wines WHERE id = ${legacyId}`
+    // (e) no key carries a wine id or a guest uuid.
+    const keysSeen: string[] = []
+    const collect = (v: unknown, key?: string): void => {
+      if (Array.isArray(v)) { v.forEach(x => collect(x)); return }
+      if (v && typeof v === 'object') { for (const [kk, x] of Object.entries(v)) collect(x, kk); return }
+      if (typeof v === 'string' && (key === 'key' || key === 'person' || key === 'bottle')) keysSeen.push(v)
+    }
+    lookBodies.forEach(x => collect(x))
+    const badKey = keysSeen.filter(x => [...fixtureWines].some(w => x.includes(w) || x.includes(w.toLowerCase())) || [...guestUuids].some(u => x.includes(u) || x.includes(u.slice(0, 8))))
+    check(`🔒 no key (${keysSeen.length} seen) equals or contains a wine id or a guest uuid`, keysSeen.length > 100 && badKey.length === 0, badKey.slice(0, 5))
+    await redis.set(gRateKey, JSON.stringify(gVal), { KEEPTTL: true })
+    const withNotes = lookBodies.filter(x => /"notes"/.test(JSON.stringify(x)) || /note [0-9]|cap"/.test(JSON.stringify(x)))
+    check(`🔒 no look-in body (${lookBodies.length}, first reads and details) carries a note: no "notes" key, no fixture note text (R15)`, lookBodies.length >= 30 && withNotes.length === 0, withNotes.slice(0, 2).map(x => JSON.stringify(x).slice(0, 200)))
+
     // ── § 24 j the canary ───────────────────────────────────────────────────
     section('§ 24 j the canary: no code, no link token, no wine or rating id, no identity in what an outsider sees')
     const leakedCode = outside.filter(o => [...codes].some(c => o.text.includes(c)))
@@ -685,7 +861,9 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
     check('🔒 …and no s:{CODE}:* value holds a token', tokenInRedis.length === 0, tokenInRedis)
     const ALLOWED = new Set(['member', 'moment', 'id', 'name', 'coverPhotoUrl', 'category', 'dateFrom', 'dateTo', 'blind', 'timezone', 'address', 'description', 'link', 'host', 'imageUrl',
       'lineupHidden', 'lineup', 'position', 'producer', 'vintage', 'grape', 'colour', 'sparkling', 'abv', 'region', 'country', 'vinification', 'purchaseUrl', 'broughtBy', 'avg', 'count',
-      'people', 'total', 'named', 'more', 'key', 'guest', 'ratings', 'person', 'score', 'notes', 'flavors', 'aromas'])
+      'people', 'total', 'named', 'more', 'key', 'guest', 'ratings', 'person', 'score', 'flavors', 'aromas',
+      // step 2: the light first read and the details read
+      'bottle', 'hasAromas', 'lineupRevealsAt', 'bottles'])
     const badKeys = new Set<string>(), badIds: unknown[] = []
     const walk = (v: unknown, key?: string): void => {
       if (key === 'flavors') { if (!v || typeof v !== 'object' || Object.values(v).some(x => typeof x !== 'number')) badKeys.add('flavors (a non-number)'); return }

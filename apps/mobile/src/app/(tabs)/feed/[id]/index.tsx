@@ -200,7 +200,7 @@ export default function FeedImpression() {
   const deleted = useIsFeedPostDeleted(feedItemId);
   const item = deleted ? null : found ?? pinnedRef.current;
   const detail = item ? detailFromItem(item) : null;
-  const { code: momentCode, enter: enterMoment } = useEnterableMoment(detail?.sessionId);
+  const { enterable: momentEnterable, enter: enterMoment } = useEnterableMoment(detail?.sessionId, detail?.momentId);
   // The author → their profile, pushed on this post's own stack (a card, back
   // returns here). When the post was opened FROM that person's list, the
   // profile is the screen underneath: the tap closes the post and lands there
@@ -930,7 +930,7 @@ export default function FeedImpression() {
             author={author}
             createdAt={createdAt}
             place={place}
-            onPlacePress={momentCode ? enterMoment : undefined}
+            onPlacePress={momentEnterable ? enterMoment : undefined}
             onAuthorPress={onAuthorPress}
             dismissible={!cardMode}
             onCollapse={(c) => reportCollapse(wines[0].ratingId, c)}
@@ -990,7 +990,7 @@ export default function FeedImpression() {
                     author={author}
                     createdAt={createdAt}
                     place={place}
-                    onPlacePress={momentCode ? enterMoment : undefined}
+                    onPlacePress={momentEnterable ? enterMoment : undefined}
                     onAuthorPress={onAuthorPress}
                     dismissible={!cardMode}
                     onCollapse={(c) => reportCollapse(w.ratingId, c)}
