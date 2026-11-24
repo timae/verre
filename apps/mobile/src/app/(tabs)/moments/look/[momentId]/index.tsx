@@ -203,7 +203,7 @@ export default function LookInScreen() {
             open={joinOpen}
             onClose={() => setJoinOpen(false)}
             momentId={momentId}
-            name={title}
+            name={look.moment.name ?? ''}
             // Joined: the moment itself, in place of the look-in on this stack.
             onJoined={(code) => { setJoinOpen(false); router.replace(sessionHref(mount, '', { code })); }}
           />

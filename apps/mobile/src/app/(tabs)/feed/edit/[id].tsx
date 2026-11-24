@@ -21,7 +21,7 @@ import { closeOpenedPost, closePost, feedHref, feedListHref, useSessionTab } fro
 import { useFeedPost } from '@/lib/useFeedPost';
 import { ApiError } from '@/lib/api/sessions';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
-import { clearCheckinEditMeta, getCheckinEditMeta, setCheckinEditMeta } from '@/lib/checkinEdit';
+import { clearCheckinEditMeta, getCheckinEditMeta, newCheckinEditKey, setCheckinEditMeta } from '@/lib/checkinEdit';
 import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
 import { kindLabel } from '@/lib/momentFormat';
 import { asColour, linkBody, writeOutcome } from '@/lib/catalogChoice';
@@ -55,6 +55,8 @@ export default function EditFeedPost() {
   // (`[id]/edit/[postId]`, where `id` is the opened post): the edited post is
   // `postId` there.
   const feedItemId = Number(postId ?? id);
+  // This edit's own entry in the details store (lib/checkinEdit.ts).
+  const [editKey] = useState(() => newCheckinEditKey(feedItemId));
   const listUserId = normalizePublicUserId(user);
   const tab = useSessionTab();
   const meId = useMeId();
@@ -113,7 +115,7 @@ export default function EditFeedPost() {
     setAromas(seedGate.value ?? []);
     if (item?.type === 'checkin') {
       const c = item.checkin;
-      setCheckinEditMeta({
+      setCheckinEditMeta(editKey, {
         feedItemId,
         label: { name: c.wineName, producer: c.producer ?? '', year: c.vintage ?? '', colour: asColour(c.colour), sparkling: c.sparkling },
         choice: null,
@@ -130,12 +132,28 @@ export default function EditFeedPost() {
   }, [wine]);
   // The store is edit-session-scoped: clear on unmount so a later create/edit
   // can't inherit it.
-  useEffect(() => () => clearCheckinEditMeta(), []);
+  useEffect(() => () => clearCheckinEditMeta(editKey), [editKey]);
 
   // Re-read the shared meta store when the details sub-screen pops back.
   const [metaTick, setMetaTick] = useState(0);
   useFocusEffect(useCallback(() => { setMetaTick((t) => t + 1); }, []));
-  const meta = getCheckinEditMeta();
+
+  // Close this edit after a save only while it is the screen on top: since
+  // 2026-11-24 it is an ordinary push, so a look-in link can open over it
+  // while the PATCH is out, and a blind `router.back()` popped THAT instead
+  // (review 2026-11-24). Covered: it closes itself once it is back on top.
+  // Swiped away meanwhile: nothing to close.
+  const closeWhenBack = useRef(false);
+  const leave = () => {
+    if (navigation.isFocused()) router.back();
+    else closeWhenBack.current = true;
+  };
+  useFocusEffect(useCallback(() => {
+    if (!closeWhenBack.current) return;
+    closeWhenBack.current = false;
+    router.back();
+  }, [router]));
+  const meta = getCheckinEditMeta(editKey);
   void metaTick;
 
   const scrollRef = useRef<ScrollViewInstance>(null);
@@ -231,7 +249,7 @@ export default function EditFeedPost() {
           // never send it again (it would add the wine twice). Close and say so.
           if (m.choice?.kind === 'create' && writeOutcome(e instanceof ApiError && e.status > 0 ? e.status : null) === 'unknown') {
             refetchFeedCaches(queryClient);
-            router.back();
+            leave();
             Alert.alert('Not Confirmed', 'We couldn’t confirm the change. Reopen the check-in and check.');
             return;
           }
@@ -269,7 +287,7 @@ export default function EditFeedPost() {
       }
       // Your header (average, tile photo) can change with any save.
       invalidateProfileHeader(queryClient, meId);
-      router.back();
+      leave();
     } catch (e) {
       // Friendly-copy gate (the delete flows' rule): surface the server's
       // message only for resolved 4xx — a 500/timeout must not print raw
@@ -329,7 +347,7 @@ export default function EditFeedPost() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Edit Impression Details"
-            onPress={() => router.push(feedHref(tab, 'edit/details', { user: listUserId ?? undefined }))}
+            onPress={() => router.push(feedHref(tab, 'edit/details', { user: listUserId ?? undefined, edit: editKey }))}
             style={({ pressed }) => ({
               flexDirection: 'row', alignItems: 'center', gap: 12,
               padding: 10, marginBottom: 16, borderRadius: radius.md,

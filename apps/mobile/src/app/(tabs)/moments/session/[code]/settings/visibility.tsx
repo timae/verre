@@ -74,6 +74,7 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
   const [saving, setSaving] = useState(false);
   const [linkBusy, setLinkBusy] = useState(false);
   const busy = useRef(false);
+  const queryClient = useQueryClient();
   // A re-read (focus, a save elsewhere) shows through while nothing is in flight.
   useEffect(() => { if (!busy.current) setView(served); }, [served]);
   const edit = served.canEdit;
@@ -81,24 +82,35 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
   // Frozen: only narrower; a switch that is off on the record may not go on.
   const mayTurnOn = (was: boolean) => !frozen || was;
 
+  // 🔒 A read in flight (the page's own mount read, a foreground refetch) can
+  // carry the value from BEFORE a save: cancel it before showing the change
+  // and again before writing the answer, like You → Settings → Privacy
+  // (review 2026-11-24). The base is the query's CURRENT copy, never a render
+  // behind it.
+  const key = momentVisibilityKey(code);
+  const current = () => queryClient.getQueryData<MomentVisibilityView>(key) ?? served;
   const save = async (patch: MomentVisibilityPatch) => {
     // 🔒 Synchronous: a second tap in the same frame can't start a second save.
     if (busy.current) return;
-    if ((Object.keys(patch) as (keyof MomentVisibilityPatch)[]).every((k) => patch[k] === served[k])) return;
+    if ((Object.keys(patch) as (keyof MomentVisibilityPatch)[]).every((k) => patch[k] === current()[k])) return;
     busy.current = true;
     setSaving(true);
-    setView({ ...served, ...patch });
     // 🔒 A save that lands after a sign-out (or another account) belongs to the
     // previous viewer: nothing of it may reach the cleared cache (Codex r1).
     const epoch = viewerCacheEpoch();
     try {
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
+      if (viewerCacheEpoch() !== epoch) return;
+      setView({ ...current(), ...patch });
       const v = await updateMomentVisibility(code, patch);
+      if (viewerCacheEpoch() !== epoch) return;
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
       if (viewerCacheEpoch() !== epoch) return;
       setView(v);
       onChanged(v);
     } catch (e) {
       if (viewerCacheEpoch() !== epoch) return;
-      setView(served);
+      setView(current());
       if (e instanceof ApiError && e.kind === 'not-found') return onGone();
       // A refusal changed nothing; no answer (a timeout, a 5xx) may have saved.
       if (!(e instanceof ApiError && e.status >= 400 && e.status < 500)) onUnsure();
@@ -117,6 +129,8 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
       const v = await lookInLinkAction(code, action);
       // 🔒 The host's link (and its URL) must not reach the next viewer's cache,
       // nor its share sheet open after a sign-out (Codex r1).
+      if (viewerCacheEpoch() !== epoch) return;
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
       if (viewerCacheEpoch() !== epoch) return;
       setView(v);
       onChanged(v);

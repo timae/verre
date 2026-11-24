@@ -149,7 +149,8 @@ export function ScanResult({ result, meId, leaveTo, onOpenMoment, onlyMoment }: 
   const namedQ = useQuery({
     queryKey: ['profile-by-username', byName],
     queryFn: () => getProfileByUsername(byName!),
-    enabled: byName != null,
+    // A look-in's Join answers any non-moment code without a lookup.
+    enabled: byName != null && !onlyMoment,
     gcTime: 0,
   });
   const named = namedQ.data && namedQ.data.state !== 'gone' ? namedQ.data : null;

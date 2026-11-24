@@ -145,7 +145,7 @@ type ListSub = 'impressions' | 'moments' | 'cravings';
 export function feedHref(
   mount: SessionMount,
   sub: FeedSub,
-  params: { id?: string; index?: string; wine?: string; user?: string; tab?: string; known?: string; source?: 'item' } = {},
+  params: { id?: string; index?: string; wine?: string; user?: string; tab?: string; known?: string; source?: 'item'; edit?: string } = {},
 ): Href {
   const t = mount.tab;
   const clean = (p: Record<string, string | undefined>) => Object.fromEntries(Object.entries(p).filter(([, v]) => v != null));
@@ -194,7 +194,8 @@ export function feedHref(
       break;
     case 'edit/details':
       pathname = inPost ? `/(tabs)/${t}/[id]/edit/details` : `/(tabs)/${t}/edit/details`;
-      out = { id: mount.post, user: params.user };
+      // `edit`: the edit screen's key into the details store (lib/checkinEdit.ts).
+      out = { id: mount.post, user: params.user, edit: params.edit };
       break;
     case 'status':
       pathname = inPost ? `/(tabs)/${t}/[id]/status` : `/(tabs)/${t}/status`;

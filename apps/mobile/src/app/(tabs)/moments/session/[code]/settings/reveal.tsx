@@ -1,7 +1,7 @@
 import { useLocalSearchParams } from 'expo-router';
 import { BLIND_FEED_REVEAL_NOTE } from '@verre/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VBar } from '@/components/VBar';
@@ -9,7 +9,7 @@ import { VText } from '@/components/ui/VText';
 import { ChoiceChip } from '@/components/ui/ChoiceChip';
 import { SettingsScreenFallback, ToggleRow } from '@/components/moments/settingsParts';
 import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
-import { updateMomentSettings, type MomentSettingsBody, type SessionMetaView } from '@/lib/api/sessions';
+import { ApiError, updateMomentSettings, type MomentSettingsBody, type SessionMetaView } from '@/lib/api/sessions';
 import { errorText } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
 import { useSettingsSession } from '@/lib/useSettingsSession';
@@ -46,21 +46,31 @@ export default function MomentSetup() {
 }
 
 type Setup = { hideLineup: boolean; hideMinutes: number; blind: boolean; blindForEveryone: boolean; showProvenance: boolean };
+type SetupSource = Pick<SessionMetaView, 'hideLineup' | 'hideLineupMinutesBefore' | 'blind' | 'blindForEveryone' | 'showProvenance'>;
+const setupFrom = (m: SetupSource): Setup => ({
+  hideLineup: !!m.hideLineup,
+  hideMinutes: m.hideLineupMinutesBefore ?? 0,
+  blind: !!m.blind,
+  blindForEveryone: !!m.blindForEveryone,
+  // "Show who brought each impression" — default ON, so an absent flag reads as true.
+  showProvenance: m.showProvenance !== false,
+});
 
 function RevealForm({ code, meta, pro, onSaved }: { code: string; meta: SessionMetaView; pro: boolean; onSaved: () => void }) {
   const insets = useSafeAreaInsets();
   // Seeded once from the moment; from then on the page's own copy (the poll's
-  // meta may still be a save behind).
-  const [setup, setSetup] = useState<Setup>(() => ({
-    hideLineup: !!meta.hideLineup,
-    hideMinutes: meta.hideLineupMinutesBefore ?? 0,
-    blind: !!meta.blind,
-    blindForEveryone: !!meta.blindForEveryone,
-    // "Show who brought each impression" — default ON, so an absent flag reads as true.
-    showProvenance: meta.showProvenance !== false,
-  }));
+  // meta may still be a save behind), set from each save's answer.
+  const [setup, setSetup] = useState<Setup>(() => setupFrom(meta));
   const [saving, setSaving] = useState(false);
   const busy = useRef(false);
+  // The page FOLLOWS the moment while no save is out (Codex 2026-11-24: a
+  // cohost's change, or a save with no definite answer, must show). A read
+  // started before a save can't land after it: every save ends in onSaved,
+  // whose invalidation cancels a read in flight and reads again.
+  useEffect(() => {
+    if (busy.current) return;
+    setSetup(setupFrom(meta));
+  }, [meta]);
 
   // Hide line-up needs a start time (the reveal countdown is relative to From).
   const hasStart = !!meta.dateFrom;
@@ -74,12 +84,16 @@ function RevealForm({ code, meta, pro, onSaved }: { code: string; meta: SessionM
     setSetup({ ...setup, ...change });
     const epoch = viewerCacheEpoch();
     try {
-      await updateMomentSettings(code, body);
+      const echo = await updateMomentSettings(code, body);
       if (viewerCacheEpoch() !== epoch) return;
+      // The server's answer (a clamped time, Blind for All cleared with Blind).
+      if (echo) setSetup(setupFrom(echo));
       onSaved();
     } catch (e) {
       if (viewerCacheEpoch() !== epoch) return;
       setSetup(before);
+      // No definite answer (a timeout, a 5xx): it may have landed; read again.
+      if (!(e instanceof ApiError && e.status >= 400 && e.status < 500)) onSaved();
       Alert.alert('Something went wrong', errorText(e));
     } finally {
       busy.current = false;

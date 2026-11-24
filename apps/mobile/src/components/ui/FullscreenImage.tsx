@@ -50,8 +50,9 @@ export function FullscreenImage({
   // why): the ROOT Stack's trait is what reaches UIKit when the host is a
   // transparentModal screen (the feed's impression detail), and the NEAREST
   // screen's trait is what reaches it when the host is itself a
-  // fullScreenModal screen (feed edit details), which UIKit asks directly. The
-  // hook sets both and restores both. A pushed host is covered by either.
+  // fullScreenModal screen (the feed edit details were one until 2026-11-24),
+  // which UIKit asks directly. The hook sets both and restores both. A pushed
+  // host is covered by either.
   useReportFullscreenViewer(visible, onClose);
 
   return (

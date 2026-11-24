@@ -11,6 +11,7 @@ import { firstName } from '@/lib/initials';
 import { viewerCacheEpoch } from '@/lib/query';
 import { confirmUnfollow, relate, usePersonBusy, type RelOp } from '@/lib/relationship';
 import { feedHref, useSessionTab } from '@/lib/sessionStack';
+import { useMeId } from '@/lib/meId';
 
 // 04·12d's person: THE short preview of someone, before you open their
 // profile. One card for a scanned code (`ScanResult`) and a person tapped
@@ -43,9 +44,12 @@ export function PersonPreview({ id, leaveTo, goneText, seed, seedAt, onRelated }
     initialDataUpdatedAt: seedAt,
   });
   const busy = usePersonBusy(id);
+  // Your own id: an unfollow drops the row from your Following / Friends at
+  // once, as everywhere else (review 2026-11-24).
+  const meId = useMeId();
   const act = (op: RelOp) => {
     const epoch = viewerCacheEpoch();
-    void relate(queryClient, id, op).then(({ ok }) => {
+    void relate(queryClient, id, op, meId).then(({ ok }) => {
       if (ok && viewerCacheEpoch() === epoch) onRelated?.(op);
     });
   };

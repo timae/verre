@@ -34,8 +34,8 @@ export default function EditCheckinDetails() {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const meta = getCheckinEditMeta();
-  const { user } = useLocalSearchParams<{ user?: string }>();
+  const { user, edit } = useLocalSearchParams<{ user?: string; edit?: string }>();
+  const meta = getCheckinEditMeta(edit);
   const listUserId = normalizePublicUserId(user);
   const tab = useSessionTab();
   const meId = useMeId();
@@ -89,7 +89,8 @@ export default function EditCheckinDetails() {
       setError(picker.status === 'error' ? picker.error : picker.status === 'pending' ? 'One moment, the years are still loading.' : 'Choose the bottle, or keep it.');
       return;
     }
-    setCheckinEditMeta({
+    if (!edit || !meta) return;
+    setCheckinEditMeta(edit, {
       ...meta,
       ...(picker.status === 'ok' ? { choice: picker.choice } : {}),
       vinification: process, description, purchaseUrl,

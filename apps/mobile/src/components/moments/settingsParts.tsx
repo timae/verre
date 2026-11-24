@@ -430,13 +430,14 @@ export function SetNote({ children, style }: { children: ReactNode; style?: Styl
 // micro-label.
 export function SetTitle({ children, info }: { children: string; info?: ReactNode }) {
   const title = (
-    <VText variant="bodyLg" accessibilityRole="header" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: -0.17, marginBottom: info ? 0 : 6 }}>
+    <VText variant="bodyLg" accessibilityRole="header" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: -0.17, marginBottom: info ? 0 : 6, ...(info ? { flexShrink: 1, minWidth: 0 } : null) }}>
       {children}
     </VText>
   );
   if (!info) return title;
   // `info`: an ⓘ right after the title (ui/InfoTip, Moment Privacy); its touch
-  // target overhangs, so the title keeps its own line height.
+  // target overhangs, so the title keeps its own line height. The title wraps
+  // before it pushes the ⓘ off the row (large text, Codex 2026-11-24).
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, marginBottom: 6 }}>
       {title}

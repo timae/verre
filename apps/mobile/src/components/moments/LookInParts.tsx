@@ -111,8 +111,9 @@ export function LookInRow({ bottle, index, onPress }: { bottle: LookInBottle; in
   );
 }
 
-// .ovc, read-only: only the lines the look-in sent (Show Address, Show
-// Description and Event Link), then the people foot and "Join with Code" (R6).
+// .ovc, read-only: only the lines the look-in sent (the place and the
+// description / event link, when the host doesn't hide them), then the people
+// foot. Joining is the bar's + Join pill (LookInJoinSheet).
 export function LookInAbout({ look, onPeople }: { look: LookIn; onPeople: () => void }) {
   const { theme } = useTheme();
   const [descOpen, setDescOpen] = useState(false);
@@ -272,11 +273,10 @@ export function LookInPeopleSheet({ open, onClose, look }: { open: boolean; onCl
   );
 }
 
-// "Join with Code" (R6): the Moments home's join form in a sheet. A moment
-// joined by code or by scan REPLACES the look-in (Codex r1: a scanned one was
-// pushed on top of it).
-// The bar's Join (ruled 2026-11-24: top right, the "+ New" pill): titled with
-// the moment's name, and only this moment's code joins.
+// Join (R6; since 2026-11-24 the bar's + Join pill, top right): the Moments
+// home's join form in a sheet, titled with the moment's name, and only THIS
+// moment's code joins. A moment joined by code or by scan REPLACES the
+// look-in (Codex r1: a scanned one was pushed on top of it).
 export function LookInJoinSheet({ open, onClose, onJoined, momentId, name }: {
   open: boolean; onClose: () => void; onJoined: (code: string) => void; momentId: string; name: string;
 }) {
