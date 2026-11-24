@@ -583,10 +583,12 @@ export type MomentPreview = {
   address: string | null;
   coverPhotoUrl: string | null;
   joined: boolean;
+  // Only when asked with `moment` (a look-in's Join): whether the code is that moment's.
+  sameMoment?: boolean;
 };
-export const momentPreviewKey = (code: string) => ['moment-preview', code] as const;
-export async function getMomentPreview(code: string): Promise<MomentPreview> {
-  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/preview`);
+export const momentPreviewKey = (code: string, moment?: string) => ['moment-preview', code, moment ?? null] as const;
+export async function getMomentPreview(code: string, moment?: string): Promise<MomentPreview> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/preview${moment ? `?moment=${encodeURIComponent(moment)}` : ''}`);
   if (!res.ok) await throwApiError(res);
   return res.json();
 }

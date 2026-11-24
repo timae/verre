@@ -29,6 +29,7 @@ import { markProfileHeaderStale } from '@/lib/feedCache';
 import { errorText } from '@/lib/errorCopy';
 import { useMeId } from '@/lib/meId';
 import { AboutBlock, Hero, NameBlock } from '@/components/moments/ImpressionParts';
+import { NoTopEdgeFade } from '@/components/ui/NoTopEdgeFade';
 
 const POLL_MS = 5000;
 const isGone = (e: unknown): e is ApiError => e instanceof ApiError && e.kind === 'not-found';
@@ -600,6 +601,7 @@ export default function ImpressionDetail() {
               views out of the native hierarchy, and a flattened dead-end
               never exists for the finder to hit. */}
           <View collapsable={false} style={{ width: 0, height: 0 }} />
+          <NoTopEdgeFade style={{ flex: 1 }}>
           <ScrollView
             ref={scrollRef}
             onScroll={(e) => onScroll(e.nativeEvent.contentOffset.y)}
@@ -633,6 +635,7 @@ export default function ImpressionDetail() {
               {body}
             </View>
           </ScrollView>
+          </NoTopEdgeFade>
           <FloatHead
             title={barTitle}
             titleShown={titleShown}
@@ -675,6 +678,7 @@ export default function ImpressionDetail() {
               onReveal={toggleReveal}
             />
           </View>
+          <NoTopEdgeFade style={{ flex: 1 }}>
           <ScrollView
             ref={scrollRef}
             onScroll={(e) => onScroll(e.nativeEvent.contentOffset.y)}
@@ -698,6 +702,7 @@ export default function ImpressionDetail() {
             />
             {body}
           </ScrollView>
+          </NoTopEdgeFade>
         </View>
       )}
       <FootBar

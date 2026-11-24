@@ -16,7 +16,7 @@ import { adaptLookIn, lookInPersonId, mergeAromas } from '../../apps/mobile/src/
 import { bottleStars, footFaces } from '../../apps/mobile/src/lib/lookInView'
 import type { LookIn } from '../../apps/mobile/src/lib/lookInWire'
 import { blockLook } from '../../apps/mobile/src/lib/blockLook'
-import { audienceLabel, audienceSummary, guestCirclesApply, guestCirclesTitle, widerThan } from '../../apps/mobile/src/lib/momentVisibilityCopy'
+import { AUDIENCE_MENU, AUDIENCE_ORDER, HIDE_HELPER, WHO_CAN_SEE_INFO, audienceLabel, guestCirclesApply, guestCirclesHelper, guestCirclesTitle, widerThan } from '../../apps/mobile/src/lib/momentVisibilityCopy'
 
 let failures = 0
 function check(name: string, got: unknown, want: unknown) {
@@ -126,10 +126,12 @@ check('…no host named: the room\'s order', footFaces({ moment: { host: null } 
 console.log('\n§5 Moment Visibility\'s words')
 check('the host reads "Your", everyone else "Host’s" (R9)', (['members', 'friends', 'followers', 'verre'] as const).map(a => [audienceLabel(a, 'host'), audienceLabel(a, 'other')]),
   [['Only People in It', 'Only People in It'], ['Your Friends', 'Host’s Friends'], ['Your Followers', 'Host’s Followers'], ['Verre Users', 'Verre Users']])
-check('the guests\' circle switch: Friends and Followers only, named after the audience', [guestCirclesApply('members'), guestCirclesApply('friends'), guestCirclesApply('followers'), guestCirclesApply('verre'), guestCirclesTitle('friends'), guestCirclesTitle('followers')],
-  [false, true, true, false, 'Include Friends of Guests', 'Include Followers of Guests'])
-check('the hub row', [audienceSummary('friends', true, 'other'), audienceSummary('followers', true, 'host'), audienceSummary('friends', false, 'host'), audienceSummary('verre', true, 'other')],
-  ['Host’s Friends + friends of guests', 'Your Followers + followers of guests', 'Your Friends', 'Verre Users'])
+check('the circle switch: Friends and Followers only, named after the audience, "People in It" (ruled 2026-11-24)', [guestCirclesApply('members'), guestCirclesApply('friends'), guestCirclesApply('followers'), guestCirclesApply('verre'), guestCirclesTitle('friends'), guestCirclesTitle('followers')],
+  [false, true, true, false, 'Include Friends of People in It', 'Include Followers of People in It'])
+check('Moment Privacy\'s lines (ruled 2026-11-24): the circle switch, the two Hide switches, the ⓘ', [guestCirclesHelper('friends'), guestCirclesHelper('followers'), HIDE_HELPER.place, HIDE_HELPER.details, WHO_CAN_SEE_INFO],
+  ['Friends of people in it can see it too.', 'Followers of people in it can see it too.', 'Hides the address from people outside this moment.', 'Hides them from people outside this moment.', 'Choose who outside this moment can open it from posts, profiles and links. To join, they still need the code. People in it only appear if their own privacy settings allow it.'])
+check('the Visible To sheet runs widest first, like Privacy; the scale stays narrowest first', [AUDIENCE_MENU.map(a => audienceLabel(a, 'host')), [...AUDIENCE_MENU].reverse().join() === AUDIENCE_ORDER.join()],
+  [['Verre Users', 'Your Followers', 'Your Friends', 'Only People in It'], true])
 check('frozen: only narrower (members < friends < followers < verre)', [widerThan('verre', 'friends'), widerThan('members', 'friends'), widerThan('friends', 'friends')], [true, false, false])
 
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1) }

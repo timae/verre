@@ -42,6 +42,7 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
   const { call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, TAG } = h
   const lookInRoute = await import('../../app/api/moments/[publicId]/route.ts')
   const byMomentRoute = await import('../../app/api/me/sessions/by-moment/[publicId]/route.ts')
+  const previewRoute = await import('../../app/api/session/[code]/preview/route.ts')
   const joinRoute = await import('../../app/api/session/join/route.ts')
   const rateRoute = await import('../../app/api/session/[code]/rate/route.ts')
   const codeRoute = await import('../../app/api/session/[code]/route.ts')
@@ -547,6 +548,16 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
     for (const r of bmNo) seen('by-moment refusal', r)
     check('🔒 kicked, banned, a stranger, unknown, malformed, a kick-keep rater, the flag off: the look-in\'s one 404', bmNo.every(r => shape(r) === ref), bmNo.map(r => [r.status, r.wire]))
     check('signed out: 401', (await byMoment(lRow.public_id, {})).status === 401)
+
+    // ── § 24 f2 the preview's ?moment= (a look-in's Join takes only that moment's code)
+    section('§ 24 f2 GET /api/session/:code/preview?moment=: yes or no, never the moment\'s id')
+    const preview = async (code: string, a: Actor, moment?: string) => {
+      await resetLimits()
+      return call(previewRoute.GET, 'GET', `/api/session/${code}/preview${moment === undefined ? '' : `?moment=${encodeURIComponent(moment)}`}`, a, undefined, { code })
+    }
+    const pv = [await preview(L, Sl, lRow.public_id), await preview(L, Sl, lRow.public_id.toLowerCase()), await preview(L, Sl, sRow0.public_id), await preview(L, Sl, 'bad'), await preview(L, Sl)]
+    check('its own id (either case) → true; another moment\'s, a malformed one → false; not asked → no field', [pv[0].wire?.sameMoment, pv[1].wire?.sameMoment, pv[2].wire?.sameMoment, pv[3].wire?.sameMoment, 'sameMoment' in (pv[4].wire ?? {})], [true, true, false, false, false])
+    check('🔒 the answer never carries a moment id', pv.every(r => r.status === 200 && !JSON.stringify(r.wire).includes(lRow.public_id) && !JSON.stringify(r.wire).includes(sRow0.public_id)), pv.map(r => r.status))
 
     // ── § 24 g someone's Moments ────────────────────────────────────────────
     section('§ 24 g someone\'s Moments: open rows, the filters on hidden people, the counts')

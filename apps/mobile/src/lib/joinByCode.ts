@@ -14,6 +14,10 @@ export async function joinByCode(queryClient: QueryClient, code: string, fallbac
   return joined;
 }
 
+// A look-in's Join takes only that moment's code (ruled 2026-11-24): any other
+// code, scanned or typed, a profile's QR included, says so and joins nothing.
+export const notThisMomentText = (name: string) => (name ? `That isn’t the code for “${name}”.` : 'That isn’t the code for this moment.');
+
 // The join's failure copy (the join block's line, the scan result's alert).
 export function joinErrorText(e: unknown): string {
   if (e instanceof ApiError && e.kind === 'not-found') return 'No moment found for that code.';

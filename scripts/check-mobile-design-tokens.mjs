@@ -50,7 +50,10 @@ const ALLOW_FONTSIZE = new Set([
   'apps/mobile/src/components/moments/InviteSheet.tsx', // join-code display (surface="code")
   'apps/mobile/src/components/moments/settingsParts.tsx', // PRO badge
   'apps/mobile/src/app/(tabs)/moments/index.tsx', // carousel constrained labels (surface="carousel")
-  'apps/mobile/src/app/(tabs)/moments/session/[code]/index.tsx', // map pill + uppercase micro-label (chrome; migrate when touched)
+  // The moment screen's map pill + uppercase micro-label moved to LineupParts (Moment Visibility step 2):
+  'apps/mobile/src/components/moments/LineupParts.tsx', // map pill + uppercase micro-label (chrome; migrate when touched)
+  'apps/mobile/src/components/moments/LookInParts.tsx', // the look-in's map pill (the same chrome as LineupParts')
+  'apps/mobile/src/components/moments/JoinCodeForm.tsx', // the join-code field (the code surface; moved from moments/index.tsx)
   'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', // form-control metric (migrate when touched)
   'apps/mobile/src/app/(tabs)/feed/[id]/index.tsx', // hero block = mock pixel spec (brand-custom)
 ])

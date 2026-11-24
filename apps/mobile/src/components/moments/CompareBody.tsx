@@ -249,7 +249,7 @@ export function CompareToolbar({
 // sheet opens; rows carry the mock's small "Friend" tag. ────────────────────
 
 export function ComparePickerSheet({
-  open, onClose, people, hidden, myIdentityId, blocksOut, blocksIn, onToggle, onAll, onJustMe, onMeAndFriends, lookIn,
+  open, onClose, people, hidden, myIdentityId, blocksOut, blocksIn, onToggle, onAll, onJustMe, onMeAndFriends,
 }: {
   open: boolean;
   onClose: () => void;
@@ -264,9 +264,6 @@ export function ComparePickerSheet({
   onJustMe: () => void;
   /** Receives the friend identity-id set resolved by the sheet's lazy fetch. */
   onMeAndFriends: (friendIds: Set<string>) => void;
-  /** A look-in (Moment Visibility T13): the viewer is not in the roster, so the
-   *  presets are Everyone + My Friends, and the foot counts who isn't shown. */
-  lookIn?: { more: number };
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -277,7 +274,7 @@ export function ComparePickerSheet({
   const friendsQ = useQuery({
     queryKey: ['my-friends'],
     queryFn: getMyFriends,
-    enabled: open && (!!myIdentityId || !!lookIn),
+    enabled: open && !!myIdentityId,
     staleTime: 60_000,
   });
   const friendIds = useMemo(
@@ -352,7 +349,7 @@ export function ComparePickerSheet({
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingTop: 12 }}>
           {preset('Everyone', isAll, onAll)}
           {myIdentityId ? preset('Just me', isMe, onJustMe) : null}
-          {(myIdentityId || lookIn) && friendsQ.data !== undefined ? preset(lookIn ? 'My Friends' : 'Me + friends', isMeFriends, () => onMeAndFriends(friendIds)) : null}
+          {myIdentityId && friendsQ.data !== undefined ? preset('Me + friends', isMeFriends, () => onMeAndFriends(friendIds)) : null}
         </View>
         <View style={{ paddingVertical: 12 }}>
           <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search tasters" />
@@ -419,11 +416,6 @@ export function ComparePickerSheet({
               No matches
             </VText>
           ) : null}
-          {lookIn && lookIn.more > 0 ? (
-            <VText variant="small" color="inkSoft" style={{ paddingTop: 12 }}>
-              {`${lookIn.more} more ${lookIn.more === 1 ? 'taster isn’t' : 'tasters aren’t'} shown to you.`}
-            </VText>
-          ) : null}
         </View>
   );
   return (
@@ -462,9 +454,6 @@ export function CompareBody({
   hidden,
   sort,
   query,
-  groupStats,
-  emptyCopy,
-  onOpenChange,
 }: {
   wines: WireWine[] | null;
   ratings: RatingsView | null;
@@ -473,15 +462,8 @@ export function CompareBody({
   hidden: Set<string>;
   sort: CompareSort;
   query: string;
-  // The look-in's seams (Moment Visibility step-2 plan T13); the moment's own
-  // Compare passes none. `groupStats`: lib/compareItems.ts. `emptyCopy`: the
-  // "No ratings yet" state's words. `onOpenChange`: a card opened or closed (by
-  // its wine id), so the screen can fetch the open cards' aromas.
-  groupStats?: GroupStats;
-  emptyCopy?: { title: string; body: string };
-  onOpenChange?: (wineId: string, open: boolean) => void;
 }) {
-  const items = useMemo(() => buildItems(wines, ratings, meta, hidden, groupStats), [wines, ratings, meta, hidden, groupStats]);
+  const items = useMemo(() => buildItems(wines, ratings, meta, hidden), [wines, ratings, meta, hidden]);
   const q = query.trim();
   const shown = useMemo(() => {
     const base = q ? items.filter((it) => fuzzyIncludes(searchHay(it), q)) : items;
@@ -508,13 +490,13 @@ export function CompareBody({
     // excludes every rater" — via the SAME comparable predicate buildItems
     // applies (a session holding only notes-only ratings is empty, not a
     // selection failure).
-    const anyComparable = hidden.size > 0 && buildItems(wines, ratings, meta, EMPTY_HIDDEN, groupStats).length > 0;
+    const anyComparable = hidden.size > 0 && buildItems(wines, ratings, meta, EMPTY_HIDDEN).length > 0;
     return (
       <View style={{ paddingVertical: 72 }}>
         {anyComparable ? (
           <CenteredMessage title="Nobody selected" body="Pick people with the People button above to compare their ratings." />
         ) : (
-          <CenteredMessage title={emptyCopy?.title ?? 'No ratings yet'} body={emptyCopy?.body ?? "Rate some impressions and they'll show up here to compare."} />
+          <CenteredMessage title="No ratings yet" body="Rate some impressions and they'll show up here to compare." />
         )}
       </View>
     );
@@ -530,16 +512,35 @@ export function CompareBody({
   return (
     <View style={{ paddingHorizontal: GUTTER, paddingTop: 8, gap: 10 }}>
       {shown.map((item) => (
-        <CmpAccItem key={item.wine.id} item={item} onOpenChange={onOpenChange} />
+        <CmpAccItem key={item.wine.id} item={item} />
       ))}
     </View>
   );
 }
 
-// ── accordion item (.cmp-acc) — owns its open/drill/person-detail/sheet state
-// so cards are fully independent (multi-open). All data is selection-scoped. ─
+// ONE bottle's card, open and without its header (a look-in's bottle page,
+// ruled 2026-11-24: the bottle's compare view on its own page): the chart, the
+// aromas and each person's scores, over everyone the page may show (nobody
+// deselected). Null when nothing comparable is there for it (no rating, or
+// only ratings from people the viewer can't see): the page says that itself.
+export function CompareBottle({ wines, ratings, meta, groupStats, wineId, onOpenChange }: {
+  wines: WireWine[];
+  ratings: RatingsView;
+  meta: CompareRoster;
+  groupStats?: GroupStats;
+  wineId: string;
+  onOpenChange?: (wineId: string, open: boolean) => void;
+}) {
+  const item = useMemo(() => buildItems(wines, ratings, meta, EMPTY_HIDDEN, groupStats).find((it) => it.wine.id === wineId), [wines, ratings, meta, groupStats, wineId]);
+  if (!item || item.hiddenOnly) return null;
+  return <CmpAccItem item={item} onOpenChange={onOpenChange} bare />;
+}
 
-function CmpAccItem({ item, onOpenChange }: { item: CmpItem; onOpenChange?: (wineId: string, open: boolean) => void }) {
+// ── accordion item (.cmp-acc) — owns its open/drill/person-detail/sheet state
+// so cards are fully independent (multi-open). All data is selection-scoped.
+// `bare` (CompareBottle): always open, no header, no card frame. ─
+
+function CmpAccItem({ item, onOpenChange, bare }: { item: CmpItem; onOpenChange?: (wineId: string, open: boolean) => void; bare?: boolean }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   // Fixed ACROSS cards, but large enough for the widest capped score label.
@@ -547,9 +548,9 @@ function CmpAccItem({ item, onOpenChange }: { item: CmpItem; onOpenChange?: (win
   // every star on one x-coordinate without clipping 4.25.
   const scoreBoxWidth = Math.max(60, Math.round(60 * phone.surface('score').fontScale));
   const { wine } = item;
-  const [open, setOpen] = useState(false);
-  // The look-in fetches an open card's aromas (lib/lookInDetails.ts): it
-  // reports the card opening, closing, and leaving the list.
+  const [open, setOpen] = useState(!!bare);
+  // A look-in's bottle page fetches its card's aromas (lib/lookInDetails.ts):
+  // the card reports opening, closing, and leaving.
   const wineId = wine.id;
   useEffect(() => {
     if (!onOpenChange) return;
@@ -687,7 +688,7 @@ function CmpAccItem({ item, onOpenChange }: { item: CmpItem; onOpenChange?: (win
 
   return (
     <View
-      style={{
+      style={bare ? undefined : {
         borderWidth: 1,
         borderColor: open ? theme.accentLine : theme.rule,
         borderRadius: radius.md,
@@ -695,6 +696,7 @@ function CmpAccItem({ item, onOpenChange }: { item: CmpItem; onOpenChange?: (win
         overflow: 'hidden',
       }}
     >
+      {bare ? null : (
       <Pressable
         accessibilityRole={hiddenOnly ? undefined : 'button'}
         accessibilityState={hiddenOnly ? undefined : { expanded: open }}
@@ -762,8 +764,9 @@ function CmpAccItem({ item, onOpenChange }: { item: CmpItem; onOpenChange?: (win
           ) : null}
         </View>
       </Pressable>
+      )}
       {open && !hiddenOnly ? (
-        <View style={{ paddingHorizontal: 14 }}>
+        <View style={{ paddingHorizontal: bare ? 0 : 14 }}>
           <CmpChart
             item={item}
             agg={agg}

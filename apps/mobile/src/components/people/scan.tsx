@@ -14,7 +14,7 @@ import { ApiError, getMomentPreview, momentPreviewKey, type MomentPreview } from
 import { getProfileByUsername } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
 import { WEB_BASE } from '@/lib/config';
-import { joinByCode, joinErrorText } from '@/lib/joinByCode';
+import { joinByCode, joinErrorText, notThisMomentText } from '@/lib/joinByCode';
 import { sessionWhen } from '@/lib/momentFormat';
 import { parseVerreCode, type VerreCode } from '@/lib/scanCode';
 import { feedHref, sessionHref, useSessionTab } from '@/lib/sessionStack';
@@ -132,7 +132,11 @@ export function useVerreScanner(active: boolean, onCode: (code: VerreCode) => vo
 // `onOpenMoment`: where a scanned moment you joined (or were already in) opens;
 // absent, it is pushed on this mount (a look-in's Join sheet replaces itself
 // with it instead, Moment Visibility step 2).
-export function ScanResult({ result, meId, leaveTo, onOpenMoment }: { result: VerreCode; meId: string | null; leaveTo: (push: () => void) => void; onOpenMoment?: (code: string) => void }) {
+// `onlyMoment` (a look-in's Join): only that moment's code goes on; anything
+// else scanned (another moment, a profile) says it isn't that moment's code.
+export function ScanResult({ result, meId, leaveTo, onOpenMoment, onlyMoment }: {
+  result: VerreCode; meId: string | null; leaveTo: (push: () => void) => void; onOpenMoment?: (code: string) => void; onlyMoment?: { momentId: string; name: string };
+}) {
   const router = useRouter();
   const mount = useSessionTab();
   const queryClient = useQueryClient();
@@ -152,8 +156,8 @@ export function ScanResult({ result, meId, leaveTo, onOpenMoment }: { result: Ve
   const scannedId = result.kind === 'profile' ? result.id : named?.id ?? null;
   const momentCode = result.kind === 'moment' ? result.code : null;
   const previewQ = useQuery({
-    queryKey: momentPreviewKey(momentCode ?? ''),
-    queryFn: () => getMomentPreview(momentCode!),
+    queryKey: momentPreviewKey(momentCode ?? '', onlyMoment?.momentId),
+    queryFn: () => getMomentPreview(momentCode!, onlyMoment?.momentId),
     enabled: momentCode != null,
     // Never a cached answer: `joined` changes with a join.
     gcTime: 0,
@@ -187,9 +191,13 @@ export function ScanResult({ result, meId, leaveTo, onOpenMoment }: { result: Ve
     }
   };
 
+  if (onlyMoment && result.kind !== 'moment') return <PreviewMessage text={notThisMomentText(onlyMoment.name)} />;
   if (result.kind === 'moment') {
     const { data, error } = previewQ;
     if (previewQ.isPending) return <PreviewSpinner />;
+    if (onlyMoment && ((error instanceof ApiError && error.kind === 'not-found') || (data && data.sameMoment !== true))) {
+      return <PreviewMessage text={notThisMomentText(onlyMoment.name)} />;
+    }
     if (error instanceof ApiError && error.kind === 'not-found') return <PreviewMessage text="This code isn’t available." />;
     if (error instanceof ApiError && (error.kind === 'banned' || error.kind === 'rate-limited')) return <PreviewMessage text={joinErrorText(error)} />;
     if (error || !data) {

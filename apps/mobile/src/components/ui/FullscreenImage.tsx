@@ -52,7 +52,7 @@ export function FullscreenImage({
   // screen's trait is what reaches it when the host is itself a
   // fullScreenModal screen (feed edit details), which UIKit asks directly. The
   // hook sets both and restores both. A pushed host is covered by either.
-  useReportFullscreenViewer(visible);
+  useReportFullscreenViewer(visible, onClose);
 
   return (
     // overFullScreen, not fullScreen (device pass 2026-11-06, SDK 58): the

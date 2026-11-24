@@ -56,14 +56,13 @@ export default function FeedStack() {
           contentStyle: { backgroundColor: 'transparent' },
         }}
       />
-      {/* The edit screens render FULL SCREEN from both entry points (Simon,
-          2026-07-18). With the default card presentation, a push from the
-          impression detail sits above a modal, so UIKit presents it modally —
-          the iOS pageSheet (partial, parent peeking at the top). fullScreenModal
-          keeps the full-page look regardless of what's beneath; both stages
-          need it or the details push would re-inherit the sheet. */}
-      <Stack.Screen name="edit/[id]" options={{ presentation: 'fullScreenModal' }} />
-      <Stack.Screen name="edit/details" options={{ presentation: 'fullScreenModal' }} />
+      {/* The post edit is an ordinary PUSH with swipe-back, like opening an
+          impression (ruled 2026-11-24; was a fullScreenModal since 2026-07-18,
+          for a push from the old modal detail, which now opens the edit on its
+          own stack). So anything can open on top of it (a look-in link) and
+          Back returns to the edit. */}
+      <Stack.Screen name="edit/[id]" />
+      <Stack.Screen name="edit/details" />
     </Stack>
     </SessionTabProvider>
   );

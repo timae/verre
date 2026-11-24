@@ -4,10 +4,10 @@ import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VBar } from '@/components/VBar';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
-import { AnchoredMenu, AnchorButton, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { ChoiceChip } from '@/components/ui/ChoiceChip';
+import { InfoTip } from '@/components/ui/InfoTip';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { CatalogSearchError, type CatalogScope, type ProductHit, type SearchAnswer } from '@/lib/api/catalog';
@@ -85,18 +85,9 @@ export function YearRow({
   );
 }
 
-// The ⓘ beside NV: an info popover (never a "bubble": bubbles are sparkling).
+// The ⓘ beside NV (ui/InfoTip).
 export function NvInfo() {
-  const { theme } = useTheme();
-  const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
-  return (
-    <>
-      <AnchorButton icon="info" iconColor={theme.inkSoft} accessibilityLabel="What does NV mean?" onOpen={setAnchor} />
-      <AnchoredMenu anchor={anchor} onClose={() => setAnchor(null)} right={16} minWidth={200}>
-        <VText variant="small" style={{ color: theme.ink, paddingHorizontal: 10, paddingVertical: 6 }}>Non-vintage: a release without a year.</VText>
-      </AnchoredMenu>
-    </>
-  );
+  return <InfoTip accessibilityLabel="What does NV mean?" text="Non-vintage: a release without a year." />;
 }
 
 export function StatusLine({ text, error }: { text: string | null; error?: boolean }) {

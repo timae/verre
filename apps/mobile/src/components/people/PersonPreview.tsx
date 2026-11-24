@@ -9,7 +9,7 @@ import { ApiError } from '@/lib/api/sessions';
 import { profileQueryOptions, type Profile } from '@/lib/api/users';
 import { firstName } from '@/lib/initials';
 import { viewerCacheEpoch } from '@/lib/query';
-import { relate, usePersonBusy, type RelOp } from '@/lib/relationship';
+import { confirmUnfollow, relate, usePersonBusy, type RelOp } from '@/lib/relationship';
 import { feedHref, useSessionTab } from '@/lib/sessionStack';
 
 // 04·12d's person: THE short preview of someone, before you open their
@@ -83,7 +83,10 @@ export function PersonPreview({ id, leaveTo, goneText, seed, seedAt, onRelated }
       <View style={{ flexDirection: 'row', gap: 10 }}>
         <Button title="View Profile" variant="secondary" style={{ flex: 1 }} onPress={() => leaveTo(() => router.push(feedHref(mount, 'profile', { id: profile.id })))} />
         {profile.isFollowing ? (
-          <Button title={followsYou ? 'Friends' : 'Following'} icon="check" variant="secondary" style={{ flex: 1 }} disabled />
+          // A real button (ruled 2026-11-24, it read as broken greyed out):
+          // the profile's own unfollow confirm, then the same write.
+          <Button title={followsYou ? 'Friends' : 'Following'} icon="check" variant="secondary" loading={busy} style={{ flex: 1 }}
+            onPress={() => confirmUnfollow({ name: profile.name, followsYou }, () => act('unfollow'))} />
         ) : (
           <Button title={followsYou ? 'Follow Back' : 'Follow'} loading={busy} style={{ flex: 1 }} onPress={() => act('follow')} />
         )}

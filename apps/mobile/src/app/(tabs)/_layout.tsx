@@ -70,9 +70,10 @@ export default function TabsLayout() {
 
   // The design ruling "in-flow footer actions replace the nav while
   // rating/creating": 02e (Previous / Save & next), 02a (Create), 02b·add
-  // (Add to line-up), and the 02f settings sub-screens (Moment details /
-  // Moment Setup, Discard / Save) carry their own action bars — hide the
-  // pill there. The settings HUB keeps the bar (it's a nav list, no footer).
+  // (Add to line-up), and Moment Details (Discard / Save) carry their own
+  // action bars — hide the pill there. The settings HUB keeps the bar (it's a
+  // nav list, no footer), and so do Moment Setup and Moment Privacy since they
+  // save on change (ruled 2026-11-24).
   const hidden =
     overlayHidesBar ||
     keyboardShown ||
@@ -101,8 +102,6 @@ export default function TabsLayout() {
     // check-in edit details' boundary (lib/sessionStack.ts catalogHref)
     /\/catalog\/(search|producer|wines|new)\/?$/.test(pathname) ||
     pathname.endsWith('/settings/details') ||
-    pathname.endsWith('/settings/reveal') ||
-    pathname.endsWith('/settings/visibility') || // Moment Visibility (its Discard / Save footer)
     // You → Settings: Change Email + Change Password (sticky Discard / Save) and Appearance
     // (its own buttons over a full-screen theme preview), incl. their mirrors
     // on an opened post's stack. The hub and its list pages keep the pill.

@@ -1,7 +1,7 @@
 import { router, useNavigationContainerRef } from 'expo-router';
 import { useEffect, useReducer, useRef } from 'react';
 import { Alert } from 'react-native';
-import { useFullscreenViewerOpen } from './fullscreenViewer';
+import { closeFullscreenViewers, useFullscreenViewerOpen } from './fullscreenViewer';
 import { consumePendingLookIn, hasPendingLookIn, pendingLookInKind, setLookInOpenerActive, subscribeLookInLinks } from './lookInLinks';
 import { openerDecision, tabsStateKey, type NavState } from './lookInOpener';
 import { lookHref } from './sessionStack';
@@ -47,6 +47,9 @@ export function usePendingLookIn(): void {
     }
     const decision = openerDecision(nav.getRootState() as NavState | undefined, viewerOpen);
     if (decision.kind === 'wait') return;
+    // The viewer closes through its own close (the gallery lands on its page);
+    // `viewerOpen` turning false runs this again.
+    if (decision.kind === 'close-viewer') { closeFullscreenViewers(); return; }
     if (decision.kind === 'switch-to-moments') {
       // A plain tab switch (JUMP_TO on the tabs navigator): Moments keeps its
       // stack as it is (a href navigation could pop it to its home).

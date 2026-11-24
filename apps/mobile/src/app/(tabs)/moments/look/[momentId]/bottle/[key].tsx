@@ -2,38 +2,42 @@ import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { StatusBar } from 'expo-status-bar';
 import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native';
+import { ActivityIndicator, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VBar } from '@/components/VBar';
 import { HeroTopBar } from '@/components/moments/LineupParts';
 import { AboutBlock, Hero, NameBlock } from '@/components/moments/ImpressionParts';
-import { PersonPreviewProvider, usePersonPreview } from '@/components/moments/PersonPreviewSheet';
+import { PersonPreviewProvider } from '@/components/moments/PersonPreviewSheet';
+import { CompareBottle } from '@/components/moments/CompareBody';
 import { SessionFatalView } from '@/components/moments/SessionFatalView';
 import { StarScore } from '@/components/scoring/StarScore';
-import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
 import { VText } from '@/components/ui/VText';
-import type { LookIn, LookInPerson } from '@/lib/api/moments';
+import type { LookIn } from '@/lib/api/moments';
 import { TAB_BAR_CLEARANCE, heroBarHeight, usePhoneTokens } from '@/lib/layout';
-import { lookInPersonId, lookInWine } from '@/lib/lookInCompare';
+import { adaptLookIn, lookInWine, type LookInCompare } from '@/lib/lookInCompare';
 import { bottleStars } from '@/lib/lookInView';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { useMeId } from '@/lib/meId';
 import { useIsOnline } from '@/lib/query';
 import { tabHomeHref, useSessionTab } from '@/lib/sessionStack';
-import { lookInFatalOf, useLookIn } from '@/lib/useLookIn';
+import { lookInFatalOf, useLookIn, useLookInAromas } from '@/lib/useLookIn';
 import { radius, useTheme } from '@/theme';
+import { NoTopEdgeFade } from '@/components/ui/NoTopEdgeFade';
 
 // A look-in bottle's own page (Moment Visibility step-2 plan § 4.5, R2 + R15):
 // the bottle's details as the impression screen shows them, read-only (its
 // Hero / NameBlock / AboutBlock, components/moments/ImpressionParts.tsx), the
-// average, then each NAMED person's stars in the room's order (R15: no notes,
-// no rating photos: a moment's rating has none of its own), and "N more
-// ratings from people you can't see". A blind row: "Impression N", no details.
+// average, then the bottle's COMPARE card, open (ruled 2026-11-24: the
+// compare view on the bottle's own page, in place of the named people's
+// stars: `CompareBottle`, the structure chart, the aromas, each named
+// person's score), and "N more ratings from people you can't see". R15
+// stands: no notes, no rating photos. A blind row: "Impression N", no details.
 // It reads the look-in's FIRST read (lib/useLookIn.ts: the same query and fetch
-// gate as the look-in under it), polling every 5 s while focused; opened by
-// link, the same handle (the header goes with it).
+// gate as the look-in under it), polling every 5 s while focused, and the
+// card's aromas through the details read (`useLookInAromas`: the card reports
+// itself open); opened by link, the same handle (the header goes with it).
 
 const GUTTER = 20; // the impression body's gutters (02e), as on its own screen
 
@@ -42,21 +46,26 @@ export default function LookInBottlePage() {
   const momentId = String(raw ?? '');
   const key = String(rawKey ?? '');
   const meId = useMeId();
-  const { q, badLink, viaLink } = useLookIn(momentId, via, h);
+  const { q, token, badLink, viaLink, gate, focused } = useLookIn(momentId, via, h);
   const look: LookIn | null = q.data && q.data.member === false ? q.data : null;
+  const eligible = useMemo(() => new Set((look?.ratings ?? []).filter((r) => r.hasAromas).map((r) => r.bottle)), [look]);
+  const { aromas, onOpenChange } = useLookInAromas(momentId, token, gate, eligible, focused);
+  const adapted = useMemo(() => (look ? adaptLookIn(look, aromas) : null), [look, aromas]);
   const fatal = lookInFatalOf({ badLink, viaLink, memberGone: false, error: q.error, hasData: !!look, member: q.data?.member === true });
   const previewIds = useMemo(() => (look?.people.named ?? []).filter((p) => !p.guest && p.id).map((p) => `u:${p.id}`), [look]);
   return (
     <BottomSheetModalProvider>
       <PersonPreviewProvider meta={null} roster={fatal ? null : previewIds} myIdentityId={meId ? `u:${meId}` : ''}>
-        <BottleBody look={look} lookKey={key} fatal={fatal} member={q.data?.member === true} reconnecting={!!look && q.isError} onRetry={() => void q.refetch()} />
+        <BottleBody look={look} adapted={adapted} onOpenChange={onOpenChange} lookKey={key} fatal={fatal} member={q.data?.member === true} reconnecting={!!look && q.isError} onRetry={() => void q.refetch()} />
       </PersonPreviewProvider>
     </BottomSheetModalProvider>
   );
 }
 
-function BottleBody({ look, lookKey, fatal, member, reconnecting, onRetry }: {
+function BottleBody({ look, adapted, onOpenChange, lookKey, fatal, member, reconnecting, onRetry }: {
   look: LookIn | null;
+  adapted: LookInCompare | null;
+  onOpenChange: (key: string, open: boolean) => void;
   lookKey: string;
   fatal: ReturnType<typeof lookInFatalOf>;
   member: boolean;
@@ -70,7 +79,6 @@ function BottleBody({ look, lookKey, fatal, member, reconnecting, onRetry }: {
   const navigation = useNavigation();
   const mount = useSessionTab();
   const online = useIsOnline();
-  const preview = usePersonPreview();
   const goBack = () => {
     if ((navigation.getState()?.index ?? 0) > 0) router.back();
     else router.replace(tabHomeHref(mount.tab));
@@ -97,30 +105,6 @@ function BottleBody({ look, lookKey, fatal, member, reconnecting, onRetry }: {
 
   const by = bottle && !bottle.blind ? bottle.broughtBy : null;
   const byPerson = by ? look?.people.named.find((p) => p.id === by.id) : undefined;
-  const row = (p: LookInPerson, score: number, i: number) => {
-    const id = lookInPersonId(p);
-    const tappable = !!preview?.canOpen(id);
-    return (
-      <Pressable
-        key={p.key}
-        disabled={!tappable}
-        accessibilityRole={tappable ? 'button' : undefined}
-        accessibilityLabel={`${p.name}, ${score}`}
-        onPress={() => preview?.open(id)}
-        style={({ pressed }) => ({
-          flexDirection: 'row', alignItems: 'center', gap: phone.lerp(10, 13), paddingVertical: phone.lerp(9, 12),
-          borderTopWidth: i === 0 ? 0 : 1, borderTopColor: theme.ruleSoft, opacity: pressed && tappable ? 0.6 : 1,
-        })}
-      >
-        <Avatar imageUrl={p.imageUrl} name={p.name} size={phone.grow(30)} anon={!!p.guest} />
-        <VText numberOfLines={1} color={p.guest ? 'inkSoft' : 'ink'} style={{ flex: 1, fontFamily: p.guest ? 'InstrumentSans_400Regular' : 'InstrumentSans_500Medium', ...phone.text('body') }}>
-          {p.name}
-        </VText>
-        <StarScore value={score} size={16} />
-      </Pressable>
-    );
-  };
-
   const body = !bottle || !wine ? null : (
     <>
       {photo ? (
@@ -139,14 +123,18 @@ function BottleBody({ look, lookKey, fatal, member, reconnecting, onRetry }: {
             broughtById={by ? `u:${by.id}` : null}
           />
         ) : null}
-        {/* The average over everyone counted (the line-up's), then the named people's stars. */}
+        {/* The average over everyone counted (the line-up's), then the bottle's compare card. */}
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 14, paddingBottom: 6 }}>
           {bottle.avg !== null ? <StarScore value={bottle.avg} size={18} /> : null}
           <VText variant="small" color="inkSoft">
             {bottle.count > 0 ? `${bottle.count} ${bottle.count === 1 ? 'rating' : 'ratings'}` : 'No ratings yet'}
           </VText>
         </View>
-        {(stars?.rows ?? []).map((r, i) => row(r.person, r.score, i))}
+        {adapted ? (
+          <View style={{ paddingTop: 6 }}>
+            <CompareBottle wines={adapted.wines} ratings={adapted.ratings} meta={adapted.roster} groupStats={adapted.groupStats} wineId={lookKey} onOpenChange={onOpenChange} />
+          </View>
+        ) : null}
         {stars && stars.more > 0 ? (
           <VText variant="small" color="inkSoft" style={{ paddingTop: 10 }}>
             {`${stars.more} more ${stars.more === 1 ? 'rating' : 'ratings'} from people you can’t see`}
@@ -176,6 +164,7 @@ function BottleBody({ look, lookKey, fatal, member, reconnecting, onRetry }: {
           <Button title="Back" variant="secondary" onPress={goBack} style={{ marginTop: 10 }} />
         </View>
       ) : (
+        <NoTopEdgeFade style={{ flex: 1 }}>
         <ScrollView
           scrollEventThrottle={16}
           contentInsetAdjustmentBehavior="never"
@@ -191,6 +180,7 @@ function BottleBody({ look, lookKey, fatal, member, reconnecting, onRetry }: {
         >
           {body}
         </ScrollView>
+        </NoTopEdgeFade>
       )}
       {photo && !fatal ? <HeroTopBar title={title} collapsed={collapsed} canAdd={false} showAdd={false} onAdd={() => {}} onBack={goBack} /> : null}
     </View>

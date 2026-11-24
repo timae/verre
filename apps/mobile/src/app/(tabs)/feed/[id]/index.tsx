@@ -32,6 +32,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Icon } from '@/components/ui/Icon';
 import { Gradient } from '@/components/ui/Gradient';
+import { NoTopEdgeFade } from '@/components/ui/NoTopEdgeFade';
 import { VText } from '@/components/ui/VText';
 import { ClampText } from '@/components/ui/ClampText';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
@@ -952,6 +953,7 @@ export default function FeedImpression() {
             deferBody={!!source}
           />
         ) : (
+          <NoTopEdgeFade style={{ flex: 1 }}>
           <ScrollView
             ref={pagerRef}
             horizontal
@@ -1016,6 +1018,7 @@ export default function FeedImpression() {
               );
             })}
           </ScrollView>
+          </NoTopEdgeFade>
         )}
 
       </Reanimated.View>
@@ -1737,7 +1740,9 @@ function DetailPage({
   return (
     // Pan OUTSIDE the scroll's native gesture, declared simultaneous — the pan
     // reads scrollY to arm only at the top; useScrollOffset + the plain JS
-    // onScroll coexist (the collapsing-hero pattern doc).
+    // onScroll coexist (the collapsing-hero pattern doc). NoTopEdgeFade: no
+    // iOS 26 haze in the page colour under the status bar (ui/NoTopEdgeFade).
+    <NoTopEdgeFade style={{ flex: 1 }}>
     <GestureDetector gesture={dismissPan}>
       <GestureDetector gesture={nativeScroll}>
         <Reanimated.ScrollView
@@ -1911,6 +1916,7 @@ function DetailPage({
         </Reanimated.ScrollView>
       </GestureDetector>
     </GestureDetector>
+    </NoTopEdgeFade>
   );
 }
 

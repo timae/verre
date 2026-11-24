@@ -199,18 +199,23 @@ check('a tab whose stack is not built yet: push there', openerDecision(root('you
 check('a post open: push on ITS stack', openerDecision(root('feed', st([['index'], ['[id]', { id: '41' }, st([['index']])]])), false), { kind: 'push', mount: { tab: 'feed', post: '41' } })
 check('a card on a post\'s stack: still the post\'s stack', openerDecision(root('you', st([['index'], ['[id]', { id: '7' }, st([['index'], ['post/[postId]', { id: '7', postId: '9' }]])]])), false), { kind: 'push', mount: { tab: 'you', post: '7' } })
 check('Soon: switch to Moments first', openerDecision(root('soon'), false), { kind: 'switch-to-moments' })
+// A post edit is an ordinary push since 2026-11-24 ("like Check In"): the
+// look-in opens ON TOP of it (the tab's stack, or the post's), Back returns to it.
+const overEdits: [string, NavState, object][] = [
+  ['the outer edit (Feed)', root('feed', st([['index'], ['edit/[id]', { id: '5' }]])), { tab: 'feed' }],
+  ['the outer edit\'s details', root('moments', st([['index'], ['edit/[id]'], ['edit/details']])), { tab: 'moments' }],
+  ['a post\'s own edit', root('feed', st([['index'], ['[id]', { id: '41' }, st([['index'], ['edit/[postId]']])]])), { tab: 'feed', post: '41' }],
+  ['a post\'s own details step', root('you', st([['index'], ['[id]', { id: '41' }, st([['index'], ['edit/[postId]'], ['edit/details']])]])), { tab: 'you', post: '41' }],
+  ['the catalogue search as a SIBLING of a post\'s edit details', root('moments', st([['index'], ['[id]', { id: '41' }, st([['index'], ['edit/[postId]'], ['edit/details'], ['catalog/search']])]])), { tab: 'moments', post: '41' }],
+]
+for (const [label, s, mount] of overEdits) check(`opens on top: ${label}`, openerDecision(s, false), { kind: 'push', mount })
 const waits: [string, NavState][] = [
-  ['the outer edit (Feed)', root('feed', st([['index'], ['edit/[id]', { id: '5' }]]))],
-  ['the outer edit\'s details under a page above it', root('moments', st([['index'], ['edit/[id]'], ['edit/details']], 1))],
-  ['a post\'s own edit', root('feed', st([['index'], ['[id]', { id: '41' }, st([['index'], ['edit/[postId]']])]]))],
-  ['a post\'s own details step', root('you', st([['index'], ['[id]', { id: '41' }, st([['index'], ['edit/[postId]'], ['edit/details']])]]))],
-  ['the catalogue search as a SIBLING of a post\'s edit details', root('moments', st([['index'], ['[id]', { id: '41' }, st([['index'], ['edit/[postId]'], ['edit/details'], ['catalog/search']])]]))],
   ['About on top of the tabs', st([['__root', undefined, st([['(tabs)', undefined, st([['feed']])], ['about']])]])],
   ['the auth group', st([['__root', undefined, st([['(auth)']])]])],
   ['no state yet', st([])],
 ]
 for (const [label, s] of waits) check(`waits: ${label}`, openerDecision(s, false).kind, 'wait')
-check('waits: the photo viewer open', openerDecision(root('feed', st([['index']])), true).kind, 'wait')
+check('the photo viewer open: close it first (ruled 2026-11-24)', openerDecision(root('feed', st([['index']])), true).kind, 'close-viewer')
 check('waits: undefined state', openerDecision(undefined, false).kind, 'wait')
 
 // The budget at the FETCH boundary, through the real doors: throughGate (the

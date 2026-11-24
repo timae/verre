@@ -12,7 +12,6 @@ import { PersonPreviewProvider } from '@/components/moments/PersonPreviewSheet';
 import { ReadCard, SetGroup, SetNav, type SettingsRole } from '@/components/moments/settingsParts';
 import { ApiError, deleteMoment } from '@/lib/api/sessions';
 import { getMomentVisibility, momentVisibilityKey } from '@/lib/api/moments';
-import { audienceSummary } from '@/lib/momentVisibilityCopy';
 import { authClient } from '@/lib/authClient';
 import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen } from '@/lib/momentFormat';
@@ -59,16 +58,15 @@ export default function SettingsHub() {
   // it has no set date (date-less moments carry no time to show).
   const metaDate = sessionWhen(meta?.dateFrom, meta?.dateTo)
     ?? shortDay(meta ? new Date(meta.createdAt).toISOString() : null);
-  // Moment Visibility (step-2 plan § 4.6): read from the record. A 404 means
-  // the feature is off (T10): no row. The host and cohosts open the page; for
-  // everyone else the row only reads (R11).
+  // Moment Privacy (step-2 plan § 4.6; renamed from Moment Visibility, ruled
+  // 2026-11-24): read from the record. A 404 means the feature is off (T10):
+  // no row. No value beside it (ruled 2026-11-24: it broke the row's lines);
+  // everyone opens the page, which only reads for anyone but the host and
+  // cohosts (R11).
   const vis = useQuery({ queryKey: momentVisibilityKey(code), queryFn: () => getMomentVisibility(code), enabled: !!meta, retry: false });
-  const visValue = vis.data ? audienceSummary(vis.data.visibility, vis.data.includeGuestCircles, isSelfHost ? 'host' : 'other') : null;
-  const visibilityRow = visValue === null ? null : vis.data?.canEdit ? (
-    <SetNav key="visibility" icon="users" label="Moment Visibility" value={visValue} onPress={() => router.push(sessionHref(sessionTab, 'settings/visibility', { code }))} />
-  ) : (
-    <SetNav key="visibility" icon="users" label="Moment Visibility" value={visValue} trailing="none" />
-  );
+  const visibilityRow = vis.data ? (
+    <SetNav key="visibility" icon="users" label="Moment Privacy" onPress={() => router.push(sessionHref(sessionTab, 'settings/visibility', { code }))} />
+  ) : null;
 
   const confirmDelete = () => {
     // Destructive confirms always NAME what's being deleted (Simon, 2026-07-18).

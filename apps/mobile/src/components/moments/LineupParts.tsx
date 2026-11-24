@@ -27,6 +27,7 @@ import { InlineField, LongPressable, markNoShake } from '@/components/ui/InPlace
 import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen, kindLabel } from '@/lib/momentFormat';
 import { motion, radius, useTheme } from '@/theme';
+import { NoTopEdgeFade } from '@/components/ui/NoTopEdgeFade';
 
 
 // The moment screen's layout parts (moved verbatim from
@@ -269,7 +270,7 @@ export function useTabTransition(windowW: number, paired: boolean): TabTransitio
 // contentInsetAdjustmentBehavior never→automatic. Reanimated.ScrollView wraps a
 // real ScrollView (still a UIScrollView), so the dead-end still applies.
 export function CoverHeroLineup({
-  meta, coverUrl, edit, scrollByRef, bottomPad, lock, wines, indexById, luNarrowed, toolbar, reorder, ratings, myIdentityId, canAdd, windowH, windowW, ovc, reveal, transition, onSelectTab, compare, compareRail, onCollapsedChange, onPressWine, onAdd,
+  meta, coverUrl, edit, scrollByRef, bottomPad, lock, wines, indexById, luNarrowed, toolbar, reorder, ratings, myIdentityId, canAdd, windowH, windowW, ovc, reveal, transition, onSelectTab, compare, compareRail, noTabs, onCollapsedChange, onPressWine, onAdd,
   renderRow, empty, lockCard,
 }: {
   /** Only the name is read (the look-in passes just that). */
@@ -305,6 +306,10 @@ export function CoverHeroLineup({
   compare: React.ReactNode;
   /** The compare toolbar (People + sort + search). Rides the Compare toolbar slot. */
   compareRail: React.ReactNode;
+  /** No Line-up ⇄ Compare tabs (the look-in, ruled 2026-11-24: each bottle's
+   *  page carries its compare card): the panel keeps only its rounded overlap
+   *  over the photo, nothing pins under the bar, the Line-up is the only pane. */
+  noTabs?: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   onPressWine: (wineId: string) => void;
   onAdd: () => void;
@@ -576,7 +581,9 @@ export function CoverHeroLineup({
   // (at the pin the photo still fills the notches, then slides away; past it
   // the notches sit over theme.bg content and read as nothing).
   // While editing only the tabs dim (the panel's bg stays opaque over the photo).
-  const Tabs = (
+  const Tabs = noTabs ? (
+    <View style={{ backgroundColor: theme.bg, height: radius.xl, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl }} />
+  ) : (
     <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl }} pointerEvents={editing ? 'none' : 'auto'}>
       {/* Out of VoiceOver too while editing: activating Compare would unmount the fields. */}
       <View style={dim} {...inertA11y}>
@@ -606,6 +613,7 @@ export function CoverHeroLineup({
   return (
     <>
       <View collapsable={false} style={{ width: 0, height: 0 }} />
+      <NoTopEdgeFade style={{ flex: 1 }}>
       <Reanimated.ScrollView
         ref={aref}
         onScroll={(e) => onScrollJS(e.nativeEvent.contentOffset.y)}
@@ -838,13 +846,14 @@ export function CoverHeroLineup({
           </View>
         )}
       </Reanimated.ScrollView>
+      </NoTopEdgeFade>
       {/* OVERLAYS. Tabs: the pinned copy at the bar (opacity-swaps with its inline
           copy at the pin line — unchanged). Toolbars: the SINGLE live copy of
           each toolbar, always visible, riding its own vertical anchor
           (max(anchorTop − scrollY, floor)) + the paired-slot horizontal X. The
           inline flow carries only inert spacers. zIndex 7, UNDER HeroTopBar (8);
           the toolbar slot pins under the tabs (floor = PIN_Y + tabsH). */}
-      {!lock ? (
+      {!lock && !noTabs ? (
         <Reanimated.View
           pointerEvents={tabsStuck && !editing ? 'auto' : 'none'}
           // Exactly ONE copy in the accessibility tree at a time (codex): the
@@ -893,7 +902,7 @@ export function CoverHeroLineup({
 // anchors the shared SessionMenu via measureInWindow (same protocol as
 // SessionMenuButton).
 export function HeroTopBar({
-  title, collapsed, canAdd, showAdd, onAdd, onBack, onMenu, inert,
+  title, collapsed, canAdd, showAdd, onAdd, onBack, onMenu, inert, trailing,
 }: {
   title: string;
   collapsed: boolean;
@@ -906,6 +915,8 @@ export function HeroTopBar({
   onBack: () => void;
   /** Absent = no ⋯ (the look-in: read-only, Moment Visibility § 4.4). */
   onMenu?: (anchorBottomY: number) => void;
+  /** At the right end (the look-in's Join pill). */
+  trailing?: React.ReactNode;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -999,6 +1010,7 @@ export function HeroTopBar({
               </Pressable>
             </View>
             ) : null}
+            {trailing ? <View style={{ marginLeft: 6 }}>{trailing}</View> : null}
           </View>
         </View>
       </View>

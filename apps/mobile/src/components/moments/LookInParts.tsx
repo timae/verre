@@ -113,7 +113,7 @@ export function LookInRow({ bottle, index, onPress }: { bottle: LookInBottle; in
 
 // .ovc, read-only: only the lines the look-in sent (Show Address, Show
 // Description and Event Link), then the people foot and "Join with Code" (R6).
-export function LookInAbout({ look, onPeople, onJoin }: { look: LookIn; onPeople: () => void; onJoin: () => void }) {
+export function LookInAbout({ look, onPeople }: { look: LookIn; onPeople: () => void }) {
   const { theme } = useTheme();
   const [descOpen, setDescOpen] = useState(false);
   const [clampLen, setClampLen] = useState<number | null>(null);
@@ -167,15 +167,6 @@ export function LookInAbout({ look, onPeople, onJoin }: { look: LookIn; onPeople
         />
       ) : null}
       <LookInFoot look={look} onPress={onPeople} first={footOnly} />
-      <Pressable
-        accessibilityRole="button"
-        onPress={onJoin}
-        hitSlop={{ top: 6, bottom: 6 }}
-        style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14, opacity: pressed ? 0.6 : 1 })}
-      >
-        <Icon name="qr" size={16} color={theme.inkSoft} />
-        <VText variant="small" color="inkSoft">Join with Code</VText>
-      </Pressable>
     </View>
   );
 }
@@ -284,12 +275,16 @@ export function LookInPeopleSheet({ open, onClose, look }: { open: boolean; onCl
 // "Join with Code" (R6): the Moments home's join form in a sheet. A moment
 // joined by code or by scan REPLACES the look-in (Codex r1: a scanned one was
 // pushed on top of it).
-export function LookInJoinSheet({ open, onClose, onJoined }: { open: boolean; onClose: () => void; onJoined: (code: string) => void }) {
+// The bar's Join (ruled 2026-11-24: top right, the "+ New" pill): titled with
+// the moment's name, and only this moment's code joins.
+export function LookInJoinSheet({ open, onClose, onJoined, momentId, name }: {
+  open: boolean; onClose: () => void; onJoined: (code: string) => void; momentId: string; name: string;
+}) {
   const insets = useSafeAreaInsets();
   return (
     <Sheet open={open} onClose={onClose}>
       <BottomSheetView style={{ width: '100%', paddingTop: 8, paddingBottom: insets.bottom + 16 }}>
-        {open ? <JoinCodeForm onJoined={onJoined} resultLayer={1} scannedJoins /> : null}
+        {open ? <JoinCodeForm onJoined={onJoined} resultLayer={1} scannedJoins title={name ? `Join ${name}` : 'Join This Moment'} only={{ momentId, name }} /> : null}
       </BottomSheetView>
     </Sheet>
   );

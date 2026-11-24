@@ -127,8 +127,8 @@ export function tabHomeHref(tab: SessionTab): Href {
 //     `[id]/u/[personId]`, `[id]/people/[personId]`), so no route tree nests
 //     inside itself;
 //   • 'edit' / 'edit/details' — from a tab stack, the OUTER edit screens
-//     (fullScreenModal there); from inside a post, the same screens on the
-//     POST's stack (`[id]/edit/[postId]`, sliding up like the modal). Nothing
+//     (plain pushes with swipe-back since 2026-11-24); from inside a post,
+//     the same screens on the POST's stack (`[id]/edit/[postId]`). Nothing
 //     may be presented on the outer stack while a post is open: a native
 //     modal over the contained post hung the app (device pass 2026-11-10).
 //     So the "post is gone" exits there are plain pops on the post's stack.
@@ -244,9 +244,9 @@ export function settingsHref(mount: SessionMount, page?: SettingsPage): Href {
 // The "Add Wine to Catalogue" pages (ruled 2026-11-22: real pages, so the
 // bar's back and the edge swipe go back alike). They live beside their host on
 // the host's OWN stack: an opened post's stack (`[id]/catalog/…`), or the tab
-// stack (`catalog/…`), except the check-in edit's details, a `fullScreenModal`
-// on a tab stack, whose pages live INSIDE its own boundary
-// (`edit/details/catalog/…`: a card above a modal would be pushed behind it).
+// stack (`catalog/…`), except the check-in edit's details on a tab stack,
+// whose pages live INSIDE its own boundary (`edit/details/catalog/…`; built
+// while those details were a modal, edit/details/_layout.tsx).
 export type CatalogPage = 'search' | 'producer' | 'wines' | 'new';
 export function catalogHref(mount: SessionMount, inDetails: boolean, page: CatalogPage, key: string): Href {
   if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/catalog/${page}`, params: { id: mount.post, key } } as Href;

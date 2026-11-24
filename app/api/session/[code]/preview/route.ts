@@ -6,7 +6,7 @@ import { authorBlocksViewer, viewerBlocksAuthor } from '@/lib/userBlock'
 import { participantOrBanned, authUnavailable } from '@/lib/identity'
 import { openSessionFor } from '@/lib/sessionRoute'
 import { normalizeCode } from '@verre/core'
-import { publicIdFor } from '@/lib/publicIds'
+import { parsePublicIdParam, publicIdFor } from '@/lib/publicIds'
 import { prisma } from '@/lib/prisma'
 
 // What a scanned moment code shows in the app before you join (Add Friends →
@@ -76,6 +76,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const blockPair = hostUserId != null && hostUserId !== viewerId
     && (await Promise.all([viewerBlocksAuthor(viewerId, hostUserId), authorBlocksViewer(viewerId, hostUserId)])).some(Boolean)
 
+  // `?moment=<publicId>` (a look-in's Join: only that moment's code may join
+  // there): whether this code is that moment's, from the record. Never the
+  // moment's id itself (the code holder learns only yes or no); a guest
+  // moment (no record) or a malformed id is no.
+  const asked = req.nextUrl.searchParams.get('moment')
+  const askedId = asked === null ? null : parsePublicIdParam(asked)
+  const sameMoment = asked === null ? undefined
+    : askedId !== null && (await prisma.session.findUnique({ where: { code: c }, select: { publicId: true } }))?.publicId === askedId
+
   const linked = hostUserId != null && !blockPair
   const [hostPublicId, hostRow] = linked
     ? await Promise.all([publicIdFor(hostUserId), prisma.user.findUnique({ where: { id: hostUserId }, select: { username: true } })])
@@ -93,5 +102,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
     address: meta.address || null,
     coverPhotoUrl: meta.coverPhotoUrl || null,
     joined: p.status === 'ok',
+    ...(sameMoment === undefined ? {} : { sameMoment }),
   }, { headers: noStore })
 }

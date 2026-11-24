@@ -133,7 +133,7 @@ export function FullscreenGallery({
   // photo-bearing page there is no Modal, and a refetch that drops the last
   // photo while the gallery is up must release the hide with it (Codex).
   const open = visible && pages.length > 0;
-  useReportFullscreenViewer(open);
+  useReportFullscreenViewer(open, land);
   if (!pages.length) return null;
   return (
     // overFullScreen + no status-bar element logic here: see ui/FullscreenImage.

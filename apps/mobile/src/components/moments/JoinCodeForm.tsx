@@ -3,14 +3,15 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Platform, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { normalizeCode, formatCodeInput } from '@verre/core';
+import { normalizeCode, formatCodeInput, validateCodeInput } from '@verre/core';
 import { ScanResult, useVerreScanner } from '@/components/people/scan';
 import { Sheet } from '@/components/ui/Sheet';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { GUTTER } from '@/lib/layout';
-import { joinByCode, joinErrorText } from '@/lib/joinByCode';
+import { joinByCode, joinErrorText, notThisMomentText } from '@/lib/joinByCode';
+import { ApiError, getMomentPreview } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { type VerreCode } from '@/lib/scanCode';
 import { usePushGuard } from '@/lib/usePushGuard';
@@ -20,13 +21,17 @@ import { meIdOf } from '@/lib/meId';
 // once it holds a code. Moved from the Moments home (app/(tabs)/moments/
 // index.tsx, its `JoinBlock`) for a look-in's "Join with Code" (Moment
 // Visibility step-2 plan § 4.4, R6). The caller decides where a join lands.
-export function JoinCodeForm({ onJoined, resultLayer, scannedJoins }: {
+export function JoinCodeForm({ onJoined, resultLayer, scannedJoins, title, only }: {
   /** Where a successful join lands (the Moments home pushes the moment; a look-in replaces itself). */
   onJoined: (code: string) => void;
   /** A scanned moment opened from the scan result goes through `onJoined` too (a look-in). */
   scannedJoins?: boolean;
   /** Inside another sheet (a look-in's Join sheet): the scan result's sheet stacks above it. */
   resultLayer?: number;
+  /** The sheet's title (default "Join a Moment"; a look-in: "Join <its name>"). */
+  title?: string;
+  /** A look-in: only THIS moment's code joins (asked of the preview first, which answers yes or no). */
+  only?: { momentId: string; name: string };
 }) {
   const queryClient = useQueryClient();
   const { data: auth } = authClient.useSession();
@@ -34,6 +39,10 @@ export function JoinCodeForm({ onJoined, resultLayer, scannedJoins }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const code = normalizeCode(input);
+  // A letter codes never use says so at once (device pass 2026-11-24: Join
+  // just stayed grey); a code still being typed says nothing.
+  const checked = validateCodeInput(input);
+  const charHint = !checked.ok && checked.error === 'invalid-char' ? 'Codes don’t use the letters I, L, O or U.' : null;
   const insets = useSafeAreaInsets();
   const guard = usePushGuard();
   const meId = meIdOf(auth);
@@ -63,6 +72,14 @@ export function JoinCodeForm({ onJoined, resultLayer, scannedJoins }: {
     setBusy(true);
     setError(null);
     try {
+      if (only) {
+        // An unknown code reads the same as another moment's.
+        const same = await getMomentPreview(code, only.momentId).then(
+          (p) => p.sameMoment === true,
+          (e: unknown) => { if (e instanceof ApiError && e.kind === 'not-found') return false; throw e; },
+        );
+        if (!same) { setError(notThisMomentText(only.name)); return; }
+      }
       // lib/joinByCode.ts (shared with Add Friends' scan): your name fresh
       // from the users row, then ['my-sessions'] invalidated.
       const joined = await joinByCode(queryClient, code, auth?.user.name);
@@ -80,7 +97,7 @@ export function JoinCodeForm({ onJoined, resultLayer, scannedJoins }: {
     <View style={{ paddingHorizontal: GUTTER, gap: 10, marginTop: 6 }}>
       {/* .sh-sheettitle */}
       <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-        Join a Moment
+        {title ?? 'Join a Moment'}
       </VText>
       <VText variant="small" color="inkSoft" style={{ marginTop: -4 }}>Enter the code your host shared.</VText>
       {/* .gs-codewrap: row, gap 8, stretch */}
@@ -121,10 +138,10 @@ export function JoinCodeForm({ onJoined, resultLayer, scannedJoins }: {
           <Button title="Join" loadingTitle="Joining…" variant={code ? 'primary' : 'secondary'} loading={busy} disabled={!code} onPress={join} style={{ paddingHorizontal: 20, minWidth: scanW || undefined }} />
         )}
       </View>
-      {error ? <VText variant="caption" color="critical">{error}</VText> : null}
+      {error || charHint ? <VText variant="caption" color="critical">{error ?? charHint}</VText> : null}
       <Sheet open={sheetOpen} onClose={() => setSheetOpen(false)} {...(resultLayer != null ? { stackBehavior: 'push' as const, layer: resultLayer } : {})}>
         <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16 }}>
-          {scanned && meId != null ? <ScanResult key={scanSeq} result={scanned} meId={meId} leaveTo={leaveTo} onOpenMoment={scannedJoins ? onJoined : undefined} /> : null}
+          {scanned && meId != null ? <ScanResult key={scanSeq} result={scanned} meId={meId} leaveTo={leaveTo} onOpenMoment={scannedJoins ? onJoined : undefined} onlyMoment={only} /> : null}
         </BottomSheetView>
       </Sheet>
     </View>

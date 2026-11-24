@@ -15,6 +15,7 @@ import { closeOpenedPost, feedHref, useSessionTab } from '@/lib/sessionStack';
 import { space, useTheme } from '@/theme';
 import { useMeId } from '@/lib/meId';
 import { useScreenReaderEnabled } from '@/lib/screenReader';
+import { NoTopEdgeFade } from '@/components/ui/NoTopEdgeFade';
 
 // The caller's handle on the list's scroll position, whichever layout is
 // showing (the list, or the error state's scroll view).
@@ -387,6 +388,7 @@ export function FeedList({
     return (
       <View style={{ flex: 1 }}>
         {deadEnd}
+        <NoTopEdgeFade style={{ flex: 1 }} enabled={fullBleed}>
         <ScrollView
           ref={errorScrollRef}
           contentInsetAdjustmentBehavior={fullBleed ? 'never' : undefined}
@@ -401,6 +403,7 @@ export function FeedList({
             <ErrorState onRetry={() => feed.refetch()} retrying={feed.isFetching} />
           </View>
         </ScrollView>
+        </NoTopEdgeFade>
       </View>
     );
   }
@@ -409,6 +412,7 @@ export function FeedList({
     <View style={{ flex: 1 }}>
       {deadEnd}
       {conn === 'banner' && <ConnectionBanner onRetry={() => feed.refetch()} />}
+      <NoTopEdgeFade style={{ flex: 1 }} enabled={fullBleed}>
       <FlatList
         // iOS keeps every row's native views attached by default (Android
         // detaches off-screen ones): with every loaded post attached, each
@@ -468,6 +472,7 @@ export function FeedList({
           ))
         }
       />
+      </NoTopEdgeFade>
     </View>
   );
 }

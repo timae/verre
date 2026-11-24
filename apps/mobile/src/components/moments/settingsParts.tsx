@@ -428,11 +428,20 @@ export function SetNote({ children, style }: { children: ReactNode; style?: Styl
 // A settings section title (the You Privacy page, ruled 2026-11-11): `bodyLg`
 // 600, -0.01em, ink, Title Case, 6 above its first row. Not the uppercase
 // micro-label.
-export function SetTitle({ children }: { children: string }) {
-  return (
-    <VText variant="bodyLg" accessibilityRole="header" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: -0.17, marginBottom: 6 }}>
+export function SetTitle({ children, info }: { children: string; info?: ReactNode }) {
+  const title = (
+    <VText variant="bodyLg" accessibilityRole="header" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: -0.17, marginBottom: info ? 0 : 6 }}>
       {children}
     </VText>
+  );
+  if (!info) return title;
+  // `info`: an ⓘ right after the title (ui/InfoTip, Moment Privacy); its touch
+  // target overhangs, so the title keeps its own line height.
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, marginBottom: 6 }}>
+      {title}
+      <View style={{ marginVertical: -10 }}>{info}</View>
+    </View>
   );
 }
 
