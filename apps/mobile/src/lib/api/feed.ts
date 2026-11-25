@@ -2,6 +2,7 @@ import { infiniteQueryOptions } from '@tanstack/react-query';
 import type { AromaSelection } from '@verre/core';
 import { apiFetch } from '../apiFetch';
 import { ApiError, throwApiError } from './sessions';
+import { stampPrivacy } from '../postPrivacyPatch';
 
 // Typed fetchers + wire types for the social feed (`/api/feed`).
 // Wire types MIRROR the server's emitted shape in app/api/feed/route.ts
@@ -92,6 +93,12 @@ export type CheckinPayload = {
   liked: boolean;
   viewerFollowsAuthor: boolean;
   saved?: boolean;
+  // YOUR OWN check-in only, with the server's HIDE_FROM_FEED_ENABLED on
+  // (Moment Visibility step 3, R5): Hide from Feed. Absent = no ⋯ row.
+  hiddenFromFeed?: boolean;
+  // Client-side: when the request that carried this copy LEFT (getFeed), so a
+  // write recorded after it wins over it (lib/postPrivacyState.ts).
+  privacyAt?: number;
 };
 
 // A session-aggregate post ("<name> shared a moment") — mirrors
@@ -114,6 +121,12 @@ export type SessionFeedPayload = {
   wines: SessionFeedWine[];
   likeCount: number;
   liked: boolean;
+  // YOUR OWN moment post only: Incognito there (Moment Visibility on; R2, R11)
+  // and Hide from Feed for it (HIDE_FROM_FEED_ENABLED on; R12). Absent = no ⋯ row.
+  onlyInside?: boolean;
+  hiddenFromFeed?: boolean;
+  // Client-side, as on CheckinPayload.
+  privacyAt?: number;
 };
 
 export type FeedItem =
@@ -133,9 +146,25 @@ export async function getFeed(cursor?: string | null, userId?: string | null): P
   const qs = [cursor ? `cursor=${encodeURIComponent(cursor)}` : '', userId != null ? `user=${encodeURIComponent(userId)}` : '']
     .filter(Boolean)
     .join('&');
+  const startedAt = Date.now();
   const res = await apiFetch(`/api/feed${qs ? `?${qs}` : ''}`);
   if (!res.ok) await throwApiError(res);
-  return (await res.json()) as FeedPage;
+  return stampPrivacy((await res.json()) as FeedPage, startedAt);
+}
+
+// The ⋯ row on your own post (PATCH /api/feed-items/:id/privacy): Hide from
+// Feed, on a moment post or a check-in (R12, R13; the route also takes
+// Incognito on a moment post, which the app no longer sends). The answer echoes
+// the field.
+export async function setPostPrivacy(postId: number, field: 'onlyInside' | 'hiddenFromFeed', on: boolean): Promise<boolean> {
+  const res = await apiFetch(`/api/feed-items/${postId}/privacy`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ [field]: on }),
+  });
+  if (!res.ok) await throwApiError(res);
+  const j = (await res.json()) as Record<string, unknown>;
+  return j[field] === true;
 }
 
 // POST|DELETE /api/feed-items/:id/like — toggle the like. Returns the
@@ -339,9 +368,10 @@ export function feedQueryOptions(userId?: string | null) {
 // `fetchQuery`: a plain { items } entry under a ['feed', …] key breaks
 // updateFeedCaches (`data.pages.map`) for every like / edit / delete.
 export async function getFeedItem(userId: string, postId: number): Promise<FeedPage> {
+  const startedAt = Date.now();
   const res = await apiFetch(`/api/feed?user=${encodeURIComponent(userId)}&item=${postId}`);
   if (!res.ok) await throwApiError(res);
-  return (await res.json()) as FeedPage;
+  return stampPrivacy((await res.json()) as FeedPage, startedAt);
 }
 export function feedItemKey(userId: string, postId: number) {
   return ['feed', 'user', userId, 'item', postId] as const;

@@ -4,7 +4,7 @@ import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { parsePathId } from '@/lib/parsePathId'
-import { viewerCanSeePosts } from '@/lib/profileVisibility'
+import { viewerCanSeePost } from '@/lib/profileVisibility'
 import { outsideViewSql } from '@/lib/outsideView'
 import { saveBottle, unsaveBottle, NOT_IN_CATALOGUE, SAVE_LIMIT } from '@/lib/cravings'
 import { checkRate, formatWait } from '@/lib/rateLimit'
@@ -19,8 +19,8 @@ const NO_STORE = { 'Cache-Control': 'private, no-store' }
 // Moment Visibility 1a: a still-hidden bottle on someone else's post carries
 // no wine id); a check-in's bottle is the post's own (no body).
 //
-// 🔒 Order: the post gate (`viewerCanSeePosts`: profile tier + Check-Ins
-// Visible To) → 404, the bottle must be one of THIS post's (a check-in's own,
+// 🔒 Order: the single-post gate (`viewerCanSeePost`: profile tier + Check-Ins
+// Visible To, and the post itself: Only Inside, Hide from Feed) → 404, the bottle must be one of THIS post's (a check-in's own,
 // or a session post's: the author's rating in that moment) → 404, a line-up
 // hidden from the caller → 404 (the feed leaves it out), then the OUTSIDE rule
 // for the caller (lib/outsideView.ts, the one the feed redacts by): on a
@@ -43,7 +43,7 @@ async function run(req: NextRequest, { params }: Ctx, on: boolean): Promise<Next
   if (raw !== undefined && ratingId === null) return NextResponse.json({ error: 'ratingId must be a rating id' }, { status: 400, headers: NO_STORE })
 
   const item = await prisma.feedItem.findUnique({ where: { id: itemId }, select: { userId: true, kind: true, sessionId: true, ratingId: true } })
-  if (!item || !(await viewerCanSeePosts(userId, item.userId))) return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
+  if (!item || !(await viewerCanSeePost(userId, { id: itemId, userId: item.userId }))) return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
   // The bottle: the author's rating the row names, in THIS moment; or the
   // check-in's own. A moment post without a key, any other rating id, and a
   // line-up hidden from the caller (the feed leaves that post out) are the same

@@ -104,7 +104,8 @@ export async function momentVisibility(h: MomentVisibilityHarness) {
     if (r.status !== 200) throw new Error(`anonymous create failed ${r.status} ${JSON.stringify(r.json)}`)
     return { code: r.json.code as string, host: { anon: r.wire.anonToken as string } as Actor }
   }
-  const CLOSED = { visibility: 'members', includeGuestCircles: false, showPlace: false, showDetails: false, frozen: true, canEdit: false }
+  // Step 3: every answer of this shape carries the caller's own choice (`me`), null without a record.
+  const CLOSED = { visibility: 'members', includeGuestCircles: false, showPlace: false, showDetails: false, frozen: true, canEdit: false, me: null }
   const four = (r: Res) => ({ visibility: r.wire?.visibility, includeGuestCircles: r.wire?.includeGuestCircles, showPlace: r.wire?.showPlace, showDetails: r.wire?.showDetails })
   const noStore = (r: Res) => r.headers.get('cache-control') === 'private, no-store'
 
@@ -195,8 +196,9 @@ export async function momentVisibility(h: MomentVisibilityHarness) {
 
     flag(true)
     const tg = await getV(M, T)
-    check('a taster reads the four settings, canEdit false, no link part',
-      tg.status === 200 && JSON.stringify(tg.wire) === JSON.stringify({ visibility: 'friends', includeGuestCircles: true, showPlace: false, showDetails: false, frozen: false, canEdit: false }) && noStore(tg), tg.wire)
+    const mid = (await rowOf({ code: M })).id
+    check('a taster reads the four settings, canEdit false, no link part; me carries the moment\'s id (signed in)',
+      tg.status === 200 && JSON.stringify(tg.wire) === JSON.stringify({ visibility: 'friends', includeGuestCircles: true, showPlace: false, showDetails: false, frozen: false, canEdit: false, me: { onlyInside: false, sessionId: mid } }) && noStore(tg), tg.wire)
     const hg = await getV(M, H), cg = await getV(M, C)
     check('host and cohost: canEdit, and the link part (available, not active, no url)',
       [hg, cg].every(r => r.status === 200 && r.wire.canEdit === true && r.wire.frozen === false && JSON.stringify(r.wire.link) === JSON.stringify({ available: true, active: false, url: null, since: null })), [hg.wire, cg.wire])

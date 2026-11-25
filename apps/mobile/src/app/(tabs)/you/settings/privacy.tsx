@@ -54,6 +54,14 @@ const sameSettings = (a: VisibilitySettings, b: VisibilitySettings) =>
 // My Profile (Show Cravings, Show Moments, Show My Locations), then Blocked
 // and Muted, each a row opening its own page (ruling Q-B).
 export default function Privacy() {
+  return <PrivacySettings />;
+}
+
+// `inMoment`: the same page opened from a moment's Moment Privacy ("Outside
+// This Moment", R15), on the moment's own stack so Back returns there
+// (session/[code]/settings/my-privacy). Without People (Blocked / Muted):
+// those pages live on the You tab, and a push there would jump tabs.
+export function PrivacySettings({ inMoment = false, title = 'Privacy' }: { inMoment?: boolean; title?: string }) {
   const router = useRouter();
   const mount = useSessionTab();
   const queryClient = useQueryClient();
@@ -154,7 +162,7 @@ export default function Privacy() {
     // BottomSheetModalProvider in-screen: the OptionSheet needs a sized host
     // across the Stack boundary (no root provider, see app/_layout.tsx).
     <BottomSheetModalProvider>
-    <SetPage title="Privacy" gap={32} bottomPad={TAB_BAR_CLEARANCE + 100} offline={failedReads(vis, blocks, mutes)}>
+    <SetPage title={title} gap={32} bottomPad={TAB_BAR_CLEARANCE + 100} offline={failedReads(vis, blocks, mutes)}>
       {/* The settings type (ruled 2026-11-11 on device, from the design): a
           SetTitle per topic, rows `body` regular, helpers `small`, no cards. */}
       <View>
@@ -217,11 +225,13 @@ export default function Privacy() {
           <ToggleRow title="Show My Locations" subtitle="Places on your posts" value={v.showLocations} busy={saving} onChange={(on) => void save({ showLocations: on })} />
         </View>
       ) : null}
-      <View>
-        <SetTitle>People</SetTitle>
-        <ListRow flush icon="block" label="Blocked" q={blocks} onPress={() => router.push(settingsHref(mount, 'blocked'), { dangerouslySingular: true })} />
-        <ListRow icon="eyeoff" label="Muted" q={mutes} onPress={() => router.push(settingsHref(mount, 'muted'), { dangerouslySingular: true })} />
-      </View>
+      {inMoment ? null : (
+        <View>
+          <SetTitle>People</SetTitle>
+          <ListRow flush icon="block" label="Blocked" q={blocks} onPress={() => router.push(settingsHref(mount, 'blocked'), { dangerouslySingular: true })} />
+          <ListRow icon="eyeoff" label="Muted" q={mutes} onPress={() => router.push(settingsHref(mount, 'muted'), { dangerouslySingular: true })} />
+        </View>
+      )}
       <OptionSheet
         open={sheet === 'profile'}
         title="Account Visible To"

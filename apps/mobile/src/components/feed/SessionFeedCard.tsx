@@ -24,6 +24,8 @@ import { Avatar } from '@/components/ui/Avatar';
 import { Gradient } from '@/components/ui/Gradient';
 import { useScreenReaderEnabled } from '@/lib/screenReader';
 import { FeedCardMenu } from '@/components/feed/FeedCardMenu';
+import { PrivacyByline } from '@/components/feed/PrivacyByline';
+import { usePostPrivacyRow } from '@/lib/postPrivacyActions';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
@@ -97,6 +99,8 @@ export function SessionFeedCard({
   // Edit / Delete Rating need the wine id: always there on your own post (the
   // only place the menu shows), absent on a blind row of someone else's.
   const activeWineId = wines[activeIdx]?.id;
+  // Your own moment post only: Hide from Feed's ⋯ row and the status line (R3, R12, R13).
+  const privacy = usePostPrivacyRow({ type: 'session', session });
   useEffect(() => {
     setActiveIdx((cur) => Math.min(cur, maxIdx));
   }, [maxIdx]);
@@ -269,7 +273,7 @@ export function SessionFeedCard({
               shared a moment
             </VText>
           </VText>
-          <VText variant="caption" color="inkSoft" numberOfLines={1}>
+          <PrivacyByline line={privacy.line}>
             {session.deleted ? (
               '[deleted moment]'
             ) : session.sessionName ? (
@@ -284,7 +288,7 @@ export function SessionFeedCard({
             ) : null}
             {(session.deleted || session.sessionName) ? ' · ' : ''}
             {timeAgo(createdAt)}
-          </VText>
+          </PrivacyByline>
         </View>
         {onEdit && activeWineId ? (
           <FeedCardMenu
@@ -292,6 +296,7 @@ export function SessionFeedCard({
             onDelete={onDeleteRating ? () => onDeleteRating(activeWineId) : undefined}
             deleteLabel="Delete Rating"
             deleteAccessibilityLabel="Delete Rating"
+            privacy={privacy.rows}
           />
         ) : null}
       </View>

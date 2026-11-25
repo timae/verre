@@ -70,6 +70,26 @@ export function grantFromRow(r: GrantRow, userId: number | null): Grant {
   }
 }
 
+// 🔒 "People in the moment" in SQL (Moment Visibility step 3, T2): the twin of
+// `grantStatus(grant) === 'ok'` for the viewer in the moment `sid` (a column or
+// a value): a LIVE row, no ban of `u:<viewer>`, and the strict host, or a
+// member row not kicked, or no member row and a rating of the viewer's there.
+// The SAME answer as the look-in's `member: true`, the feed's `momentId` and
+// by-moment (pinned against grantStatus over every grant state, the suite's
+// § 25 a). A deleted moment has no insiders; a NULL viewer is never one.
+// Aliases are private (`gi*`) so a caller's `s` can't be shadowed.
+export function insiderSql(viewerId: number | null, sid: Prisma.Sql): Prisma.Sql {
+  if (viewerId === null) return Prisma.sql`FALSE`
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM sessions gis
+     WHERE gis.id = ${sid} AND gis.deleted_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM session_bans gib WHERE gib.session_code = gis.code AND gib.identity_id = ${`u:${viewerId}`}::text)
+       AND (COALESCE(gis.host_user_id = ${viewerId}::integer, false)
+         OR EXISTS (SELECT 1 FROM session_members gim WHERE gim.session_code = gis.code AND gim.user_id = ${viewerId}::integer AND gim.removed_state IS DISTINCT FROM 'kicked')
+         OR (NOT EXISTS (SELECT 1 FROM session_members gin WHERE gin.session_code = gis.code AND gin.user_id = ${viewerId}::integer)
+             AND EXISTS (SELECT 1 FROM ratings gir WHERE gir.session_id = gis.id AND gir.user_id = ${viewerId}::integer))))`
+}
+
 // One statement. null = no live sessions row (a Redis-only session).
 export async function readGrant(db: Db, code: string, userId: number): Promise<Grant | null> {
   const rows = await db.$queryRaw<GrantRow[]>`

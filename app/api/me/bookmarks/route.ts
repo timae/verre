@@ -6,6 +6,7 @@ import { decimalToNumber } from '@verre/core'
 import { hiddenSql, redactedSql } from '@/lib/outsideView'
 import { cravingKey, ownerCravingsSql, ownerWasThereSql } from '@/lib/cravings'
 import { viewerCanSeePosts } from '@/lib/profileVisibility'
+import { postShownSql } from '@/lib/postPrivacy'
 import { entryKey, loadEntriesSoft, tombstoneMapSql, type CatalogEntry } from '@/lib/catalogEntries'
 import { entryYear } from '@/lib/wineDisplay'
 
@@ -29,6 +30,7 @@ type Row = {
   style: string | null; colour: string | null; sparkling: boolean | null; abv: Prisma.Decimal | null; category: string | null
   image_url: string | null; purchase_url: string | null
   session_id: number | null; session_code: string | null; session_deleted_at: Date | null; was_there: boolean | null; item_author: number | null
+  item_shown: boolean | null
 }
 type RatingRow = {
   id: number; score: Prisma.Decimal | null; flavors: unknown; notes: string | null; rated_at: Date; vintage: string | null
@@ -47,18 +49,21 @@ export async function GET(req: NextRequest) {
            w.name AS w_name, w.producer AS w_producer, w.vintage AS w_vintage, w.grape, w.style, w.colour, w.sparkling, w.abv,
            w.category, w.image_url, w.purchase_url,
            s.id AS session_id, s.code AS session_code, s.deleted_at AS session_deleted_at, ${ownerWasThereSql(userId)} AS was_there,
-           (SELECT fi.user_id FROM feed_items fi WHERE fi.id = oc.item_id) AS item_author
+           fio.user_id AS item_author, ${postShownSql(userId, 'fio')} AS item_shown
       FROM (${ownerCravingsSql(userId)}) oc
       LEFT JOIN wines w ON w.id = oc.wine_id
       LEFT JOIN sessions s ON s.id = oc.sid
+      LEFT JOIN feed_items fio ON fio.id = oc.item_id
      ORDER BY oc.saved_at DESC, oc.sk DESC`
   const entries = await loadEntriesSoft(rows.map(r => ({ productId: r.product_id, vintageId: r.vintage_id })))
   // A bottle saved from someone's post (a moment you were not in) shows its
-  // photo and purchase link only while you may still see that post (ruled
-  // 2026-11-20: a block or a narrowed audience hides them).
+  // photo and purchase link only while you may still see that POST (ruled
+  // 2026-11-20: a block or a narrowed audience hides them; Moment Visibility
+  // step 3: the post itself too, `viewerCanSeePost`'s two halves: the author's
+  // gate here, the post's own rule in the statement, lib/postPrivacy.ts).
   const seesAuthor = new Map<number, boolean>()
   for (const a of new Set(rows.filter(r => r.was_there !== true && r.item_author !== null).map(r => r.item_author!))) seesAuthor.set(a, await viewerCanSeePosts(userId, a))
-  const showBottle = (r: Row) => r.was_there === true || (r.item_author !== null && seesAuthor.get(r.item_author) === true)
+  const showBottle = (r: Row) => r.was_there === true || (r.item_author !== null && r.item_shown === true && seesAuthor.get(r.item_author) === true)
   const entryOf = (r: Row): CatalogEntry | undefined => (r.product_id ? entries.get(entryKey(r.product_id, r.vintage_id)) : undefined)
 
   type Group = { key: string; entry?: CatalogEntry; rows: Row[] }

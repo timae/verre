@@ -13,6 +13,8 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Avatar } from '@/components/ui/Avatar';
 import { Gradient } from '@/components/ui/Gradient';
 import { FeedCardMenu } from '@/components/feed/FeedCardMenu';
+import { PrivacyByline } from '@/components/feed/PrivacyByline';
+import { usePostPrivacyRow } from '@/lib/postPrivacyActions';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
@@ -72,6 +74,8 @@ export function StandaloneFeedCard({
   // hero speak — ONE adapter (checkinToWine), shared with the detail screen's
   // detailFromItem, so the card and the detail page can never drift apart.
   const wine = useMemo<SessionFeedWine>(() => checkinToWine(checkin), [checkin]);
+  // Your own check-in only: Hide from Feed's ⋯ row and the status line (R3, R5).
+  const privacy = usePostPrivacyRow({ type: 'checkin', checkin });
 
   const uri = checkin.imageUrl;
 
@@ -105,14 +109,14 @@ export function StandaloneFeedCard({
               had a wine
             </VText>
           </VText>
-          <VText variant="caption" color="inkSoft" numberOfLines={1}>
+          <PrivacyByline line={privacy.line}>
             {[[checkin.venueName, checkin.city].filter(Boolean).join(', '), timeAgo(createdAt)]
               .filter(Boolean)
               .join(' · ')}
-          </VText>
+          </PrivacyByline>
         </View>
         {onEdit ? (
-          <FeedCardMenu onEdit={onEdit} onDelete={onDelete} deleteAccessibilityLabel="Delete Check-In" />
+          <FeedCardMenu onEdit={onEdit} onDelete={onDelete} deleteAccessibilityLabel="Delete Check-In" privacy={privacy.rows} />
         ) : null}
       </View>
 

@@ -123,7 +123,9 @@ const web = firstSegments(join(ROOT, 'app'), false)
 const app = firstSegments(join(ROOT, 'apps/mobile/src/app'), true)
 check('the walk finds the known routes (web)', ['api', 'join', 'legal', 'login', 'register', 'me', 'session', 'u'].filter(w => !web.includes(w)), [])
 check('the walk finds the known routes (app)', ['about', 'attributions', 'feed', 'moments', 'you', 'soon', 'signin', 'signup'].filter(w => !app.includes(w)), [])
-check('none is free to register', [...new Set([...web, ...app])].filter(w => !isReservedUsername(w)), [])
+// "Free" = the sign-up would take it (a segment under the 3-character minimum,
+// `l` for the look-in link page, can't be registered at all).
+check('none is free to register', [...new Set([...web, ...app])].filter(w => checkUsername(w).ok), [])
 check('a reserved word is still well-formed where it can be', isUsernameFormat('api'), true)
 
 console.log(failures === 0 ? '\nOK — username pins pass.' : `\nFAILED — ${failures} username pin(s).`)

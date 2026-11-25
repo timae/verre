@@ -30,6 +30,7 @@ import { momentFacetWhere, resolveFacets, type MomentFacets, type OpenRowsNaming
 import { decideMoments, sharedMomentSql } from '@/lib/momentAudience'
 import { momentLookInEnabled } from '@/lib/momentGate'
 import { coverOutsideSql } from '@/lib/profileTiles'
+import { postHiddenSql, postShownSql, strippedSql } from '@/lib/postPrivacy'
 
 const PAGE = 30
 const SIMILARITY = 0.3
@@ -42,8 +43,15 @@ const SIMILARITY = 0.3
 const POST_JOINS = Prisma.sql`
   LEFT JOIN feed_items fis ON fis.user_id = r.user_id AND fis.session_id = r.session_id AND fis.kind = 'session'
   LEFT JOIN feed_items fic ON fic.rating_id = r.id`
-const POST_ID = Prisma.sql`COALESCE(fis.id, fic.id)`
 const HAD_AT = Prisma.sql`COALESCE(fis.created_at, fic.created_at, r.rated_at)`
+// 🔒 The post a viewer may OPEN from the row (Moment Visibility step 3, § 4.3):
+// the post only while it is not hidden from them (lib/postPrivacy.ts: Only
+// Inside outside its moment, Hide from Feed). The joins above stay UNFILTERED:
+// `HAD_AT` is built from them, and filtered there a hidden row's date would
+// fall to `rated_at`, move on every re-rate and differ between viewers.
+const visiblePostId = (viewerId: number | null) => Prisma.sql`(CASE
+  WHEN fis.id IS NOT NULL THEN CASE WHEN NOT ${postHiddenSql(viewerId, 'fis')} THEN fis.id END
+  WHEN fic.id IS NOT NULL THEN CASE WHEN NOT ${postHiddenSql(viewerId, 'fic')} THEN fic.id END END)`
 
 // Accent-insensitive substring OR typo-tolerant trigram on one column.
 function textMatch(col: Prisma.Sql, q: string): Prisma.Sql {
@@ -165,6 +173,13 @@ export async function loadImpressions(
   const other = viewerId !== null && viewerId !== ownerId ? viewerId : null
   const own = viewerId !== null && viewerId === ownerId
   const redacted = redactedSql(viewerId, 's', 'w')
+  // 🔒 Only Inside This Moment (§ 4.3): a row from a moment its owner is Only
+  // Inside in, seen by someone not in it, shows without its moment: no name,
+  // no wine id, no moment photo, no "You ★" (a viewer who rated that bottle
+  // row was in the moment, so the match itself tells), outside `q`'s moment
+  // half and outside "both had".
+  const stripped = strippedSql(viewerId, Prisma.sql`r.user_id`, Prisma.sql`r.session_id`)
+  const postId = visiblePostId(viewerId)
   const where: Prisma.Sql[] = [impressionsWhere(ownerId, viewerId)]
   if (f.from) where.push(Prisma.sql`${HAD_AT} >= ${f.from}`)
   if (f.to) where.push(Prisma.sql`${HAD_AT} <= ${f.to}`)
@@ -176,13 +191,15 @@ export async function loadImpressions(
   // Their structure and aromas show on their POST (blind ones too: the
   // taster's own perception), not on the row: on someone else's list these
   // two filters only match a row that has one.
-  if (other !== null && (f.structure.length > 0 || f.aromas.length > 0)) where.push(Prisma.sql`${POST_ID} IS NOT NULL`)
+  // (A row whose post is hidden from the viewer is post-less there.)
+  if (other !== null && (f.structure.length > 0 || f.aromas.length > 0)) where.push(Prisma.sql`${postId} IS NOT NULL`)
   if (f.q) {
     where.push(Prisma.sql`((NOT ${redacted} AND (${textMatch(Prisma.sql`w.name`, f.q)} OR ${textMatch(Prisma.sql`w.producer`, f.q)}))
-      OR (s.deleted_at IS NULL AND ${textMatch(Prisma.sql`s.name`, f.q)}))`)
+      OR (s.deleted_at IS NULL AND NOT ${stripped} AND ${textMatch(Prisma.sql`s.name`, f.q)}))`)
   }
   const yours = Prisma.sql`EXISTS (SELECT 1 FROM ratings yr WHERE yr.user_id = ${other}::integer AND yr.wine_id = r.wine_id)`
-  if (f.common && other !== null) where.push(Prisma.sql`NOT ${redacted} AND ${yours}`)
+  // `yours` first: the cheap match narrows before the per-row privacy probes.
+  if (f.common && other !== null) where.push(Prisma.sql`${yours} AND NOT ${redacted} AND NOT ${stripped}`)
   const cursor = f.cursor ? parseImpressionsCursor(f.cursor, f.sort) : null
   if (f.cursor && !cursor) return { items: [], nextCursor: null }
   if (cursor) where.push(impressionsAfter(f.sort, cursor))
@@ -191,14 +208,16 @@ export async function loadImpressions(
     id: number; post_id: number | null; wine_id: string; name: string; vintage: string | null; producer: string | null
     style: string | null; colour: string | null; sparkling: boolean; category: string; image_url: string | null; score: Prisma.Decimal | null; had_at: Date; product_id: string | null; vintage_id: string | null
     had_key: string; score_cents: number | null; redacted: boolean; moment_name: string | null; your_score: Prisma.Decimal | null; in_session: boolean
+    stripped: boolean | null
   }[]>`
-    SELECT r.id, ${POST_ID} AS post_id, r.wine_id, w.name, w.vintage, w.producer, w.style, w.colour, w.sparkling, w.category, w.product_id, w.vintage_id,
+    SELECT r.id, ${postId} AS post_id, r.wine_id, w.name, w.vintage, w.producer, w.style, w.colour, w.sparkling, w.category, w.product_id, w.vintage_id,
            COALESCE((SELECT ri.image_url FROM rating_images ri WHERE ri.rating_id = r.id ORDER BY ri.sort_order ASC LIMIT 1), w.image_url) AS image_url,
            r.score, ${HAD_AT} AS had_at, ${usKeySql(HAD_AT)} AS had_key, (${SCORE_KEY} * 100)::int AS score_cents, ${redacted} AS redacted,
+           ${stripped} AS stripped,
            CASE WHEN s.deleted_at IS NULL THEN s.name END AS moment_name,
            (r.session_id IS NOT NULL) AS in_session,
            ${other !== null
-             ? Prisma.sql`(SELECT yr.score FROM ratings yr WHERE yr.user_id = ${other} AND yr.wine_id = r.wine_id ORDER BY yr.rated_at DESC, yr.id DESC LIMIT 1)`
+             ? Prisma.sql`CASE WHEN NOT ${stripped} THEN (SELECT yr.score FROM ratings yr WHERE yr.user_id = ${other} AND yr.wine_id = r.wine_id ORDER BY yr.rated_at DESC, yr.id DESC LIMIT 1) END`
              : Prisma.sql`NULL::numeric`} AS your_score
     ${impressionsBase}
     ${POST_JOINS}
@@ -213,12 +232,14 @@ export async function loadImpressions(
   const items = page.map((r): ImpressionRow => {
     // A NULL flag (never by construction) reads as the closed side.
     const blind = r.redacted !== false
+    // A NULL (never by construction) reads as stripped, on someone else's list.
+    const strip = !own && r.stripped !== false
     const e = !blind && r.product_id ? entries.get(entryKey(r.product_id, r.vintage_id)) : undefined
-    const momentName = r.in_session && r.moment_name ? r.moment_name : undefined
+    const momentName = r.in_session && r.moment_name && !strip ? r.moment_name : undefined
     return {
       id: r.id,
       postId: r.post_id,
-      ...(!blind || own ? { wineId: r.wine_id } : {}),
+      ...((!blind || own) && !strip ? { wineId: r.wine_id } : {}),
       name: blind ? '' : e?.name ?? r.name,
       vintage: blind ? null : e ? (entryYear(e) || null) : r.vintage,
       producer: blind ? null : e?.producer ?? r.producer,
@@ -229,12 +250,14 @@ export async function loadImpressions(
       colour: r.colour,
       sparkling: r.sparkling,
       category: r.category,
-      imageUrl: blind ? null : r.image_url,
+      // A stripped row is a moment's: no rating photo exists (C4), and the
+      // bottle's is the moment's.
+      imageUrl: blind || strip ? null : r.image_url,
       score: positive(r.score),
       hadAt: r.had_at.toISOString(),
       ...(blind ? { blind: true as const } : {}),
       ...(momentName ? { momentName } : {}),
-      ...(other !== null ? { yourScore: blind ? null : positive(r.your_score) } : {}),
+      ...(other !== null ? { yourScore: blind || strip ? null : positive(r.your_score) } : {}),
     }
   })
   const last = page[page.length - 1]
@@ -242,8 +265,110 @@ export async function loadImpressions(
   if (other === null || f.cursor) return { items, nextCursor }
   const common = await prisma.$queryRaw<{ n: number }[]>`
     SELECT COUNT(*)::int AS n ${impressionsBase}
-    WHERE ${impressionsWhere(ownerId, viewerId)} AND NOT ${redacted} AND ${yours}`
+    WHERE ${impressionsWhere(ownerId, viewerId)} AND ${yours} AND NOT ${redacted} AND NOT ${stripped}`
   return { items, nextCursor, commonCount: common[0]?.n ?? 0 }
+}
+
+// ── One impression (Moment Visibility step 3, § 4.5) ────────────────────────
+
+// GET /api/users/:id/impressions/:ratingId: ONE row the Impressions list would
+// show this viewer (the same base, the same hidden line-up rule, the same blind
+// and strip rules), with the rating itself for the impression's page (R4: a
+// post hidden from the viewer, or a rating without one, opens as the full
+// impression). 🔒 No post id, no moment (name, other bottles, place, tags,
+// likes), and no wine id on a blind or stripped row; the bottle's own moment
+// text (description, vinification, purchase link) only when neither (R8);
+// grape, region and country on a stripped row from the catalogue entry ONLY
+// (an unlinked bottle's snapshot is host-typed text other members' posts show
+// beside the moment's name). null = the one 404.
+export type ImpressionPage = {
+  id: number
+  // The owner, as on the feed (`author`): the page's byline, no second read.
+  // The viewer passed that profile's gate; the public id only.
+  author: { id: string; name: string; username: string | null; xp: number; imageUrl: string | null }
+  wineId?: string
+  name: string
+  vintage: string | null
+  producer: string | null
+  type: string | null
+  colour: string | null
+  sparkling: boolean
+  category: string
+  abv: number | null
+  grape: string | null
+  region: string | null
+  country: string | null
+  imageUrl: string | null
+  score: number | null
+  flavors: Record<string, number>
+  aromas: { a: string; m: string | null; p?: boolean }[]
+  notes: string | null
+  description: string | null
+  vinification: string | null
+  purchaseUrl: string | null
+  hadAt: string
+  blind?: true
+}
+
+export async function loadImpression(ownerId: number, gate: ProfileGateOk, ratingId: number): Promise<ImpressionPage | null> {
+  if (!gate.sees.posts) return null
+  const viewerId = gate.viewer.id
+  const own = viewerId !== null && viewerId === ownerId
+  const rows = await prisma.$queryRaw<{
+    id: number; wine_id: string; name: string; vintage: string | null; producer: string | null; style: string | null; colour: string | null
+    sparkling: boolean; category: string; abv: Prisma.Decimal | null; grape: string | null; region: string | null; country: string | null
+    description: string | null; vinification: string | null; purchase_url: string | null; product_id: string | null; vintage_id: string | null
+    rating_image: string | null; wine_image: string | null; score: Prisma.Decimal | null; flavors: unknown; aromas: unknown; notes: string | null
+    had_at: Date; redacted: boolean | null; stripped: boolean | null
+  }[]>`
+    SELECT r.id, r.wine_id, w.name, w.vintage, w.producer, w.style, w.colour, w.sparkling, w.category, w.abv, w.grape, w.region, w.country,
+           w.description, w.vinification, w.purchase_url, w.product_id, w.vintage_id,
+           (SELECT ri.image_url FROM rating_images ri WHERE ri.rating_id = r.id ORDER BY ri.sort_order ASC LIMIT 1) AS rating_image,
+           w.image_url AS wine_image, r.score, r.flavors, r.aromas, r.notes, ${HAD_AT} AS had_at,
+           ${redactedSql(viewerId, 's', 'w')} AS redacted,
+           ${strippedSql(viewerId, Prisma.sql`r.user_id`, Prisma.sql`r.session_id`)} AS stripped
+    ${impressionsBase}
+    ${POST_JOINS}
+    WHERE ${impressionsWhere(ownerId, viewerId)} AND r.id = ${ratingId}`
+  const r = rows[0]
+  if (!r) return null
+  const owner = await prisma.user.findUnique({ where: { id: ownerId }, select: { publicId: true, name: true, username: true, xp: true, imageUrl: true } })
+  if (!owner) return null
+  // A NULL flag (never by construction) reads as the closed side.
+  const blind = r.redacted !== false
+  const strip = !own && r.stripped !== false
+  const e = !blind && r.product_id ? (await loadEntriesSoft([{ productId: r.product_id, vintageId: r.vintage_id }])).get(entryKey(r.product_id, r.vintage_id)) : undefined
+  const fromEntry = strip ? e : undefined
+  return {
+    id: r.id,
+    author: { id: owner.publicId, name: owner.name, username: owner.username, xp: owner.xp, imageUrl: owner.imageUrl },
+    ...((!blind || own) && !strip ? { wineId: r.wine_id } : {}),
+    name: blind ? '' : e?.name ?? r.name,
+    vintage: blind ? null : e ? (entryYear(e) || null) : r.vintage,
+    producer: blind ? null : e?.producer ?? r.producer,
+    type: blind && r.style === 'nonalc' ? null : r.style,
+    colour: r.colour,
+    sparkling: r.sparkling,
+    category: r.category,
+    // No alcohol-free mark on a blind row (ruled 2026-11-20); an unlinked
+    // stripped bottle's is host-typed too.
+    abv: blind || (strip && !r.product_id) || r.abv === null ? null : Number(r.abv),
+    grape: blind ? null : strip ? (fromEntry ? fromEntry.grapes.join(', ') || null : null) : e ? (e.grapes.join(', ') || null) : r.grape,
+    region: blind ? null : strip ? fromEntry?.region ?? null : e?.region ?? r.region,
+    country: blind ? null : strip ? fromEntry?.country ?? null : e?.country ?? r.country,
+    // The rating's own photo first (a check-in's); the bottle's only where the
+    // list row would show it.
+    imageUrl: blind ? null : r.rating_image ?? (strip ? null : r.wine_image),
+    score: positive(r.score),
+    flavors: (r.flavors as Record<string, number> | null) ?? {},
+    aromas: Array.isArray(r.aromas) ? r.aromas as ImpressionPage['aromas'] : [],
+    notes: r.notes,
+    description: blind || strip ? null : r.description,
+    vinification: blind || strip ? null : r.vinification,
+    purchaseUrl: blind || strip ? null : r.purchase_url,
+    hadAt: r.had_at.toISOString(),
+    ...(blind ? { blind: true as const } : {}),
+  }
 }
 
 // 0 = "not rated" (root CLAUDE.md § Score system).
@@ -349,7 +474,7 @@ export async function loadCravings(
     kind: string; id: number; sk: bigint; wine_id: string | null; product_id: string | null; vintage_id: string | null
     name: string | null; vintage: string | null; producer: string | null; style: string | null; colour: string | null; sparkling: boolean | null
     wine_image: string | null; rating_image: string | null; score: Prisma.Decimal | null; post_id: number | null; rating_id: number | null
-    at_us: string; moment_name: string | null; was_there: boolean | null; item_author: number | null
+    at_us: string; moment_name: string | null; was_there: boolean | null; item_author: number | null; item_shown: boolean | null; stripped: boolean | null
   }[]>`
     WITH mine_p AS (
       SELECT DISTINCT ow.product_id AS id FROM ratings o JOIN wines ow ON ow.id = o.wine_id WHERE o.user_id = ${ownerId} AND ow.product_id IS NOT NULL
@@ -375,13 +500,23 @@ export async function loadCravings(
            w.style, w.colour, w.sparkling, w.image_url AS wine_image,
            (SELECT ri.image_url FROM rating_images ri WHERE ri.rating_id = COALESCE(rv.id, rp.id, rw.id) ORDER BY ri.sort_order ASC LIMIT 1) AS rating_image,
            ${score} AS score,
-           ${showScores ? Prisma.sql`COALESCE(fps.id, fpc.id)` : Prisma.sql`NULL::integer`} AS post_id,
+           -- the matched rating's post only while it is not hidden from the
+           -- viewer (lib/postPrivacy.ts); the score and the rating stay (the
+           -- row then opens that impression's page)
+           ${showScores ? Prisma.sql`(CASE
+             WHEN fps.id IS NOT NULL THEN CASE WHEN NOT ${postHiddenSql(viewerId, 'fps')} THEN fps.id END
+             WHEN fpc.id IS NOT NULL THEN CASE WHEN NOT ${postHiddenSql(viewerId, 'fpc')} THEN fpc.id END END)` : Prisma.sql`NULL::integer`} AS post_id,
            ${showScores ? Prisma.sql`COALESCE(rv.id, rp.id, rw.id)` : Prisma.sql`NULL::integer`} AS rating_id,
            ${AT_US}::text AS at_us,
            CASE WHEN s.deleted_at IS NULL THEN s.name END AS moment_name,
            ${ownerWasThereSql(ownerId)} AS was_there,
-           (SELECT fis.user_id FROM feed_items fis WHERE fis.id = oc.item_id) AS item_author
+           -- the craving's own moment: its owner Only Inside there, the viewer not in it
+           ${strippedSql(viewerId, Prisma.sql`${ownerId}::integer`, Prisma.sql`oc.sid`)} AS stripped,
+           -- the post it was saved from (another person's): its author for the
+           -- caller's per-author gate, and the post's own rule
+           fio.user_id AS item_author, ${postShownSql(viewerId, 'fio')} AS item_shown
     ${cravingsBase(ownerId)}
+    LEFT JOIN feed_items fio ON fio.id = oc.item_id
     -- one of the three matches at most (by the craving's grain)
     LEFT JOIN rv ON oc.vintage_id IS NOT NULL AND rv.ep = oc.ep AND rv.ev = oc.ev
     LEFT JOIN rp ON oc.product_id IS NOT NULL AND oc.vintage_id IS NULL AND rp.ep = oc.ep
@@ -397,14 +532,19 @@ export async function loadCravings(
   // snapshot (a purged or legacy craving), else its bottle's.
   const entries = await loadEntriesSoft(page.map(r => ({ productId: r.product_id, vintageId: r.vintage_id })))
   // A row saved from a post (a moment its owner was not in) shows its bottle
-  // (id and photo) only to a viewer who may see that post, the owner included
-  // (ruled 2026-11-20: a block or a narrowed audience hides it from them too).
+  // (id and photo) only to a viewer who may see that POST, the owner included
+  // (ruled 2026-11-20: a block or a narrowed audience hides it from them too;
+  // Moment Visibility step 3: the post itself too, `viewerCanSeePost`'s two
+  // halves: the author's gate here, the post's own rule in the statement). A
+  // row of a moment its owner is Only Inside in shows no bottle to someone
+  // outside it (§ 4.4).
   const authors = [...new Set(page.filter(r => r.was_there !== true && r.item_author !== null).map(r => r.item_author!))]
   const seesAuthor = new Map<number, boolean>()
   for (const a of authors) seesAuthor.set(a, await viewerCanSeePosts(viewerId, a))
   const items = page.map((r): CravingRow => {
     const e = r.product_id ? entries.get(entryKey(r.product_id, r.vintage_id)) : undefined
-    const showBottle = r.was_there === true || (r.item_author !== null && seesAuthor.get(r.item_author) === true)
+    const strip = !own && r.stripped !== false
+    const showBottle = !strip && (r.was_there === true || (r.item_author !== null && r.item_shown === true && seesAuthor.get(r.item_author) === true))
     const ratingImage = showScores ? r.rating_image : null
     return {
       ...(own ? { key: cravingKey(r.kind, r.id) } : {}),
@@ -412,8 +552,10 @@ export async function loadCravings(
       postId: r.post_id,
       // The rating the row's score and post come from: the post's row to open
       // (step 7 review: since step 5 it can be another bottle of the same wine
-      // than the craving's). Only beside its post, so under the same gate.
-      ...(r.post_id !== null && r.rating_id !== null ? { ratingId: r.rating_id } : {}),
+      // than the craving's), or its impression page when the post is hidden
+      // from the viewer or there is none (Moment Visibility step 3, T14).
+      // Under the post gate (null without it).
+      ...(r.rating_id !== null ? { ratingId: r.rating_id } : {}),
       name: e?.name ?? r.name ?? '',
       vintage: e ? (entryYear(e) || null) : (r.vintage?.trim() || null),
       producer: e?.producer ?? r.producer,

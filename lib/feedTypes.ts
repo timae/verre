@@ -87,4 +87,10 @@ export type SessionFeedPayload = {
   wines: SessionFeedWine[]
   likeCount: number
   liked: boolean
+  // Your OWN moment post only, with Moment Visibility on (step 3): whether you
+  // chose Incognito there (R11). Absent on everyone else's.
+  onlyInside?: boolean
+  // Your OWN moment post only, with HIDE_FROM_FEED_ENABLED on (R12): whether
+  // your post of this moment is hidden from feeds.
+  hiddenFromFeed?: boolean
 }

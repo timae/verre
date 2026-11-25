@@ -40,6 +40,7 @@ import {
   VISIBILITY_FIELDS,
 } from '@/lib/profileVisibilityShared'
 import { viewerBlocksAuthor, authorBlocksViewer } from '@/lib/userBlock'
+import { postShownTo } from '@/lib/postPrivacy'
 import { applyVisibilityChanges, canonicalPostAudience, extendedCircleApplies, type StrictTier } from '@verre/core'
 
 // Re-export client-safe primitives so server callers keep importing from
@@ -298,6 +299,20 @@ export async function resolveProfileViewer(
 export async function viewerCanSeePosts(viewerId: number | null, authorId: number): Promise<boolean> {
   const gate = await resolveProfileViewer(authorId, viewerId)
   return gate.status === 'ok' && gate.sees.posts
+}
+
+// 🔒 The single-POST gate (Moment Visibility step 3, T5): "the post the feed
+// would show you". The author's post gate above, AND the post itself not
+// hidden from the viewer (Only Inside This Moment, Hide from Feed) AND, for a
+// moment post, its line-up not hidden from them (lib/postPrivacy.ts
+// `postShownSql`, read from the row in one statement). Every caller that
+// decides ONE post uses this (like POST, crave from a post, had a sip); a
+// caller that needs the profile gate's status (like DELETE's 'gone') composes
+// `resolveProfileViewer` with `postShownTo` itself. Batch readers select
+// `postShownSql` in their own statement beside a per-author gate.
+export async function viewerCanSeePost(viewerId: number | null, post: { id: number; userId: number }): Promise<boolean> {
+  if (!(await viewerCanSeePosts(viewerId, post.userId))) return false
+  return postShownTo(viewerId, post.id)
 }
 
 // 🔒 The person in the middle (`x`) links nobody while a block stands either

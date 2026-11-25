@@ -10,14 +10,19 @@ import { ChoiceRow, SetNav, SettingsScreenFallback, SetTitle, ToggleRow } from '
 import { Button } from '@/components/ui/Button';
 import { InfoTip } from '@/components/ui/InfoTip';
 import { VText } from '@/components/ui/VText';
-import { getMomentVisibility, lookInLinkAction, momentVisibilityKey, updateMomentVisibility, type MomentVisibilityPatch, type MomentVisibilityView } from '@/lib/api/moments';
+import { getMomentVisibility, lookInLinkAction, momentVisibilityKey, updateMomentVisibility, updateMyMomentPrivacy, type MomentChoice, type MomentVisibilityPatch, type MomentVisibilityView } from '@/lib/api/moments';
 import { ApiError } from '@/lib/api/sessions';
 import { viewerCacheEpoch } from '@/lib/query';
 import { authClient } from '@/lib/authClient';
 import { errorText } from '@/lib/errorCopy';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { DATE_LOCALE } from '@/lib/locale';
-import { AUDIENCE_MENU, HIDE_HELPER, WHO_CAN_SEE_INFO, audienceLabel, guestCirclesApply, guestCirclesHelper, guestCirclesTitle, widerThan, type Audience } from '@/lib/momentVisibilityCopy';
+import { AUDIENCE_MENU, HIDE_HELPER, OUTSIDE_SUMMARY_LINE, OWN_AUDIENCE_LINK, ownAudienceBlock, audienceSummaryLabel, shownOrHidden, MOMENT_HIDE_FROM_FEED_HELPER, MOMENT_HIDE_FROM_FEED_TITLE, ONLY_INSIDE_HELPER, ONLY_INSIDE_TITLE, WHO_CAN_SEE_INFO, WHO_CAN_SEE_YOU, audienceLabel, guestCirclesApply, guestCirclesHelper, guestCirclesTitle, widerThan, type Audience } from '@/lib/momentVisibilityCopy';
+import { getVisibility, VISIBILITY_KEY } from '@/lib/api/settings';
+import { sessionHref, useSessionTab } from '@/lib/sessionStack';
+import { bumpTarget, lateAnswerMe, privacyTarget, privacyWriteGeneration, recordMomentPrivacy, writeSuperseded } from '@/lib/postPrivacyState';
+import { applyMomentPrivacyToFeeds } from '@/lib/postPrivacyActions';
+import { useMeId } from '@/lib/meId';
 import { useSettingsSession } from '@/lib/useSettingsSession';
 
 // Moment Privacy (step-2 plan § 4.6, R8 + R9; renamed from Moment Visibility
@@ -29,6 +34,13 @@ import { useSettingsSession } from '@/lib/useSettingsSession';
 // fails. No footer, so the bottom nav shows. The View-Only Link's actions act
 // at once too, each answer replacing the page's copy. A 404 is "the feature is
 // off" (T10): back.
+// Step 3 (R1, R11, R12): "Who Can See You", your own Incognito for everyone in
+// the moment and, signed in with the server's Hide from Feed on, Hide from Feed
+// for your post of it (from the GET's `me`; the section hides while `me` is
+// null: no record; the second switch while `me.hiddenFromFeed` is absent). Its answer is merged into `me` only. 🔒 An audience or link answer
+// carries `me` too, but one whose request left before a newer Only Inside
+// write (this page, or a post's ⋯ on any tab: lib/postPrivacyState.ts) keeps
+// the `me` the page shows and re-reads once.
 export default function MomentPrivacySettings() {
   const { code: raw } = useLocalSearchParams<{ code: string }>();
   const code = String(raw ?? '');
@@ -75,6 +87,14 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
   const [linkBusy, setLinkBusy] = useState(false);
   const busy = useRef(false);
   const queryClient = useQueryClient();
+  const meId = useMeId();
+  const router = useRouter();
+  const mount = useSessionTab();
+  // Your own privacy (R15): only when signed in (a guest's `me` has no moment id).
+  const myVis = useQuery({ queryKey: VISIBILITY_KEY, queryFn: getVisibility, enabled: served.me?.sessionId != null, staleTime: 60_000 });
+  // The `me` the page shows right now, for an answer that lands late.
+  const shown = useRef(view);
+  shown.current = view;
   // A re-read (focus, a save elsewhere) shows through while nothing is in flight.
   useEffect(() => { if (!busy.current) setView(served); }, [served]);
   const edit = served.canEdit;
@@ -98,16 +118,20 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
     // 🔒 A save that lands after a sign-out (or another account) belongs to the
     // previous viewer: nothing of it may reach the cleared cache (Codex r1).
     const epoch = viewerCacheEpoch();
+    const startedGen = privacyWriteGeneration();
     try {
       await queryClient.cancelQueries({ queryKey: key, exact: true });
       if (viewerCacheEpoch() !== epoch) return;
       setView({ ...current(), ...patch });
-      const v = await updateMomentVisibility(code, patch);
+      const answer = await updateMomentVisibility(code, patch);
       if (viewerCacheEpoch() !== epoch) return;
       await queryClient.cancelQueries({ queryKey: key, exact: true });
       if (viewerCacheEpoch() !== epoch) return;
+      const { me, reread } = lateAnswerMe(answer.me, shown.current.me, startedGen);
+      const v = { ...answer, me };
       setView(v);
       onChanged(v);
+      if (reread) void queryClient.refetchQueries({ queryKey: key, exact: true });
     } catch (e) {
       if (viewerCacheEpoch() !== epoch) return;
       setView(current());
@@ -125,15 +149,19 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
     busy.current = true;
     setLinkBusy(true);
     const epoch = viewerCacheEpoch();
+    const startedGen = privacyWriteGeneration();
     try {
-      const v = await lookInLinkAction(code, action);
+      const answer = await lookInLinkAction(code, action);
       // 🔒 The host's link (and its URL) must not reach the next viewer's cache,
       // nor its share sheet open after a sign-out (Codex r1).
       if (viewerCacheEpoch() !== epoch) return;
       await queryClient.cancelQueries({ queryKey: key, exact: true });
       if (viewerCacheEpoch() !== epoch) return;
+      const { me, reread } = lateAnswerMe(answer.me, shown.current.me, startedGen);
+      const v = { ...answer, me };
       setView(v);
       onChanged(v);
+      if (reread) void queryClient.refetchQueries({ queryKey: key, exact: true });
       // iOS shares the URL itself (both fields would show it twice); Android only takes a message.
       if (action === 'share' && v.link?.url) await Share.share(Platform.OS === 'ios' ? { url: v.link.url } : { message: v.link.url }).catch(() => {});
     } catch (e) {
@@ -143,6 +171,58 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
     } finally {
       busy.current = false;
       setLinkBusy(false);
+    }
+  };
+  // Your own choices (Incognito, Hide from Feed: R11, R12): the same
+  // one-save-at-a-time rule; each answer is merged into `me` only, then your
+  // posts of this moment follow in every feed cache (lib/postPrivacyActions.ts).
+  const saveMe = async (field: MomentChoice, value: boolean) => {
+    if (busy.current) return;
+    const was = current().me;
+    if (!was || was[field] === value) return;
+    busy.current = true;
+    setSaving(true);
+    const epoch = viewerCacheEpoch();
+    // One target with this moment's post's ⋯ (lib/postPrivacyState.ts); the
+    // moment's id comes from the server (`me.sessionId`, signed in).
+    const sessionId = was.sessionId;
+    const target = sessionId != null ? privacyTarget(field, sessionId, NaN) : `c${code}:${field}`;
+    const gen = bumpTarget(target);
+    try {
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
+      if (viewerCacheEpoch() !== epoch) return;
+      setView({ ...current(), me: { ...was, [field]: value } });
+      const on = await updateMyMomentPrivacy(code, field, value);
+      if (viewerCacheEpoch() !== epoch) return;
+      // Overtaken by a ⋯ tap while in flight (lib/postPrivacyState.ts): the
+      // page keeps what it shows and re-reads; the lists are re-read too.
+      const overtaken = writeSuperseded(target, gen);
+      bumpTarget(target);
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
+      if (viewerCacheEpoch() !== epoch) return;
+      const cur = current();
+      const v = overtaken ? cur : { ...cur, me: { ...(cur.me ?? was), [field]: on } };
+      setView(v);
+      onChanged(v);
+      void applyMomentPrivacyToFeeds(queryClient, sessionId, field, on, meId, overtaken);
+      if (overtaken) {
+        // Never trust an overtaken answer (Codex recheck 2): re-read `me` and
+        // record the moment's value at the read's start.
+        const readAt = Date.now();
+        void queryClient.fetchQuery({ queryKey: key, queryFn: () => getMomentVisibility(code), staleTime: 0 }).then((fresh) => {
+          const v = fresh.me?.[field];
+          if (viewerCacheEpoch() === epoch && sessionId != null && typeof v === 'boolean') recordMomentPrivacy(sessionId, field, v, readAt);
+        }).catch(() => {});
+      }
+    } catch (e) {
+      if (viewerCacheEpoch() !== epoch) return;
+      setView(current());
+      if (e instanceof ApiError && e.kind === 'not-found') return onGone();
+      if (!(e instanceof ApiError && e.status >= 400 && e.status < 500)) onUnsure();
+      Alert.alert('Something went wrong', errorText(e));
+    } finally {
+      busy.current = false;
+      setSaving(false);
     }
   };
   const confirm = (title: string, body: string, label: string, action: 'off' | 'reset') =>
@@ -172,6 +252,21 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 4, paddingBottom: TAB_BAR_CLEARANCE, gap: 28 }}
         showsVerticalScrollIndicator={false}
       >
+        {!edit ? (
+          // Anyone who can't change it reads a summary (R14): values, no
+          // disabled switches, no sheet.
+          <View>
+            <SetTitle>Who Can See This Moment</SetTitle>
+            <VText variant="small" color="inkSoft">{OUTSIDE_SUMMARY_LINE}</VText>
+            <ChoiceRow label="Visible To" value={audienceSummaryLabel(view.visibility, view.includeGuestCircles)} valueLines={2} />
+            {view.visibility !== 'members' ? (
+              <>
+                <ChoiceRow label="Moment Location" value={shownOrHidden(view.showPlace)} />
+                <ChoiceRow label="Description and Event Link" value={shownOrHidden(view.showDetails)} />
+              </>
+            ) : null}
+          </View>
+        ) : (
         <View>
           <SetTitle
             info={
@@ -228,6 +323,45 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
             </VText>
           ) : null}
         </View>
+        )}
+        {view.me ? (
+          <View>
+            {/* No ⓘ (ruled 2026-11-25): the switches' own lines say it. */}
+            <SetTitle>{WHO_CAN_SEE_YOU}</SetTitle>
+            {/* R15: your own account privacy limits who outside sees you by
+                name (signed in): the lead, your setting, maybe a note, and the
+                link to Account Privacy, opened on the moment's own stack. */}
+            {myVis.data ? (() => {
+              const own = ownAudienceBlock(myVis.data, view.me.onlyInside);
+              return (
+                // Room under the link before the switches (device pass 2026-11-25).
+                <View style={{ marginBottom: 12 }}>
+                  <VText variant="small" color="inkSoft">{own.lead}</VText>
+                  <VText variant="body" color="ink" style={{ marginTop: 2 }}>{own.value}</VText>
+                  {own.note ? <VText variant="small" color="inkSoft" style={{ marginTop: 2 }}>{own.note}</VText> : null}
+                  <SetNav bare accent icon="link" trailing="none" label={OWN_AUDIENCE_LINK} onPress={() => router.push(sessionHref(mount, 'settings/my-privacy', { code }), { dangerouslySingular: true })} />
+                </View>
+              );
+            })() : null}
+            <ToggleRow
+              flush={!myVis.data}
+              title={ONLY_INSIDE_TITLE}
+              subtitle={ONLY_INSIDE_HELPER}
+              value={view.me.onlyInside}
+              onChange={(on) => void saveMe('onlyInside', on)}
+              busy={inert}
+            />
+            {view.me.hiddenFromFeed !== undefined ? (
+              <ToggleRow
+                title={MOMENT_HIDE_FROM_FEED_TITLE}
+                subtitle={MOMENT_HIDE_FROM_FEED_HELPER}
+                value={view.me.hiddenFromFeed}
+                onChange={(on) => void saveMe('hiddenFromFeed', on)}
+                busy={inert}
+              />
+            ) : null}
+          </View>
+        ) : null}
         {edit && link?.available ? (
           <View>
             <SetTitle>View-Only Link</SetTitle>

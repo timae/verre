@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { QueryClient, QueryClientProvider, focusManager, onlineManager } from '@tanstack/react-query';
+import { clearPostPrivacyState } from './postPrivacyState';
 
 // Native poll hardening per proposal 02 §4: RN has no visibilitychange, so
 // AppState drives focusManager — only 'active' counts as focused ('inactive'
@@ -53,6 +54,8 @@ export function clearViewerCache(): void {
   viewerEpoch++;
   void queryClient.cancelQueries();
   queryClient.clear();
+  // Your own posts' switches belong to this viewer too (lib/postPrivacyState.ts).
+  clearPostPrivacyState();
 }
 
 export function QueryProvider({ children }: { children: ReactNode }) {

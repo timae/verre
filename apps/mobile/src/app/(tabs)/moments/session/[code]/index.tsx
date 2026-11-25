@@ -1,4 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
+import { getMomentVisibility, momentVisibilityKey } from '@/lib/api/moments';
+import { getVisibility, VISIBILITY_KEY } from '@/lib/api/settings';
 import { StatusBar } from 'expo-status-bar';
 import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -53,6 +55,17 @@ export default function SessionLineup() {
   // Visit → /state poll → per-section merge, shared with Compare (02d).
   const { meta, wines, ratings, state, fatal, removedKind, visited, retryVisit, myIdentityId, stateKey } =
     useSessionPoll(code);
+  // Moment Privacy's read starts here, once the visit has landed (the read is
+  // a participant's): the settings hub shows its row only once that read has
+  // answered, and started there it drew a round trip after the other rows
+  // (device pass 2026-11-25). A 404 (the feature off) simply stays no row.
+  const hasMeta = !!meta;
+  useEffect(() => {
+    if (!visited || !hasMeta) return;
+    void queryClient.prefetchQuery({ queryKey: momentVisibilityKey(code), queryFn: () => getMomentVisibility(code), retry: false });
+    // Its "Outside This Moment" row reads your own privacy (R15), signed in only.
+    if (myIdentityId.startsWith('u:')) void queryClient.prefetchQuery({ queryKey: VISIBILITY_KEY, queryFn: getVisibility, staleTime: 60_000 });
+  }, [visited, hasMeta, code, myIdentityId, queryClient]);
   const isHostViewer =
     !!meta &&
     (meta.hostIdentityId === myIdentityId ||

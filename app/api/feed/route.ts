@@ -15,13 +15,14 @@ import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
 import { mutedUserIds } from '@/lib/userMute'
 import { blockPairIds, viewerBlockedAmong } from '@/lib/userBlock'
 import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
-import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
+import { hiddenSessionIds } from '@/lib/outsideView'
+import { pagePostIds } from '@/lib/postPrivacy'
 import { parsePathId } from '@/lib/parsePathId'
 import { entryKey, loadEntriesSoft } from '@/lib/catalogEntries'
 import { entryYear } from '@/lib/wineDisplay'
 import { savedFlags } from '@/lib/cravings'
 import { decideMoments, type MomentDecision } from '@/lib/momentAudience'
-import { momentLookInEnabled } from '@/lib/momentGate'
+import { momentLookInEnabled, hideFromFeedEnabled } from '@/lib/momentGate'
 import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 const PAGE = 20
@@ -104,17 +105,16 @@ export async function GET(req: NextRequest) {
   // the relations. Naive per-row accessors would N+1; the include shape
   // avoids it (one round-trip plus one per included relation, all
   // resolved via Prisma's WHERE … IN under the hood).
-  // 🔒 A moment post whose line-up is hidden from this viewer is left out IN
-  // the query, before paging (lib/outsideView.ts): `nextCursor` below is the
-  // last RAW row's time, so dropping them after the read would hand out a
-  // hidden post's exact time.
+  // 🔒 The page's ids come from ONE statement that leaves out, BEFORE its
+  // LIMIT, every post hidden from this viewer: a moment post whose line-up is
+  // hidden (lib/outsideView.ts), an Only Inside author's post outside their
+  // moment, a check-in hidden from feeds (lib/postPrivacy.ts, T4).
+  // `nextCursor` below is the last RAW row's time, so dropping posts after the
+  // read would hand out a hidden post's exact time.
   const hidden = await hiddenSessionIds(userId, allowedNetworkIds)
-  const feedItems = await prisma.feedItem.findMany({
-    where: {
-      userId: { in: allowedNetworkIds }, createdAt: { lt: cursor },
-      ...(itemId !== null ? { id: itemId } : {}),
-      ...notHiddenPosts(hidden),
-    },
+  const page = await pagePostIds({ viewerId: userId, authors: allowedNetworkIds, before: cursor, item: itemId, hiddenSessions: hidden, limit: PAGE })
+  const feedItems = page.length === 0 ? [] : await prisma.feedItem.findMany({
+    where: { id: { in: page.map(p => p.id) } },
     include: {
       user: { select: { id: true, publicId: true, name: true, username: true, xp: true, imageUrl: true } },
       _count: { select: { likes: true } },
@@ -134,8 +134,7 @@ export async function GET(req: NextRequest) {
         },
       },
     },
-    orderBy: { createdAt: 'desc' },
-    take: PAGE,
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
   })
 
   // Which of these feed_items has the current user already liked?
@@ -235,6 +234,16 @@ export async function GET(req: NextRequest) {
       .catch((err: unknown) => { console.error('[feed] moment audience unavailable:', err); return new Map<number, MomentDecision>() }),
   ])
   const lookIn = momentLookInEnabled()
+  const hideFromFeed = hideFromFeedEnabled()
+  // Your OWN posts' switches, each only with its flag: Incognito (`onlyInside`)
+  // on a moment post, Hide from Feed on a moment post (its moment's choice,
+  // R12) and on a check-in. Nobody else's post ever carries either. (The app
+  // shows only Hide from Feed on a post since R13; Incognito is set on Moment
+  // Privacy, whose cache patch keeps `onlyInside` current.)
+  const ownMoments = lookIn || hideFromFeed ? feedItems.flatMap(f => (f.kind === 'session' && f.user.id === userId && f.sessionId !== null ? [f.sessionId] : [])) : []
+  const ownChoices = new Map((ownMoments.length === 0 ? [] : await prisma.momentPrivacy.findMany({
+    where: { userId, sessionId: { in: ownMoments } }, select: { sessionId: true, onlyInside: true, hiddenFromFeed: true },
+  })).map(r => [r.sessionId, r]))
   // A check-in's bottle: shown from its catalogue entry (merges followed), else
   // its snapshot; the viewer's save state (a check-in is never blind).
   const checkinWines = feedItems.flatMap(f => (f.kind === 'standalone' && f.rating ? [f.rating.wine] : []))
@@ -326,6 +335,7 @@ export async function GET(req: NextRequest) {
             liked: myLikes.has(f.id),
             viewerFollowsAuthor: myFollowing.has(f.user.id),
             ...(checkinSaved ? { saved: checkinSaved.get(wine.id) ?? false } : {}),
+            ...(hideFromFeed && f.user.id === userId ? { hiddenFromFeed: f.hiddenFromFeed } : {}),
           },
         }]
       }
@@ -363,6 +373,8 @@ export async function GET(req: NextRequest) {
             wines,
             likeCount: Math.max(0, f._count.likes - (blockAdjustedLikeCount.get(f.id) ?? 0)),
             liked: myLikes.has(f.id),
+            ...(lookIn && f.user.id === userId && s ? { onlyInside: ownChoices.get(s.id)?.onlyInside === true } : {}),
+            ...(hideFromFeed && f.user.id === userId && s ? { hiddenFromFeed: ownChoices.get(s.id)?.hiddenFromFeed === true } : {}),
           },
         }]
       }
@@ -378,8 +390,8 @@ export async function GET(req: NextRequest) {
   // cursor is the last RAW row's createdAt so dropped trailing rows aren't
   // rescanned; a page may ship fewer than PAGE items with a non-null cursor —
   // clients just keep paging.
-  const nextCursor = feedItems.length === PAGE
-    ? feedItems[feedItems.length - 1].createdAt.toISOString()
+  const nextCursor = page.length === PAGE
+    ? page[page.length - 1].created_at.toISOString()
     : null
 
   // Response varies by viewer (myLikes, viewerFollowsAuthor, tag filter,
@@ -406,6 +418,11 @@ async function networkAuthors(userId: number): Promise<{ ids: number[]; settings
       FROM session_members sm1
       JOIN session_members sm2 ON sm2.session_code = sm1.session_code
       WHERE sm1.user_id = ${userId} AND sm2.user_id <> ${userId}
+        -- 🔒 Only while neither row is kicked (lib/peopleSql.ts, together):
+        -- a kick-keep row (lib/sessionWipe.ts) would otherwise keep adding
+        -- everyone who joins later to the kicked person's network, and an Only
+        -- Inside person's unrelated check-ins would tell them who was there.
+        AND sm1.removed_state IS DISTINCT FROM 'kicked' AND sm2.removed_state IS DISTINCT FROM 'kicked'
     ) n
   `
   const networkIds = network.map(r => r.user_id)

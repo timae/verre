@@ -153,12 +153,20 @@ export type MomentVisibilityView = {
   canEdit: boolean
   // Host and cohosts only. `url` and `since` only while the link is active.
   link?: { available: boolean; active: boolean; url: string | null; since: string | null }
+  // The CALLER's own choices in this moment (step 3: Incognito, Hide from Feed):
+  // null when the moment has no record. 🔒 On EVERY answer of this shape (the
+  // GET, the visibility PATCH, the link POST): the app replaces its copy with
+  // each answer, so one without it would drop the switch's state.
+  me: MomentMe | null
 }
+// `onlyInside` = Incognito (R11); `hiddenFromFeed` = Hide from Feed for your
+// post of this moment (R12), signed in and with HIDE_FROM_FEED_ENABLED only.
+export type MomentMe = { onlyInside: boolean; hiddenFromFeed?: boolean; sessionId?: number }
 
 // The one wire shape of the three handlers. `settings` null = no record (a
-// guest-only moment): closed, frozen, nothing to edit.
-export function momentVisibilityView(settings: MomentSettings | null, canEdit: boolean): MomentVisibilityView {
-  if (!settings) return { visibility: 'members', includeGuestCircles: false, showPlace: false, showDetails: false, frozen: true, canEdit: false }
+// guest-only moment): closed, frozen, nothing to edit, no `me`.
+export function momentVisibilityView(settings: MomentSettings | null, canEdit: boolean, me: MomentMe | null): MomentVisibilityView {
+  if (!settings) return { visibility: 'members', includeGuestCircles: false, showPlace: false, showDetails: false, frozen: true, canEdit: false, me: null }
   const view: MomentVisibilityView = {
     visibility: settings.visibility,
     includeGuestCircles: settings.includeGuestCircles,
@@ -166,6 +174,7 @@ export function momentVisibilityView(settings: MomentSettings | null, canEdit: b
     showDetails: settings.showDetails,
     frozen: frozen(settings),
     canEdit,
+    me,
   }
   if (!canEdit) return view
   const available = linkAvailable(settings)

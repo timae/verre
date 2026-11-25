@@ -15,7 +15,7 @@ import { cleanUrl } from '@/lib/textSafe'
 import { validateScore, decimalToNumber } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
-import { viewerCanSeePosts } from '@/lib/profileVisibility'
+import { viewerCanSeePost } from '@/lib/profileVisibility'
 import { CatalogValidationError, publishSearchWords } from '@/lib/catalogWrite'
 import { isClientOccurrenceId } from '@/lib/occurrences'
 import { prepareLink, applyLink, linkRequired, type AppliedLink } from '@/lib/catalogLink'
@@ -197,8 +197,9 @@ export async function POST(req: NextRequest) {
     if (source.userId === userId) {
       return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
-    // The POST gate (profile tier + Check-Ins Visible To), like the like POST.
-    if (!(await viewerCanSeePosts(userId, source.userId))) {
+    // The single-post gate (profile tier + Check-Ins Visible To, and the post
+    // itself: a check-in hidden from feeds is not copied), like the like POST.
+    if (!(await viewerCanSeePost(userId, { id: copyFromCheckinId, userId: source.userId }))) {
       return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
     const follows = await prisma.follow.findUnique({

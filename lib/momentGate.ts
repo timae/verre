@@ -12,3 +12,14 @@
 export function momentLookInEnabled(): boolean {
   return process.env.MOMENT_LOOKIN_ENABLED === 'true'
 }
+
+// Hide from Feed's release fence (Moment Visibility step 3, R9; the
+// lib/catalogGate.ts pattern, but OFF by default): only the literal 'true'
+// opens its WRITE (`PATCH /api/feed-items/:id/privacy` with `hiddenFromFeed`)
+// and the feed's `hiddenFromFeed` field on your own check-ins. 🔒 Its READERS
+// are always on (lib/postPrivacy.ts): once anyone has hidden a post, no deploy
+// may go below this step, and turning the flag off must not reopen a post.
+// Read per call, so a suite can flip it.
+export function hideFromFeedEnabled(): boolean {
+  return process.env.HIDE_FROM_FEED_ENABLED === 'true'
+}

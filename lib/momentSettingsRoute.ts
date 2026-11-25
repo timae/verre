@@ -9,6 +9,17 @@ import { openAsParticipant } from '@/lib/sessionRoute'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { momentLookInEnabled } from '@/lib/momentGate'
 import { readMomentSettings, momentVisibilityView, type MomentSettings } from '@/lib/momentSettings'
+import { readMomentChoices, type MomentChoice } from '@/lib/postPrivacy'
+import { hideFromFeedEnabled } from '@/lib/momentGate'
+import type { MomentMe } from '@/lib/momentSettings'
+
+// A signed-in caller's `me` (Moment Privacy's answers): Incognito always, Hide
+// from Feed only with its flag on (R9, R12), and the moment's id (the key the
+// caller's own posts of it carry in the feed, so the app finds them: Codex
+// recheck 2026-11-25; never on a guest's `me`).
+export function myMoment(c: Record<MomentChoice, boolean>, sessionId: number): MomentMe {
+  return { onlyInside: c.onlyInside, ...(hideFromFeedEnabled() ? { hiddenFromFeed: c.hiddenFromFeed } : {}), sessionId }
+}
 import type { Prisma } from '@prisma/client'
 
 // The two writes of Moment Visibility (the visibility PATCH and the look-in
@@ -57,14 +68,15 @@ export async function momentSettingsWrite<B>(
   const body = parse(await req.json().catch(() => null))
   if (body === null) return NextResponse.json({ error: 'invalid body' }, { status: 400, headers: noStore })
   try {
-    const next = await withSessionMutation(c, { label, redisLock: false, caller: op.identity }, async (tx, ctx) => {
+    const { next, me } = await withSessionMutation(c, { label, redisLock: false, caller: op.identity }, async (tx, ctx) => {
       const caller = admitted(ctx)
       if (!caller.grant || !ctx.row || !isHostByIdentity(ctx.meta!, caller)) throw refuse(403, HOST_ONLY)
       const current = await readMomentSettings(tx, ctx.row.id)
       if (!current) throw refuse(403, HOST_ONLY)
-      return change(tx, current, body)
+      // The caller's own choices ride on the answer (step 3 § 4.7).
+      return { next: await change(tx, current, body), me: myMoment(await readMomentChoices(tx, ctx.row.id, Number(caller.id.slice(2))), ctx.row.id) }
     })
-    return NextResponse.json(momentVisibilityView(next, true), { headers: noStore })
+    return NextResponse.json(momentVisibilityView(next, true, me), { headers: noStore })
   } catch (err) {
     return contractFailure(err, c, { label })
   }

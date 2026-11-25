@@ -16,7 +16,8 @@ import { ImpressionFilterSheet, NO_IMP_FILTERS, impFilterCount, type ImpFilterUp
 import { ListNote, ListRow, MonthHeader, ScoreColumn, ToolRow, groupByMonth, type RowHandle } from './ListParts';
 import { ToolButton, type ToolAnchor } from '@/components/ui/ToolButton';
 import { useListRefresh } from './useListRefresh';
-import { useOpenListPost } from './useOpenListPost';
+import { useListTapGuard, useOpenListImpression, useOpenListPost } from './useOpenListPost';
+import { listRowTarget } from '@/lib/impressionRoute';
 import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // Someone's (or your) Impressions (lists plan D3 / D8 / D9, design 04·6a /
@@ -123,7 +124,18 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
   }, [firstCommon]);
 
   const { pulling, onPullRefresh, refetchInPlace } = useListRefresh(listQ.refetch, headerQ.refetch);
-  const openPost = useOpenListPost(userId, refetchInPlace, shown);
+  const tapGuard = useListTapGuard(shown);
+  const openPost = useOpenListPost(userId, refetchInPlace, tapGuard);
+  const openImpression = useOpenListImpression(userId, refetchInPlace, tapGuard);
+  // Its post while you may open one, else its impression page (Moment
+  // Visibility step 3, T14: an Only Inside moment's, a hidden check-in, a
+  // rating without a post).
+  const rowPress = (row: ImpressionRow) => {
+    const to = listRowTarget(row.postId, row.id);
+    if (to.kind === 'post') return (handle?: RowHandle) => void openPost(to.postId, { ratingId: row.id }, handle);
+    if (to.kind === 'impression') return (handle?: RowHandle) => void openImpression(to.ratingId, handle);
+    return undefined;
+  };
   const active = impFilterCount(filters);
   const narrowed = search !== '' || active > 0 || both;
 
@@ -152,7 +164,7 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
         ListFooterComponent={listQ.isFetchingNextPage ? <View style={{ paddingVertical: 16, alignItems: 'center' }}><ActivityIndicator color={theme.inkSoft} /></View> : undefined}
         renderItem={({ item: g }) => g.kind === 'month'
           ? <MonthHeader label={g.label} first={g.first} />
-          : <ImpressionListRow row={g.row} showYours={!own} onPress={g.row.postId != null ? (handle) => void openPost(g.row.postId, { ratingId: g.row.id }, handle) : undefined} />}
+          : <ImpressionListRow row={g.row} showYours={!own} onPress={rowPress(g.row)} />}
       />
     );
   }

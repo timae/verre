@@ -61,7 +61,15 @@ export type MomentVisibilityView = {
   canEdit: boolean; // host or cohost, signed in
   // Host and cohosts only. `url` / `since` only while the link is active.
   link?: { available: boolean; active: boolean; url: string | null; since: string | null };
+  // Your own choices here (step 3): `onlyInside` = Incognito (R11);
+  // `hiddenFromFeed` = Hide from Feed for your post of it (R12; signed in, and
+  // only with the server's HIDE_FROM_FEED_ENABLED: absent = no switch). null =
+  // the moment has no record. On EVERY answer of this shape.
+  // `sessionId`: the moment's id, signed in only (the key your posts of it
+  // carry in the feed; Codex recheck 2026-11-25).
+  me: { onlyInside: boolean; hiddenFromFeed?: boolean; sessionId?: number } | null;
 };
+export type MomentChoice = 'onlyInside' | 'hiddenFromFeed';
 export type MomentVisibilityPatch = Partial<Pick<MomentVisibilityView, 'visibility' | 'includeGuestCircles' | 'showPlace' | 'showDetails'>>;
 export const momentVisibilityKey = (code: string) => ['moment-visibility', code] as const;
 
@@ -77,6 +85,15 @@ export async function updateMomentVisibility(code: string, patch: MomentVisibili
   const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/visibility`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(patch) });
   if (!res.ok) await throwApiError(res);
   return res.json();
+}
+
+// One of your own choices (PATCH /api/session/:code/me/privacy): anyone in
+// the moment. The answer echoes the field only: merged into the page's `me`,
+// never a replacement of its copy.
+export async function updateMyMomentPrivacy(code: string, field: MomentChoice, on: boolean): Promise<boolean> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/me/privacy`, { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ [field]: on }) });
+  if (!res.ok) await throwApiError(res);
+  return ((await res.json()) as Record<string, unknown>)[field] === true;
 }
 
 export async function lookInLinkAction(code: string, action: 'share' | 'off' | 'reset'): Promise<MomentVisibilityView> {

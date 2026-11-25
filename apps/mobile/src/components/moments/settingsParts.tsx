@@ -453,10 +453,12 @@ export function SetTitle({ children, info }: { children: string; info?: ReactNod
 // sheet, so the chevron points DOWN (a page = right; ruled 2026-11-11).
 // `icon`: a leading glyph (19, ink-soft, as on SetNav). Same rhythm as
 // ToggleRow (`flush` = no top padding).
-export function ChoiceRow({ icon, label, value, helper, onPress, dropdown, disabled, busy, flush, accessibilityLabel }: {
+export function ChoiceRow({ icon, label, value, valueLines = 1, helper, onPress, dropdown, disabled, busy, flush, accessibilityLabel }: {
   icon?: IconName;
   label: string;
   value: string;
+  // A value that may run long (Moment Privacy's summary): wraps, right-aligned.
+  valueLines?: number;
   helper?: string;
   onPress?: () => void;
   dropdown?: boolean;
@@ -484,7 +486,7 @@ export function ChoiceRow({ icon, label, value, helper, onPress, dropdown, disab
         <VText variant="body" color={disabled ? 'inkFaint' : 'ink'}>{label}</VText>
         {helper ? <VText variant="small" color={disabled ? 'inkFaint' : 'inkSoft'} style={{ marginTop: HELPER_PULL }}>{helper}</VText> : null}
       </View>
-      {value ? <VText variant="body" color={disabled ? 'inkFaint' : 'inkSoft'} numberOfLines={1} style={{ maxWidth: '60%' }}>{value}</VText> : null}
+      {value ? <VText variant="body" color={disabled ? 'inkFaint' : 'inkSoft'} numberOfLines={valueLines} style={{ maxWidth: '60%', textAlign: valueLines > 1 ? 'right' : undefined }}>{value}</VText> : null}
       {/* The down chevron's tip sits ~2 pt nearer the edge than the right one's
           (path to 18.8 vs 16.3 of 24): inset it so every row ends on the same
           line as the switches (CHEVRON_TIP_INSET). */}

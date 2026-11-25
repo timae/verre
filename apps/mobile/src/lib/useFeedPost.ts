@@ -8,11 +8,14 @@ import { feedItemQueryOptions, feedQueryOptions, findFeedItem } from '@/lib/api/
 // ONLY that post's own item query (['feed', 'user', id, 'item', postId], the
 // list's page shape). `refetchOnMount: false` like the list reads: the row
 // prefetched it; a cold open still runs the initial fetch.
-export function useFeedPost(postId: number, userId: string | null, source: string | undefined) {
+// `enabled: false` = the impression page (Moment Visibility step 3, T13): its
+// id is not a post, and an enabled read with a non-finite id would fall back to
+// the owner's WHOLE post list below.
+export function useFeedPost(postId: number, userId: string | null, source: string | undefined, enabled = true) {
   const opts = source === 'item' && userId != null && Number.isFinite(postId)
     ? feedItemQueryOptions(userId, postId)
     : feedQueryOptions(userId);
-  const feed = useInfiniteQuery({ ...opts, refetchOnMount: false });
+  const feed = useInfiniteQuery({ ...opts, refetchOnMount: false, enabled });
   const found = Number.isFinite(postId) ? findFeedItem(feed.data?.pages, postId) : null;
   return { feed, found };
 }

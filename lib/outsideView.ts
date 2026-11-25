@@ -99,7 +99,8 @@ export function cravingSessionIdSql(bName: string, wName: string): Prisma.Sql {
 
 // 🔒 A fully hidden moment post is left out IN the query, before paging: the
 // feed's cursor is the last raw row's time, so a page of dropped hidden posts
-// would hand out a hidden post's exact time. The moments among these authors'
+// would hand out a hidden post's exact time (the page statement,
+// lib/postPrivacy.ts `pagePostIds`, takes these ids). The moments among these authors'
 // session posts whose line-up is hidden from this viewer. Starts from the
 // moments still before their start with Hide Line-up on (a hidden line-up
 // implies both), so the cost follows those, not the authors' post history.
@@ -118,8 +119,3 @@ export async function hiddenSessionIds(viewerId: number | null, authorIds: numbe
   return rows.map(r => r.id)
 }
 
-// The grouped Prisma clause (Codex r2): an ungrouped `NOT: { kind, sessionId }`
-// negates each condition separately and would drop EVERY moment post.
-export function notHiddenPosts(hidden: number[]): Prisma.FeedItemWhereInput {
-  return hidden.length === 0 ? {} : { NOT: { AND: [{ kind: 'session' }, { sessionId: { in: hidden } }] } }
-}

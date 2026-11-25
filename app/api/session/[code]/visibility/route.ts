@@ -10,14 +10,17 @@ import { readGrant, grantStatus } from '@/lib/sessionGrant'
 import { checkRate, formatWait, getClientIp } from '@/lib/rateLimit'
 import { momentLookInEnabled } from '@/lib/momentGate'
 import { readMomentSettingsByCode, momentVisibilityView, parseVisibilityPatch, widens, frozen, writeVisibility } from '@/lib/momentSettings'
-import { momentSettingsWrite, momentSettingsSeams, featureOff, noStore } from '@/lib/momentSettingsRoute'
+import { momentSettingsWrite, momentSettingsSeams, featureOff, noStore, myMoment } from '@/lib/momentSettingsRoute'
+import type { MomentMe } from '@/lib/momentSettings'
+import { readMomentChoices, guestOnlyInside } from '@/lib/postPrivacy'
 
 type Ctx = { params: Promise<{ code: string }> }
 
 // Moment Visibility, read from the RECORD on every call (never the cached
-// meta: step-1 plan T7). Any participant reads the four settings; `canEdit`
-// and the link part only for a signed-in host or cohost (the grant). A moment
-// with no record (guest-only) reads as closed and frozen.
+// meta: step-1 plan T7). Any participant reads the four settings and their own
+// Only Inside choice (`me`); `canEdit` and the link part only for a signed-in
+// host or cohost (the grant). A moment with no record (guest-only) reads as
+// closed and frozen, with no `me`.
 //
 // 🔒 The flag check sits AFTER the entrance gate, so the route sweep covers
 // this route with no exemption; its 404 is the app's "feature off" signal.
@@ -54,7 +57,13 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     const fresh = await readGrant(prisma, c, Number(op.identity.id.slice(2)))
     canEdit = !!fresh && fresh.sessionId === settings.sessionId && grantStatus(fresh) === 'ok' && (fresh.strictHost || fresh.role === 'co_host')
   }
-  return NextResponse.json(momentVisibilityView(settings, canEdit), { headers: noStore })
+  // The caller's own Only Inside choice (step 3): from the record for a
+  // signed-in caller, from `s:{CODE}:shown` for a guest (missing = Only Inside:
+  // fails closed). None without a record.
+  let me: MomentMe | null = null
+  if (settings && op.identity.kind === 'user' && op.identity.grant) me = myMoment(await readMomentChoices(prisma, settings.sessionId, Number(op.identity.id.slice(2))), settings.sessionId)
+  else if (settings && op.identity.kind !== 'user') me = { onlyInside: await guestOnlyInside(c, op.identity.id) }
+  return NextResponse.json(momentVisibilityView(settings, canEdit, me), { headers: noStore })
 }
 
 // Body: any of `visibility`, `includeGuestCircles`, `showPlace`, `showDetails`.

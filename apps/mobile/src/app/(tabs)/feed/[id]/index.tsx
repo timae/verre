@@ -1,5 +1,5 @@
 import { Image } from 'expo-image';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -62,6 +62,11 @@ import { useFlavourColors } from '@/theme/flavourColors';
 import { radius, space, springs, useTheme } from '@/theme';
 import { countryName, normalizePublicUserId } from '@verre/core';
 import { useMeId } from '@/lib/meId';
+import { ListGoneError, getImpression, impressionKey } from '@/lib/api/lists';
+import { isImpressionRouteId, parseImpressionRouteId } from '@/lib/impressionRoute';
+import { impressionDetail } from '@/lib/impressionDetail';
+import { usePostPrivacyRow } from '@/lib/postPrivacyActions';
+import { PrivacyByline } from '@/components/feed/PrivacyByline';
 
 // Full impression detail — a NEW read-only screen (proposal 08 §3; NOT 02e,
 // which is a write interface). Reached from a feed card's glass panel. Pure
@@ -167,7 +172,15 @@ export default function FeedImpression() {
   // onto. Card mode = a post opened inside that stack (`postId`).
   const mount = useSessionTab();
   const cardMode = postId != null;
-  const feedItemId = Number(cardMode ? postId : mount.post ?? id);
+  // 🔒 THE IMPRESSION PAGE (Moment Visibility step 3, R4, T13): `r<ratingId>`
+  // on these same routes, opened from a profile list row whose post you may
+  // not open. Its id is NOT a post: never a number here (NaN keys collide in
+  // the post registries), both post hooks are off, and its read lives outside
+  // ['feed', …] (['impression', owner, ratingId]).
+  const rawPost = cardMode ? postId : mount.post ?? id;
+  const impressionMode = isImpressionRouteId(rawPost);
+  const impressionRatingId = impressionMode ? parseImpressionRouteId(rawPost) : null;
+  const feedItemId = impressionMode ? NaN : Number(rawPost);
   // The list this post was opened from: the network feed (no `user`) or one
   // person's profile feed. A card's list is a profile on the post's stack; the
   // modal's is on the outer tab stack (its edit + "gone" exits go there).
@@ -185,7 +198,16 @@ export default function FeedImpression() {
   // `source: 'item'` = opened from a profile tile list (lists plan D9): read
   // ONLY that post's own item query (it can be older than any loaded page).
   const fromList = sourceParam === 'item' ? 'item' : undefined;
-  const { feed, found } = useFeedPost(feedItemId, listUserId, fromList);
+  const { feed, found } = useFeedPost(feedItemId, listUserId, fromList, !impressionMode);
+  // A cold or restored page without its owner (`user`) or with a malformed id
+  // makes no request: "This impression isn’t available".
+  const impressionEnabled = impressionMode && listUserId != null && impressionRatingId != null;
+  const impressionQ = useQuery({
+    queryKey: impressionKey(listUserId ?? '', impressionRatingId ?? 0),
+    queryFn: () => getImpression(listUserId!, impressionRatingId!),
+    enabled: impressionEnabled,
+    retry: (n, e) => !(e instanceof ListGoneError) && n < 1,
+  });
   // Pin the last-found item (the house lastRef pattern — cf. the session
   // screens' per-section poll merge). refetchOnMount:false only covers THIS
   // observer's mount: the list observer underneath (and this one, on
@@ -198,9 +220,12 @@ export default function FeedImpression() {
   if (found) pinnedRef.current = found;
   // ...unless the post was explicitly DELETED (anywhere, any tab): then the
   // pinned copy would be an actionable ghost (lib/feedCache.ts).
-  const deleted = useIsFeedPostDeleted(feedItemId);
-  const item = deleted ? null : found ?? pinnedRef.current;
-  const detail = item ? detailFromItem(item) : null;
+  const deleted = useIsFeedPostDeleted(feedItemId, !impressionMode);
+  const item = impressionMode || deleted ? null : found ?? pinnedRef.current;
+  const detail = impressionMode
+    ? (impressionQ.data ? impressionDetail(impressionQ.data) : null)
+    : item ? detailFromItem(item) : null;
+  const pending = impressionMode ? impressionEnabled && impressionQ.isPending : feed.isPending;
   const { enterable: momentEnterable, enter: enterMoment } = useEnterableMoment(detail?.sessionId, detail?.momentId);
   // The author → their profile, pushed on this post's own stack (a card, back
   // returns here). When the post was opened FROM that person's list, the
@@ -212,10 +237,11 @@ export default function FeedImpression() {
   const openAuthor = useCallback(() => {
     if (authorId == null) return;
     // Opened from a tile list, the screen underneath is that list, not the
-    // profile: push the profile.
-    if (authorId === listUserId && fromList !== 'item') requestCloseRef.current();
+    // profile: push the profile. The impression page closes back onto its
+    // list (T13).
+    if (impressionMode || (authorId === listUserId && fromList !== 'item')) requestCloseRef.current();
     else router.push(feedHref(mount, 'profile', { id: authorId }));
-  }, [router, mount, authorId, listUserId, fromList]);
+  }, [router, mount, authorId, listUserId, fromList, impressionMode]);
   const onAuthorPress = authorId != null ? openAuthor : undefined;
   // Clamp seam for the pager index: `index` arrives via route params (a deep
   // link can carry garbage) and onPagerScroll can round past the end on an
@@ -533,7 +559,7 @@ export default function FeedImpression() {
   closeDetailRef.current = closeDetail;
   useFocusEffect(
     useCallback(() => {
-      if (isFeedPostDeleted(feedItemId)) closeDetailRef.current();
+      if (Number.isFinite(feedItemId) && isFeedPostDeleted(feedItemId)) closeDetailRef.current();
     }, [feedItemId]),
   );
 
@@ -546,6 +572,10 @@ export default function FeedImpression() {
   // menu is placeholders this pass — no live write from this screen.
   const isOwner = myUserId != null && detail?.author.id === myUserId;
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
+  // Your own post's switches (step 3, R2 / R5 / R11 / R12) and the status
+  // line under your name (R3). The PINNED copy is what renders here, so the own-post store
+  // (lib/postPrivacyState.ts) carries a toggle made from this screen.
+  const privacy = usePostPrivacyRow(item);
 
   // Owner delete (Simon, 2026-07-18) — mirrors the feed list's ⋯ flow.
   // Standalone = DELETE the check-in; session = clear the ACTIVE impression's
@@ -819,17 +849,21 @@ export default function FeedImpression() {
     scrollFns.current[clampedActive]?.();
   }, [clampedActive]);
 
-  if (!item || !detail) {
+  if (!detail) {
     // Post not in the cache (deep link before the feed loaded, or trimmed
     // out). Solid + un-animated — there's no source frame worth honoring.
     return (
       <View style={{ flex: 1, backgroundColor: theme.bg }}>
-        <FloatBar solid title="" onBack={closeDetail} insetTop={insets.top} pending={feed.isPending} card={cardMode} />
-        <CenteredMessage
-          title="This impression is gone"
-          body="It may have been removed, or the feed hasn't loaded it yet."
-          pending={feed.isPending}
-        />
+        <FloatBar solid title="" onBack={closeDetail} insetTop={insets.top} pending={pending} card={cardMode} />
+        {impressionMode ? (
+          <CenteredMessage title="This impression isn’t available" pending={pending} />
+        ) : (
+          <CenteredMessage
+            title="This impression is gone"
+            body="It may have been removed, or the feed hasn't loaded it yet."
+            pending={pending}
+          />
+        )}
       </View>
     );
   }
@@ -933,6 +967,7 @@ export default function FeedImpression() {
             place={place}
             onPlacePress={momentEnterable ? enterMoment : undefined}
             onAuthorPress={onAuthorPress}
+            privacyLine={privacy.line}
             dismissible={!cardMode}
             onCollapse={(c) => reportCollapse(wines[0].ratingId, c)}
             onTitle={(t) => reportTitle(wines[0].ratingId, t)}
@@ -994,6 +1029,7 @@ export default function FeedImpression() {
                     place={place}
                     onPlacePress={momentEnterable ? enterMoment : undefined}
                     onAuthorPress={onAuthorPress}
+                    privacyLine={privacy.line}
                     dismissible={!cardMode}
                     onCollapse={(c) => reportCollapse(w.ratingId, c)}
                     onTitle={(t) => reportTitle(w.ratingId, t)}
@@ -1083,7 +1119,7 @@ export default function FeedImpression() {
           insetTop={insets.top}
           photoless={activeWine ? !!activeWine._blind || !activeWine.imageUrl : false}
           hasDots={total > 1}
-          onMenu={setMenuAnchor}
+          onMenu={impressionMode ? undefined : setMenuAnchor}
         />
       </Reanimated.View>
 
@@ -1113,6 +1149,20 @@ export default function FeedImpression() {
         {detail.isSession === false ? <MenuItem icon="plus" label="Had It Too" disabled /> : null}
         <MenuItem icon="share" label="Share" disabled />
         {isOwner ? <MenuSeparator /> : null}
+        {isOwner
+          ? privacy.rows.map((row) => (
+            <MenuItem
+              key={row.field}
+              icon="eyeoff"
+              label={row.label}
+              checked={row.on}
+              onPress={() => {
+                setMenuAnchor(null);
+                row.onToggle();
+              }}
+            />
+          ))
+          : null}
         {isOwner ? (
           <MenuItem
             icon="edit"
@@ -1304,16 +1354,22 @@ function FloatBar({
         ) : (
           <View style={{ flex: 1 }} />
         )}
-        <Pressable
-          ref={menuBtnRef}
-          onPress={() => menuBtnRef.current?.measureInWindow((_x, y, _w, h) => onMenu?.({ top: y, bottom: y + h }))}
-          accessibilityRole="button"
-          accessibilityLabel="More"
-          hitSlop={8}
-          style={({ pressed }) => ({ ...circle, marginLeft: 2, opacity: pressed ? 0.5 : 1 })}
-        >
-          <Icon name="more" size={phone.size('compactActionIcon')} color={iconColor} />
-        </Pressable>
+        {/* No menu (the impression page, step 3 T13; the gone state): no
+            dead ⋯, a same-size spacer keeps the title where it was. */}
+        {onMenu ? (
+          <Pressable
+            ref={menuBtnRef}
+            onPress={() => menuBtnRef.current?.measureInWindow((_x, y, _w, h) => onMenu({ top: y, bottom: y + h }))}
+            accessibilityRole="button"
+            accessibilityLabel="More"
+            hitSlop={8}
+            style={({ pressed }) => ({ ...circle, marginLeft: 2, opacity: pressed ? 0.5 : 1 })}
+          >
+            <Icon name="more" size={phone.size('compactActionIcon')} color={iconColor} />
+          </Pressable>
+        ) : (
+          <View style={{ ...circle, marginLeft: 2, opacity: 0 }} pointerEvents="none" />
+        )}
       </View>
     </View>
   );
@@ -1347,12 +1403,15 @@ function CaptionByline({
   createdAt,
   onPlacePress,
   onAuthorPress,
+  privacyLine = null,
 }: {
   author: FeedAuthor;
   note: string | null;
   place: string | null;
   createdAt: string;
   onPlacePress?: () => void;
+  // Your own hidden post (step 3, R3): the eye + its words lead the meta line.
+  privacyLine?: string | null;
   // Avatar + name → the author's profile (the feed cards' pattern: a pressable
   // avatar and a pressable name span inside the caption copy).
   onAuthorPress?: () => void;
@@ -1375,8 +1434,8 @@ function CaptionByline({
       {end > author.name.length ? full.slice(Math.max(start, author.name.length), end) : null}
     </>
   );
-  const meta = place || stamp ? (
-    <VText variant="caption" color="inkSoft" numberOfLines={1} style={styles.captionMeta}>
+  const meta = place || stamp || privacyLine ? (
+    <PrivacyByline line={privacyLine} style={styles.captionMeta}>
       {place ? (
         <VText
           variant="caption"
@@ -1389,7 +1448,7 @@ function CaptionByline({
       ) : null}
       {place && stamp ? ' · ' : ''}
       {stamp}
-    </VText>
+    </PrivacyByline>
   ) : null;
 
   return (
@@ -1446,6 +1505,7 @@ function DetailPage({
   place,
   onPlacePress,
   onAuthorPress,
+  privacyLine = null,
   dismissible,
   onCollapse,
   onTitle,
@@ -1473,6 +1533,7 @@ function DetailPage({
   place: string | null;
   onPlacePress?: () => void;
   onAuthorPress?: () => void;
+  privacyLine?: string | null;
   // false in card mode: no pull-down dismiss (the edge-swipe pops the card),
   // and the top keeps its rubber-band.
   dismissible: boolean;
@@ -1876,6 +1937,7 @@ function DetailPage({
           createdAt={createdAt}
           onPlacePress={onPlacePress}
           onAuthorPress={onAuthorPress}
+          privacyLine={privacyLine}
         />
 
         {/* divider before the structure/aroma profile */}

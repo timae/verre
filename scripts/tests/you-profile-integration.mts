@@ -87,6 +87,12 @@
 //        vs the audience, the leak matrix, the guest reader), the by-moment
 //        read, someone's Moments' open rows and their filters, the tile, the
 //        feed's momentId and hostName (flag off too), the code / token canary
+//   Moment Visibility, step 3, scripts/tests/post-privacy-section.mts:
+//   § 25 the insider rule against the grant, every post surface with an Only
+//        Inside author and a hidden check-in, paging, the lists' strip, the
+//        impression read, tiles, the two writes and the state, flags off,
+//        1b's readers through the real write, the like routes' line-up term,
+//        the feed's network after a kick
 //   + the CANARY over every response of the run (no user integer leaves)
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
@@ -208,6 +214,8 @@ const { usernames } = await import('./usernames-section.mts')
 // § 23 Moment Visibility, step 1a; § 24 step 1b
 const { momentVisibility } = await import('./moment-visibility-section.mts')
 const { momentLookIn } = await import('./moment-lookin-section.mts')
+// § 25 step 3 (Only Inside This Moment, Hide from Feed)
+const { postPrivacy } = await import('./post-privacy-section.mts')
 // § 18 public user ids
 const stateRoute = await import('../../app/api/session/[code]/state/route.ts')
 const visitRoute = await import('../../app/api/session/[code]/visit/route.ts')
@@ -1000,6 +1008,26 @@ try {
   const foreignPatch = await call((await import('../../app/api/checkins/[id]/route.ts')).PATCH, 'PATCH', `/api/checkins/${postId}`, Rf, { notes: 'mine now' }, { id: String(postId) })
   const foreignDel = await call((await import('../../app/api/checkins/[id]/route.ts')).DELETE, 'DELETE', `/api/checkins/${postId}`, Rf, undefined, { id: String(postId) })
   check('D13: a non-owner PATCH / DELETE of a check-in → 404 (not 403)', foreignPatch.status === 404 && foreignDel.status === 404, [foreignPatch.status, foreignDel.status])
+
+  // Moment Visibility step 3: the same surfaces with an Only Inside author (the
+  // moment post) and a hidden check-in (raw rows here; § 25 drives the writes).
+  {
+    const omSid = (await prisma.session.findFirstOrThrow({ where: { code: OM }, select: { id: true } })).id
+    const omPost = (await prisma.feedItem.findFirstOrThrow({ where: { userId: O.id, sessionId: omSid }, select: { id: true } })).id
+    await prisma.momentPrivacy.create({ data: { sessionId: omSid, userId: O.id, onlyInside: true } })
+    await prisma.feedItem.update({ where: { id: postId }, data: { hiddenFromFeed: true } })
+    const has = (f: { json: Record<string, any> }, id: number) => ((f.json?.items ?? []) as Record<string, any>[]).some(i => (i.type === 'checkin' ? i.checkin.id : i.session.id) === id) // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON
+    const neither = (f: { json: Record<string, any> }) => !has(f, postId) && !has(f, omPost) // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON
+    check('🔒 step 3: network feed — the friend and the follower see neither the hidden check-in nor the Only Inside post', neither(await feedOf(Rf)) && neither(await feedOf(Fl)))
+    check('🔒 step 3: ?user= — neither, for the friend and the stranger', neither(await feedOf(Rf, O.id)) && neither(await feedOf(St, O.id)))
+    check('step 3: self sees both (network and ?user=)', has(await feedOf(O), postId) && has(await feedOf(O), omPost) && has(await feedOf(O, O.id), postId) && has(await feedOf(O, O.id), omPost))
+    wp = await webProfile(O.id, Rf)
+    check('🔒 step 3: web payload for the friend — neither', !wp.json.recentCheckins.some((c: { id: number }) => c.id === postId) && !wp.json.recentSessionPosts.some((c: { id: number }) => c.id === omPost), wp.json)
+    check('🔒 step 3: like POST from the friend → 404; had a sip from the follower → 400', (await like(Rf, 'POST')).status === 404 && (await sip(Fl)).status === 400)
+    await prisma.momentPrivacy.deleteMany({ where: { sessionId: omSid, userId: O.id } })
+    await prisma.feedItem.update({ where: { id: postId }, data: { hiddenFromFeed: false } })
+    check('step 3: both choices undone, the friend sees both again', has(await feedOf(Rf), postId) && has(await feedOf(Rf), omPost))
+  }
 
   // ── § 12 (c2) no moment code in a non-participant's payloads ──────────────
   section('§ 12 no profile / feed payload a non-participant receives carries a moment code')
@@ -2458,6 +2486,7 @@ try {
   // ── § 23 Moment Visibility, step 1a ──────────────────────────────────────
   await momentVisibility({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
   await momentLookIn({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
+  await postPrivacy({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
 
   section('canary: no response carried a user integer')
   check('🔒 no response body or header carried a fixture user integer, a u:<digit>, or a public id inside a URL', canaryViolations.length === 0, [...new Set(canaryViolations)].slice(0, 20))

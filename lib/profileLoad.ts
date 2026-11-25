@@ -13,7 +13,8 @@ import { decimalToNumber } from '@verre/core'
 import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
 import { entryKey, loadEntriesSoft } from '@/lib/catalogEntries'
 import { entryYear } from '@/lib/wineDisplay'
-import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
+import { hiddenSessionIds } from '@/lib/outsideView'
+import { pagePostIds } from '@/lib/postPrivacy'
 import { impressionsCount } from '@/lib/profileLists'
 import { decideMoments, type MomentDecision } from '@/lib/momentAudience'
 import type { SessionFeedWine } from '@/lib/feedTypes'
@@ -190,13 +191,19 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   //
   // Never ship lat/lng on the public wire. No per-row visibility filter
   // here — the gate's `sees.posts` handled it above.
-  // 🔒 A moment post whose line-up is hidden from this viewer is left out in
-  // the query (lib/outsideView.ts), like the feed.
+  // 🔒 The ids of each list come from the feed's page statement
+  // (lib/postPrivacy.ts, T4): a moment post whose line-up is hidden from this
+  // viewer, an Only Inside post outside its moment and a check-in hidden from
+  // feeds are left out BEFORE the limit. Signed out there is no insider, so
+  // every Only Inside post and every hidden check-in is out.
   const hidden = await hiddenSessionIds(viewerId, [userId])
-  const standaloneFeedItems = await prisma.feedItem.findMany({
-    where: { userId, kind: 'standalone' },
-    orderBy: { createdAt: 'desc' },
-    take: 10,
+  const [standalonePage, sessionPage] = await Promise.all([
+    pagePostIds({ viewerId, authors: [userId], kind: 'standalone', hiddenSessions: hidden, limit: 10 }),
+    pagePostIds({ viewerId, authors: [userId], kind: 'session', hiddenSessions: hidden, limit: 10 }),
+  ])
+  const standaloneFeedItems = standalonePage.length === 0 ? [] : await prisma.feedItem.findMany({
+    where: { id: { in: standalonePage.map(p => p.id) } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     select: {
       id: true,
       venueName: true, city: true, country: true, createdAt: true,
@@ -221,10 +228,9 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   // each guarantees the top-10 chronological mix is correctly resolved
   // for users with a strong skew either way; the renderer will slice as
   // appropriate. At Tim+Simon scale this is two cheap queries.
-  const sessionFeedItems = await prisma.feedItem.findMany({
-    where: { userId, kind: 'session', ...notHiddenPosts(hidden) },
-    orderBy: { createdAt: 'desc' },
-    take: 10,
+  const sessionFeedItems = sessionPage.length === 0 ? [] : await prisma.feedItem.findMany({
+    where: { id: { in: sessionPage.map(p => p.id) } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     select: {
       id: true, createdAt: true,
       _count: { select: { likes: true } },

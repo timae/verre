@@ -18,7 +18,8 @@ import { useTheme } from '@/theme';
 import { ListNote, ListRow, ToolRow, type RowHandle } from './ListParts';
 import { ToolButton, type ToolAnchor } from '@/components/ui/ToolButton';
 import { useListRefresh } from './useListRefresh';
-import { useOpenListPost } from './useOpenListPost';
+import { useListTapGuard, useOpenListImpression, useOpenListPost } from './useOpenListPost';
+import { listRowTarget } from '@/lib/impressionRoute';
 import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // Your Cravings (design 04·10) or someone's (lists plan D6): sort + search,
@@ -72,7 +73,9 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
   // a score (their scores follow their post visibility).
   const scored = own || rows.some((r) => r.score != null) || sort === 'score';
   const { pulling, onPullRefresh, refetchInPlace } = useListRefresh(listQ.refetch);
-  const openPost = useOpenListPost(userId, refetchInPlace, shown);
+  const tapGuard = useListTapGuard(shown);
+  const openPost = useOpenListPost(userId, refetchInPlace, tapGuard);
+  const openImpression = useOpenListImpression(userId, refetchInPlace, tapGuard);
 
   // Remove at once: off every one of your Cravings lists (cancel first, so an
   // in-flight page can't put it back), then the server; a failure says so and
@@ -125,8 +128,14 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
         renderItem={({ item }) => {
           // The post opens on the row of the rating the score comes from (step 7
           // review: not the craving's bottle, which can be another one).
+          // Without a post you may open, the impression's page by that rating
+          // (Moment Visibility step 3, T14); neither = inert, as before.
           const ratingId = item.ratingId;
-          const row = <CravingListRow row={item} onPress={item.postId != null && ratingId != null ? (handle) => void openPost(item.postId, { ratingId }, handle) : undefined} />;
+          const to = listRowTarget(item.postId, ratingId);
+          const onPress = to.kind === 'post' && ratingId != null
+            ? (handle?: RowHandle) => void openPost(to.postId, { ratingId }, handle)
+            : to.kind === 'impression' ? (handle?: RowHandle) => void openImpression(to.ratingId, handle) : undefined;
+          const row = <CravingListRow row={item} onPress={onPress} />;
           return own && item.key ? <RemovableRow width={rowWidth} onRemove={() => void remove(item.key!)}>{row}</RemovableRow> : row;
         }}
       />

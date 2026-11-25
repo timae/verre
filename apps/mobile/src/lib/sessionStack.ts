@@ -75,6 +75,7 @@ type SessionSub =
   | 'settings/details'
   | 'settings/reveal'
   | 'settings/visibility'
+  | 'settings/my-privacy'
   | 'impression/[wineId]'
   | 'edit-impression/[wineId]';
 

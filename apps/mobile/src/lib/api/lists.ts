@@ -13,7 +13,7 @@ import { throwApiError } from './sessions';
 
 export type ImpressionRow = {
   id: number; // the rating
-  postId: number | null; // the post it belongs to (null: none, inert)
+  postId: number | null; // the post you may open (null: none, or hidden from you: the row opens its impression page)
   wineId?: string; // absent on a blind row of someone else's list
   name: string;
   vintage: string | null;
@@ -31,6 +31,42 @@ export type ImpressionRow = {
 };
 export type ImpressionsPage = { items: ImpressionRow[]; nextCursor: string | null; commonCount?: number };
 
+// ONE impression for its page (Moment Visibility step 3, R4, T13): GET
+// /api/users/:id/impressions/:ratingId, the row the list shows you plus the
+// rating. Mirrors lib/profileLists.ts `ImpressionPage`. No post, no moment, no
+// wine id on a blind or stripped row; 404 for every miss.
+export type ImpressionPage = {
+  id: number; // the rating
+  author: { id: string; name: string; username: string | null; xp: number; imageUrl: string | null };
+  wineId?: string;
+  name: string;
+  vintage: string | null;
+  producer: string | null;
+  type: string | null;
+  colour: string | null;
+  sparkling: boolean;
+  category: string;
+  abv: number | null;
+  grape: string | null;
+  region: string | null;
+  country: string | null;
+  imageUrl: string | null;
+  score: number | null;
+  flavors: Record<string, number>;
+  aromas: AromaSelection[];
+  notes: string | null;
+  description: string | null;
+  vinification: string | null;
+  purchaseUrl: string | null;
+  hadAt: string;
+  blind?: true;
+};
+// 🔒 OUTSIDE ['feed', …] (T13): the feed cache patch maps every ['feed'] entry.
+export const impressionKey = (owner: string, ratingId: number) => ['impression', owner, ratingId] as const;
+export function getImpression(owner: string, ratingId: number): Promise<ImpressionPage> {
+  return get(`/api/users/${encodeURIComponent(owner)}/impressions/${ratingId}`);
+}
+
 export type CravingRow = {
   // Your own rows: the remove handle (`DELETE /api/me/bookmarks/:key`: the
   // craving's id, or `m` + a blind save's id). 🔒 Absent on someone else's
@@ -40,8 +76,9 @@ export type CravingRow = {
   // The row's bottle, while there is one (the post link pairs it with postId).
   wineId?: string;
   postId: number | null; // the list owner's post of it, when they rated it
-  // The rating that post and the score come from (beside postId only): the
-  // post's row to open. Since step 5 it can be another bottle of the same wine.
+  // The rating that post and the score come from: the post's row to open, or
+  // the impression's page when there is no post you may open (Moment
+  // Visibility step 3, T14). Since step 5 it can be another bottle of the same wine.
   ratingId?: number;
   name: string;
   vintage: string | null;
