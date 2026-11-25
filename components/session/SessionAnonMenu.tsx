@@ -260,7 +260,7 @@ export function SessionAnonMenu({ displayName, code, role, onRenamed }: Props) {
               />
               <span style={{minWidth:0}}>
                 <span style={{display:'block',fontSize:11,color:'var(--fg)',fontFamily:'var(--mono)',letterSpacing:'0.04em'}}>Incognito</span>
-                <span style={{display:'block',fontSize:10,color:'var(--fg-dim)',marginTop:2,lineHeight:1.35}}>Hides your name from people outside this moment.</span>
+                <span style={{display:'block',fontSize:10,color:'var(--fg-dim)',marginTop:2,lineHeight:1.35}}>Only people who joined can see your name.</span>
                 {privacyError && <span style={{display:'block',fontSize:10,color:'rgba(184,64,64,0.9)',marginTop:4}}>{privacyError}</span>}
               </span>
             </label>

@@ -11,6 +11,8 @@
 //   §4 the feed cache patch and the stamp: only your own posts that carry the
 //      field; a moment's write patches every post of that moment
 //   §5 the menu rows' presence rule (no field, no row)
+//   §8 step 3b, "Private Moment": the place line, a blind Impressions row's
+//      line, the note under "Who Can See You" in every state and variant
 //
 // Run: npx tsx scripts/tests/post-privacy-units.ts
 
@@ -20,7 +22,7 @@ import {
 import { postPrivacyOf, stampPrivacy, withPrivacy } from '../../apps/mobile/src/lib/postPrivacyPatch'
 import { impressionRouteId, isImpressionRouteId, listRowTarget, parseImpressionRouteId } from '../../apps/mobile/src/lib/impressionRoute'
 import { impressionDetail } from '../../apps/mobile/src/lib/impressionDetail'
-import { audienceSummaryLabel, outsideNameLabel, ownAudienceBlock, shownOrHidden } from '../../apps/mobile/src/lib/momentVisibilityCopy'
+import { PRIVATE_MOMENT, PRIVATE_MOMENT_INFO_LABEL, PRIVATE_MOMENT_NOTE, audienceSummaryLabel, blindRowLine, momentPlace, outsideNameLabel, ownAudienceBlock, privateMomentNote, shownOrHidden } from '../../apps/mobile/src/lib/momentVisibilityCopy'
 
 let failures = 0
 function check(name: string, got: unknown, want: unknown) {
@@ -164,7 +166,7 @@ console.log('§6 a taster\'s summary of who can see the moment (R14)')
 {
   check('the circle by who it is: people in it with the switch on, the host\'s alone with it off; the others unchanged',
     [audienceSummaryLabel('friends', true), audienceSummaryLabel('followers', true), audienceSummaryLabel('friends', false), audienceSummaryLabel('followers', false), audienceSummaryLabel('verre', true), audienceSummaryLabel('members', true)],
-    ['Friends of People in It', 'Followers of People in It', 'Host’s Friends', 'Host’s Followers', 'Verre Users', 'Only People in It'])
+    ['Friends of People Who Joined', 'Followers of People Who Joined', 'Host’s Friends', 'Host’s Followers', 'Verre Users', 'Only People Who Joined'])
   check('shown / hidden', [shownOrHidden(true), shownOrHidden(false)], ['Shown', 'Hidden'])
 }
 
@@ -178,10 +180,35 @@ console.log('§7 who outside sees you by name: your own account privacy (R15)')
   check('🔒 a posts choice wider than the account never reads as MORE private than the truth: the account\'s audience (with its circle)',
     [outsideNameLabel(v('public-mutual', false, 'public-users')), outsideNameLabel(v('public-mutual', true, 'public-followers'))], ['Your Friends', 'Your Friends and Their Friends'])
   check('the block: the lead + your setting (Incognito off)', ownAudienceBlock(v('public-mutual', true, null), false),
-    { lead: 'Your account privacy settings also limit who outside this moment can see you by name:', value: 'Your Friends and Their Friends' })
-  check('…Incognito on: no one, whatever the setting', ownAudienceBlock(v('public-internet', false, null), true), { lead: 'Who can see you by name outside this moment:', value: 'No one (Incognito is on)' })
+    { lead: 'Your account privacy settings limit who can see your participation without joining:', value: 'Your Friends and Their Friends' })
+  check('…Incognito on: no one, whatever the setting', ownAudienceBlock(v('public-internet', false, null), true), { lead: 'Who can see your participation without joining:', value: 'No one (Incognito)' })
   check('…posts Only Me: its own lead and the note', ownAudienceBlock(v('public-users', false, 'only-me'), false),
-    { lead: 'Your posts are set to:', value: 'Only Me', note: 'People outside this moment won’t see you by name. People in it still see you.' })
+    { lead: 'Your posts are set to:', value: 'Only Me', note: 'Only people who joined this moment can see your participation.' })
+}
+
+console.log('§8 "Private Moment" (step 3b, R16–R19)')
+{
+  check('the label (R18)', PRIVATE_MOMENT, 'Private Moment')
+  check('the place line: deleted wins, then private, then the name; a nameless named moment has none',
+    [momentPlace({ deleted: true, sessionName: null }), momentPlace({ deleted: true, privateMoment: true, sessionName: null }), momentPlace({ deleted: false, privateMoment: true, sessionName: null }), momentPlace({ deleted: false, sessionName: 'Jura Night' }), momentPlace({ deleted: false, sessionName: null }), momentPlace({ deleted: false, sessionName: '' })],
+    ['[deleted moment]', '[deleted moment]', 'Private Moment', 'Jura Night', null, null])
+  check('a blind Impressions row\'s line: the name, else the label, else nothing',
+    [blindRowLine({ momentName: 'Jura Night' }), blindRowLine({ privateMoment: true }), blindRowLine({})], ['Jura Night', 'Private Moment', null])
+  check('the two notes, verbatim (R19)', PRIVATE_MOMENT_NOTE, {
+    members: 'Your post stays visible to people in this audience who haven’t joined, as ‘Private Moment’ instead of the moment’s name.',
+    other: 'Your post stays visible to this audience, as ‘Private Moment’ for anyone who can’t open this moment.',
+  })
+  check('no em dash in either note', Object.values(PRIVATE_MOMENT_NOTE).some(t => t.includes('\u2014')), false)
+  check('the ⓘ the note sits behind, named for VoiceOver', PRIVATE_MOMENT_INFO_LABEL, 'How people who haven’t joined see your post')
+  const base = { signedIn: true, onlyInside: false, hiddenFromFeed: false, postsOnlyMe: false, visibility: 'friends' as const }
+  check('which note, by the served Visible To: Only People in It → the first; Friends, Followers, Verre Users → the second',
+    (['members', 'friends', 'followers', 'verre'] as const).map(visibility => privateMomentNote({ ...base, visibility })),
+    [PRIVATE_MOMENT_NOTE.members, PRIVATE_MOMENT_NOTE.other, PRIVATE_MOMENT_NOTE.other, PRIVATE_MOMENT_NOTE.other])
+  check('…an unknown Visible To → the first (a frozen moment reads by its Visible To: it can still be opened)', privateMomentNote({ ...base, visibility: null }), PRIVATE_MOMENT_NOTE.members)
+  check('no note: a guest, Incognito on, Hide from Feed on, posts Only Me',
+    [privateMomentNote({ ...base, signedIn: false }), privateMomentNote({ ...base, onlyInside: true }), privateMomentNote({ ...base, hiddenFromFeed: true }), privateMomentNote({ ...base, postsOnlyMe: true })],
+    [null, null, null, null])
+  check('…Hide from Feed absent (its flag off) reads as off: the note shows', privateMomentNote({ ...base, hiddenFromFeed: undefined }), PRIVATE_MOMENT_NOTE.other)
 }
 
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1) }

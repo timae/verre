@@ -1097,8 +1097,11 @@ async function ownView() {
   const sAfter = ((await saved(U)).json as unknown as { name: string; image_url: string | null; purchase_url: string | null }[])[0]
   check('(31b) after the block: the wine stays, without its photo or bottle id', after?.name === e.name && after.imageUrl === null && !('wineId' in after), after)
   check('(31b) …and Saved without photo or purchase link', sAfter?.name === e.name && sAfter.image_url === null && sAfter.purchase_url === null, sAfter)
-  check('(31c) the moment\'s name goes with them (review r3): shown before, absent after, and not searchable', !!before?.momentName && !('momentName' in after)
-    && (await cravingsOf(U, U, '?q=moment')).length === 0, [before?.momentName, after, await cravingsOf(U, U, '?q=moment')])
+  // Moment Visibility step 3b (T6): your own craving names a moment only when
+  // you were there, so a bottle saved from someone's post names none, before
+  // the block too (it used to follow the post rule, review r3).
+  check('(31c) a bottle saved from a post never names its moment (step 3b, T6): not before, not after, and not searchable', !!before && !('momentName' in before) && !('momentName' in after)
+    && (await cravingsOf(U, U, '?q=moment')).length === 0, [before, after, await cravingsOf(U, U, '?q=moment')])
 }
 
 // ── § 34 A deleted moment: a member's save keeps its bottle (review r3) ─────

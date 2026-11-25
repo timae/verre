@@ -52,9 +52,12 @@ export type LoadedCheckin = {
 // for chronological merging with standalone check-ins on the same surface.
 export type LoadedSessionPost = {
   id: number              // feed_items.id
-  sessionId: number | null
-  sessionName: string | null  // null when deleted (scrubbed) or unnamed
-  hostName: string | null     // null when deleted (scrubbed), anon-host, or the host is hidden from the viewer
+  sessionId: number | null    // null on a `privateMoment` post (step 3b, T5)
+  sessionName: string | null  // null when deleted (scrubbed), unnamed, or private to this viewer
+  // A live moment this viewer may not see the name of (step 3b, R16: the
+  // feed's rule; present only when true).
+  privateMoment?: true
+  hostName: string | null     // null when deleted (scrubbed), anon-host, private, or the host is hidden from the viewer
   deleted: boolean
   blind: boolean
   wines: SessionFeedWine[]    // empty when deleted (collapse rule)
@@ -247,8 +250,10 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   const sessionPairs: SessionFeedPair[] = sessionFeedItems.flatMap(f =>
     f.session ? [{ authorId: userId, sessionId: f.session.id }] : [])
   // 🔒 The host's name only to a viewer in the moment or one the host is named
-  // to (the feed's rule, lib/momentAudience.ts; a signed-out viewer included;
-  // a failure hides every host, never the page).
+  // to, and the moment's name (step 3b, R16) only to the owner or a viewer who
+  // could open it (the feed's rule, lib/momentAudience.ts; signed out: never
+  // member, never open, so every moment is private; a failure hides every
+  // host and names only the owner's own view, never the page).
   const [sessionWines, moments] = await Promise.all([
     loadSessionFeedWines(sessionPairs, viewerId),
     decideMoments(viewerId, sessionFeedItems.flatMap(f => (f.session && !f.session.deletedAt ? [f.session.id] : [])))
@@ -257,6 +262,10 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   const hostNameFor = (s: { id: number; hostName: string | null }) => {
     const d = moments.get(s.id)
     return d && (d.member || d.hostNamed) ? s.hostName : null
+  }
+  const privateFor = (s: { id: number }) => {
+    const d = moments.get(s.id)
+    return !isOwner && !(d && (d.member || d.open))
   }
 
   // Hydrate viewer's "liked" state across BOTH standalone and session
@@ -357,14 +366,17 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
       // The feed's empty-post drop (app/api/feed/route.ts): a LIVE moment post
       // with nothing left to show is not rendered (a tombstone still is).
       if (!deleted && wines.length === 0) return []
+      // T4: by liveness, never by whether a name is present.
+      const privateMoment = !!f.session && !deleted && privateFor(f.session)
       return [{
         id: f.id,
-        sessionId: f.session?.id ?? null,
+        sessionId: privateMoment ? null : (f.session?.id ?? null),
         // §8 contract: when soft-deleted, the session's name + hostName
         // are scrubbed (NULL). Renderer collapses to "[deleted session]"
         // without a link or per-wine enumeration.
-        sessionName: deleted ? null : (f.session?.name ?? null),
-        hostName: f.session && !deleted ? hostNameFor(f.session) : null,
+        sessionName: deleted || privateMoment ? null : (f.session?.name ?? null),
+        hostName: f.session && !deleted && !privateMoment ? hostNameFor(f.session) : null,
+        ...(privateMoment ? { privateMoment: true as const } : {}),
         deleted,
         blind: !!f.session?.blind,
         wines,

@@ -332,6 +332,11 @@ jobs:
       # the guest reader bound to the incarnation, the by-moment read, open
       # rows on someone's Moments and their filters, the tile, the feed's
       # momentId and hostName, the code / link-token canary.
+      # § 26 Moment Visibility, step 3b (scripts/tests/private-moment-section.mts):
+      # "Private Moment", a moment's name outside it only to a viewer who
+      # could open it (feed, web profile, someone's Impressions and its q, own
+      # Cravings), decideAdmission against decideMoments, one candidate set
+      # whatever q says, the top-up, the Incognito race, a throwing decision.
       - name: You profile (tiles, retention, profile images, settings, public ids, moment visibility)
         run: npx tsx scripts/tests/you-profile-integration.mts
         timeout-minutes: 12

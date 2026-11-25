@@ -125,13 +125,13 @@ check('…no host named: the room\'s order', footFaces({ moment: { host: null } 
 
 console.log('\n§5 Moment Visibility\'s words')
 check('the host reads "Your", everyone else "Host’s" (R9)', (['members', 'friends', 'followers', 'verre'] as const).map(a => [audienceLabel(a, 'host'), audienceLabel(a, 'other')]),
-  [['Only People in It', 'Only People in It'], ['Your Friends', 'Host’s Friends'], ['Your Followers', 'Host’s Followers'], ['Verre Users', 'Verre Users']])
-check('the circle switch: Friends and Followers only, named after the audience, "People in It" (ruled 2026-11-24)', [guestCirclesApply('members'), guestCirclesApply('friends'), guestCirclesApply('followers'), guestCirclesApply('verre'), guestCirclesTitle('friends'), guestCirclesTitle('followers')],
-  [false, true, true, false, 'Include Friends of People in It', 'Include Followers of People in It'])
+  [['Only People Who Joined', 'Only People Who Joined'], ['Your Friends', 'Host’s Friends'], ['Your Followers', 'Host’s Followers'], ['Verre Users', 'Verre Users']])
+check('the circle switch: Friends and Followers only, named "Tasters’" (ruled 2026-11-24 as "People in It", short wording 2026-11-25)', [guestCirclesApply('members'), guestCirclesApply('friends'), guestCirclesApply('followers'), guestCirclesApply('verre'), guestCirclesTitle('friends'), guestCirclesTitle('followers')],
+  [false, true, true, false, 'Include Tasters’ Friends', 'Include Tasters’ Followers'])
 check('Moment Privacy\'s lines (ruled 2026-11-24): the circle switch, the two Hide switches, the ⓘ', [guestCirclesHelper('friends'), guestCirclesHelper('followers'), HIDE_HELPER.place, HIDE_HELPER.details, WHO_CAN_SEE_INFO],
-  ['Friends of people in it can see it too.', 'Followers of people in it can see it too.', 'Hides the address from people outside this moment.', 'Hides them from people outside this moment.', 'Choose who outside this moment can open it from posts, profiles and links. To join, they still need the code. People in it only appear if their own privacy settings allow it.'])
+  ['Friends of people who joined can see it too.', 'Followers of people who joined can see it too.', 'Only people who joined can see the address.', 'Only people who joined can see them.', 'Choose who can open this moment from posts, profiles and links without joining. To join, they still need the code. Each taster’s privacy settings control who can see their name. Hidden tasters are only counted, not named.'])
 check('the Visible To sheet runs widest first, like Privacy; the scale stays narrowest first', [AUDIENCE_MENU.map(a => audienceLabel(a, 'host')), [...AUDIENCE_MENU].reverse().join() === AUDIENCE_ORDER.join()],
-  [['Verre Users', 'Your Followers', 'Your Friends', 'Only People in It'], true])
+  [['Verre Users', 'Your Followers', 'Your Friends', 'Only People Who Joined'], true])
 check('frozen: only narrower (members < friends < followers < verre)', [widerThan('verre', 'friends'), widerThan('members', 'friends'), widerThan('friends', 'friends')], [true, false, false])
 
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1) }

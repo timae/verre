@@ -27,13 +27,19 @@ import { encodeKeyCursor, parseKeyCursor, usKeySql } from '@/lib/keyCursor'
 import { encodeImpressionsCursor, isScoreSort, parseImpressionsCursor, type ImpressionSort, type ImpressionsCursor } from '@/lib/impressionsCursor'
 import { openCravingsCursor, sealCravingsCursor, type CravingsCursor, type CravingsSort } from '@/lib/cravingsCursor'
 import { momentFacetWhere, resolveFacets, type MomentFacets, type OpenRowsNaming } from '@/lib/momentFacets'
-import { decideMoments, sharedMomentSql } from '@/lib/momentAudience'
+import { decideAdmission, decideMoments, sharedMomentSql } from '@/lib/momentAudience'
 import { momentLookInEnabled } from '@/lib/momentGate'
 import { coverOutsideSql } from '@/lib/profileTiles'
 import { postHiddenSql, postShownSql, strippedSql } from '@/lib/postPrivacy'
+import { insiderSql } from '@/lib/sessionGrant'
 
 const PAGE = 30
 const SIMILARITY = 0.3
+// The moments decided per request for someone's list, most recent first: the
+// candidates for open rows on their Moments (past it a moment is only counted),
+// and on their Impressions the candidates whose name may show and be searched
+// (past it a row is still labelled by the top-up, but not found by its name).
+const OPEN_CANDIDATES = 100
 
 // The post a rating belongs to, defined ONCE (D10): a session rating's =
 // feed_items (user_id, session_id) (unique), a standalone's =
@@ -162,7 +168,58 @@ export type ImpressionRow = {
   hadAt: string
   blind?: true
   momentName?: string
+  // A live moment's row whose name this viewer may not see (step 3b, R16 /
+  // R17; present only when true, T4), a stripped row included (T7).
+  privateMoment?: true
   yourScore?: number | null
+}
+
+// 🔒 The moment's NAME on someone else's Impressions (step 3b, § 2.3, R17):
+// only to a viewer who could open it, people in it (`insiderSql`, the grant
+// rule, a column of the list statement) or the audience (`open`, decided ONLY
+// by lib/momentAudience.ts `decideAdmission` in this request, never a SQL twin,
+// T1). Each moment is decided at most once per request (T2): ONE candidate set
+// (the owner's live moments the viewer is not in, most recent first, at most
+// OPEN_CANDIDATES), the same whatever `q` says (the decision's cost never tells
+// whether a hidden moment's name matches), plus a top-up over the page's
+// leftovers (disjoint from it). Skipped with the flag off (`open` is false by
+// construction, T3). A failed decision names only insiders, the page served (T8).
+// 🔒 One snapshot for the audience and the name (Codex r1 P2): the decision and
+// the list statement are separate reads, so a host who narrows the moment (and
+// renames it) between them must not have the NEW name shown or searched on the
+// strength of the old answer. The candidates statement records each moment's
+// audience settings (`vis`, `igc`); an open answer names a row only while the
+// list statement still reads the same settings (fails closed on a change).
+type Fp = { vis: string | null; igc: boolean | null }
+type Admitted = { candidates: Map<number, Fp>; open: Set<number>; failed: boolean }
+const NOT_ADMITTED: Admitted = { candidates: new Map(), open: new Set(), failed: false }
+async function admittedMoments(ownerId: number, viewerId: number): Promise<Admitted> {
+  if (!momentLookInEnabled()) return NOT_ADMITTED
+  const cand = await prisma.$queryRaw<{ id: number; vis: string | null; igc: boolean | null }[]>`
+    SELECT s.id, s.visibility AS vis, s.include_guest_circles AS igc FROM sessions s
+     WHERE s.id IN (SELECT DISTINCT r.session_id FROM ratings r WHERE r.user_id = ${ownerId} AND r.session_id IS NOT NULL)
+       AND s.deleted_at IS NULL AND NOT ${insiderSql(viewerId, Prisma.sql`s.id`)}
+     ORDER BY COALESCE(s.date_from, s.created_at) DESC, s.id DESC LIMIT ${OPEN_CANDIDATES}`
+  const candidates = new Map(cand.map(r => [r.id, { vis: r.vis, igc: r.igc }]))
+  return { candidates, open: await openOf(viewerId, [...candidates.keys()]), failed: false }
+}
+// The open moments still under the audience settings the decision was made on,
+// in SQL for the search (the list statement's `s`).
+function stillOpenSql(a: Admitted): Prisma.Sql {
+  const ids = [...a.open].filter(id => a.candidates.has(id))
+  if (ids.length === 0) return Prisma.sql`FALSE`
+  const vis = ids.map(id => a.candidates.get(id)!.vis), igc = ids.map(id => a.candidates.get(id)!.igc)
+  return Prisma.sql`EXISTS (SELECT 1 FROM unnest(${ids}::int[], ${vis}::text[], ${igc}::boolean[]) AS ppd(id, vis, igc)
+    WHERE ppd.id = s.id AND ppd.vis IS NOT DISTINCT FROM s.visibility AND ppd.igc IS NOT DISTINCT FROM s.include_guest_circles)`
+}
+async function openOf(viewerId: number, ids: number[]): Promise<Set<number>> {
+  if (ids.length === 0) return new Set()
+  const decided = await decideAdmission(viewerId, ids)
+  return new Set([...decided].filter(([, d]) => d.open).map(([id]) => id))
+}
+const admissionFailed = (err: unknown): Admitted => {
+  console.error('[impressions] moment audience unavailable:', err)
+  return { ...NOT_ADMITTED, failed: true }
 }
 
 export async function loadImpressions(
@@ -180,6 +237,8 @@ export async function loadImpressions(
   // half and outside "both had".
   const stripped = strippedSql(viewerId, Prisma.sql`r.user_id`, Prisma.sql`r.session_id`)
   const postId = visiblePostId(viewerId)
+  const cursor = f.cursor ? parseImpressionsCursor(f.cursor, f.sort) : null
+  if (f.cursor && !cursor) return { items: [], nextCursor: null }
   const where: Prisma.Sql[] = [impressionsWhere(ownerId, viewerId)]
   if (f.from) where.push(Prisma.sql`${HAD_AT} >= ${f.from}`)
   if (f.to) where.push(Prisma.sql`${HAD_AT} <= ${f.to}`)
@@ -193,27 +252,49 @@ export async function loadImpressions(
   // two filters only match a row that has one.
   // (A row whose post is hidden from the viewer is post-less there.)
   if (other !== null && (f.structure.length > 0 || f.aromas.length > 0)) where.push(Prisma.sql`${postId} IS NOT NULL`)
+  // Someone else's list: who may see each moment's name (see `admittedMoments`).
+  // Without `q` it runs BESIDE the list statement; with `q` it is awaited first
+  // (the search's moment half needs it). The catch sits on this promise alone.
+  // 🔒 Keyed on `own`, never on whether a decision ran: a viewer who is not the
+  // owner (signed out included: no insider, nothing admitted) always takes the
+  // rule's branch (security review P3).
+  const insider = insiderSql(viewerId, Prisma.sql`r.session_id`)
+  const admittedP = other === null ? Promise.resolve(NOT_ADMITTED) : admittedMoments(ownerId, other).catch(admissionFailed)
+  const admittedQ = f.q && !own ? await admittedP : null
   if (f.q) {
+    // 🔒 Found by its moment's name exactly when the row would be NAMED:
+    // yours, or someone else's to an insider or an admitted viewer whose
+    // answer still holds (`stillOpenSql`). `NOT stripped` stays on the open arm
+    // (r3 P2): the candidates and this statement are separate, so an owner who
+    // turns Incognito on between them is not found by the name. 🔒 The name
+    // matcher runs only INSIDE the CASE branch an authorised row reaches
+    // (Codex r1 P2): in a plain AND, Postgres may evaluate it on a closed
+    // moment's name first, and its cost (the trigram fallback runs only on an
+    // ILIKE miss) would depend on the private name.
+    const momentHalf = own || admittedQ === null
+      ? Prisma.sql`(s.deleted_at IS NULL AND NOT ${stripped} AND ${textMatch(Prisma.sql`s.name`, f.q)})`
+      : Prisma.sql`(s.deleted_at IS NULL AND CASE WHEN ${insider} OR (${stillOpenSql(admittedQ)} AND NOT ${stripped})
+          THEN ${textMatch(Prisma.sql`s.name`, f.q)} ELSE false END)`
     where.push(Prisma.sql`((NOT ${redacted} AND (${textMatch(Prisma.sql`w.name`, f.q)} OR ${textMatch(Prisma.sql`w.producer`, f.q)}))
-      OR (s.deleted_at IS NULL AND NOT ${stripped} AND ${textMatch(Prisma.sql`s.name`, f.q)}))`)
+      OR ${momentHalf})`)
   }
   const yours = Prisma.sql`EXISTS (SELECT 1 FROM ratings yr WHERE yr.user_id = ${other}::integer AND yr.wine_id = r.wine_id)`
   // `yours` first: the cheap match narrows before the per-row privacy probes.
   if (f.common && other !== null) where.push(Prisma.sql`${yours} AND NOT ${redacted} AND NOT ${stripped}`)
-  const cursor = f.cursor ? parseImpressionsCursor(f.cursor, f.sort) : null
-  if (f.cursor && !cursor) return { items: [], nextCursor: null }
   if (cursor) where.push(impressionsAfter(f.sort, cursor))
 
-  const rows = await prisma.$queryRaw<{
-    id: number; post_id: number | null; wine_id: string; name: string; vintage: string | null; producer: string | null
+  const listP = prisma.$queryRaw<{
+    id: number; session_id: number | null; post_id: number | null; wine_id: string; name: string; vintage: string | null; producer: string | null
     style: string | null; colour: string | null; sparkling: boolean; category: string; image_url: string | null; score: Prisma.Decimal | null; had_at: Date; product_id: string | null; vintage_id: string | null
     had_key: string; score_cents: number | null; redacted: boolean; moment_name: string | null; your_score: Prisma.Decimal | null; in_session: boolean
-    stripped: boolean | null
+    stripped: boolean | null; insider: boolean | null; live: boolean | null; vis: string | null; igc: boolean | null
   }[]>`
-    SELECT r.id, ${postId} AS post_id, r.wine_id, w.name, w.vintage, w.producer, w.style, w.colour, w.sparkling, w.category, w.product_id, w.vintage_id,
+    SELECT r.id, r.session_id, ${postId} AS post_id, r.wine_id, w.name, w.vintage, w.producer, w.style, w.colour, w.sparkling, w.category, w.product_id, w.vintage_id,
            COALESCE((SELECT ri.image_url FROM rating_images ri WHERE ri.rating_id = r.id ORDER BY ri.sort_order ASC LIMIT 1), w.image_url) AS image_url,
            r.score, ${HAD_AT} AS had_at, ${usKeySql(HAD_AT)} AS had_key, (${SCORE_KEY} * 100)::int AS score_cents, ${redacted} AS redacted,
            ${stripped} AS stripped,
+           ${own ? Prisma.sql`NULL::boolean` : insider} AS insider,
+           (s.id IS NOT NULL AND s.deleted_at IS NULL) AS live, s.visibility AS vis, s.include_guest_circles AS igc,
            CASE WHEN s.deleted_at IS NULL THEN s.name END AS moment_name,
            (r.session_id IS NOT NULL) AS in_session,
            ${other !== null
@@ -224,18 +305,40 @@ export async function loadImpressions(
     WHERE ${Prisma.join(where, ' AND ')}
     ${impressionsOrder(f.sort)}
     LIMIT ${PAGE + 1}`
+  const [rows, admitted] = await Promise.all([listP, admittedQ ?? admittedP])
   const more = rows.length > PAGE
   const page = more ? rows.slice(0, PAGE) : rows
+  // A NULL flag (never by construction) reads as the closed side: stripped on
+  // someone else's list, not an insider, not live.
+  const stripOf = (r: (typeof rows)[number]) => !own && r.stripped !== false
+  // The top-up (both paths): the page's live moments that are not insider, not
+  // stripped and not among the candidates, decided once over just those
+  // (usually none). Skipped with the flag off and after a failed decision.
+  const leftovers = other === null || admitted.failed || !momentLookInEnabled() ? [] : [...new Set(page
+    .filter(r => r.in_session && r.live === true && r.insider !== true && !stripOf(r) && r.session_id !== null && !admitted.candidates.has(r.session_id))
+    .map(r => r.session_id!))]
+  const topUp = leftovers.length === 0 ? new Set<number>() : await openOf(other!, leftovers).catch((err: unknown) => {
+    console.error('[impressions] moment audience top-up unavailable:', err)
+    return new Set<number>()
+  })
   // A visible bottle shows its catalogue entry (merges followed), else its
   // snapshot; a blind row never reads it.
   const entries = await loadEntriesSoft(page.filter(r => r.redacted === false).map(r => ({ productId: r.product_id, vintageId: r.vintage_id })))
   const items = page.map((r): ImpressionRow => {
     // A NULL flag (never by construction) reads as the closed side.
     const blind = r.redacted !== false
-    // A NULL (never by construction) reads as stripped, on someone else's list.
-    const strip = !own && r.stripped !== false
+    const strip = stripOf(r)
     const e = !blind && r.product_id ? entries.get(entryKey(r.product_id, r.vintage_id)) : undefined
-    const momentName = r.in_session && r.moment_name && !strip ? r.moment_name : undefined
+    // 🔒 Your own rows always carry it (T6); someone else's only when NAMED: an
+    // insider, an open answer whose settings this statement still read (the
+    // one snapshot rule above; a change fails closed), or the top-up (decided
+    // after this statement read the name).
+    const seen = r.session_id !== null ? admitted.candidates.get(r.session_id) : undefined
+    const stillOpen = !!seen && admitted.open.has(r.session_id!) && seen.vis === r.vis && seen.igc === r.igc
+    const named = own || (!strip && (r.insider === true || stillOpen || (r.session_id !== null && topUp.has(r.session_id))))
+    const momentName = r.in_session && r.moment_name && !strip && named ? r.moment_name : undefined
+    // T4: by liveness, never by whether a name is present; T7: stripped too.
+    const privateMoment = r.in_session && r.live === true && !named
     return {
       id: r.id,
       postId: r.post_id,
@@ -257,6 +360,7 @@ export async function loadImpressions(
       hadAt: r.had_at.toISOString(),
       ...(blind ? { blind: true as const } : {}),
       ...(momentName ? { momentName } : {}),
+      ...(privateMoment ? { privateMoment: true as const } : {}),
       ...(other !== null ? { yourScore: blind || strip ? null : positive(r.your_score) } : {}),
     }
   })
@@ -566,8 +670,10 @@ export async function loadCravings(
       sparkling: e ? e.sparkling : !!r.sparkling,
       imageUrl: ratingImage ?? (showBottle ? r.wine_image : null),
       score: decimalToNumber(r.score),
-      // The moment of a post-saved bottle follows the same rule (review r3).
-      ...(own && showBottle && r.moment_name ? { momentName: r.moment_name } : {}),
+      // 🔒 Only a moment you were there in (step 3b, T6): a bottle saved from
+      // someone's post never names that post's moment (you may never have seen
+      // it); the search matches the same (`ownerWasThereSql` above).
+      ...(own && r.was_there === true && r.moment_name ? { momentName: r.moment_name } : {}),
     }
   })
   const last = page[page.length - 1]
@@ -598,8 +704,7 @@ const theirMemberships = (ownerId: number) => Prisma.sql`
   JOIN sessions s ON s.code = sm.session_code
   WHERE sm.user_id = ${ownerId} AND s.deleted_at IS NULL AND sm.removed_state IS DISTINCT FROM 'kicked'`
 // The candidates for open rows: their most recent memberships you're not in
-// (the list's own order). Past it a moment is counted, never an open row.
-const OPEN_CANDIDATES = 100
+// (the list's own order, `OPEN_CANDIDATES` at the top).
 
 // The app's SessionRole (RoleChip), mapped exactly as /api/me/sessions does.
 export type MomentRole = 'host' | 'cohost' | 'provider' | null

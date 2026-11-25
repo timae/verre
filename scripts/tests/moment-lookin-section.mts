@@ -668,7 +668,8 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
       await resetLimits()
       const r = await call(feedRoute.GET, 'GET', path, viewer)
       if (viewer !== Mf) seen(`feed ${path}`, r)
-      return ((r.wire?.items ?? []) as J[]).find(i => i.type === 'session' && i.session?.sessionId === fmRow.id)?.session as J | undefined
+      // By the post's id: a private post carries no sessionId (step 3b, T5).
+      return ((r.wire?.items ?? []) as J[]).find(i => i.type === 'session' && i.session?.id === postId)?.session as J | undefined
     }
     const paths = ['/api/feed', `/api/feed?user=${Af.pid}`, `/api/feed?user=${Af.pid}&item=${postId}`]
     const asMember = await Promise.all(paths.map(p => feedPost(Mf, p))), asOutsider = await Promise.all(paths.map(p => feedPost(Of, p)))
@@ -678,7 +679,8 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
     const closed = await feedPost(Of, '/api/feed')
     check('🔒 an outsider not admitted: no momentId', !!closed && !('momentId' in closed) && closed.hostName === null, closed)
     await setSettings(Hf.id, 'public-users')
-    check('…the host shown to them: the host\'s name (naming, not admission)', (await feedPost(Of, '/api/feed'))?.hostName === 'Hugo Feedhost')
+    const shownHostPost = await feedPost(Of, '/api/feed')
+    check('…the host shown to them, but the moment private to them (step 3b, T5): no host\'s name, the post reads privateMoment', shownHostPost?.hostName === null && shownHostPost?.privateMoment === true && shownHostPost?.sessionId === null, shownHostPost)
     await setSettings(Hf.id, 'public-users', { show: false })
     flag(false)
     const offM = await feedPost(Mf, '/api/feed'), offO = await feedPost(Of, '/api/feed')
@@ -686,12 +688,13 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
     const webPost = async (viewerId: number | null) => {
       const gate = await resolveProfileViewer(Af.id, viewerId)
       if (gate.status !== 'ok') return undefined
-      return (await loadProfile({ userId: Af.id, gate }))?.recentSessionPosts.find((p: J) => p.sessionId === fmRow.id) as J | undefined
+      return (await loadProfile({ userId: Af.id, gate }))?.recentSessionPosts.find((p: J) => p.id === postId) as J | undefined
     }
     const wm = await webPost(Mf.id), wo = await webPost(Of.id), wOut = await webPost(null)
     check('🔒 the web profile (flag off): the member sees the host\'s name; an outsider and a signed-out visitor do not', wm?.hostName === 'Hugo Feedhost' && wo?.hostName === null && wOut?.hostName === null, [wm?.hostName, wo?.hostName, wOut?.hostName])
     await setSettings(Hf.id, 'public-internet')
-    check('…a host who shows to everyone: named to a signed-out visitor too', (await webPost(null))?.hostName === 'Hugo Feedhost')
+    const outPost = await webPost(null)
+    check('…a host who shows to everyone, to a signed-out visitor: still no host\'s name, the moment is private to them (step 3b, T5)', outPost?.hostName === null && outPost?.privateMoment === true, outPost)
     flag(true)
 
     // ── § 24 k step 2: the light first read, stable keys, the details read ──

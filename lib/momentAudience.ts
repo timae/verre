@@ -7,8 +7,22 @@ import { viewerBlockedAmong } from '@/lib/userBlock'
 
 // Who may look into a moment, and who in it is NAMED to the viewer
 // (docs/dev/proposals/moment-visibility.md § 6 / § 7; step-1 plan § 10 "1b").
-// ONE entry point, `decideMoments`, for the look-in, the feed's `momentId` and
-// `hostName`, and someone's Moments list (open rows, their filters, the tile).
+// ONE decision (`decide` below) behind two typed exports:
+// - `decideMoments`: the look-in, the feed's and the web profile's `momentId`,
+//   `hostName` and moment name (step 3b, R16), and someone's Moments list
+//   (open rows, their filters, the tile).
+// - `decideAdmission` (step 3b, T10): ONLY `{ member, open }` per moment, for
+//   someone's Impressions (the moment's name on a row, R17). It evaluates no
+//   host and nobody asked about: people only where admission depends on a
+//   named member (the bridging moments), only the bridge-edge members there,
+//   and no people statement at all when nothing bridges. Below the cap its
+//   `open` equals `decideMoments`' (a moment bridges only when the host's own
+//   edge fails, so the host is never the bridge). At the cap the two fill
+//   their 200 slots differently (hosts first there, bridges by id here), so
+//   EITHER can leave closed a moment the other opens (Codex r1: a high-id
+//   person who hosts one candidate and is the only bridge of another); both
+//   fail closed, neither ever opens past the truth.
+//   Its type has no `named` / `hostNamed`: a half-evaluated naming can't be used.
 //
 // Two halves, because "named" includes the post gate, which is TypeScript:
 // - SQL finds the candidates: the moment's row, the viewer's grant (the
@@ -77,17 +91,37 @@ type PersonRow = { sid: number; user_id: number; only_inside: boolean; v_follows
 const tierEdge = (visibility: string | null, vFollows: boolean, followsV: boolean) =>
   visibility === 'friends' ? vFollows && followsV : visibility === 'followers' && vFollows
 
-export async function decideMoments(
+export function decideMoments(
   viewerId: number | null,
   sessionIds: number[],
   opts: { everyone?: boolean; also?: number[] } = {},
+): Promise<Map<number, MomentDecision>> {
+  return decide(viewerId, sessionIds, opts, 'full')
+}
+
+export type AdmissionDecision = { member: boolean; open: boolean }
+
+export async function decideAdmission(viewerId: number | null, sessionIds: number[]): Promise<Map<number, AdmissionDecision>> {
+  const decided = await decide(viewerId, sessionIds, {}, 'admission')
+  return new Map([...decided].map(([id, d]) => [id, { member: d.member, open: d.open }]))
+}
+
+// `admission` mode: no hosts, nobody asked about, people only for the bridging
+// moments (see the header). Only `member` / `open` of its answer are complete.
+async function decide(
+  viewerId: number | null,
+  sessionIds: number[],
+  opts: { everyone?: boolean; also?: number[] },
+  mode: 'full' | 'admission',
 ): Promise<Map<number, MomentDecision>> {
   const out = new Map<number, MomentDecision>()
   const ids = [...new Set(sessionIds)]
   if (ids.length === 0) return out
   const v = viewerId
   const admission = momentLookInEnabled() && v !== null
-  const also = [...new Set(opts.also ?? [])]
+  const full = mode === 'full'
+  const everyone = full && opts.everyone === true
+  const also = full ? [...new Set(opts.also ?? [])] : []
   const moments = await prisma.$queryRaw<MomentRow[]>`
     SELECT ${grantColumnsSql(v)}, s.public_id, s.visibility, s.include_guest_circles,
            EXISTS (SELECT 1 FROM user_blocks ub
@@ -116,16 +150,20 @@ export async function decideMoments(
     const p = pre.get(m.id)!
     return admission && !p.member && !p.refused && !p.direct && m.include_guest_circles === true && (m.visibility === 'friends' || m.visibility === 'followers')
   }).map(m => m.id)
-  const people = outsider.length === 0 ? [] : await prisma.$queryRaw<PersonRow[]>`
+  // Admission mode asks only about the bridging moments, and about no host
+  // (the fragments below drop the host arms from the same statement).
+  const asked = full ? outsider : bridging
+  const hostArm = full ? Prisma.sql`OR sm.user_id = mo.host_user_id` : Prisma.empty
+  const people = asked.length === 0 ? [] : await prisma.$queryRaw<PersonRow[]>`
     WITH mo AS (
       SELECT s.id AS sid, s.code, s.host_user_id, s.visibility, s.include_guest_circles
-        FROM sessions s WHERE s.id = ANY(${outsider}::int[]) AND s.deleted_at IS NULL
+        FROM sessions s WHERE s.id = ANY(${asked}::int[]) AND s.deleted_at IS NULL
     ), p AS (
       SELECT mo.sid, sm.user_id FROM mo JOIN session_members sm ON sm.session_code = mo.code
        WHERE (sm.removed_state IS DISTINCT FROM 'kicked' OR sm.user_id = mo.host_user_id)
-         AND (${opts.everyone === true} OR mo.sid = ANY(${bridging}::int[]) OR sm.user_id = ANY(${also}::int[]) OR sm.user_id = mo.host_user_id)
-      UNION
-      SELECT mo.sid, mo.host_user_id FROM mo WHERE mo.host_user_id IS NOT NULL
+         AND (${everyone} OR mo.sid = ANY(${bridging}::int[]) OR sm.user_id = ANY(${also}::int[]) ${hostArm})
+      ${full ? Prisma.sql`UNION
+      SELECT mo.sid, mo.host_user_id FROM mo WHERE mo.host_user_id IS NOT NULL` : Prisma.empty}
     ), e AS (
       SELECT p.sid, p.user_id, mo.code, mo.host_user_id, mo.visibility, mo.include_guest_circles,
              EXISTS (SELECT 1 FROM follows f WHERE f.follower_id = ${v}::int AND f.following_id = p.user_id) AS v_follows,
@@ -136,7 +174,7 @@ export async function decideMoments(
       FROM e
       LEFT JOIN moment_privacy mp ON mp.session_id = e.sid AND mp.user_id = e.user_id
      WHERE NOT EXISTS (SELECT 1 FROM session_bans b WHERE b.session_code = e.code AND b.identity_id = 'u:' || e.user_id)
-       AND (${opts.everyone === true} OR e.user_id = e.host_user_id OR e.user_id = ANY(${also}::int[])
+       AND (${everyone} ${full ? Prisma.sql`OR e.user_id = e.host_user_id` : Prisma.empty} OR e.user_id = ANY(${also}::int[])
             OR (e.sid = ANY(${bridging}::int[])
                 AND ((e.visibility = 'friends' AND e.v_follows AND e.follows_v) OR (e.visibility = 'followers' AND e.v_follows))))`
 
@@ -151,7 +189,7 @@ export async function decideMoments(
   const isBridgeEdge = (p: PersonRow) => bridgingSet.has(p.sid) && tierEdge(visibilityOf.get(p.sid)!, p.v_follows, p.follows_v)
   // The fixed fill order, capped; the people asked about always cost their slots.
   const present = new Set(people.map(p => p.user_id))
-  const hosts = new Set(moments.flatMap(m => (m.host_user_id === null ? [] : [Number(m.host_user_id)])))
+  const hosts = new Set(full ? moments.flatMap(m => (m.host_user_id === null ? [] : [Number(m.host_user_id)])) : [])
   const bridges = new Set(people.filter(isBridgeEdge).map(p => p.user_id))
   const asc = (s: Iterable<number>) => [...s].sort((a, b) => a - b)
   const considered = new Set(also.filter(id => present.has(id)))

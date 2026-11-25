@@ -36,6 +36,7 @@ import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
 import { registerFeedLanding, setFeedTransitionSource } from '@/lib/feedTransition';
 import { timeAgo } from '@/lib/momentFormat';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
+import { momentPlace } from '@/lib/momentVisibilityCopy';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { space, useTheme } from '@/theme';
 import type { FeedAuthor, SessionFeedPayload, SessionFeedWine } from '@/lib/api/feed';
@@ -85,6 +86,7 @@ export function SessionFeedCard({
   // (code resolved from their own sessions; never on the feed wire), else the
   // look-in when the post carries a momentId (Moment Visibility).
   const { enterable: momentEnterable, enter: enterMoment } = useEnterableMoment(session.sessionId, session.momentId);
+  const place = momentPlace(session);
 
   const [rawActiveIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
@@ -274,19 +276,17 @@ export function SessionFeedCard({
             </VText>
           </VText>
           <PrivacyByline line={privacy.line}>
-            {session.deleted ? (
-              '[deleted moment]'
-            ) : session.sessionName ? (
-              // Tappable when the viewer was a member, or may look in.
-              momentEnterable ? (
-                <VText variant="caption" color="accent" style={styles.bold} onPress={enterMoment}>
-                  {session.sessionName}
-                </VText>
-              ) : (
-                session.sessionName
-              )
-            ) : null}
-            {(session.deleted || session.sessionName) ? ' · ' : ''}
+            {/* "[deleted moment]", "Private Moment" (step 3b: plain text, never
+                tappable) or the name, tappable when the viewer was a member, or
+                may look in. */}
+            {place !== null && session.sessionName && !session.deleted && momentEnterable ? (
+              <VText variant="caption" color="accent" style={styles.bold} onPress={enterMoment}>
+                {session.sessionName}
+              </VText>
+            ) : (
+              place
+            )}
+            {place !== null ? ' · ' : ''}
             {timeAgo(createdAt)}
           </PrivacyByline>
         </View>

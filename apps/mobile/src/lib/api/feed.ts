@@ -3,6 +3,7 @@ import type { AromaSelection } from '@verre/core';
 import { apiFetch } from '../apiFetch';
 import { ApiError, throwApiError } from './sessions';
 import { stampPrivacy } from '../postPrivacyPatch';
+import { momentPlace } from '../momentVisibilityCopy';
 
 // Typed fetchers + wire types for the social feed (`/api/feed`).
 // Wire types MIRROR the server's emitted shape in app/api/feed/route.ts
@@ -110,11 +111,15 @@ export type CheckinPayload = {
 // moment's public id, never its code) only while Moment Visibility is on and
 // the viewer is in the moment or may look in: the place line opens the look-in
 // for a moment the viewer's own sessions don't hold (step-2 plan § 4.3).
+// `privateMoment` (step 3b, R16): a live moment whose name this viewer may not
+// see (they couldn't open it); then `sessionName`, `hostName` and `sessionId`
+// are null and the place reads "Private Moment", never tappable.
 export type SessionFeedPayload = {
   id: number; // feed_items.id
   sessionId: number | null;
   momentId?: string;
   sessionName: string | null;
+  privateMoment?: true;
   hostName: string | null;
   deleted: boolean;
   blind: boolean;
@@ -460,7 +465,7 @@ export function detailFromItem(item: FeedItem): {
       isSession: true,
       createdAt: item.createdAt,
       verb: 'shared a moment',
-      place: item.session.deleted ? '[deleted moment]' : momentName,
+      place: momentPlace(item.session),
       momentName,
       sessionId: item.session.sessionId,
       momentId: item.session.deleted ? null : item.session.momentId ?? null,

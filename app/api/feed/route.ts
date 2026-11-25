@@ -227,7 +227,11 @@ export async function GET(req: NextRequest) {
   // moments, beside the bottles: 🔒 `hostName` only to a viewer in the moment
   // or one the host is named to (live, not behind the flag); `momentId` (flag
   // on) to a member (the by-moment read needs it) or a viewer who may look in.
-  // A failure hides every host and every momentId (fails closed), never the page.
+  // 🔒 The moment's NAME (step 3b, R16) only on your own post or to a viewer
+  // who could open it (`member || open`); anyone else gets `privateMoment`
+  // with no name, no host and no `sessionId` (T5). Never behind the flag (with
+  // it off `open` is false). A failure hides every host and every momentId,
+  // and names only your own posts (fails closed, T8), never the page.
   const [sessionWines, moments] = await Promise.all([
     loadSessionFeedWines(sessionPairs, userId),
     decideMoments(userId, feedItems.flatMap(f => (f.kind === 'session' && f.session && !f.session.deletedAt ? [f.session.id] : [])))
@@ -355,19 +359,22 @@ export async function GET(req: NextRequest) {
         // scrub and the "[deleted session]" render is deliberate.
         if (!deleted && wines.length === 0) return []
         const d = s && !deleted ? moments.get(s.id) : undefined
+        // T4: decided by liveness, never by whether a name is present.
+        const privateMoment = !!s && !deleted && f.user.id !== userId && !(d && (d.member || d.open))
         return [{
           type: 'session' as const,
           createdAt: f.createdAt,
           author: wireAuthor(f.user),
           session: {
             id: f.id,
-            sessionId: s?.id ?? null,
+            sessionId: privateMoment ? null : (s?.id ?? null),
             ...(lookIn && d && (d.member || d.open) ? { momentId: d.publicId } : {}),
             // §8 contract: when soft-deleted, name + hostName + code are
             // scrubbed. Renderer shows the "[deleted session]" header in
             // place of the live name; the wine list still renders.
-            sessionName: deleted ? null : (s?.name ?? null),
-            hostName: d && (d.member || d.hostNamed) ? (s?.hostName ?? null) : null,
+            sessionName: deleted || privateMoment ? null : (s?.name ?? null),
+            hostName: !privateMoment && d && (d.member || d.hostNamed) ? (s?.hostName ?? null) : null,
+            ...(privateMoment ? { privateMoment: true as const } : {}),
             deleted,
             blind: !!s?.blind,
             wines,

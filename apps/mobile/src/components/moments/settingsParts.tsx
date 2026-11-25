@@ -146,7 +146,7 @@ export function SetSection({ label, children }: { label?: string; children: Reac
 // actions: Remove All Other Devices, Delete Account), value `body`, rows ~12
 // apart (`flush` = none above).
 export function SetNav({
-  icon, leading, label, subtitle, value, trailing, onPress, action, critical, accent, disabled, soon, busy, bare, flush,
+  icon, leading, label, subtitle, value, trailing, onPress, action, critical, accent, disabled, soon, busy, bare, flush, small,
 }: {
   icon?: IconName;
   leading?: ReactNode;
@@ -163,6 +163,9 @@ export function SetNav({
   busy?: boolean;
   bare?: boolean;
   flush?: boolean;
+  /** A `bare` row at the helper size (`small`, icon 15): a link that sits
+   * under a line of `small` text (Moment Privacy's Change Account Privacy). */
+  small?: boolean;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -178,8 +181,8 @@ export function SetNav({
       onPress={onPress}
       style={({ pressed }) => (bare
         ? {
-            flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16),
-            paddingTop: flush ? 0 : ROW_GAP, paddingBottom: 2,
+            flexDirection: 'row', alignItems: 'center', gap: small ? phone.lerp(8, 10) : phone.lerp(12, 16),
+            paddingTop: flush ? 0 : small ? ROW_GAP / 2 : ROW_GAP, paddingBottom: small ? 6 : 2,
             opacity: pressed && !disabled && onPress ? 0.6 : 1,
           }
         : {
@@ -192,10 +195,10 @@ export function SetNav({
             backgroundColor: pressed && !disabled ? theme.surfaceSunk : 'transparent',
           })}
     >
-      {leading ?? (icon ? <Icon name={icon} size={19} color={iconTint} /> : null)}
+      {leading ?? (icon ? <Icon name={icon} size={small ? 15 : 19} color={iconTint} /> : null)}
       <View style={{ flex: 1, minWidth: 0 }}>
         <VText
-          variant="body"
+          variant={small ? 'small' : 'body'}
           style={bare ? (action ? { fontFamily: 'InstrumentSans_500Medium' } : null) : { fontFamily: action ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium' }}
           color={tint}
         >

@@ -74,13 +74,24 @@ export type SessionFeedWine = {
 // has authorised the reveal; participants engaged with the wine).
 export type SessionFeedPayload = {
   id: number              // feed_items.id
+  // null on a `privateMoment` post (T5)
   sessionId: number | null
   // The moment's PUBLIC id (Moment Visibility, flag on): only to a member or a
   // viewer who may look in. Never the code.
   momentId?: string
+  // 🔒 Your own post, or a viewer who could open the moment (step 3b, R16:
+  // `member || open`, lib/momentAudience.ts); null otherwise (then
+  // `privateMoment`), and for a deleted moment.
   sessionName: string | null
-  // 🔒 Only to a viewer in the moment or one the host is NAMED to
-  // (lib/momentAudience.ts); null otherwise, and for a deleted moment.
+  // A live moment's post whose name this viewer may not see (R16; present
+  // only when true, T4): the client shows "Private Moment", not tappable.
+  // `sessionName`, `hostName` and `sessionId` are null on it (T5). Never on a
+  // deleted moment's post (that one is `deleted`).
+  privateMoment?: true
+  // 🔒 Only to a viewer in the moment, or to one who could open it (step 3b,
+  // T5) AND to whom the host is NAMED (lib/momentAudience.ts); null
+  // otherwise (so never to a non-member with the flag off), for a deleted
+  // moment, and on a `privateMoment` post.
   hostName: string | null
   deleted: boolean
   blind: boolean

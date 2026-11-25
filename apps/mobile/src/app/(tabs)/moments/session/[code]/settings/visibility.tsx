@@ -17,7 +17,7 @@ import { authClient } from '@/lib/authClient';
 import { errorText } from '@/lib/errorCopy';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { DATE_LOCALE } from '@/lib/locale';
-import { AUDIENCE_MENU, HIDE_HELPER, OUTSIDE_SUMMARY_LINE, OWN_AUDIENCE_LINK, ownAudienceBlock, audienceSummaryLabel, shownOrHidden, MOMENT_HIDE_FROM_FEED_HELPER, MOMENT_HIDE_FROM_FEED_TITLE, ONLY_INSIDE_HELPER, ONLY_INSIDE_TITLE, WHO_CAN_SEE_INFO, WHO_CAN_SEE_YOU, audienceLabel, guestCirclesApply, guestCirclesHelper, guestCirclesTitle, widerThan, type Audience } from '@/lib/momentVisibilityCopy';
+import { AUDIENCE_MENU, HIDE_HELPER, OUTSIDE_SUMMARY_LINE, OWN_AUDIENCE_LINK, outsideNameLabel, ownAudienceBlock, privateMomentNote, PRIVATE_MOMENT_INFO_LABEL, audienceSummaryLabel, shownOrHidden, MOMENT_HIDE_FROM_FEED_HELPER, MOMENT_HIDE_FROM_FEED_TITLE, ONLY_INSIDE_HELPER, ONLY_INSIDE_TITLE, WHO_CAN_SEE_INFO, WHO_CAN_SEE_YOU, audienceLabel, guestCirclesApply, guestCirclesHelper, guestCirclesTitle, widerThan, type Audience } from '@/lib/momentVisibilityCopy';
 import { getVisibility, VISIBILITY_KEY } from '@/lib/api/settings';
 import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { bumpTarget, lateAnswerMe, privacyTarget, privacyWriteGeneration, recordMomentPrivacy, writeSuperseded } from '@/lib/postPrivacyState';
@@ -261,8 +261,8 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
             <ChoiceRow label="Visible To" value={audienceSummaryLabel(view.visibility, view.includeGuestCircles)} valueLines={2} />
             {view.visibility !== 'members' ? (
               <>
-                <ChoiceRow label="Moment Location" value={shownOrHidden(view.showPlace)} />
-                <ChoiceRow label="Description and Event Link" value={shownOrHidden(view.showDetails)} />
+                <ChoiceRow label="Location" value={shownOrHidden(view.showPlace)} />
+                <ChoiceRow label="Description and Link" value={shownOrHidden(view.showDetails)} />
               </>
             ) : null}
           </View>
@@ -284,9 +284,13 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
             dropdown={edit}
             label="Visible To"
             value={audienceLabel(view.visibility, who)}
+            // "Only People Who Joined" at the largest text sizes wraps, never cut (Codex r1 + r2 P3).
+            valueLines={4}
             accessibilityLabel={`Who can see this moment: ${audienceLabel(view.visibility, who)}`}
-            busy={saving}
-            onPress={edit && !inert ? () => setSheet(true) : undefined}
+            // Inert while a save or a link action runs, but the chevron stays
+            // (it is drawn only with an onPress: phone look 2026-11-25).
+            busy={inert}
+            onPress={edit ? () => setSheet(true) : undefined}
           />
           {guestCirclesApply(view.visibility) ? (
             <ToggleRow
@@ -302,7 +306,7 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
               says hidden (`showPlace` false, the default). Frozen: a hidden one
               may not be shown again (mayTurnOn reads the record). */}
           <ToggleRow
-            title="Hide Moment Location"
+            title="Hide Location"
             subtitle={HIDE_HELPER.place}
             value={!view.showPlace}
             onChange={(hide) => void save({ showPlace: !hide })}
@@ -310,7 +314,7 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
             busy={inert}
           />
           <ToggleRow
-            title="Hide Description and Event Link"
+            title="Hide Description and Link"
             subtitle={HIDE_HELPER.details}
             value={!view.showDetails}
             onChange={(hide) => void save({ showDetails: !hide })}
@@ -319,7 +323,7 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
           />
           {frozen ? (
             <VText variant="small" color="inkSoft" style={{ marginTop: 12 }}>
-              This moment’s host no longer has an account, so who can see it can only be narrowed.
+              The host’s account was deleted. Privacy changes can only narrow the audience.
             </VText>
           ) : null}
         </View>
@@ -333,13 +337,23 @@ function PrivacyForm({ code, served, who, onChanged, onUnsure, onGone }: {
                 link to Account Privacy, opened on the moment's own stack. */}
             {myVis.data ? (() => {
               const own = ownAudienceBlock(myVis.data, view.me.onlyInside);
+              // Step 3b (R19): what people outside see of your post, "Private
+              // Moment" for those who can't open it; by the SERVED Visible To.
+              const privateNote = privateMomentNote({
+                signedIn: view.me.sessionId != null, onlyInside: view.me.onlyInside, hiddenFromFeed: view.me.hiddenFromFeed,
+                postsOnlyMe: outsideNameLabel(myVis.data) === 'Only Me', visibility: served.visibility,
+              });
               return (
                 // Room under the link before the switches (device pass 2026-11-25).
                 <View style={{ marginBottom: 12 }}>
                   <VText variant="small" color="inkSoft">{own.lead}</VText>
-                  <VText variant="body" color="ink" style={{ marginTop: 2 }}>{own.value}</VText>
+                  {/* The step-3b note behind an ⓘ after your audience (Simon, phone look 2026-11-25: too much text under the section). */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, marginTop: 2 }}>
+                    <VText variant="body" color="ink" style={{ flexShrink: 1 }}>{own.value}</VText>
+                    {privateNote ? <InfoTip text={privateNote} accessibilityLabel={PRIVATE_MOMENT_INFO_LABEL} minWidth={240} /> : null}
+                  </View>
                   {own.note ? <VText variant="small" color="inkSoft" style={{ marginTop: 2 }}>{own.note}</VText> : null}
-                  <SetNav bare accent icon="link" trailing="none" label={OWN_AUDIENCE_LINK} onPress={() => router.push(sessionHref(mount, 'settings/my-privacy', { code }), { dangerouslySingular: true })} />
+                  <SetNav bare small accent icon="link" trailing="none" label={OWN_AUDIENCE_LINK} onPress={() => router.push(sessionHref(mount, 'settings/my-privacy', { code }), { dangerouslySingular: true })} />
                 </View>
               );
             })() : null}

@@ -18,6 +18,7 @@ import { ToolButton, type ToolAnchor } from '@/components/ui/ToolButton';
 import { useListRefresh } from './useListRefresh';
 import { useListTapGuard, useOpenListImpression, useOpenListPost } from './useOpenListPost';
 import { listRowTarget } from '@/lib/impressionRoute';
+import { blindRowLine } from '@/lib/momentVisibilityCopy';
 import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // Someone's (or your) Impressions (lists plan D3 / D8 / D9, design 04·6a /
@@ -208,8 +209,9 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
 
 function ImpressionListRow({ row, showYours, onPress }: { row: ImpressionRow; showYours: boolean; onPress?: (row: RowHandle) => void }) {
   const title = row.blind ? 'Blind Impression' : row.name;
-  // A blind row's line is its moment (what the post shows); else producer · type.
-  const meta = row.blind ? row.momentName ?? null : [row.producer, kindLabel(row)].filter(Boolean).join(' · ') || null;
+  // A blind row's line is its moment (what the post shows: "Private Moment"
+  // where its name isn't yours to see, step 3b); else producer · type.
+  const meta = row.blind ? blindRowLine(row) : [row.producer, kindLabel(row)].filter(Boolean).join(' · ') || null;
   return (
     <ListRow
       uri={row.imageUrl}

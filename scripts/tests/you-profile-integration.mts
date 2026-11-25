@@ -93,6 +93,12 @@
 //        impression read, tiles, the two writes and the state, flags off,
 //        1b's readers through the real write, the like routes' line-up term,
 //        the feed's network after a kick
+//   Moment Visibility, step 3b, scripts/tests/private-moment-section.mts:
+//   § 26 "Private Moment": the name only to a viewer who could open it, the
+//        leak matrix (feed, web profile, Impressions and its q, own Cravings),
+//        a nameless moment, a throwing decision, decideAdmission against
+//        decideMoments, the heavy bridge, the candidates and the top-up, the
+//        Incognito race, a deleted moment
 //   + the CANARY over every response of the run (no user integer leaves)
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
@@ -216,6 +222,8 @@ const { momentVisibility } = await import('./moment-visibility-section.mts')
 const { momentLookIn } = await import('./moment-lookin-section.mts')
 // § 25 step 3 (Only Inside This Moment, Hide from Feed)
 const { postPrivacy } = await import('./post-privacy-section.mts')
+// § 26 step 3b ("Private Moment")
+const { privateMoment } = await import('./private-moment-section.mts')
 // § 18 public user ids
 const stateRoute = await import('../../app/api/session/[code]/state/route.ts')
 const visitRoute = await import('../../app/api/session/[code]/visit/route.ts')
@@ -2487,6 +2495,7 @@ try {
   await momentVisibility({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
   await momentLookIn({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
   await postPrivacy({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
+  await privateMoment({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
 
   section('canary: no response carried a user integer')
   check('🔒 no response body or header carried a fixture user integer, a u:<digit>, or a public id inside a URL', canaryViolations.length === 0, [...new Set(canaryViolations)].slice(0, 20))

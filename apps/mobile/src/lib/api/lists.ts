@@ -27,6 +27,7 @@ export type ImpressionRow = {
   hadAt: string; // the post's time (a moment's ratings group together)
   blind?: true;
   momentName?: string;
+  privateMoment?: true; // a live moment whose name you may not see (step 3b, R16): the line reads "Private Moment"
   yourScore?: number | null; // someone else's list only: your score of the same bottle
 };
 export type ImpressionsPage = { items: ImpressionRow[]; nextCursor: string | null; commonCount?: number };

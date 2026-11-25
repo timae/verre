@@ -95,6 +95,15 @@ function SessionHeader({ session }: { session: SessionFeedPayload }) {
       </div>
     )
   }
+  // A moment this viewer couldn't open (step 3b, R16): the label, never the
+  // name, and no host line (the server sends neither).
+  if (session.privateMoment) {
+    return (
+      <div style={{ fontSize:14, fontWeight:700, color:'var(--fg)', lineHeight:1.3 }}>
+        Private Moment
+      </div>
+    )
+  }
   const name = session.sessionName || 'Untitled session'
   const host = session.hostName
   return (
