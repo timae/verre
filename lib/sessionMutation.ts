@@ -126,6 +126,12 @@ export type MutationOpts = {
   // NULL; the work reconciles (reconcileLineup) before it writes.
   bumpLineup?: boolean
   timeoutMs?: number
+  // Bounds every LOCK WAIT of this transaction (`SET LOCAL lock_timeout`,
+  // issued before the advisory lock, so it also bounds the row's FOR UPDATE and
+  // the writes): SQLSTATE 55P03 (wrapped in P2010) instead of a wait that
+  // `timeoutMs` (Prisma's transaction timer) cannot end. OFF by default, so no
+  // existing writer inherits it. Moment Defaults' bulk apply (lib/momentDefaults.ts).
+  lockTimeoutMs?: number
 }
 
 // Test seam (cutover suite): a no-op unless a suite replaces `at`.
@@ -194,6 +200,7 @@ async function attemptMutation<T>(
     let txRef: Prisma.TransactionClient | null = null
     const result = await prisma.$transaction(async (tx) => {
       txRef = tx
+      if (opts.lockTimeoutMs) await tx.$executeRaw`SELECT set_config('lock_timeout', ${`${Math.max(1, Math.floor(opts.lockTimeoutMs))}ms`}, true)`
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${advisoryLockKey(code)}))`
       if (token && !(await sessionLockHeld(code, token))) throw new LockLost(code)
       const row = await readLiveRow(tx, code, opts.bumpLineup ? 'bump' : 'update')

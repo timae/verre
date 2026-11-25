@@ -65,7 +65,7 @@ import { useMeId } from '@/lib/meId';
 import { ListGoneError, getImpression, impressionKey } from '@/lib/api/lists';
 import { isImpressionRouteId, parseImpressionRouteId } from '@/lib/impressionRoute';
 import { impressionDetail } from '@/lib/impressionDetail';
-import { usePostPrivacyRow } from '@/lib/postPrivacyActions';
+import { useApplyReread, usePostPrivacyRow } from '@/lib/postPrivacyActions';
 import { PrivacyByline } from '@/components/feed/PrivacyByline';
 
 // Full impression detail — a NEW read-only screen (proposal 08 §3; NOT 02e,
@@ -576,6 +576,8 @@ export default function FeedImpression() {
   // line under your name (R3). The PINNED copy is what renders here, so the own-post store
   // (lib/postPrivacyState.ts) carries a toggle made from this screen.
   const privacy = usePostPrivacyRow(item);
+  // Moment Defaults' apply: a pinned copy older than it re-reads its switch.
+  useApplyReread(item);
 
   // Owner delete (Simon, 2026-07-18) — mirrors the feed list's ⋯ flow.
   // Standalone = DELETE the check-in; session = clear the ACTIVE impression's

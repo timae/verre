@@ -133,3 +133,97 @@ export function privateMomentNote(o: { signedIn: boolean; onlyInside: boolean; h
   if (!o.signedIn || o.onlyInside || o.hiddenFromFeed === true || o.postsOnlyMe) return null;
   return o.visibility === null || o.visibility === 'members' ? PRIVATE_MOMENT_NOTE.members : PRIVATE_MOMENT_NOTE.other;
 }
+
+// ── Moment Defaults (plan § 6, picked by Simon 2026-11-25) ───────────────────
+// Your own defaults, COPIED when you create or join a moment or check in
+// (never live). Split by Simon (2026-11-25): "who can see you is a privacy
+// setting, while who can see moments you created is a moment default". So
+// Settings → Privacy holds your join defaults (Incognito, Hide from Feed) and
+// the check-ins' Hide from Feed (under Post Visibility); Settings → the
+// moments area → Moment Defaults holds the moments you create. No line about
+// "past choices" on either (dropped by Simon: the titles say when, the alert
+// says the rest). The rows reuse the Moment Privacy words.
+// The Settings hub row + its page (the design's "Tasting" placeholder; no
+// "tasting": the app never says it; picked by Simon 2026-11-25).
+export const MOMENTS_AREA_TITLE = 'Moments & Check-Ins';
+export const WHO_CAN_SEE_THIS_MOMENT = 'Who Can See This Moment';
+export const MOMENT_DEFAULTS_SECTIONS = {
+  // "Create", not "Host" (Simon, 2026-11-25): a default is copied when you create a moment.
+  host: 'Who Can See Moments You Create',
+  // Privacy's section of your join default, Incognito (picked by Simon,
+  // 2026-11-25; the moment posts' Hide from Feed sits in Post Visibility).
+  join: 'Joining or Creating Moments',
+} as const;
+// The check-ins' default switch, under Privacy → Post Visibility (no "New":
+// changing it offers to apply to existing check-ins too; picked by Simon
+// 2026-11-25).
+export const CHECKIN_HIDE_FROM_FEED_TITLE = 'Hide Check-Ins from Feed';
+// Both helpers name YOUR posts of that kind (Simon, 2026-11-25: "be clear in
+// the helper text that it is about your check-ins and your moment posts").
+export const CHECKIN_HIDE_FROM_FEED_HELPER = 'Only you can see your check-in posts. Your impressions still show on your profile.';
+// The moment posts' default switch, beside it in Post Visibility (Simon's
+// grouping, 2026-11-25; Codex's pick): copied when you join or create a moment.
+export const MOMENT_POSTS_HIDE_FROM_FEED_TITLE = 'Hide Moment Posts from Feed';
+export const MOMENT_POSTS_HIDE_FROM_FEED_HELPER = 'Only you can see your moment posts. Your impressions still show on your profile.';
+// The check-in rate stage's switch (§ 6 item 9).
+export const RATE_HIDE_FROM_FEED_HELPER = 'Only you can see the post. Your impression still shows on your profile.';
+
+// The alert after ONE default changed, when something you have differs (D3):
+// two buttons, the apply only on the second. `existing` = the PATCH's preview.
+export type DefaultsPreview = { field: string; count: number; wider: number; narrower: number };
+const moments = (n: number) => (n === 1 ? '1 moment' : `${n} moments`);
+const checkins = (n: number) => (n === 1 ? '1 check-in' : `${n} check-ins`);
+export function applyDefaultAlert(p: DefaultsPreview): { title: string; message: string; keep: string; all: string } {
+  if (p.field === 'checkinHiddenFromFeed') {
+    return {
+      title: 'Apply to Existing Check-Ins?',
+      message: `${checkins(p.count)} would be ${p.narrower > 0 ? 'hidden' : 'shown'}.`,
+      keep: 'New Check-Ins Only',
+      all: p.count === 1 ? 'Include Existing Check-In' : `All ${p.count} Check-Ins`,
+    };
+  }
+  const message = p.wider > 0 && p.narrower > 0
+    ? `${moments(p.count)} ${p.count === 1 ? 'has' : 'have'} a different setting.\n${p.wider} would open wider and ${p.narrower} would narrow.`
+    : `This would ${p.wider > 0 ? 'increase' : 'reduce'} visibility for ${moments(p.count)}.`;
+  // One item: "Include Existing …" (Simon picked Codex's option, 2026-11-25:
+  // "All 1 Moment" read oddly).
+  return { title: 'Apply to Existing Moments?', message, keep: 'New Moments Only', all: p.count === 1 ? 'Include Existing Moment' : `All ${p.count} Moments` };
+}
+
+// Create Moment's Privacy row (D4, § 6 item 7): the ACTUAL values, never
+// "Default". Line 1 the audience (+ the tasters' circle when it applies and is
+// on); line 2 what people who haven't joined can see (location, then
+// description and link; only when the audience reaches anyone outside), then
+// your own Incognito / hidden from feeds. Line 2 is PHRASES: the row keeps the
+// whole ones that fit and ends with an ellipsis (components: FitPhrases).
+export type CreatePrivacyValues = { visibility: Audience; includeGuestCircles: boolean; showPlace: boolean; showDetails: boolean; onlyInside: boolean; hiddenFromFeed: boolean };
+export function createPrivacyLines(p: CreatePrivacyValues): { first: string; phrases: string[] } {
+  const circle = guestCirclesApply(p.visibility) && p.includeGuestCircles ? (p.visibility === 'followers' ? ' + tasters’ followers' : ' + tasters’ friends') : '';
+  const shown = p.visibility === 'members' ? [] : [p.showPlace ? 'location' : null, p.showDetails ? 'description and link' : null].filter((s): s is string => !!s);
+  const phrases = [
+    shown.length ? `${shown.join(', ')} shown` : null,
+    // "Incognito on", only while on (Simon, 2026-11-25).
+    p.onlyInside ? 'Incognito on' : null,
+    p.hiddenFromFeed ? 'hidden from feeds' : null,
+  ].filter((s): s is string => !!s);
+  return { first: `${audienceLabel(p.visibility, 'host')}${circle}`, phrases };
+}
+// Line 2 from the first `keep` phrases: the first letter up, ` · ` between,
+// an ellipsis when some were left out.
+export function phraseLine(phrases: string[], keep = phrases.length): string {
+  const kept = phrases.slice(0, Math.max(1, keep));
+  const s = kept.join(' · ') + (kept.length < phrases.length ? ' …' : '');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// D1: the line under a moment's date while YOU are Incognito or hidden from
+// feeds there (whatever set it: a default, a hand choice, promotion), with
+// the struck-through eye first and "Change" opening Moment Privacy (§ 6 item 8).
+export const MOMENT_STATUS_CHANGE = 'Change';
+export function momentStatusLine(me: { onlyInside: boolean; hiddenFromFeed?: boolean } | null | undefined): string | null {
+  if (!me) return null;
+  if (me.onlyInside && me.hiddenFromFeed) return 'Incognito · hidden from feeds';
+  if (me.onlyInside) return 'Incognito';
+  if (me.hiddenFromFeed) return POST_PRIVACY_COPY.hiddenFromFeed.line;
+  return null;
+}

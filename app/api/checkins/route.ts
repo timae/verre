@@ -20,6 +20,7 @@ import { CatalogValidationError, publishSearchWords } from '@/lib/catalogWrite'
 import { isClientOccurrenceId } from '@/lib/occurrences'
 import { prepareLink, applyLink, linkRequired, type AppliedLink } from '@/lib/catalogLink'
 import { linkableLink, loadEntries, entryKey } from '@/lib/catalogEntries'
+import { readDefaults } from '@/lib/momentDefaults'
 
 // Inlined S3 copy — adding a third named export to lib/s3.ts trips a Next
 // 15.5 / webpack 5.98 bundling bug (see lib/accountDelete.ts for the same
@@ -105,7 +106,7 @@ export async function POST(req: NextRequest) {
   // mints one (the add-flow body); "had a sip" takes its SOURCE's link. Typed
   // identity text (wineName, producer, vintage, grape, type, wineRegion,
   // wineCountry) is ignored: the bottle's snapshot is the entry's.
-  const { occurrenceId, score, flavors, aromas, notes, imageData, copyFromCheckinId, copyPhoto, venueName, city, country, lat, lng, taggedUserIds: rawTags, vinification, description, purchaseUrl } = body
+  const { occurrenceId, score, flavors, aromas, notes, imageData, copyFromCheckinId, copyPhoto, venueName, city, country, lat, lng, taggedUserIds: rawTags, vinification, description, purchaseUrl, hiddenFromFeed } = body
   // 🔒 The client mints the occurrence id (model change § 8a): a check-in
   // retried after a lost response replays the WHOLE check-in (occurrence,
   // rating, feed item) instead of adding a second one. The photo is not part of
@@ -143,6 +144,11 @@ export async function POST(req: NextRequest) {
   // omitted-preserves collapses to "omitted = []" (the column default).
   const aromasCheck = gateAromas(aromas); if (aromasCheck.error) return NextResponse.json({ error: aromasCheck.error }, { status: 400 })
   const ratingAromas = aromasCheck.value ?? []
+  // Moment Defaults (§ 2.3, D8): `hiddenFromFeed` present = this check-in's
+  // choice; absent = your check-in default (read in the transaction). Had a
+  // sip is this same POST. A replay answers the stored check-in before this
+  // matters; photo PATCHes and edits never touch the column.
+  if (hiddenFromFeed !== undefined && typeof hiddenFromFeed !== 'boolean') return NextResponse.json({ error: 'invalid hiddenFromFeed' }, { status: 400 })
 
   // A retry of a check-in that already committed is answered BEFORE any
   // source-dependent work (Codex r1: a "had a sip" retry whose source was
@@ -354,6 +360,7 @@ export async function POST(req: NextRequest) {
         lat: lat ?? null,
         lng: lng ?? null,
         locationPublic: hasLocation,
+        hiddenFromFeed: typeof hiddenFromFeed === 'boolean' ? hiddenFromFeed : (await readDefaults(tx, userId)).checkinHiddenFromFeed,
       },
     })
     // 5. Attach the rating_image if we have one. sortOrder=0 (single

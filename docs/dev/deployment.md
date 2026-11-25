@@ -278,6 +278,8 @@ Plan of record: `docs/dev/proposals/moment-visibility.md`. Step 1a (the record a
 
 🔒 **Rollback floors (both features):** once `MOMENT_LOOKIN_ENABLED` is on and someone has saved "Only Inside This Moment", no deploy may go below step 3: an older build would serve those posts to everyone. Once `HIDE_FROM_FEED_ENABLED` is on and someone has hidden a post (a check-in, or a moment post: R12), the same: no deploy below step 3 (the moment post's choice needs `20261125120000_moment_hide_from_feed` and its readers). Turning either flag OFF later stops new choices only; the stored ones keep hiding (the readers are not behind the flags). Roll forward only, as for account privacy (`docs/dev/profile-visibility.md`). A release that carries step 3 with both flags unset has no floor of its own: nothing can be stored.
 
+🔒 **Moment Defaults' rollback floor** (`20261125130000_moment_defaults`, additive: CREATE TABLE only; live from day one, no flag): once it is live, a deploy below it ignores the table, so protective defaults (Incognito, Hide from Feed) silently stop being copied onto new moments, joins and check-ins; nothing existing changes and nothing leaks. The release's own floor (the catalogue cutover) is higher anyway. Roll forward only.
+
 **Before the flag flips:** the go-live runbook (the proposal's § 11: the image gate, the guest-hosted check, the tombstone statement, the `shown` seed, the secret on every instance) is written with the go-live step, not here. Until it has run, the flag stays unset.
 
 ## Usernames — release day and the operator script

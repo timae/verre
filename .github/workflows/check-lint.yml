@@ -60,3 +60,11 @@ jobs:
       # negative control first; blind spots in the script header.
       - name: Moment-name census
         run: node scripts/check-moment-names.mjs
+
+      # Membership-write census (Moment Defaults K1 / K2): every write of a
+      # session_members row in app/ + lib/ is listed as ENTRY (participation
+      # may start there: seedParticipation follows it in the same function) or
+      # NOT ENTRY with its reason (set-role, kick-keep: must not seed). Own
+      # negative control first; blind spots in the script header.
+      - name: Membership-write census
+        run: node scripts/check-member-writes.mjs

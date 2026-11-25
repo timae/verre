@@ -179,6 +179,10 @@ export function NewWinePage() {
                 trackColor={{ false: offTrack, true: theme.accent }}
                 ios_backgroundColor={offTrack}
                 accessibilityLabel="Sparkling"
+                // React Native's iOS Switch defaults to `alignSelf: 'flex-start'`
+                // (Switch.js), which left it at the column's start, not centred
+                // under its title as ruled (2026-11-22).
+                style={{ alignSelf: 'center' }}
               />
             </View>
           </View>

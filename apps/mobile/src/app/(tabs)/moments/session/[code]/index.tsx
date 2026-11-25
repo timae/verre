@@ -1,4 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getMomentVisibility, momentVisibilityKey } from '@/lib/api/moments';
 import { getVisibility, VISIBILITY_KEY } from '@/lib/api/settings';
 import { StatusBar } from 'expo-status-bar';
@@ -28,6 +28,7 @@ import { markNoShake } from '@/components/ui/InPlaceEdit';
 import { useIsOnline } from '@/lib/query';
 import { lockState, useSessionPoll } from '@/lib/useSessionPoll';
 import { sessionHref, tabHomeHref, useSessionTab } from '@/lib/sessionStack';
+import { momentStatusLine } from '@/lib/momentVisibilityCopy';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { useTheme } from '@/theme';
 
@@ -286,9 +287,16 @@ export default function SessionLineup() {
   // fade is a native-driven Animated.Value owned by the child — no re-render.
   const [heroCollapsed, setHeroCollapsed] = useState(false);
 
+  // D1 (Moment Defaults): while YOU are Incognito or hidden from feeds here,
+  // whatever set it, a line under the date says so with "Change" (Moment
+  // Privacy). From Moment Privacy's read (prefetched above; this observer only
+  // keeps it current). Not on the look-in, not while a host edits in place.
+  const privacyRead = useQuery({ queryKey: momentVisibilityKey(code), queryFn: () => getMomentVisibility(code), enabled: visited && hasMeta, retry: false });
+  const statusLine = momentStatusLine(privacyRead.data?.me);
+  const status = statusLine ? { line: statusLine, onChange: () => router.push(sessionHref(sessionTab, 'settings/visibility', { code }), { dangerouslySingular: true }) } : null;
   // Shared OvcAbout — same props in both layouts.
   const ovc = meta ? (
-    <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} edit={edit} />
+    <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} edit={edit} status={status} />
   ) : null;
   const openImpression = (wineId: string) =>
     router.push(sessionHref(sessionTab, 'impression/[wineId]', { code, wineId }), { dangerouslySingular: true });

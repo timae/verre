@@ -358,6 +358,10 @@ export type CreateMomentBody = {
   description?: string;
   link?: string;
   blind?: boolean; // pro-gated server-side
+  // Moment Defaults (D4, ruled 2026-11-25): the six values the Privacy row
+  // showed, all sent (a field absent = your default at the time of the create,
+  // the server's rule for a client that sends none).
+  privacy?: { visibility: 'members' | 'friends' | 'followers' | 'verre'; includeGuestCircles: boolean; showPlace: boolean; showDetails: boolean; onlyInside: boolean; hiddenFromFeed: boolean };
   // No lifespan: every logged-in create is 'unlimited' server-side (a body
   // lifespan is ignored; root CLAUDE.md § Freemium split).
 };

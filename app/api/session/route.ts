@@ -12,6 +12,7 @@ import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { isSameOrigin } from '@/lib/csrf'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { newAnonIdentityId, newAnonToken, userIdentityId } from '@/lib/identity'
+import { parseCreatePrivacy, createHostSettings, readDefaults, seedParticipation } from '@/lib/momentDefaults'
 
 // Inlined S3 reclaim — same workaround as app/api/me/avatar/route.ts: a
 // third export on lib/s3.ts gets dropped by webpack, so each route that
@@ -159,6 +160,12 @@ export async function POST(req: NextRequest) {
   // upload so a rejection can't orphan S3 bytes (same ordering as the fields).
   if (!meta.name || !meta.name.trim()) return NextResponse.json({ error: 'Please name your moment.' }, { status: 400 })
   if (!meta.dateFrom) return NextResponse.json({ error: 'Please set a start date.' }, { status: 400 })
+  // Moment Defaults (§ 2.3): `privacy` = this moment's own choices (a field
+  // present, `false` included); absent = the host's default at the time of the
+  // create. Signed in only: a guest's is ignored (the trigger closes a
+  // guest-hosted moment). Before the cover upload, like the checks above.
+  const privacy = session?.user ? parseCreatePrivacy((body as Record<string, unknown>).privacy) : {}
+  if (typeof privacy === 'string') return NextResponse.json({ error: privacy }, { status: 400 })
 
   // Upload the cover last among the validations (every rejection above is
   // side-effect-free). The settings path's key (public-user-ids § 8a c): a
@@ -201,9 +208,19 @@ export async function POST(req: NextRequest) {
         }
         // Reconciled from birth (model change § 8a): revision 1, the empty
         // line-up stamped with it in the projection.
-        await tx.session.create({ data: { code: candidate, ...sessionMetaToColumns(meta), lineupRevision: 1 } })
+        // The four host settings: the body's, else the host's defaults (read
+        // here, in the create's transaction). Never in meta (lib/CLAUDE.md §
+        // Moment Visibility).
+        const defaults = await readDefaults(tx, userId)
+        const created = await tx.session.create({
+          data: { code: candidate, ...sessionMetaToColumns(meta), lineupRevision: 1, ...createHostSettings(privacy, defaults) },
+          select: { id: true },
+        })
         await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${candidate}`
         await tx.$executeRaw`INSERT INTO session_members (user_id, session_code, role) VALUES (${userId}, ${candidate}, 'host')`
+        // 🔒 An ENTRY writer (Moment Defaults K1): the host's own Incognito /
+        // Hide from Feed, the body's choice winning field by field.
+        await seedParticipation(tx, created, [userId], { onlyInside: privacy.onlyInside, hiddenFromFeed: privacy.hiddenFromFeed })
         await tx.$executeRaw`
           UPDATE users SET lifetime_sessions_hosted = lifetime_sessions_hosted + 1,
                            lifetime_sessions_joined = lifetime_sessions_joined + 1

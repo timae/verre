@@ -1,6 +1,6 @@
 import { useNavigation, Stack, useRouter } from 'expo-router';
-import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ScrollView, View, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
@@ -9,6 +9,9 @@ import { Button } from '@/components/ui/Button';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { RatingSection } from '@/components/scoring/RatingSection';
+import { ToggleRow } from '@/components/moments/settingsParts';
+import { getMomentDefaults, MOMENT_DEFAULTS_KEY } from '@/lib/api/momentDefaults';
+import { MOMENT_HIDE_FROM_FEED_TITLE, RATE_HIDE_FROM_FEED_HELPER } from '@/lib/momentVisibilityCopy';
 import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchScroll';
 import { ApiError } from '@/lib/api/sessions';
 import { createCheckin, patchCheckin } from '@/lib/api/feed';
@@ -16,7 +19,7 @@ import { linkBody, writeOutcome } from '@/lib/catalogChoice';
 import { newClientId } from '@/lib/clientId';
 import { authClient } from '@/lib/authClient';
 import { dropUnmountedFeedCaches, invalidateProfileHeader, refetchFeedCaches } from '@/lib/feedCache';
-import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
+import { checkinDraftVersion, clearCheckinDraft, getCheckinDraft, setCheckinDraft, subscribeCheckinDrafts, type CheckinDraft } from '@/lib/checkinDraft';
 import { popsPast } from '@/lib/pickerFlow';
 import { checkinHref, useSessionTab } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
@@ -82,6 +85,36 @@ export default function CheckinRate() {
   const postedRating = useRef<string | null>(null);
   // The latest draft (the store), not the mount snapshot, for every write-back.
   const latest = () => getCheckinDraft(mount.tab) ?? draft!;
+  // Hide from Feed (Moment Defaults): preset from your check-in default, shown
+  // only once it loaded (never a guessed off), kept in the draft.
+  const defaults = useQuery({ queryKey: MOMENT_DEFAULTS_KEY, queryFn: getMomentDefaults, refetchOnMount: 'always' });
+  const [hidden, setHidden] = useState<boolean | undefined>(draft?.hiddenFromFeed);
+  // 🔒 Once a post is in flight or may have landed, what it sent (a value, or
+  // nothing) is final: the draft's `privacyLocked` (Codex build r1 + r2: kept
+  // in the shared draft, so a back-swipe and a second rate stage see it). A
+  // frozen draft never presets.
+  const locked = () => { const d = getCheckinDraft(mount.tab); return !!d?.frozen || !!d?.privacyLocked; };
+  // The shared draft's version: a lock or an unlock from ANY rate stage of the
+  // flow re-runs the preset below and re-renders the switch (Codex build r4 +
+  // r5: a refusal on another stage unlocks this one's draft too).
+  const draftVersion = useSyncExternalStore(subscribeCheckinDrafts, checkinDraftVersion, checkinDraftVersion);
+  // 🔒 Draft writes of an async step land only while the store's draft is
+  // still the check-in that step belongs to (Codex build r4 + r5): an
+  // abandoned check-in's late answer never touches, unlocks, freezes,
+  // recreates or clears the next one on this tab.
+  const writeOwn = (id: string, patch: Partial<CheckinDraft>) => {
+    const d = getCheckinDraft(mount.tab);
+    if (d && d.occurrenceId === id) setCheckinDraft(mount.tab, { ...d, ...patch });
+  };
+
+  // Preset only from a read of THIS screen (a cached copy may predate a
+  // default just saved: review r1 P3).
+  useEffect(() => {
+    if (hidden !== undefined || locked()) return;
+    if (!defaults.data || !defaults.isFetchedAfterMount || !defaults.isSuccess || defaults.isFetching || !getCheckinDraft(mount.tab)) return;
+    setHidden(defaults.data.checkinHiddenFromFeed);
+    setCheckinDraft(mount.tab, { ...latest(), hiddenFromFeed: defaults.data.checkinHiddenFromFeed });
+  }, [defaults.data, defaults.isFetchedAfterMount, defaults.isSuccess, defaults.isFetching, hidden, mount.tab, draftVersion]); // eslint-disable-line react-hooks/exhaustive-deps -- latest() reads the store
 
   // Cold deep-link / reload lands here with no draft — bounce to stage 1,
   // which owns the flow's entry.
@@ -120,12 +153,19 @@ export default function CheckinRate() {
   const finish = () => {
     if (left.current) return;
     left.current = true;
-    clearCheckinDraft(mount.tab);
     refetchFeedCaches(queryClient);
     // A popped profile list can't show the new post; drop it so it reloads.
     dropUnmountedFeedCaches(queryClient);
     // Your header's counts (impressions, tile photo, average) changed too.
     invalidateProfileHeader(queryClient, meId);
+    // 🔒 Only this check-in's draft is cleared and only its flow left (Codex
+    // build r5): an abandoned check-in that lands after you started the next
+    // one must not erase that one or pop its screens. Its OWN flow is left even
+    // from a stage that unmounted (a back-swipe and a reopened Rate It while
+    // the post was in flight: the post landed, so that stage goes too; r6).
+    const d = getCheckinDraft(mount.tab);
+    if (d && d.occurrenceId !== occurrenceId) return;
+    clearCheckinDraft(mount.tab);
     const st = navigation.getState();
     router.dismiss((st ? popsPast(st.routes.map((r) => r.name), st.index, 'check-in/index') : null) ?? 2);
   };
@@ -136,12 +176,12 @@ export default function CheckinRate() {
     if (!draft?.photo && !tried) return true;
     try {
       if (draft?.photo) {
-        setCheckinDraft(mount.tab, { ...latest(), photoTried: true });
+        writeOwn(occurrenceId, { photoTried: true });
         await patchCheckin(feedItemId, { imageData: draft.photo.dataUrl });
       } else {
         // Cleared after an upload that may have landed: remove it.
         await patchCheckin(feedItemId, { imageData: null });
-        setCheckinDraft(mount.tab, { ...latest(), photoTried: false });
+        writeOwn(occurrenceId, { photoTried: false });
       }
       return true;
     } catch (e) {
@@ -186,8 +226,13 @@ export default function CheckinRate() {
 
   const onCheckIn = async () => {
     if (!draft) return;
+    // An earlier rate stage's POST still in flight (a back-swipe meanwhile):
+    // this one waits for it (a tap does nothing until it settled).
+    if (getCheckinDraft(mount.tab)?.posting) return;
     setError(null);
     setSaving(true);
+    // Locked from here: unlocked again only by a definite refusal (below).
+    setCheckinDraft(mount.tab, { ...latest(), privacyLocked: true });
     if (postedId !== null) {
       if (!(await saveRatingIfChanged(postedId))) return;
       if (!(await sendPhoto(postedId))) return;
@@ -199,6 +244,12 @@ export default function CheckinRate() {
     // when anything is rated, {} when every axis is None.
     const cleanFlavors = fillFlavourZeros(flavors, 'wine', draft.choice.label);
     let posted: { id: number; replayed: boolean };
+    // 🔒 Every draft write after the POST is bound to the occurrence that SENT
+    // it (Codex build r4): an abandoned check-in's late answer must not freeze
+    // or unlock the next check-in's draft on this tab, nor recreate its own.
+    const sentId = occurrenceId;
+    const own = (patch: Partial<CheckinDraft>) => writeOwn(sentId, patch);
+    own({ posting: true });
     try {
       posted = await createCheckin({
         occurrenceId,
@@ -214,6 +265,8 @@ export default function CheckinRate() {
         ...(notes.trim() ? { notes: notes.trim() } : {}),
         ...(draft.venue.trim() ? { venueName: draft.venue.trim() } : {}),
         ...(draft.city.trim() ? { city: draft.city.trim() } : {}),
+        // The switch's value once shown, from the draft (a frozen retry sends the same).
+        ...(latest().hiddenFromFeed !== undefined ? { hiddenFromFeed: latest().hiddenFromFeed } : {}),
       });
     } catch (e) {
       setSaving(false);
@@ -221,21 +274,25 @@ export default function CheckinRate() {
       // 🔒 It MAY have landed: the choice freezes (ADR-0009), so the retry
       // sends the same id and wine, never an edited one.
       if (outcome === 'unknown') {
-        setCheckinDraft(mount.tab, { ...latest(), frozen: true });
+        own({ frozen: true });
         setError('We couldn’t confirm it was checked in. Try again.');
         return;
       }
+      // A definite refusal stored nothing: the switch may change again.
+      own({ privacyLocked: false });
       // Someone else's id (practically never): the next try gets a new one.
       if (e instanceof ApiError && e.status === 409) {
         const fresh = newClientId();
         setOccurrenceId(fresh);
-        setCheckinDraft(mount.tab, { ...latest(), occurrenceId: fresh });
+        own({ occurrenceId: fresh, posting: false });
       }
       const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
       setError(msg && msg !== 'http' ? msg : "Couldn't post it. Check your connection and try again.");
       return;
+    } finally {
+      own({ posting: false });
     }
-    setCheckinDraft(mount.tab, { ...latest(), frozen: true });
+    own({ frozen: true });
     postedRating.current = ratingKey(score, cleanFlavors, aromas, notes);
     // A replay answers the check-in as it was first stored: what changed in the
     // draft since (a second pass after a lost answer) goes as an edit (review r1).
@@ -316,6 +373,21 @@ export default function CheckinRate() {
           onAromas={setAromas}
           onRequestAromaScroll={scrollAromaSearchTo}
         />
+        {/* Hide from Feed (Moment Defaults, plan § 3): read-only once the post
+            may have landed (a retry re-sends the same body). */}
+        {hidden !== undefined ? (
+          <ToggleRow
+            title={MOMENT_HIDE_FROM_FEED_TITLE}
+            subtitle={RATE_HIDE_FROM_FEED_HELPER}
+            value={hidden}
+            disabled={postedId !== null || locked()}
+            busy={saving}
+            onChange={(on) => {
+              setHidden(on);
+              setCheckinDraft(mount.tab, { ...latest(), hiddenFromFeed: on });
+            }}
+          />
+        ) : null}
       </ScrollView>
 
       {/* Sticky "Check In" — the final action; error above, always visible. */}

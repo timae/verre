@@ -337,6 +337,13 @@ jobs:
       # could open it (feed, web profile, someone's Impressions and its q, own
       # Cravings), decideAdmission against decideMoments, one candidate set
       # whatever q says, the top-up, the Incognito race, a throwing decision.
+      # § 27 Moment Defaults (scripts/tests/moment-defaults-section.mts): the
+      # copy when participation STARTS (each ENTRY writer, none of the others,
+      # legacy authors / hosts grandfathered), the check-in default, the
+      # routes, the preview by direction, the apply (K6, the scopes, the
+      # races under each moment's locks, the lock timeout, the Redis
+      # deadlines, account deletion's lock order, the budgets, the flags),
+      # the cascade, SYSTEM_DEFAULTS, the membership-write census.
       - name: You profile (tiles, retention, profile images, settings, public ids, moment visibility)
         run: npx tsx scripts/tests/you-profile-integration.mts
         timeout-minutes: 12

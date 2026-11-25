@@ -92,6 +92,8 @@ Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy
 
 Redis key namespace, SCAN helpers (`scanKeys`, `hasKey`, preferred over `redis.keys` which blocks the event loop): see `lib/CLAUDE.md`.
 
+🔒 **Moment Defaults are copied when participation STARTS, never read live** (`lib/momentDefaults.ts`): every write of a `session_members` row is classified ENTRY (it seeds) or NOT ENTRY in `scripts/check-member-writes.mjs` (CI); a new membership writer is classified there. Detail: `lib/CLAUDE.md` § Moment Defaults.
+
 ### Score system
 
 Scores are decimal `0..5` in `0.25` steps. `0` means "not rated".

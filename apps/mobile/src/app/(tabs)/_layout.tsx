@@ -86,6 +86,7 @@ export default function TabsLayout() {
     OPENED_POST_PATH.test(pathname) ||
     pathname.includes('/edit-impression/') ||
     pathname.endsWith('/moments/create') ||
+    pathname.endsWith('/moments/create-privacy') || // Create Moment's Privacy page, every mount
     // both check-in create stages (sticky Rate It / Check In bars), on Feed
     // and on You (your Impressions' "+ Check In", lists plan D8): suffix-based.
     /\/check-in(\/rate|\/wine)?\/?$/.test(pathname) ||

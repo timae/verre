@@ -1,11 +1,13 @@
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { useSyncExternalStore } from 'react';
+import { useIsFocused } from 'expo-router';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { Alert } from 'react-native';
 import { getFeedItem, setPostPrivacy, type FeedItem } from '@/lib/api/feed';
 import { markProfileHeaderStale, refetchFeedCaches, updateFeedCaches } from '@/lib/feedCache';
 import { errorText } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
-import { bumpTarget, postPrivacyVersion, privacyTarget, recordMomentPrivacy, recordPostPrivacy, subscribePostPrivacy, writeSuperseded, type PrivacyField } from '@/lib/postPrivacyState';
+import { bumpTarget, fieldAppliedAt, needsApplyReread, postPrivacyVersion, privacyTarget, recordFieldApply, recordMomentPrivacy, recordPostPrivacy, subscribePostPrivacy, writeSuperseded, type PrivacyField } from '@/lib/postPrivacyState';
+import type { MomentDefaultField } from '@/lib/api/momentDefaults';
 import { useMeId } from '@/lib/meId';
 import { POST_PRIVACY_COPY } from '@/lib/momentVisibilityCopy';
 import { postPrivacyOf, withPrivacy, type PrivacyTarget } from '@/lib/postPrivacyPatch';
@@ -104,15 +106,19 @@ export async function togglePostPrivacy(queryClient: QueryClient, postId: number
 // run the writes in another order than the app saw them): the post is re-read
 // and its value recorded at the read's START (`getFeedItem` stamps it), so only
 // a write that started later can outrank it.
-async function rereadOwnPost(postId: number, field: PrivacyField, meId: string | null, epoch: number): Promise<void> {
-  if (!meId) return;
+// Says whether it got an answer (the apply re-read retries on the next focus
+// when it did not).
+async function rereadOwnPost(postId: number, field: PrivacyField, meId: string | null, epoch: number): Promise<boolean> {
+  if (!meId) return false;
   try {
     const it = (await getFeedItem(meId, postId)).items[0];
-    if (viewerCacheEpoch() !== epoch || !it) return;
+    if (viewerCacheEpoch() !== epoch || !it) return true;
     const [served, at] = it.type === 'session' ? [it.session[field], it.session.privacyAt] : [field === 'hiddenFromFeed' ? it.checkin.hiddenFromFeed : undefined, it.checkin.privacyAt];
     if (typeof served === 'boolean' && at != null) recordPostPrivacy(postId, field, served, at);
+    return true;
   } catch {
     // The lists' refetch and the next open read it again.
+    return false;
   }
 }
 
@@ -149,4 +155,43 @@ export function usePostPrivacyRow(item: PrivacyTarget | null | undefined): { row
     rows: switches.map((p) => ({ field: p.field, label: POST_PRIVACY_COPY.hiddenFromFeed.row, on: p.on, onToggle: () => void togglePostPrivacy(queryClient, p.postId, p.field, !p.on, meId, p.sessionId) })),
     line: switches.some((p) => p.on) ? POST_PRIVACY_COPY.hiddenFromFeed.line : null,
   };
+}
+
+// Moment Defaults' apply answered (a 429 too: its narrowing part applied,
+// plan § 3): the field's own-post records are dropped and its apply time
+// kept (lib/postPrivacyState.ts), every mounted feed list re-read in place,
+// every Moment Privacy copy re-read, your header marked stale. Host fields
+// touch no post of yours, only Moment Privacy.
+const POST_FIELD: Partial<Record<MomentDefaultField, PrivacyField>> = { onlyInside: 'onlyInside', momentHiddenFromFeed: 'hiddenFromFeed', checkinHiddenFromFeed: 'hiddenFromFeed' };
+export function afterDefaultsApply(queryClient: QueryClient, field: MomentDefaultField, meId: string | null): void {
+  const pf = POST_FIELD[field];
+  if (pf) recordFieldApply(pf, Date.now());
+  void refetchFeedCaches(queryClient);
+  // Cancelled first (Codex build r3): a first read still in flight would be
+  // REUSED by the invalidation and could answer the pre-apply value.
+  void queryClient.cancelQueries({ queryKey: ['moment-visibility'] }).then(() => queryClient.invalidateQueries({ queryKey: ['moment-visibility'] }));
+  void markProfileHeaderStale(queryClient, meId);
+}
+
+// An opened post's PINNED copy (no feed page may hold it any more) fetched
+// before such an apply re-reads its Hide from Feed (the only switch a post
+// shows, R13) once: when its screen regains focus, and when the apply lands
+// while it is focused (Codex r1 P3 + r2 P3: you may have gone back to the
+// post before the apply answered).
+export function useApplyReread(item: PrivacyTarget | null | undefined): void {
+  const meId = useMeId();
+  const focused = useIsFocused();
+  const version = useSyncExternalStore(subscribePostPrivacy, postPrivacyVersion, postPrivacyVersion);
+  const rereadFor = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    const sw = postPrivacyOf(item)[0];
+    if (!focused || !item || !meId || !sw) return;
+    const servedAt = item.type === 'session' ? item.session.privacyAt : item.checkin.privacyAt;
+    if (!needsApplyReread('hiddenFromFeed', servedAt, rereadFor.current)) return;
+    // Marked at once (one read in flight per apply), cleared again when the
+    // read failed (offline), so the next focus retries (review r1 P3).
+    const at = fieldAppliedAt('hiddenFromFeed');
+    rereadFor.current = at;
+    void rereadOwnPost(sw.postId, 'hiddenFromFeed', meId, viewerCacheEpoch()).then((ok) => { if (!ok && rereadFor.current === at) rereadFor.current = undefined; });
+  }, [focused, version, item, meId]);
 }

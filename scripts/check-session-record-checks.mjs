@@ -17,9 +17,10 @@
 // format and the four visibility values (every read treats anything else as
 // closed, so a loosened CHECK would hide moments, never open them, but it
 // should not move unseen). `moment_privacy` is listed so a CHECK added there
-// later lands here too. Sibling of check-catalog-contract-checks.mjs, much
-// smaller: the tables below are not an import contract, so only the CHECK
-// bodies are compared.
+// later lands here too, and `moment_defaults` for its visibility CHECK (Moment
+// Defaults: the same four values as `sessions`). Sibling of
+// check-catalog-contract-checks.mjs, much smaller: the tables below are not an
+// import contract, so only the CHECK bodies are compared.
 //
 // Reads a REAL migrated database and diffs every CHECK constraint on the
 // session-record tables byte-for-byte against prisma/session-record-checks.json.
@@ -41,7 +42,7 @@ const SNAPSHOT = join(root, 'prisma', 'session-record-checks.json')
 // `bookmarks` since the catalogue model change (step 2): its catalogue-link CHECK
 // is the only guard against a vintage without its product (the composite key is
 // MATCH SIMPLE), as `wines_catalog_link_check` is for an occurrence.
-const TABLES = ['ratings', 'sessions', 'session_members', 'session_bans', 'session_tombstones', 'wines', 'bookmarks', 'moment_privacy']
+const TABLES = ['ratings', 'sessions', 'session_members', 'session_bans', 'session_tombstones', 'wines', 'bookmarks', 'moment_privacy', 'moment_defaults']
 
 const prisma = createPrismaClient()
 try {

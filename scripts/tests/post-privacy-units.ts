@@ -13,6 +13,10 @@
 //   §5 the menu rows' presence rule (no field, no row)
 //   §8 step 3b, "Private Moment": the place line, a blind Impressions row's
 //      line, the note under "Who Can See You" in every state and variant
+//   §9 Moment Defaults: the alert's words from the preview, Create Moment's
+//      Privacy value (lines and whole phrases), the line under a moment's
+//      date, the apply time (records of the field dropped, the pinned copy's
+//      one re-read, also after you left the page), the create's store
 //
 // Run: npx tsx scripts/tests/post-privacy-units.ts
 
@@ -23,6 +27,10 @@ import { postPrivacyOf, stampPrivacy, withPrivacy } from '../../apps/mobile/src/
 import { impressionRouteId, isImpressionRouteId, listRowTarget, parseImpressionRouteId } from '../../apps/mobile/src/lib/impressionRoute'
 import { impressionDetail } from '../../apps/mobile/src/lib/impressionDetail'
 import { PRIVATE_MOMENT, PRIVATE_MOMENT_INFO_LABEL, PRIVATE_MOMENT_NOTE, audienceSummaryLabel, blindRowLine, momentPlace, outsideNameLabel, ownAudienceBlock, privateMomentNote, shownOrHidden } from '../../apps/mobile/src/lib/momentVisibilityCopy'
+import * as copy from '../../apps/mobile/src/lib/momentVisibilityCopy'
+import { fieldAppliedAt, needsApplyReread, recordFieldApply } from '../../apps/mobile/src/lib/postPrivacyState'
+import { clearCreatePrivacy, getCreatePrivacy, seedCreatePrivacy, setCreatePrivacy } from '../../apps/mobile/src/lib/createPrivacy'
+import { nextCheckinDraft } from '../../apps/mobile/src/lib/checkinDraft'
 
 let failures = 0
 function check(name: string, got: unknown, want: unknown) {
@@ -209,6 +217,74 @@ console.log('§8 "Private Moment" (step 3b, R16–R19)')
     [privateMomentNote({ ...base, signedIn: false }), privateMomentNote({ ...base, onlyInside: true }), privateMomentNote({ ...base, hiddenFromFeed: true }), privateMomentNote({ ...base, postsOnlyMe: true })],
     [null, null, null, null])
   check('…Hide from Feed absent (its flag off) reads as off: the note shows', privateMomentNote({ ...base, hiddenFromFeed: undefined }), PRIVATE_MOMENT_NOTE.other)
+}
+
+console.log('\n§9 Moment Defaults')
+{
+  const { applyDefaultAlert, createPrivacyLines, phraseLine, momentStatusLine } = copy
+  check('mixed: the count, then both directions on a second line', applyDefaultAlert({ field: 'visibility', count: 7, wider: 5, narrower: 2 }),
+    { title: 'Apply to Existing Moments?', message: '7 moments have a different setting.\n5 would open wider and 2 would narrow.', keep: 'New Moments Only', all: 'All 7 Moments' })
+  check('one way, wider / narrower, plural and singular', [
+    applyDefaultAlert({ field: 'showPlace', count: 7, wider: 7, narrower: 0 }).message, applyDefaultAlert({ field: 'onlyInside', count: 7, wider: 0, narrower: 7 }).message,
+    applyDefaultAlert({ field: 'showPlace', count: 1, wider: 1, narrower: 0 }).message, applyDefaultAlert({ field: 'onlyInside', count: 1, wider: 0, narrower: 1 }).message,
+  ], ['This would increase visibility for 7 moments.', 'This would reduce visibility for 7 moments.', 'This would increase visibility for 1 moment.', 'This would reduce visibility for 1 moment.'])
+  check('one item: "Include Existing Moment" / "Include Existing Check-In" (picked 2026-11-25), never "All 1 …"',
+    [applyDefaultAlert({ field: 'onlyInside', count: 1, wider: 0, narrower: 1 }).all, applyDefaultAlert({ field: 'checkinHiddenFromFeed', count: 1, wider: 0, narrower: 1 }).all], ['Include Existing Moment', 'Include Existing Check-In'])
+  check('check-ins: their own title and buttons, hidden / shown', [applyDefaultAlert({ field: 'checkinHiddenFromFeed', count: 12, wider: 0, narrower: 12 }), applyDefaultAlert({ field: 'checkinHiddenFromFeed', count: 1, wider: 1, narrower: 0 }).message],
+    [{ title: 'Apply to Existing Check-Ins?', message: '12 check-ins would be hidden.', keep: 'New Check-Ins Only', all: 'All 12 Check-Ins' }, '1 check-in would be shown.'])
+  const base = { visibility: 'friends' as const, includeGuestCircles: true, showPlace: false, showDetails: false, onlyInside: false, hiddenFromFeed: false }
+  const line = (p: typeof base | Record<string, unknown>) => { const l = createPrivacyLines(p as typeof base); return [l.first, l.phrases.length ? phraseLine(l.phrases) : null] }
+  check('Codex\'s examples: the audience + circle; the details shown; your own choices', [
+    line(base), line({ ...base, includeGuestCircles: false }), line({ ...base, visibility: 'verre', showPlace: true, showDetails: true }),
+    line({ ...base, visibility: 'followers', onlyInside: true, hiddenFromFeed: true }),
+  ], [['Your Friends + tasters’ friends', null], ['Your Friends', null], ['Verre Users', 'Location, description and link shown'], ['Your Followers + tasters’ followers', 'Incognito on · hidden from feeds']])
+  check('Only People Who Joined: no circle, and nothing is "shown" to anyone outside; "Incognito on" only while on (Simon 2026-11-25)', line({ ...base, visibility: 'members', showPlace: true, onlyInside: true }), ['Only People Who Joined', 'Incognito on'])
+  check('a circle that does not apply (Verre Users) is never named', line({ ...base, visibility: 'verre' }), ['Verre Users', null])
+  check('whole phrases: keep 1 of 3 ends with an ellipsis; keep never below 1', [phraseLine(['location shown', 'Incognito', 'hidden from feeds'], 1), phraseLine(['description and link shown', 'Incognito'], 0)],
+    ['Location shown …', 'Description and link shown …'])
+  check('the line under the date (D1): each state, none when both off / no record', [
+    momentStatusLine({ onlyInside: true }), momentStatusLine({ onlyInside: false, hiddenFromFeed: true }), momentStatusLine({ onlyInside: true, hiddenFromFeed: true }),
+    momentStatusLine({ onlyInside: false, hiddenFromFeed: false }), momentStatusLine({ onlyInside: false }), momentStatusLine(null),
+  ], ['Incognito', 'Hidden from feeds', 'Incognito · hidden from feeds', null, null, null])
+  const strings = [copy.MOMENTS_AREA_TITLE, copy.WHO_CAN_SEE_THIS_MOMENT, copy.CHECKIN_HIDE_FROM_FEED_TITLE, copy.CHECKIN_HIDE_FROM_FEED_HELPER, copy.MOMENT_POSTS_HIDE_FROM_FEED_TITLE, copy.MOMENT_POSTS_HIDE_FROM_FEED_HELPER, copy.RATE_HIDE_FROM_FEED_HELPER, ...Object.values(copy.MOMENT_DEFAULTS_SECTIONS)]
+  check('no em dash in the new strings', strings.some(t => t.includes('\u2014')), false)
+  check('the split\'s words (Simon 2026-11-25): no "tasting", "Create" not "Host", no "New"', [copy.MOMENTS_AREA_TITLE, copy.MOMENT_DEFAULTS_SECTIONS.host, copy.MOMENT_DEFAULTS_SECTIONS.join, copy.CHECKIN_HIDE_FROM_FEED_TITLE],
+    ['Moments & Check-Ins', 'Who Can See Moments You Create', 'Joining or Creating Moments', 'Hide Check-Ins from Feed'])
+  check('the two posts helpers name YOUR posts of each kind and stay short (≤ 90 characters)',
+    [copy.CHECKIN_HIDE_FROM_FEED_HELPER.includes('your check-in posts'), copy.MOMENT_POSTS_HIDE_FROM_FEED_HELPER.includes('your moment posts'), copy.CHECKIN_HIDE_FROM_FEED_HELPER.length <= 90, copy.MOMENT_POSTS_HIDE_FROM_FEED_HELPER.length <= 90], [true, true, true, true])
+  // The apply time.
+  clearPostPrivacyState()
+  recordPostPrivacy(41, 'hiddenFromFeed', true, 1_000)
+  recordMomentPrivacy(7, 'hiddenFromFeed', true, 1_000)
+  recordPostPrivacy(41, 'onlyInside', true, 1_000)
+  recordFieldApply('hiddenFromFeed', 2_000)
+  check('an apply drops every record of ITS field (posts and moments), keeps the others', [effectivePrivacy(41, 'hiddenFromFeed', false, 500), effectivePrivacy(41, 'hiddenFromFeed', false, 500, 7), effectivePrivacy(41, 'onlyInside', false, 500)], [false, false, true])
+  check('a pinned copy fetched before the apply re-reads; one fetched after does not; an unstamped copy never', [needsApplyReread('hiddenFromFeed', 1_500, undefined), needsApplyReread('hiddenFromFeed', 2_500, undefined), needsApplyReread('hiddenFromFeed', undefined, undefined)], [true, false, false])
+  check('…once per apply; a newer apply asks again', [needsApplyReread('hiddenFromFeed', 1_500, fieldAppliedAt('hiddenFromFeed')), (recordFieldApply('hiddenFromFeed', 3_000), needsApplyReread('hiddenFromFeed', 1_500, 2_000))], [false, true])
+  check('an apply never moves back in time; no apply → nothing to re-read', [(recordFieldApply('hiddenFromFeed', 2_500), fieldAppliedAt('hiddenFromFeed')), needsApplyReread('onlyInside', 1, undefined)], [3_000, false])
+  // Leaving the page before the apply answered: the answer still records the
+  // apply (afterDefaultsApply runs whatever is mounted), so the post re-reads.
+  recordFieldApply('onlyInside', 4_000)
+  check('…an apply answering after you left Settings still marks the pinned post for its re-read', needsApplyReread('onlyInside', 3_900, undefined), true)
+  clearPostPrivacyState()
+  check('cleared with the viewer', fieldAppliedAt('hiddenFromFeed'), undefined)
+  // Stage 1's draft rebuild keeps the rate stage's fields (review r1 P2).
+  const det = { choice: { label: { name: 'W' } } as never, photo: null, vinification: 'v', description: 'd', purchaseUrl: '', venue: 'Bar', city: '' }
+  const prev = { ...det, occurrenceId: 'occ-1', frozen: true, photoTried: true, score: 4, flavors: { body: 3 }, aromas: [], notes: 'n', hiddenFromFeed: true, privacyLocked: true, posting: true, choice: { label: { name: 'Frozen' } } as never }
+  const next = nextCheckinDraft(prev, { ...det, venue: 'Other bar' }, 'occ-2')
+  check('a back-swipe to stage 1 keeps Hide from Feed, its lock and a POST in flight, the rating, the id, the freeze and a frozen wine; takes the new details',
+    [next.hiddenFromFeed, next.privacyLocked, next.posting, next.score, next.notes, next.occurrenceId, next.frozen, next.photoTried, (next.choice as { label: { name: string } }).label.name, next.venue], [true, true, true, 4, 'n', 'occ-1', true, true, 'Frozen', 'Other bar'])
+  check('…a first visit: nothing shown yet (undefined = the server applies the default)', nextCheckinDraft(null, det, 'occ-3').hiddenFromFeed, undefined)
+  // The create's store.
+  const v1 = { ...base }
+  seedCreatePrivacy('k1', v1)
+  seedCreatePrivacy('k1', { ...base, visibility: 'verre' })
+  check('the create store: seeded once (a later defaults read never overwrites a change)', getCreatePrivacy('k1')?.visibility, 'friends')
+  setCreatePrivacy('k1', 'onlyInside', true)
+  setCreatePrivacy('k2', 'onlyInside', true)
+  check('…a change lands on its own key only; an unknown key stays empty', [getCreatePrivacy('k1')?.onlyInside, getCreatePrivacy('k2')], [true, null])
+  clearCreatePrivacy('k1')
+  check('…cleared with its create screen', getCreatePrivacy('k1'), null)
 }
 
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1) }

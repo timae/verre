@@ -26,6 +26,7 @@ import { MOMENT_EDIT_HINT, MOMENT_FIELD_MAX, MomentCoverName, type MomentEditApi
 import { InlineField, LongPressable, markNoShake } from '@/components/ui/InPlaceEdit';
 import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen, kindLabel } from '@/lib/momentFormat';
+import { MOMENT_STATUS_CHANGE } from '@/lib/momentVisibilityCopy';
 import { motion, radius, useTheme } from '@/theme';
 import { NoTopEdgeFade } from '@/components/ui/NoTopEdgeFade';
 
@@ -1179,7 +1180,7 @@ export function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
 // MomentEdit.tsx): while editing, the address, link and description are
 // fields in place (the ones set, plus any added from the edit bar) and the
 // date line opens the date picker; the people foot dims.
-export function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople, edit }: { meta: MetaView; isHostViewer: boolean; myIdentityId: string; onPeople: () => void; edit?: MomentEditApi }) {
+export function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople, edit, status }: { meta: MetaView; isHostViewer: boolean; myIdentityId: string; onPeople: () => void; edit?: MomentEditApi; status?: { line: string; onChange: () => void } | null }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const [descOpen, setDescOpen] = useState(false);
@@ -1209,12 +1210,15 @@ export function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople, edit }: {
   }
   // A host's empty description: the profile bio's quiet prompt (hosts only).
   const descHint = !!edit && !d && description == null;
-  const hasAny = address != null || when || link != null || description != null || descHint || meta.participants.length > 0;
+  // D1 (Moment Defaults): your own Incognito / hidden from feeds, under the
+  // date; never while a host edits in place (the date line is an edit target).
+  const statusShown = status && !d ? status : null;
+  const hasAny = address != null || when || link != null || description != null || descHint || !!statusShown || meta.participants.length > 0;
   if (!hasAny) return null;
   // Foot-only block (no about lines): the foot's 14px separation margin would
   // stack on the container's paddingTop and read top-heavy against the 14px
   // below (Simon's centering call) — drop it; the paddings carry the spacing.
-  const footOnly = address == null && !when && link == null && description == null && !descHint;
+  const footOnly = address == null && !when && link == null && description == null && !descHint && !statusShown;
 
   const row = { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 } as const;
   // A guest's line is a plain Pressable; a host's holds to edit (`swaps`: the
@@ -1303,6 +1307,23 @@ export function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople, edit }: {
             'when',
           )}
         </View>
+      ) : null}
+      {statusShown ? (
+        // The struck-through eye (step 3's status words), then "Change": the
+        // whole line opens Moment Privacy.
+        <Pressable
+          key="status"
+          accessibilityRole="button"
+          accessibilityLabel={`${statusShown.line}. ${MOMENT_STATUS_CHANGE}`}
+          onPress={statusShown.onChange}
+          style={({ pressed }) => [row, { opacity: pressed ? 0.6 : 1 }]}
+        >
+          <Icon name="eyeoff" size={16} color={theme.inkSoft} />
+          <VText variant="small" color="inkSoft" style={{ flexShrink: 1 }}>
+            {`${statusShown.line} · `}
+            <VText variant="small" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{MOMENT_STATUS_CHANGE}</VText>
+          </VText>
+        </Pressable>
       ) : null}
       {link == null ? null : d && edit ? (
         <View key="link-edit" style={row}>

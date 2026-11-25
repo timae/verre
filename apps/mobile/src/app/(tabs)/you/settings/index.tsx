@@ -11,6 +11,7 @@ import { confirmSignOut } from '@/lib/signOutConfirm';
 import { legalHref, profileEditHref, settingsHref, useSessionTab } from '@/lib/sessionStack';
 import { themes, useTheme } from '@/theme';
 import { useMeId } from '@/lib/meId';
+import { MOMENTS_AREA_TITLE } from '@/lib/momentVisibilityCopy';
 
 // Settings (handoff 04·4 `settings`): your profile card → Edit Profile, then
 // Account, Privacy, Appearance and Help & About; Tasting and Notifications
@@ -39,7 +40,7 @@ export default function Settings() {
       <SetGroup flush>
         <SetNav icon="user" label="Account" onPress={() => router.push(settingsHref(mount, 'account'), { dangerouslySingular: true })} />
         <SetNav icon="eye" label="Privacy" onPress={() => router.push(settingsHref(mount, 'privacy'), { dangerouslySingular: true })} />
-        <SetNav icon="glass" label="Tasting" disabled soon />
+        <SetNav icon="glass" label={MOMENTS_AREA_TITLE} onPress={() => router.push(settingsHref(mount, 'defaults'), { dangerouslySingular: true })} />
       </SetGroup>
       <SetGroup flush>
         <SetNav icon="bell" label="Notifications" disabled soon />

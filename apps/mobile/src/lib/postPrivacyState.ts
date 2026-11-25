@@ -98,7 +98,28 @@ export function lateAnswerMe<M>(answerMe: M, shownMe: M, startedGen: number): { 
   return generation === startedGen ? { me: answerMe, reread: false } : { me: shownMe, reread: true };
 }
 
+// 3. MOMENT DEFAULTS' APPLY (the defaults page's "All N …"): it changes the
+//    field on many posts at once, so every record of that field is dropped
+//    (each may now be wrong) and the field's APPLY TIME is kept: an opened
+//    post's pinned copy fetched before it re-reads (`needsApplyReread`) when
+//    its screen regains focus and when the time moves while it is focused.
+const appliedAt = new Map<PrivacyField, number>();
+export function recordFieldApply(field: PrivacyField, at: number): void {
+  for (const k of [...records.keys()]) if (k.endsWith(`:${field}`)) records.delete(k);
+  appliedAt.set(field, Math.max(appliedAt.get(field) ?? 0, at));
+  notify();
+}
+export const fieldAppliedAt = (field: PrivacyField): number | undefined => appliedAt.get(field);
+// Re-read a pinned copy once per apply that came after its fetch (`servedAt`),
+// and never twice for the same apply (`rereadFor`: the apply time it last
+// re-read for). An unstamped copy (no field of yours on it) never re-reads.
+export function needsApplyReread(field: PrivacyField, servedAt: number | undefined, rereadFor: number | undefined): boolean {
+  const at = appliedAt.get(field);
+  return at !== undefined && servedAt !== undefined && servedAt < at && rereadFor !== at;
+}
+
 export function clearPostPrivacyState(): void {
   records.clear();
+  appliedAt.clear();
   notify();
 }

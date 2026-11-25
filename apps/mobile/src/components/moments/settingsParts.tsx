@@ -26,6 +26,11 @@ const HELPER_PULL = -4;
 // stroke included); a switch fills its frame, so it is inset by the same 6 to
 // end where the chevrons end.
 const CHEVRON_TIP_INSET = 6;
+// A ChoiceRow is at least as tall as a switch row (the iOS switch is 31 pt):
+// a one-line choice row between switch rows read squeezed (Simon, 2026-11-25:
+// Moment Privacy's / Moment Defaults' "Visible To"). A floor only: larger text
+// still grows the row.
+const SWITCH_ROW_MIN = 31;
 
 export type SettingsRole = 'host' | 'cohost' | 'provider' | 'taster';
 
@@ -346,7 +351,12 @@ export function ToggleRow({
         trackColor={{ false: offTrack, true: theme.accent }}
         ios_backgroundColor={offTrack}
         accessibilityLabel={title}
-        style={{ marginRight: CHEVRON_TIP_INSET }}
+        // 🔒 `alignSelf: 'center'`: React Native's iOS Switch composes a
+        // default `alignSelf: 'flex-start'` under our style (Switch.js), which
+        // beat the row's `alignItems: 'center'` and pinned every switch to its
+        // title line (Simon, phone 2026-11-25: "not vertically aligned with
+        // the option & helper text").
+        style={{ alignSelf: 'center', marginRight: CHEVRON_TIP_INSET }}
       />
     </View>
   );
@@ -481,6 +491,7 @@ export function ChoiceRow({ icon, label, value, valueLines = 1, helper, onPress,
       onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row', alignItems: 'center', gap: 10, paddingTop: flush ? 0 : ROW_GAP, paddingBottom: 2,
+        minHeight: (flush ? 0 : ROW_GAP) + SWITCH_ROW_MIN + 2,
         opacity: pressed ? 0.6 : 1,
       })}
     >

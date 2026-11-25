@@ -12,6 +12,7 @@ import { snapshotFor, type BottleSnapshot } from '@/lib/occurrences'
 import { cleanCountry, cleanUrl, scrub } from '@/lib/textSafe'
 import { grantStatus, type AuthorizedIdentity } from '@/lib/sessionGrant'
 import { userIdentityId } from '@/lib/identity'
+import { seedParticipation } from '@/lib/momentDefaults'
 
 export type WineMeta = {
   id: string
@@ -582,6 +583,7 @@ export async function ensurePromoted(code: string, meta: SessionMeta): Promise<n
       const users = candidates.length
         ? await tx.$queryRaw<{ id: number }[]>`SELECT id FROM users WHERE id = ANY(${candidates}::bigint[]) FOR KEY SHARE`
         : []
+      const entered: number[] = []
       for (const { id } of users) {
         const uid = `u:${id}`
         const role = fresh.hostUserId === Number(id) || fresh.hostIdentityId === uid ? 'host'
@@ -593,7 +595,14 @@ export async function ensurePromoted(code: string, meta: SessionMeta): Promise<n
           INSERT INTO session_members (user_id, session_code, role, removed_state) VALUES (${Number(id)}, ${code}, ${role}, ${removed})
           ON CONFLICT (user_id, session_code) DO NOTHING RETURNING user_id`
         if (inserted[0]) await tx.$executeRaw`UPDATE users SET lifetime_sessions_joined = lifetime_sessions_joined + 1 WHERE id = ${Number(id)}`
+        if (inserted[0] && !removed && Number(id) !== fresh.hostUserId) entered.push(Number(id))
       }
+      // 🔒 An ENTRY writer (Moment Defaults K1): each NON-kicked inserted person
+      // gets their OWN defaults (never the promoter's), in ONE statement. Rows
+      // inserted kicked may be pre-emptive placeholders: they seed on
+      // re-admission (`/join`). No host settings at promotion: a guest-hosted
+      // moment stays closed by the trigger.
+      await seedParticipation(tx, row, entered)
       return row.id
     },
     async (ctx) => {

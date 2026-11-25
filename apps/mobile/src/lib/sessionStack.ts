@@ -230,13 +230,19 @@ export function checkinHref(mount: SessionMount, stage?: 'rate'): Href {
 export function momentCreateHref(mount: SessionMount): Href {
   return (mount.tab === 'moments' ? '/(tabs)/moments/create' : `/(tabs)/${mount.tab}/moments/create`) as Href;
 }
+// Create Moment's Privacy page (Moment Defaults, plan § 3): a SIBLING of each
+// create mount (`<tab>/moments/create-privacy`), its state in the per-screen
+// store `lib/createPrivacy.ts` under `key`, so swipe-back keeps the choices.
+export function momentCreatePrivacyHref(mount: SessionMount, key: string): Href {
+  return { pathname: mount.tab === 'moments' ? '/(tabs)/moments/create-privacy' : `/(tabs)/${mount.tab}/moments/create-privacy`, params: { key } } as Href;
+}
 
 // Settings: the hub (no page) and its pages. Inside an opened post every one
 // is mirrored onto the post's stack: pushing /you/settings/… there would
 // present on the outer You stack, over the post (see 'edit' above). No page
 // may be named `details` / `reveal` / `visibility`: the tabs layout hides the
 // pill on those suffixes for the moment settings.
-export type SettingsPage = 'privacy' | 'blocked' | 'muted' | 'account' | 'change-email' | 'change-password' | 'appearance';
+export type SettingsPage = 'privacy' | 'defaults' | 'blocked' | 'muted' | 'account' | 'change-email' | 'change-password' | 'appearance';
 export function settingsHref(mount: SessionMount, page?: SettingsPage): Href {
   const tail = page ? `settings/${page}` : 'settings';
   if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/${tail}`, params: { id: mount.post } } as Href;

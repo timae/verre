@@ -136,6 +136,7 @@ model User {
   usernameHolds             UsernameHold[]
   usernameChanges           UsernameChange[]
   momentPrivacy             MomentPrivacy[]
+  momentDefaults            MomentDefaults?
   staffRoles                StaffRole[]            @relation("StaffRoleHolder")
   staffRolesGranted         StaffRole[]            @relation("StaffRoleGranter")
   // Catalog attribution. All SetNull — community catalog rows are never
@@ -466,6 +467,30 @@ model Session {
   momentPrivacy MomentPrivacy[]
 
   @@map("sessions")
+}
+
+// A person's Moment Defaults (docs/dev/proposals/moment-defaults.md): COPIED
+// into a moment at create / join (lib/momentDefaults.ts seedParticipation) and
+// into a check-in at its POST; never read live by a reader of a moment or a
+// post. NULL = the system default (SYSTEM_DEFAULTS, pinned against the column
+// defaults by the suite). CHECK `moment_defaults_visibility_chk` (hand-written,
+// prisma/session-record-checks.json). Cascades with the user (their own data).
+model MomentDefaults {
+  userId                Int      @id @map("user_id")
+  // Host: applied to a moment you create.
+  visibility            String?  @db.VarChar(16)
+  includeGuestCircles   Boolean? @map("include_guest_circles")
+  showPlace             Boolean? @map("show_place")
+  showDetails           Boolean? @map("show_details")
+  // You in a moment: copied when you create or join it.
+  onlyInside            Boolean? @map("only_inside")
+  momentHiddenFromFeed  Boolean? @map("moment_hidden_from_feed")
+  // A check-in's Hide from Feed (its own switch).
+  checkinHiddenFromFeed Boolean? @map("checkin_hidden_from_feed")
+  updatedAt             DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("moment_defaults")
 }
 
 // One person's per-moment choice, "Only Inside This Moment" (moment-visibility

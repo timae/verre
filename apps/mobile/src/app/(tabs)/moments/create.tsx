@@ -1,7 +1,7 @@
 import { useRouter } from 'expo-router';
 import { BLIND_FEED_REVEAL_NOTE } from '@verre/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Image, Keyboard, Pressable, ScrollView, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withDelay, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,7 +13,8 @@ import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
 import { DateField, Disclosure, FieldGroup, NotesField, nextFullHour, pickPhoto } from '@/components/moments/momentForm';
-import { ToggleRow } from '@/components/moments/settingsParts';
+import { ChoiceRow, ToggleRow } from '@/components/moments/settingsParts';
+import { FitPhrases } from '@/components/ui/FitPhrases';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { ChoiceChip } from '@/components/ui/ChoiceChip';
@@ -21,7 +22,10 @@ import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
 import { freshOwnName } from '@/lib/api/profile';
 import { ApiError, createMoment } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
-import { sessionHref, useSessionTab } from '@/lib/sessionStack';
+import { momentCreatePrivacyHref, sessionHref, useSessionTab } from '@/lib/sessionStack';
+import { getMomentDefaults, MOMENT_DEFAULTS_KEY } from '@/lib/api/momentDefaults';
+import { clearCreatePrivacy, getCreatePrivacy, newCreatePrivacyKey, seedCreatePrivacy, subscribeCreatePrivacy } from '@/lib/createPrivacy';
+import { createPrivacyLines, phraseLine } from '@/lib/momentVisibilityCopy';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { motion, radius, useTheme } from '@/theme';
 
@@ -52,6 +56,22 @@ export default function CreateMoment() {
   // `pro` gates the blind toggle (disabled + PRO badge); server 403 backstop.
   const account = useQuery({ queryKey: MY_ACCOUNT_KEY, queryFn: getMyAccount });
   const pro = account.data?.pro ?? false;
+  // Moment Defaults (D4): this moment's privacy, seeded from your defaults once
+  // they load (the row shows nothing before; not loaded at Create → no
+  // `privacy`, the server applies them), changed on the Privacy page.
+  const [privacyKey] = useState(newCreatePrivacyKey);
+  const defaults = useQuery({ queryKey: MOMENT_DEFAULTS_KEY, queryFn: getMomentDefaults, refetchOnMount: 'always' });
+  // Seeded only from a read of THIS screen (review r1 P3): a cached copy may
+  // predate a default just saved.
+  const fresh = defaults.isFetchedAfterMount && defaults.isSuccess && !defaults.isFetching;
+  useEffect(() => {
+    const d = defaults.data;
+    if (d && fresh) seedCreatePrivacy(privacyKey, { visibility: d.visibility, includeGuestCircles: d.includeGuestCircles, showPlace: d.showPlace, showDetails: d.showDetails, onlyInside: d.onlyInside, hiddenFromFeed: d.momentHiddenFromFeed });
+  }, [defaults.data, fresh, privacyKey]);
+  useEffect(() => () => clearCreatePrivacy(privacyKey), [privacyKey]);
+  const privacy = useSyncExternalStore(subscribeCreatePrivacy, () => getCreatePrivacy(privacyKey), () => getCreatePrivacy(privacyKey));
+  const privacyLines = privacy ? createPrivacyLines(privacy) : null;
+  const [privacyKeep, setPrivacyKeep] = useState(99);
 
   const [cover, setCover] = useState<{ dataUrl: string; previewUri: string } | null>(null);
   const [name, setName] = useState('');
@@ -133,6 +153,8 @@ export default function CreateMoment() {
         ...(address.trim() ? { address: address.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(link.trim() ? { link: link.trim() } : {}),
+        // All six values the row showed (ruled 2026-11-25).
+        ...(privacy ? { privacy } : {}),
       });
       queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
       // Into the new moment ON THIS STACK (Moments home, or your Moments' "+ New"
@@ -280,6 +302,23 @@ export default function CreateMoment() {
           onChange={setBlind}
           disabled={!pro}
         />
+
+        {/* Privacy (Moment Defaults D4): the ACTUAL values, never "Default";
+            line 1 the audience, line 2 the whole phrases that fit. Opens this
+            moment's Moment Privacy page (a sibling route, local state). */}
+        {privacy && privacyLines ? (
+          <View style={{ marginBottom: 6 }}>
+            {/* As wide as the row's helper (the chevron 18 + gap 10 at the right). */}
+            {privacyLines.phrases.length ? <FitPhrases phrases={privacyLines.phrases} onFit={setPrivacyKeep} right={28} /> : null}
+            <ChoiceRow
+              label="Privacy"
+              value=""
+              helper={privacyLines.phrases.length ? `${privacyLines.first}\n${phraseLine(privacyLines.phrases, privacyKeep)}` : privacyLines.first}
+              accessibilityLabel={`Privacy: ${privacyLines.first}${privacyLines.phrases.length ? `, ${privacyLines.phrases.join(', ')}` : ''}`}
+              onPress={() => { Keyboard.dismiss(); router.push(momentCreatePrivacyHref(mount, privacyKey)); }}
+            />
+          </View>
+        ) : null}
 
         {/* .disclosure Add more details — body expands DOWN from this bar
             (Disclosure owns the height animation); scroll into view once open. */}

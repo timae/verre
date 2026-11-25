@@ -224,6 +224,8 @@ export type CreateCheckinBody = {
   city?: string;
   country?: string; // VENUE country, ISO-2
   copyFromCheckinId?: number;
+  // Moment Defaults: this check-in's Hide from Feed (absent = your default).
+  hiddenFromFeed?: boolean;
 };
 
 // The post's answer: its feed item id (the photo attaches to it afterwards),

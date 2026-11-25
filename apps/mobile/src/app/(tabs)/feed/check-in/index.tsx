@@ -17,7 +17,7 @@ import { getFlow } from '@/lib/pickerFlow';
 import type { ProductHit } from '@/lib/api/catalog';
 import { newClientId } from '@/lib/clientId';
 import type { BottleLabel } from '@/lib/catalogChoice';
-import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
+import { clearCheckinDraft, getCheckinDraft, nextCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
 import { checkinHref, useSessionTab, type FlowDest } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
@@ -131,19 +131,8 @@ function CheckinForm({ initial }: { initial: NonNullable<ReturnType<typeof getFl
     // Preserve an in-progress rating from a prior visit to stage 2 (the rate
     // screen wrote it back on unmount) — a back-swipe to tweak a detail must
     // not wipe the score already set.
-    setCheckinDraft(mount.tab, {
-      occurrenceId: prev?.occurrenceId ?? occurrenceId,
-      choice,
-      frozen: !!prev?.frozen,
-      photo,
-      photoTried: !!prev?.photoTried,
-      vinification: process, description, purchaseUrl,
-      venue, city,
-      score: prev?.score ?? 0,
-      flavors: prev?.flavors ?? {},
-      aromas: prev?.aromas ?? [],
-      notes: prev?.notes ?? '',
-    });
+    // (and the rate stage's Hide from Feed once shown: Moment Defaults).
+    setCheckinDraft(mount.tab, nextCheckinDraft(prev, { choice, photo, vinification: process, description, purchaseUrl, venue, city }, occurrenceId));
     router.push(checkinHref(mount, 'rate'));
   };
 

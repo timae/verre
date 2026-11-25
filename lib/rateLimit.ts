@@ -30,6 +30,15 @@ export type RateResult = {
   retryAfter: number   // seconds until the limit resets (0 if allowed)
 }
 
+// The same check + increment, but a Redis error THROWS instead of allowing:
+// for a caller that must fail CLOSED (Moment Defaults' widening reservation,
+// lib/momentDefaults.ts). Everything else uses checkRate.
+export async function checkRateOrThrow(key: string, max: number, windowSeconds: number): Promise<RateResult> {
+  const [count, ttl] = (await redis.eval(SCRIPT, { keys: [key], arguments: [String(windowSeconds)] })) as [number, number]
+  const allowed = count <= max
+  return { allowed, retryAfter: allowed ? 0 : Math.max(ttl, 1) }
+}
+
 // Check + increment a single rate-limit counter.
 export async function checkRate(
   key: string,
@@ -37,13 +46,7 @@ export async function checkRate(
   windowSeconds: number,
 ): Promise<RateResult> {
   try {
-    const result = (await redis.eval(SCRIPT, {
-      keys: [key],
-      arguments: [String(windowSeconds)],
-    })) as [number, number]
-    const [count, ttl] = result
-    const allowed = count <= max
-    return { allowed, retryAfter: allowed ? 0 : Math.max(ttl, 1) }
+    return await checkRateOrThrow(key, max, windowSeconds)
   } catch (err) {
     // Fail open: if Redis is down, don't block legitimate traffic.
     console.error('rateLimit checkRate error:', err)
