@@ -1140,7 +1140,7 @@ transparent presentation, so the feed still shows through while `index` opens.
   hung the app (device pass 2026-11-10), and react-native-screens' own
   current-context fallback dismisses only the topmost of two modals removed
   together (Codex). So every screen reachable from inside a post lives on the
-  post's stack (Settings hides its Dev Gallery row there, an outer-You push),
+  post's stack (Help & About hides its Dev Gallery row there, an outer-You push),
   and the post's "post is gone" exits are plain pops on it.
 - **The post id comes from the stack, not the detail's params.** An anchored
   `index` (a cold link to a child, or `withAnchor`) gets no params of its own
@@ -1521,8 +1521,8 @@ Server side: README (mutes GET, devices for the app), `app/api/auth/CLAUDE.md`
   Router-sim case: `.local/opened-post-stack/router-sim/t13.cjs`.
 - **Hub**: `MeCard` (name from `['my-account']`, photo from your own header)
   → Edit Profile; Account / Privacy / Tasting (Soon); Notifications (Soon) /
-  Appearance (value = theme name or "Match System"); Help & About; Dev
-  Gallery (not inside a post); Sign Out; `Verre <version> · Build <n>`
+  Appearance (value = theme name or "Match System"); Help & About (the Dev
+  Gallery row lives there, on the You stack's About only); Sign Out; `Verre <version> · Build <n>`
   (`APP_VERSION` / `APP_BUILD`, `lib/clientVersion.ts`, from expo-application:
   `app.json`'s buildNumber is stale under EAS remote versioning).
 - **Privacy**: Profile Visible To (`SelectField` + `OptionSheet`, the four
@@ -1975,9 +1975,12 @@ NOT under `(tabs)/you` — the same placement as `update-required`, for the same
 reason: the attributions are a licence obligation and must render for a
 signed-out user on first launch, before any account exists. Under `(tabs)` they
 were session-gated and unreachable exactly when someone evaluating the app wants
-to read them. Entry points: the `(auth)` landing screen when signed out, and
-You → ⋯ → Settings → Help & About when signed in. ⚠️ They are outside the tab bar, so they use plain
-bottom padding — **no `TAB_BAR_CLEARANCE`** (the pill does not render there).
+to read them. Entry points: the `(auth)` landing screen when signed out (the
+root routes), and You → ⋯ → Settings → Help & About when signed in (their
+one-line MIRRORS on the You stack, `(tabs)/you/about` + `attributions`, so the
+Dev Gallery row there is a push on the same stack; an opened post has its own).
+⚠️ They use plain bottom padding — **no `TAB_BAR_CLEARANCE`**: the pill is
+hidden on every mount (the tabs layout's `YOU_LEGAL_PATH` / `OPENED_POST_PATH`).
 
 🔒 **This is a LICENCE-OBLIGATION surface, not a credits screen.** Four rendering
 rules are load-bearing and must survive any redesign or refactor:

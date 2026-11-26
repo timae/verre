@@ -289,6 +289,10 @@ export function profileEditHref(mount: SessionMount): Href {
 // came out on You). The root routes stay the canonical ones.
 export function legalHref(mount: SessionMount, screen: 'about' | 'attributions'): Href {
   if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/${screen}`, params: { id: mount.post } } as Href;
+  // From the You stack (Settings): its own mirrors, so the Dev Gallery is a
+  // push on the same stack. The root routes (signed out, the auth screens:
+  // the root fallback mount is never 'you') stay the canonical ones.
+  if (mount.tab === 'you') return `/you/${screen}` as Href;
   return `/${screen}` as Href;
 }
 

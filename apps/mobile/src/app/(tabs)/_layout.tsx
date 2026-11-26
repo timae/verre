@@ -26,6 +26,8 @@ import { useTheme } from '@/theme';
 // About / Attributions mirrored there too: they are designed without the pill
 // (no TAB_BAR_CLEARANCE), as at the app root.
 const OPENED_POST_PATH = /^\/(feed|you|moments)\/\d+(\/(post|edit)\/[^/]+|\/about|\/attributions)?\/?$/;
+// …and their mirrors on the You stack (opened from Settings): no pill either.
+const YOU_LEGAL_PATH = /^\/you\/(about|attributions)\/?$/;
 
 export default function TabsLayout() {
   const { theme } = useTheme();
@@ -86,6 +88,7 @@ export default function TabsLayout() {
     // no bottom nav (Simon, 2026-07-08). A moment or profile pushed on the
     // post's stack shows it like anywhere else (Simon, 2026-11-10).
     OPENED_POST_PATH.test(pathname) ||
+    YOU_LEGAL_PATH.test(pathname) ||
     pathname.includes('/edit-impression/') ||
     pathname.endsWith('/moments/create') ||
     pathname.endsWith('/moments/create-privacy') || // Create Moment's Privacy page, every mount
