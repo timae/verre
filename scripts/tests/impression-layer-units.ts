@@ -16,6 +16,7 @@
 //
 // Run: npx tsx scripts/tests/impression-layer-units.ts
 
+import { fieldEndEditing } from '../../apps/mobile/src/lib/fieldCapture'
 import { createTransitionGuard } from '../../apps/mobile/src/lib/impressionAutosaveCore'
 import {
   createInputCapture,
@@ -398,6 +399,62 @@ async function main() {
     await c
     check('a field that never reports: the bounded belt resolves it', late, true)
     check('and it is forgotten (the next capture does not wait on it)', cap.editing, false)
+  }
+
+  console.log('\n§12 a field ends its edit at end-editing, with the FINAL text, once, on both platforms (Codex recheck 2)')
+  {
+    // A field as ScoreInput / NotesField wire it: blur is focus UI only; the
+    // end-editing event applies its final text through the setter, THEN ends
+    // the capture (fieldEndEditing). Driven in both native orders.
+    const run = async (order: ('blur' | 'end')[]) => {
+      let belt: (() => void) | null = null
+      const cap = createInputCapture({ beltMs: 300, setTimer: (fn) => { belt = fn; return 1 }, clearTimer: () => { belt = null } })
+      const stored: string[] = [] // what the rating setter received
+      let resolvedWith: string[] | null = null
+      let resolutions = 0
+      cap.focus('note')
+      stored.push('Ripe che') // the last onChangeText that reached JS
+      const p = cap.capture().then(() => { resolutions++; resolvedWith = [...stored] })
+      let ended = false
+      for (const ev of order) {
+        if (ev === 'blur') { /* focus UI only: the capture is not told */ }
+        else { fieldEndEditing(cap, 'note', () => stored.push('Ripe cherry')); ended = true } // the IME commit's final text
+        await flush()
+        if (ev === 'blur' && !ended) check(`${order.join(' → ')}: the blur alone does not end the capture`, resolutions, 0)
+      }
+      await p
+      check(`${order.join(' → ')}: resolved once`, resolutions, 1)
+      check(`${order.join(' → ')}: AFTER the final text reached the setter`, resolvedWith, ['Ripe che', 'Ripe cherry'])
+      check(`${order.join(' → ')}: the belt was not needed`, belt, null)
+    }
+    await run(['blur', 'end']) // Android: ReactTextInputManager's focus listener
+    await run(['end', 'blur']) // iOS: textInputDidEndEditing
+  }
+  {
+    const cap = createInputCapture({ beltMs: 300 })
+    cap.focus('score')
+    let n = 0
+    const p = cap.capture().then(() => { n++ })
+    let threw = false
+    try { fieldEndEditing(cap, 'score', () => { throw new Error('setter') }) } catch { threw = true }
+    await p
+    check('a setter that throws still ends the capture (no hang)', [threw, n], [true, 1])
+    fieldEndEditing(cap, 'score', () => {}) // a second end (e.g. the unmount fallback)
+    check('a second end for the same field is a no-op', cap.editing, false)
+    check('no provider: nothing to tell, the text is still applied', (() => { let a = 0; fieldEndEditing(null, 'x', () => { a++ }); return a })(), 1)
+  }
+  {
+    const cap = createInputCapture({ beltMs: 300 })
+    cap.focus('note')
+    cap.focus('score')
+    let n = 0
+    const p = cap.capture().then(() => { n++ })
+    fieldEndEditing(cap, 'note', () => {})
+    await flush()
+    check('one field ended, the other still editing: waits', n, 0)
+    cap.done('score') // the score field unmounted mid-edit (the fallback)
+    await p
+    check('the unmount fallback ends the last one', n, 1)
   }
 
   if (failures) {

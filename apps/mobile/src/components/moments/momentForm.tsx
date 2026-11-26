@@ -648,6 +648,10 @@ export function NotesField({
   // The impression layer waits for the note's native edit to end before a
   // departure (lib/fieldCapture.ts; a no-op elsewhere).
   const fieldCapture = useFieldCapture();
+  // The last text this field reported: the end-editing's final text is applied
+  // only when it differs (an IME / dictation commit that never reached
+  // onChangeText).
+  const lastText = useRef(value);
   return (
     <View style={{ gap: 7 }}>
       {label ? (
@@ -656,13 +660,17 @@ export function NotesField({
       <TextInput
         ref={inputRef}
         value={value}
-        onChangeText={onChange}
+        onChangeText={(t) => {
+          lastText.current = t;
+          onChange(t);
+        }}
         multiline
         editable={editable}
         maxLength={maxLength}
         placeholder={placeholder}
         placeholderTextColor={theme.inkFaint}
         onFocus={() => {
+          lastText.current = value;
           fieldCapture.began();
           setFocused(true);
           onFocusChange?.(true);
@@ -670,8 +678,17 @@ export function NotesField({
         onBlur={() => {
           setFocused(false);
           onFocusChange?.(false);
-          fieldCapture.ended();
         }}
+        // The edit ends HERE, with the final text, on both platforms
+        // (lib/fieldCapture.ts: Android sends blur first, iOS after).
+        onEndEditing={(e) =>
+          fieldCapture.endEditing(() => {
+            const t = e.nativeEvent.text;
+            if (t === lastText.current) return;
+            lastText.current = t;
+            onChange(t);
+          })
+        }
         {...surface.textProps}
         style={{
           minHeight: surface.height(64),

@@ -747,8 +747,14 @@ on the stack hosting the line-up: Back returns to the open layer.
   wasn't stored). 🔒 Every departure first JOINS the active page's ONE text
   capture (`createInputCapture`, owned by the page): `ScoreInput`'s number and
   `NotesField` report when their native edit starts and when it ENDED
-  (`lib/fieldCapture.ts`, their blur / end-editing event or their unmount; a
-  no-op without the page's provider), and the capture resolves once none is
+  (`lib/fieldCapture.ts`; a no-op without the page's provider). 🔒 The end is
+  `onEndEditing`, NEVER `onBlur`: React Native sends both, in opposite orders
+  (iOS end-editing then blur, Android blur then end-editing), and only
+  end-editing carries the FINAL text, so the field applies `nativeEvent.text`
+  through its own setter first (the score: `commitDraft(text)`, never the
+  `draft` state; the note: only when it differs from its last change), then
+  reports (`fieldEndEditing`); blur is the focus UI's; the unmount and the belt
+  are the fallbacks; the slider's draft abandon still wins. The capture resolves once none is
   open, bounded by `CAPTURE_BELT_MS` (300). React Native's focused-input record
   can't tell: it is cleared at the blur REQUEST, and the root's outside-touch
   dismissal requests it on the touch-down, before a button's `onPress`; the

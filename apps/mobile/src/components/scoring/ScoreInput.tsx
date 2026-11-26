@@ -137,18 +137,22 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
     });
   const gesture = Gesture.Race(pan, tap);
 
-  const commitDraft = () => {
+  // `text` = the field's FINAL native text (`onEndEditing`'s nativeEvent.text),
+  // never the `draft` state, which may not have re-rendered with the last
+  // keystroke yet (Codex recheck 2, 2026-11-26).
+  const commitDraft = (text: string) => {
     if (skipCommitRef.current) {
+      // The slider took over while the field was open: the draft is abandoned.
       skipCommitRef.current = false;
       return;
     }
     setEditing(false);
-    const parsed = parseScoreDraft(draft);
+    const parsed = parseScoreDraft(sanitizeScoreDraft(text));
     // Empty/garbage draft leaves the value as last live-tracked (updateDraft
     // already pushed each keystroke through). Only snap+commit a parseable one.
     if (parsed == null) return;
     const next = snapScore(parsed);
-    if (next !== value) {
+    if (next !== valueRef.current) {
       onChange(next);
       commitHaptic();
     }
@@ -195,11 +199,9 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
               setEditing(true);
             }}
             onChangeText={updateDraft}
-            onEndEditing={() => {
-              commitDraft();
-              fieldCapture.ended();
-            }}
-            onBlur={fieldCapture.ended}
+            // The edit ends HERE, with the final text, on both platforms
+            // (lib/fieldCapture.ts: Android sends blur first, iOS after).
+            onEndEditing={(e) => fieldCapture.endEditing(() => commitDraft(e.nativeEvent.text))}
             keyboardType="decimal-pad"
             accessibilityLabel="Score out of 5"
             selectTextOnFocus
