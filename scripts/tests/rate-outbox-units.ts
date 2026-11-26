@@ -1538,10 +1538,11 @@ async function main() {
     await e.advance(1000);
     await e.advance(10);
     const back = e.sent.find((x) => x.body.score === 3);
-    check('r3-2: the reversal is compared with the acknowledged 4 and saved on v2', back?.body.baseVersion === 2 && e.server.row('w1').rating?.score === 3 && c.draft().score === 3);
+    check('r3-2: a reversal made while the 4 was unacknowledged is sent (on v2) and stays shown', back?.body.baseVersion === 2 && e.server.row('w1').rating?.score === 3 && c.draft().score === 3);
   }
   {
-    // r3-2: a predecessor that never went out keeps the cancellation.
+    // r4-3: a reversal of a value that never went out is staged anyway (the
+    // entry holds a revision): re-sending the server's own value is harmless.
     const e = env({ online: false });
     e.server.webSave('w1', { score: 3 });
     e.poll();
@@ -1553,81 +1554,91 @@ async function main() {
     await e.advance(1000);
     await e.setOnline(true);
     await e.advance(10);
-    check('r3-2: back to the server\'s value before it went out → nothing sent', e.sent.length === 0 && e.owner.entry(ME, CODE, 'w1') === null);
+    check('r4-3: back to the server\'s value before it went out → the 3 goes out, the server keeps 3', e.sent.length === 1 && e.sent[0].body.score === 3 && e.server.row('w1').rating?.score === 3 && e.owner.entry(ME, CODE, 'w1') === null);
+  }
+
+  // ── Codex recheck 3: mechanisms removed ──────────────────────────────────
+  {
+    // r4-1: a bare discard keeps a typed note: it is staged, sent, and the
+    // server's 404 drops it (silently).
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    e.queue({ status: 404 });
+    c.setNotes('typed');
+    c.discardPending(); // the page saw the bottle gone
+    const staged = e.owner.entry(ME, CODE, 'w1')?.fields.notes?.value === 'typed';
+    await e.advance(10);
+    check('r4-1: a bare discard stages the note; it is sent, the 404 drops it, no alert', staged && e.sent.length === 1 && e.sent[0].body.notes === 'typed' && e.disk.size === 0 && e.alerts.length === 0 && c.savedState() !== 'error');
   }
   {
-    // r3-3: discardPending() is a REQUEST: a current, confirmed read that
-    // still lists the bottle keeps the entry, and it goes out.
-    const e = env({ online: false });
+    // r4-1: … and when the bottle was there after all, the server saves it.
+    const e = env();
     e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
     await e.start();
     const c = e.ctl('w1');
-    c.setScore(4);
-    await c.drain();
+    c.setNotes('typed');
     c.discardPending();
-    await e.flush();
-    const kept = e.disk.size === 1;
-    e.setRead(() => ({ kind: 'ok', ratings: e.server.section(), wineIds: ['w1', 'w2'] }));
-    await e.setOnline(true);
     await e.advance(10);
-    check('r3-3: unverified (offline) and contrary (still listed) → the entry kept and saved', kept && e.reads.length === 1 && e.server.row('w1').rating?.score === 4);
-    e.setRead(null);
+    check('r4-1: … an ordinary answer saves it', e.server.row('w1').rating?.notes === 'typed');
   }
   {
-    // r3-3: a confirmed read of a present line-up WITHOUT the bottle deletes.
-    const e = env({ online: false });
-    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
-    await e.start();
-    const c = e.ctl('w1');
-    c.setScore(4);
-    await c.drain();
-    c.discardPending();
-    e.holdCookie(true); // the entry's own send waits at the cookie read
-    e.setRead(() => ({ kind: 'ok', ratings: e.server.section(), wineIds: ['w2'] }));
-    await e.setOnline(true);
-    await e.flush();
-    await e.releaseCookie();
-    await e.advance(10);
-    check('r3-3: confirmed gone → deleted, nothing sent', e.disk.size === 0 && e.sent.length === 0 && e.owner.entry(ME, CODE, 'w1') === null);
-    e.setRead(null);
-  }
-  {
-    // r3-3: a `removed` answered by a read sent before an auth change deletes
-    // nothing; the fresh read (still listed) keeps the entry.
-    const e = env({ online: false });
-    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
-    await e.start();
-    const c = e.ctl('w1');
-    c.setScore(4);
-    await c.drain();
-    c.discardPending();
-    e.holdCookie(true);
-    e.holdReads(true);
-    let first = true;
-    e.setRead(() => (first ? ((first = false), { kind: 'removed' as const }) : { kind: 'ok' as const, ratings: e.server.section(), wineIds: ['w1'] }));
-    await e.setOnline(true);
-    await e.flush();
-    e.bumpGen();
-    e.owner.touch();
-    await e.flush();
-    await e.releaseReads();
-    await e.advance(10);
-    check('r3-3: an old read\'s `removed` deletes nothing', e.disk.size === 1 && e.reads.length === 2);
-    await e.releaseCookie();
-    e.setRead(null);
-  }
-  {
-    // r3-4: with the screen cache empty, the outbox's own confirmed read is
-    // the snapshot too: the editor shows the stored 3 and is baseline-ready.
+    // r4-2: the dedicated read gives an unknown base its base and nothing else.
+    // Named residual: with the screen cache empty the editor is not
+    // baseline-ready until the screen's poll arrives.
     const e = env();
     e.server.webSave('w1', { score: 3 });
     await e.start(); // no screen poll
     const c = e.ctl('w1');
     e.queue('hang');
     c.setNotes('n');
-    await e.advance(1000); // base unknown → the outbox reads, then sends on v1
-    check('r3-4: the read\'s section reaches the snapshot', e.sent.length === 1 && e.sent[0].body.baseVersion === 1 && c.baselineReady() && c.draft().score === 3);
+    await e.advance(1000);
+    const residual = !c.baselineReady();
+    e.poll();
+    check('r4-2: the read supplies the base (sent on v1), not the snapshot; the poll does', e.sent.length === 1 && e.sent[0].body.baseVersion === 1 && residual && c.baselineReady() && c.draft().score === 3);
     await e.release();
+  }
+  {
+    // r4-3: another mount staged the field after this page's first touch →
+    // this page's latest value goes out (the entry holds a revision now).
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const a = e.ctl('w1');
+    const b = e.ctl('w1');
+    a.setScore(4);
+    await e.advance(500);
+    b.setScore(4);
+    b.setScore(3); // first touched with no entry: its seed is the 3
+    await e.advance(500); // a stages its 4
+    await e.advance(500); // b settles on 3
+    await e.setOnline(true);
+    await e.advance(10_000);
+    check('r4-3: a value back to the seed still goes out when the entry holds a revision', e.server.row('w1').rating?.score === 3);
+  }
+  {
+    // r4-3: Codex's sequence: a save of 4 held, 5 staged behind it, the 5
+    // changed back to 3 (offline) → the 3 is sent.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('hang');
+    c.setScore(4);
+    await e.advance(1000); // 4 out, held
+    c.setScore(5);
+    await e.advance(1000); // 5 staged behind it
+    await e.setOnline(false);
+    c.setScore(3);
+    await e.release(); // 4 acknowledged
+    await e.advance(1000);
+    await e.setOnline(true);
+    await e.advance(10_000);
+    check('r4-3: the reversal behind two revisions is sent', e.sent.some((x) => x.body.score === 3) && e.server.row('w1').rating?.score === 3);
   }
 
   // ── the 90-day clean-up ──────────────────────────────────────────────────

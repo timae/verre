@@ -36,7 +36,8 @@ export type ImpressionAutosave = {
   clearBaseline: () => ClearToken | null;
   clearRating: (token?: ClearToken | null) => Promise<boolean>;
   clearPending: boolean;
-  // A request (removed once a confirmed read agrees); `confirmed`: Delete Impression's success.
+  // Bare: the page's work ends, its draft is staged, the server's answer
+  // decides; `confirmed` (Delete Impression's success): deleted at once.
   discardPending: (opts?: { confirmed?: boolean }) => void;
   savedState: SavedState;
   error: string | null;

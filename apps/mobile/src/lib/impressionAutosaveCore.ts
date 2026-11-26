@@ -96,9 +96,10 @@ export function createAutosaveController(
   let latch: { base: Snapshot; offline: boolean; mark: EntryMark | null } | null = null;
   // Per field, the snapshot value when it was FIRST touched (Codex: the clean
   // value seen then decides "unchanged", never the latch's older snapshot).
-  // `pred`: the same field's revision pending then; acknowledged during the
-  // debounce, ITS value is the comparison (Codex recheck 2: 4 back to 3).
-  let seeds = new Map<Field, { snap: boolean; value: unknown; pred: { entry: EntryMark; rev: number } | null }>();
+  // `dirty`: the entry held a revision of that field when it was first
+  // touched (a reversal of a value still on its way): it always goes out,
+  // never compared (Codex recheck 3: no predecessor tracking).
+  let seeds = new Map<Field, { snap: boolean; value: unknown; dirty: boolean }>();
   let noteFocused = false;
   let noteRaw: string | null = null; // the note's raw text while focused
   let timer: unknown = null;
@@ -159,9 +160,7 @@ export function createAutosaveController(
       if (f === 'score' && validateScore(v).error) continue; // never a 400 for the slider's rounding
       const value = normalizeField(f, v as never, kind);
       const sd = seeds.get(f);
-      let seed = sd?.snap ? normalizeField(f, sd.value as never, kind) : undefined;
-      const acked = sd?.pred ? owner.fieldAck(viewer, code, wineId, f, sd.pred) : null;
-      if (acked) seed = normalizeField(f, acked.value as never, kind);
+      const seed = sd && sd.snap && !sd.dirty ? normalizeField(f, sd.value as never, kind) : undefined;
       owner.stage(viewer, code, wineId, f, value, seed, latch ?? undefined);
     }
     pending = {};
@@ -193,8 +192,8 @@ export function createAutosaveController(
     if (!owner.online()) latch.offline = true;
     if (!seeds.has(field)) {
       const snap = snapshot();
-      const pred = owner.fieldMark(viewer, code, wineId, field);
-      seeds.set(field, snap ? { snap: true, value: snapshotField(field, snap.rating), pred } : { snap: false, value: undefined, pred });
+      const dirty = owner.hasRevision(viewer, code, wineId, field);
+      seeds.set(field, snap ? { snap: true, value: snapshotField(field, snap.rating), dirty } : { snap: false, value: undefined, dirty });
     }
     pending = { ...pending, [field]: value };
     if (field === 'notes' && noteFocused) noteRaw = value as string;
@@ -300,14 +299,18 @@ export function createAutosaveController(
     },
     // ONLY for a confirmed terminal outcome (the bottle gone from a present
     // line-up, a confirmed removal, a successful Delete Impression).
-    // A REQUEST: the page's work goes now, the stored entry once a current,
-    // confirmed read agrees; `confirmed` (Delete Impression's success) = now.
+    // What the page SAW (the bottle gone, a removal): its work ends, the
+    // unsettled draft is STAGED (nothing typed is lost) and the stored entry
+    // stays: the runner sends it and the server's answer decides (404 / 403 /
+    // 401 removed drop it). `confirmed` (Delete Impression's success, its own
+    // answer): the draft and the stored entry go at once.
     discardPending(opts?: { confirmed?: boolean }) {
       cancelTimer();
+      noteRaw = null;
+      if (!opts?.confirmed) return stageAll();
       pending = {};
       latch = null;
       seeds = new Map();
-      noteRaw = null;
       owner.discard(viewer, code, wineId, opts);
       emit();
     },
