@@ -972,6 +972,11 @@ export function createRateOutbox(deps: OutboxDeps) {
     if (r.nextAt > t) return schedule(r.nextAt);
     r.inFlight = true;
     const stamp = deps.stamp();
+    // The entries this lookup covers, as they are NOW (Codex recheck 4): its
+    // answer applies only to those still unchanged when it lands.
+    const captured = [...slots.values()]
+      .filter((s) => s.mem && s.mem.viewer === v && s.mem.code === code && s.mem.baseVersion === 'unknown')
+      .map((s) => ({ s, e: s.mem!, rev: s.mem!.nextRev, at: s.mem!.editedAt, clear: !!s.mem!.clear }));
     let out: ReadOutcome;
     try {
       out = await deps.readState(v, code, stamp);
@@ -983,22 +988,27 @@ export function createRateOutbox(deps: OutboxDeps) {
     // Answered under another auth state, or an unconfirmed owner: dropped
     // whole (no base, no terminal outcome, no discard); read again.
     if (!deps.stampCurrent(stamp) || !ownerOk()) return pump();
-    const unknownSlots = [...slots.values()].filter((s) => s.mem && s.mem.viewer === v && s.mem.code === code && s.mem.baseVersion === 'unknown');
-    // The dedicated read supplies BASES only (never the snapshot: a slow one
-    // could replace a newer acknowledged answer, Codex recheck 3).
+    const covered = captured
+      .filter((c) => c.s.mem === c.e && c.e.baseVersion === 'unknown' && c.e.nextRev === c.rev && c.e.editedAt === c.at && !!c.e.clear === c.clear)
+      .map((c) => c.s);
+    // The dedicated read supplies BASES only: it never moves the snapshot
+    // (no raw generation, Codex recheck 3 + 4); work staged since it left is
+    // read again (the runner).
     if (out.kind === 'ok' && out.ratings) {
       r.attempts = 0;
       reads.delete(code);
-      onRawSection(v, code, out.ratings, stamp.gen);
-      return;
+      adoptBases(v, code, out.ratings, new Set(covered));
+      notify();
+      return pump();
     }
     if (out.kind === 'gone' || out.kind === 'removed') {
       reads.delete(code);
-      for (const s of unknownSlots) dropSilently(s);
-      return;
+      for (const s of covered) dropSilently(s);
+      notify();
+      return pump();
     }
     if (out.kind === 'invalid') {
-      if (unknownSlots.length) confirmInvalid(unknownSlots);
+      if (covered.length) confirmInvalid(covered);
       return;
     }
     if (out.kind === 'update-required') {
@@ -1024,9 +1034,17 @@ export function createRateOutbox(deps: OutboxDeps) {
       notify();
       return pump();
     }
+    adoptBases(v, code, ratings);
+    notify();
+    pump();
+  };
+  // The base-less entries of a moment take theirs from a ratings section
+  // (`only`: the dedicated read's covered entries). A KNOWN base never moves.
+  const adoptBases = (v: string, code: string, ratings: RatingsView, only?: Set<Slot>) => {
     for (const s of slots.values()) {
       const e = s.mem;
       if (!e || e.viewer !== v || e.code !== code || e.baseVersion !== 'unknown') continue;
+      if (only && !only.has(s)) continue;
       const row = ratings[`u:${v}`]?.ratings[e.wineId];
       if (!row) {
         e.baseVersion = 0;
@@ -1039,8 +1057,6 @@ export function createRateOutbox(deps: OutboxDeps) {
         commit(s);
       }
     }
-    notify();
-    pump();
   };
 
   // ── viewer lifecycle + launch ────────────────────────────────────────────

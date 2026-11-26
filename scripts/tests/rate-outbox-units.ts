@@ -1641,6 +1641,71 @@ async function main() {
     check('r4-3: the reversal behind two revisions is sent', e.sent.some((x) => x.body.score === 3) && e.server.row('w1').rating?.score === 3);
   }
 
+  // ── Codex recheck 4: the dedicated read ──────────────────────────────────
+  {
+    // r5-1: a first rating; the lookup held, the screen poll (no group of
+    // mine yet) supplies the base, 4 is saved, the OLDER lookup returns →
+    // the editor keeps 4, the next (offline) edit goes out on the ack.
+    const e = env();
+    await e.start(); // no screen section yet
+    const c = e.ctl('w1');
+    e.holdReads(true);
+    const old = e.server.section(); // before the save: nothing of mine
+    e.setRead(() => ({ kind: 'ok', ratings: old }));
+    c.setScore(4);
+    await e.advance(1000); // unknown base → the lookup leaves, held
+    e.poll({}); // the screen's poll: the base (no rating), no group of mine
+    await e.advance(10); // 4 saved: v1
+    await e.releaseReads(); // the older lookup lands
+    const kept = c.draft().score === 4;
+    await e.setOnline(false);
+    c.setNotes('next');
+    await e.advance(1000);
+    await e.setOnline(true);
+    await e.advance(10_000);
+    const next = e.sent.find((x) => x.body.notes === 'next');
+    check('r5-1: a slow lookup never moves the snapshot: 4 stays, the next edit goes out on v1 and is saved', kept && next?.body.baseVersion === 1 && e.server.row('w1').rating?.notes === 'next');
+    e.setRead(null);
+  }
+  {
+    // r5-2: a `removed` reply held; a second entry staged meanwhile (the
+    // viewer rejoined) → only the entry the lookup covered is dropped.
+    const e = env();
+    await e.start();
+    e.holdReads(true);
+    let first = true;
+    e.setRead(() => (first ? ((first = false), { kind: 'removed' as const }) : { kind: 'ok' as const, ratings: e.server.section() }));
+    e.ctl('w1').setScore(4);
+    await e.advance(1000); // the lookup for w1 leaves, held
+    e.ctl('w2').setScore(3);
+    await e.advance(1000); // w2 staged after it
+    await e.releaseReads();
+    await e.advance(10);
+    check('r5-2: only the covered entry is dropped; the later one is read again and saved', e.owner.entry(ME, CODE, 'w1') === null && e.server.row('w1').rating === null && e.server.row('w2').rating?.score === 3);
+    e.setRead(null);
+  }
+
+  {
+    // r5-2: an OK lookup gives a base only to the entries it covered; one
+    // staged after it left (the web rated that bottle meanwhile) is read again.
+    const e = env();
+    await e.start();
+    e.holdReads(true);
+    const old = e.server.section();
+    let first = true;
+    e.setRead(() => (first ? ((first = false), { kind: 'ok' as const, ratings: old }) : { kind: 'ok' as const, ratings: e.server.section() }));
+    e.ctl('w1').setScore(4);
+    await e.advance(1000); // the lookup for w1 leaves, held
+    e.server.webSave('w2', { notes: 'web' }); // v1 on w2
+    e.ctl('w2').setScore(3);
+    await e.advance(1000);
+    await e.releaseReads();
+    await e.advance(10);
+    const w2 = e.sent.find((x) => x.body.wineId === 'w2');
+    check('r5-2: … an entry staged after the lookup left takes its base from a fresh read (v1)', w2?.body.baseVersion === 1 && e.server.row('w2').rating?.notes === 'web' && e.server.row('w2').rating?.score === 3);
+    e.setRead(null);
+  }
+
   // ── the 90-day clean-up ──────────────────────────────────────────────────
   {
     const disk = new Map<string, string>();
