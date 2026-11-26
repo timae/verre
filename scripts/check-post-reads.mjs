@@ -48,6 +48,7 @@ const ALLOWED = {
   'app/api/checkins/[id]/route.ts': [4, 'owner-only edit / delete lookups (wrong owner = 404), the edit\'s own re-read inside its transaction'],
   'lib/outsideView.ts': [1, 'hiddenSessionIds: moment ids only (no post content), for the gated feed / profile authors'],
   'lib/profileLists.ts': [5, 'the post ids of the list rows (and the one impression\'s date): impressions only when gate.sees.posts, the id only while postHiddenSql says shown; a craving\'s (its session or check-in post) only with gate.sees.posts (or your own), the same rule; the post a craving was saved from, only to ask viewerCanSeePosts (author) + postShownSql (post) whether its bottle shows (never on the wire)'],
+  'lib/momentDefaults.ts': [2, 'the caller\'s OWN posts only (fi.user_id = caller, no other author): scopeSql (the moments you posted in, for the apply\'s scope of your choices) and previewDefault\'s count of your own check-ins whose Hide from Feed differs'],
   'lib/postPrivacy.ts': [5, 'the per-post rule itself: postShownTo (one post, for viewerCanSeePost), pagePostIds (ids + times only, every exclusion before the LIMIT, for gated authors), ownPostPrivacy (the caller\'s OWN post\'s current switch, fi.user_id = caller, before a show is charged, R10), setMomentChoiceByPost + showMomentChoiceByPost (the caller\'s own moment post as the write\'s source)'],
 }
 
