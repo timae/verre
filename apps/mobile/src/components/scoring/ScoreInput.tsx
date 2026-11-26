@@ -91,25 +91,22 @@ export function ScoreInput({ value, onChange, onStep, current }: Props) {
       }),
     [],
   );
-  const editingRef = useRef(editing);
-  editingRef.current = editing;
-
   const setFromX = (x: number) => {
     if (trackW <= thumb) return;
-    if (editingRef.current) {
-      // A slider touch while the number field is open abandons the draft —
-      // otherwise the field's eventual blur would commit the stale draft
-      // over the drag.
-      field.abandon();
+    // Range-input semantics: the thumb travels within [thumb/2, W - thumb/2].
+    const next = scoreFromFraction((x - thumb / 2) / (trackW - thumb));
+    // A slider touch while the number field is open abandons the draft (else
+    // the field's end would commit it over the drag), decided by the session's
+    // OWN state, never the last render's `editing` (Codex recheck 6: focus,
+    // typing and the slider can all land before a render). The write is
+    // deduped against the score NOW (recheck 5).
+    const r = field.slide(next);
+    if (r.tookOver) {
       setEditing(false);
       inputRef.current?.blur();
     }
-    // Range-input semantics: the thumb travels within [thumb/2, W - thumb/2].
-    const next = scoreFromFraction((x - thumb / 2) / (trackW - thumb));
-    // Deduped against the score NOW, not the last render (Codex recheck 5: a
-    // typed score staged before the render made the slider skip its write).
     // Selection tick on each 0.25 step while dragging (interaction-spec).
-    if (field.slide(next)) Haptics.selectionAsync().catch(() => {});
+    if (r.wrote) Haptics.selectionAsync().catch(() => {});
   };
   const commitHaptic = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});

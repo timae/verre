@@ -54,9 +54,10 @@ export function scoreFromDraft(text: string): number {
 // • every write (a keystroke, the end, the SLIDER) is deduped against
 //   `current()`, the score in the draft NOW (the impression's autosave updates
 //   it synchronously; the last rendered score lags a burst of events);
-// • `abandon()`: the slider took over while the field was open: from then on
-//   the edit's native text is ignored, a queued keystroke included, and its end
-//   writes nothing (the slider's value wins).
+// • the SLIDER takes over an open edit by itself (`slide`, from the session's
+//   own synchronous state, never a rendered "editing" flag: Codex recheck 6):
+//   from then on the edit's native text is ignored, a queued keystroke
+//   included, and its end writes nothing (the slider's value wins).
 export type ScoreEndResult = 'abandoned' | 'wrote' | 'none';
 export function createScoreField(deps: { current: () => number; write: (v: number) => void }) {
   let edit: { shown: number; changed: boolean } | null = null;
@@ -78,12 +79,13 @@ export function createScoreField(deps: { current: () => number; write: (v: numbe
       if (edit) edit.changed = true;
       return writeIfNew(scoreFromDraft(text));
     },
-    // The slider's pick (the same dedupe as the field's own writes).
-    slide(next: number): boolean {
-      return writeIfNew(next);
-    },
-    abandon() {
-      abandoned = true;
+    // The slider's pick: an open edit is abandoned first (`tookOver`: the first
+    // pick that did it, so the component blurs the field once), then the same
+    // dedupe as the field's own writes.
+    slide(next: number): { tookOver: boolean; wrote: boolean } {
+      const tookOver = edit !== null && !abandoned;
+      if (edit) abandoned = true;
+      return { tookOver, wrote: writeIfNew(next) };
     },
     // onEndEditing, with the FINAL native text.
     end(text: string): ScoreEndResult {

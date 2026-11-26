@@ -540,7 +540,7 @@ async function main() {
     const t = scoreHost(3)
     t.focus()
     const keystroke = () => t.field.change('2')
-    const slider = () => { t.field.abandon(); t.field.slide(3) } // setFromX: abandon while editing, then the pick
+    const slider = () => t.field.slide(3) // setFromX: the pick, nothing else (the session abandons by itself)
     if (order === 'keystroke, slider') { keystroke(); slider() } else { slider(); keystroke() }
     check(`${order}: no render in between`, t.host.rendered, 3)
     check(`🔒 ${order}: the slider's 3 is the score (deduped against the draft NOW; the queued keystroke rejected)`, t.host.store, 3)
@@ -548,9 +548,25 @@ async function main() {
     check(`${order}: still the slider's 3`, t.host.store, 3)
   }
   {
+    // Recheck 6: focus, live text, the slider's pick and end-editing, all with
+    // no render in between and no separate abandon: the component only calls
+    // field.slide (it no longer reads a rendered "editing" flag).
+    const t = scoreHost(0)
+    t.focus()
+    t.field.change('2')
+    const r = t.field.slide(3)
+    check('🔒 the slider took over the open edit by itself (the component blurs once)', r, { tookOver: true, wrote: true })
+    check('a second pick of the same drag does not take over again', t.field.slide(3.25).tookOver, false)
+    t.field.slide(3)
+    check('the field\'s end writes nothing', t.field.end('2'), 'abandoned')
+    check('🔒 no render, no abandon call: the score is the slider\'s 3', [t.host.rendered, t.host.store], [0, 3])
+    const idle = scoreHost(1)
+    check('a pick with no edit open takes nothing over', idle.field.slide(2), { tookOver: false, wrote: true })
+  }
+  {
     const t = scoreHost(3)
     t.focus()
-    t.field.abandon()
+    t.field.slide(4)
     t.field.end('1')
     t.focus()
     check('the next edit starts clean (no stale abandon)', t.field.change('2'), true)

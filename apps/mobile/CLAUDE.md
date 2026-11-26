@@ -759,8 +759,10 @@ on the stack hosting the line-up: Back returns to the open layer.
   "" / "0.00" / "4.50" alike) and writes nothing at its end (a score that
   loaded while it was focused stays); every write, the slider's included, is
   deduped against the draft's score NOW, `ScoreInput current` = the
-  autosave's `scoreNow`, never the rendered value; once the slider took over,
-  the edit's native text is ignored, a queued keystroke included; the note: only when it
+  autosave's `scoreNow`, never the rendered value; the slider takes over an
+  open edit by ITSELF (`field.slide`, from the session's synchronous state,
+  never the rendered `editing`), and from then on the edit's native text is
+  ignored, a queued keystroke included; the note: only when it
   differs from its last change), then
   reports (`fieldEndEditing`); blur is the focus UI's; the unmount and the belt
   are the fallbacks; the slider's draft abandon still wins. The capture resolves once none is
