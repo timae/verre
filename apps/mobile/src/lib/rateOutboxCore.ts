@@ -1216,6 +1216,9 @@ export function createRateOutbox(deps: OutboxDeps) {
         ready = true;
         notify();
         pump(); // the owner check (unverified slots wait for their key reads)
+        // Entries still on disk are found by a background DISCOVERY (Codex
+        // recheck 9): retried with the runner's backoff until it lists them.
+        deps.setTimer(() => { if (act === activation) void discover(v, act, 1); }, backoffMs(1));
         return;
       }
       deps.setTimer(() => { if (act === activation) void hydrate(v, act, attempt + 1); }, WRITE_RETRY_FIRST_MS);
@@ -1251,6 +1254,34 @@ export function createRateOutbox(deps: OutboxDeps) {
     }
     ready = true;
     notify();
+    pump();
+  };
+
+  // After a failed launch read: list this viewer's stored keys and feed each
+  // through the per-key merge (`loadKey`: newer page edits and confirmed
+  // discards still win); every other unverified slot is read too (nothing
+  // stored → verified). Retried with the runner's backoff until it succeeds or
+  // the viewer changes; then new slots are verified from the start.
+  const discover = async (v: string, act: number, n: number) => {
+    let keys: readonly string[];
+    try {
+      keys = await deps.storage.getAllKeys();
+    } catch (err) {
+      if (act !== activation) return;
+      log('[rateOutbox] key discovery failed', err);
+      deps.setTimer(() => { if (act === activation) void discover(v, act, n + 1); }, backoffMs(n + 1));
+      return;
+    }
+    if (act !== activation || viewer !== v) return;
+    const mine = `${STORAGE_PREFIX}${encodeURIComponent(v)}|`;
+    for (const k of keys) {
+      if (!k.startsWith(mine)) continue;
+      const [code, wineId] = k.slice(mine.length).split('|').map(decodeURIComponent);
+      if (code === undefined || wineId === undefined) continue;
+      slotFor(keyOf(v, code, wineId));
+    }
+    hydrationFailed = false;
+    for (const s of [...slots.values()]) if (!s.verified) void loadKey(s);
     pump();
   };
 

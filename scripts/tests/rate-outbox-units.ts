@@ -1970,6 +1970,59 @@ async function main() {
     check('r9-2: after launch recovery the retired stored score is pruned from the Clear\'s restore; the page\'s newer note (over the stored one) goes out', ready && e.sent[0]?.body.opId === 'op-stored-score' && !!m && m.body.score === undefined && !e.sent.slice(1).some((x) => x.body.score === 4 || x.body.notes === 'stored note'));
   }
 
+  // ── Codex recheck 9 ──────────────────────────────────────────────────────
+  {
+    // r10-1: a Home launch, one saved edit on disk, two failed launch reads,
+    // storage recovers → the background discovery finds the entry and it is
+    // sent, with no user action (no page, no poll).
+    const t0 = 7_000_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 }));
+    const e = env({ disk, t0 });
+    e.failReads(true, 0);
+    await e.start();
+    await e.advance(1500); // both launch reads fail: ready, nothing found yet
+    const before = e.sent.length;
+    e.failReads(false, 0); // storage recovers
+    await e.advance(backoffMs(1));
+    await e.advance(10);
+    check('r10-1: after two failed launch reads the stored edit is discovered and sent by itself', before === 0 && e.sent.length === 1 && e.sent[0].body.score === 4 && e.server.row('w1').rating?.score === 4 && !e.disk.has(storageKey(ME, CODE, 'w1')));
+  }
+  {
+    // r10-1: discovery keeps retrying with the backoff while storage stays unreadable.
+    const t0 = 7_100_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 }));
+    const e = env({ disk, t0 });
+    e.failReads(true, 0);
+    await e.start();
+    await e.advance(1500);
+    await e.advance(backoffMs(1) + backoffMs(2)); // two more failed discoveries
+    const fails = e.logs.filter((l) => /key discovery failed/.test(l.m)).length;
+    e.failReads(false, 0);
+    await e.advance(backoffMs(3));
+    await e.advance(10);
+    check('r10-1: … retried with the backoff until it succeeds', fails === 2 && e.server.row('w1').rating?.score === 4);
+  }
+
+  {
+    // r10-1: a confirmed discard made while storage is still unreadable keeps
+    // precedence: the recovered stored entry is never adopted back or sent.
+    const t0 = 7_200_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 }));
+    const e = env({ disk, t0 });
+    e.failReads(true, 1000); // nothing readable
+    await e.start();
+    await e.advance(1500);
+    e.ctl('w1').discardPending({ confirmed: true });
+    await e.advance(2000);
+    e.failReads(false, 0);
+    await e.advance(backoffMs(1) + backoffMs(2));
+    await e.advance(10);
+    check('r10-1: … a confirmed discard still wins over the recovered entry', !e.disk.has(storageKey(ME, CODE, 'w1')) && e.sent.length === 0);
+  }
+
   // ── the 90-day clean-up ──────────────────────────────────────────────────
   {
     const disk = new Map<string, string>();
