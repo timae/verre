@@ -1049,7 +1049,7 @@ prod fails the deploy; `ratings_score_check` exists only on prod). So:
 
 ```
 attributions page ✅ → first catalog fill ✅ → model change → review queue
-     (SHIPPED PR #93)      (prod 2026-11-18)     ← NEXT
+     (SHIPPED PR #93)      (prod 2026-11-18)     ← release 0.2.0
 ```
 
 - **Attributions page** — ✅ **SHIPPED (PR #93, 2026-07-27).** A config-driven page in web and
@@ -1109,8 +1109,15 @@ attributions page ✅ → first catalog fill ✅ → model change → review que
   the replacement (its ids are the replacement's). It carries the origin only: the
   catalogue-maintenance side holds no description or vinification text. Build step 2 starts now: the origin
   column is `wine_products.country` (answered 2026-11-19); step 1b stays open alongside
-  until both files are in and checked.
-- **Model change** — this document.
+  until both files are in and checked. **Delivered 2026-11-25** (file 1, build `d03cb878…`,
+  replacing the first delivery; file 2 fills the origin of 252,382 products) and **rehearsed
+  on a copy of prod 2026-11-26**: the replace refused nothing, then the release's ten
+  migrations, file 2 and the search rebuild ran on top of it. Prod loads file 1 on release
+  day, before the push.
+- **Model change** — this document. Ships as **release 0.2.0** (with Moment Visibility, Moment
+  Defaults and rating saves): ONE push, whose deploy applies all ten migrations before the new
+  code serves (ruled 2026-11-26; it replaces the expand push followed by a code push), file 2
+  right after the deploy, the conversion (§ 6) once the operator scripts have run.
 - **Review queue** — the curator screens (phase 3).
 
 **The catalog fence comes down before the review queue exists** (Simon's ruling,

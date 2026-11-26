@@ -19,7 +19,7 @@
 //
 // 🔒 IMPORT-FREE: this module sits in the proxy's graph (eslint.config.mjs).
 
-export const CODE_FLOOR_IOS = '0.1.5'
+export const CODE_FLOOR_IOS = '0.2.0'
 
 // The web's wire generation, sent as `X-Verre-Web` on every /api/session call
 // (lib/sessionFetch.ts webApiFetch). proxy.ts bounces a signed-in moment call
