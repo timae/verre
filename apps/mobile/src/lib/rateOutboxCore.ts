@@ -401,6 +401,14 @@ export function createRateOutbox(deps: OutboxDeps) {
     } catch {
       stored = null;
     }
+    // The launch read's 90-day cutoff applies here too (recovery after a
+    // failed launch read): an expired entry is removed unsent; the page's own
+    // fresh edits (if any) become a new entry under the key (Codex build 2 #8).
+    const editedAt = stored ? (typeof stored.editedAt === 'number' ? stored.editedAt : stored.updatedAt) : undefined;
+    if (stored && (typeof editedAt !== 'number' || deps.now() - editedAt > CLEANUP_MS)) {
+      log('[rateOutbox] a recovered entry is older than 90 days: removed unsent');
+      stored = null;
+    }
     if (stored && stored.viewer === viewer && !s.discarded) {
       stored.parked ??= {};
       stored.ackRev ??= {};
@@ -581,7 +589,10 @@ export function createRateOutbox(deps: OutboxDeps) {
   // unread: the slot is marked so the read doesn't bring it back.
   const discardNow = (key: string) => {
     const s = slots.get(key);
-    if (hydrationFailed && (!s || !s.verified)) {
+    // ANY unverified slot is tombstoned (its read may still be open: discovery
+    // clears `hydrationFailed` before the reads settle, Codex recheck 10);
+    // `hydrationFailed` only decides for a key that has no slot yet.
+    if (s ? !s.verified : hydrationFailed) {
       const d = s ?? slotFor(key);
       d.discarded = true;
       d.mem = null;
@@ -1486,6 +1497,8 @@ export function createRateOutbox(deps: OutboxDeps) {
     takeClearAsk(v: string, code: string, wineId: string): boolean {
       return clearAsks.delete(keyOf(v, code, wineId));
     },
+    // The same, without taking it (a page's selection: re-render to ask).
+    clearAskPending: (v: string, code: string, wineId: string): boolean => clearAsks.has(keyOf(v, code, wineId)),
 
     // The line-up's own rows: the entry's edits over the own-rating snapshot
     // (the poll's retained view only when there is none); an EMPTY result keeps

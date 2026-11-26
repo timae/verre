@@ -25,6 +25,24 @@ import { FIELDS, SAVE_ERROR_TEXT, type EntryMark, type Field, type FieldValues, 
 
 // The baseline a Clear confirm was opened on (`clearBaseline()` → `clearRating(token)`).
 // `mark`: the entry pending when it was taken (its ack may advance the base).
+// What one page renders from the outbox (one viewer × moment × wine): the SAME
+// object while none of it changes, so a poll that only moves another bottle
+// re-renders nothing here (Codex build 2 #7).
+export type AutosaveSelection = {
+  draft: FieldValues;
+  savedState: SavedState;
+  error: string | null;
+  baselineReady: boolean;
+  editable: boolean;
+  clearPending: boolean;
+  clearAsk: boolean;
+};
+const sameSelection = (a: AutosaveSelection, b: AutosaveSelection) =>
+  a.savedState === b.savedState && a.error === b.error && a.baselineReady === b.baselineReady && a.editable === b.editable &&
+  a.clearPending === b.clearPending && a.clearAsk === b.clearAsk &&
+  a.draft.score === b.draft.score && a.draft.notes === b.draft.notes &&
+  JSON.stringify(a.draft.flavors) === JSON.stringify(b.draft.flavors) && JSON.stringify(a.draft.aromas) === JSON.stringify(b.draft.aromas);
+
 export type ClearToken = { viewer: string; code: string; wineId: string; base: Snapshot; foreign: number; mark?: EntryMark | null };
 
 export const SETTLE_MS = 1000;
@@ -109,6 +127,7 @@ export function createAutosaveController(
   let disposed = false;
   let localError: string | null = null;
   let ver = 0;
+  let lastSelection: AutosaveSelection | null = null;
   const listeners = new Set<() => void>();
   const emit = () => {
     ver++;
@@ -233,6 +252,22 @@ export function createAutosaveController(
     },
 
     draft,
+    // The page's whole render input, identity-stable while unchanged (a
+    // `useSyncExternalStore` snapshot over the outbox AND this controller).
+    selection: (): AutosaveSelection => {
+      const next: AutosaveSelection = {
+        draft: draft(),
+        savedState: ctl.savedState(),
+        error: ctl.error(),
+        baselineReady: snapshot() !== null,
+        editable: editable(),
+        clearPending: !!owner.entry(viewer, code, wineId)?.clear,
+        clearAsk: owner.clearAskPending(viewer, code, wineId),
+      };
+      if (lastSelection && sameSelection(lastSelection, next)) return lastSelection;
+      lastSelection = next;
+      return next;
+    },
     baselineReady: () => snapshot() !== null,
     ready: () => owner.ready(viewer),
     clearPending: () => !!owner.entry(viewer, code, wineId)?.clear,

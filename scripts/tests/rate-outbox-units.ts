@@ -125,6 +125,8 @@ function env(opts: { disk?: Map<string, string>; t0?: number; online?: boolean }
   const hung: ((res?: RateResult) => void)[] = [];
   let bumpOnConfirm = 0; // get-session answers that each move the auth generation
   let holdConfirms = false;
+  let holdGets = false; // per-key and launch reads wait (`releaseGets`)
+  const heldGets: (() => void)[] = [];
   const heldConfirms: (() => void)[] = [];
   // `gen`: the auth generation the section's fetch started under (the binding's stamp).
   const cache = new Map<string, { ratings: RatingsView | null; gen?: number; wines?: { id: string; name: string; _blind?: boolean }[] }>();
@@ -157,6 +159,7 @@ function env(opts: { disk?: Map<string, string>; t0?: number; online?: boolean }
         return [...disk.keys()];
       },
       multiGet: async (keys) => {
+        if (holdGets) await new Promise<void>((r) => heldGets.push(r));
         if (failGet > 0) {
           failGet--;
           throw new Error('storage unreadable');
@@ -267,6 +270,8 @@ function env(opts: { disk?: Map<string, string>; t0?: number; online?: boolean }
     genNow: () => gen,
     bumpOnConfirm: (n: number) => { bumpOnConfirm = n; },
     holdConfirms: (on: boolean) => { holdConfirms = on; },
+    holdGets: (on: boolean) => { holdGets = on; },
+    releaseGets: async () => { holdGets = false; while (heldGets.length) heldGets.shift()!(); await flush(); },
     releaseConfirms: async () => { holdConfirms = false; while (heldConfirms.length) heldConfirms.shift()!(); await flush(); },
     // The OLDEST hung request answers `res` (a network error, …) without committing.
     releaseOne: async (res: RateResult) => { hung.shift()!(res); await flush(); },
@@ -2021,6 +2026,77 @@ async function main() {
     await e.advance(backoffMs(1) + backoffMs(2));
     await e.advance(10);
     check('r10-1: … a confirmed discard still wins over the recovered entry', !e.disk.has(storageKey(ME, CODE, 'w1')) && e.sent.length === 0);
+  }
+
+  // ── Codex build 2 #7 / #8 + recheck 10 ──────────────────────────────────
+  const storedEntry = (t0: number, extra: Record<string, unknown> = {}) => JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0, updatedAt: t0, editedAt: t0, ...extra });
+  {
+    // r11-1: recovery after a failed launch read obeys the 90-day cutoff: the
+    // expired stored score is removed unsent, the page's fresh note becomes
+    // a new entry and goes out alone.
+    const t0 = 8_000_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), storedEntry(t0 - CLEANUP_MS - 1000));
+    const e = env({ disk, t0, online: false });
+    e.failReads(true, 0); // the launch read fails, the per-key read works
+    await e.start();
+    await e.advance(1500);
+    const c = e.ctl('w1');
+    c.setNotes('fresh');
+    await e.advance(1000); // the write reads the key first: expired → not adopted
+    await e.setOnline(true);
+    await e.advance(10);
+    check('r11-1: an expired recovered entry is removed unsent; the page\'s fresh edit goes out as a new entry', e.sent.length === 1 && e.sent[0].body.notes === 'fresh' && e.sent[0].body.score === undefined && e.logs.some((l) => /older than 90 days/.test(l.m)));
+  }
+  for (const kind of ['merge', 'clear'] as const) {
+    // r11-1: … and with nothing on the page, discovery removes it unsent (an expired Clear too).
+    const t0 = 8_100_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), storedEntry(t0 - CLEANUP_MS - 1000, kind === 'clear' ? { fields: {}, clear: { opId: 'op-old-clear', restore: { score: 4 }, baseVersion: 1 } } : {}));
+    const e = env({ disk, t0 });
+    e.failReads(true, 0);
+    await e.start();
+    await e.advance(1500);
+    e.failReads(false, 0);
+    await e.advance(backoffMs(1));
+    await e.advance(10);
+    check(`r11-1: an expired recovered ${kind === 'clear' ? 'Clear' : 'entry'} is removed unsent by discovery`, e.sent.length === 0 && !e.disk.has(storageKey(ME, CODE, 'w1')));
+  }
+  {
+    // r11-2: a discovered key's read held open, a confirmed discard, the
+    // release → the tombstone wins: no /rate POST, the key removed.
+    const t0 = 8_200_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), storedEntry(t0 - 1000));
+    const e = env({ disk, t0 });
+    e.failReads(true, 0);
+    await e.start();
+    await e.advance(1500);
+    e.failReads(false, 0);
+    e.holdGets(true);
+    await e.advance(backoffMs(1)); // discovery: the key's read is open
+    e.ctl('w1').discardPending({ confirmed: true });
+    await e.releaseGets();
+    await e.advance(10);
+    check('r11-2: a confirmed discard while a discovered read is open is never posted', e.sent.length === 0 && !e.disk.has(storageKey(ME, CODE, 'w1')));
+  }
+  {
+    // r11-3: a page's selection is identity-stable: a poll that moves another
+    // bottle keeps it; one that moves this bottle changes it.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.server.webSave('w2', { score: 2 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    const s1 = c.selection();
+    e.server.webSave('w2', { score: 5 });
+    e.poll();
+    const s2 = c.selection();
+    e.server.webSave('w1', { score: 5 });
+    e.poll();
+    const s3 = c.selection();
+    check('r11-3: another bottle\'s poll keeps this page\'s selection; its own changes it', s2 === s1 && s3 !== s1 && s3.draft.score === 5 && s1.draft.score === 3);
   }
 
   // ── the 90-day clean-up ──────────────────────────────────────────────────

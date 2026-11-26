@@ -13,14 +13,13 @@
 //      discardPending(), savedState, error.
 
 import type { AromaSelection, AxisKind } from '@verre/core';
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { createAutosaveController, EMPTY_DRAFT, type AutosaveController, type ClearToken, type SavedState, type TransitionGuard } from './impressionAutosaveCore';
 import { useMeId } from './meId';
-import { rateOutbox, useRateOutboxVersion } from './rateOutbox';
+import { rateOutbox } from './rateOutbox';
 
 let mountSeq = 0;
-const noopSubscribe = () => () => {};
-const zero = () => 0;
+const nullSelection = () => null;
 const TIMERS = { set: (fn: () => void, ms: number) => setTimeout(fn, ms), clear: (h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>) };
 
 export type ImpressionAutosave = {
@@ -70,8 +69,22 @@ export function useImpressionAutosave({
   );
   ctrl?.setKind(kind);
   ctrl?.setSuspended(() => guard?.held ?? false);
-  useRateOutboxVersion();
-  useSyncExternalStore(ctrl ? ctrl.subscribe : noopSubscribe, ctrl ? ctrl.version : zero);
+  // ONE subscription over the owner and this page's controller, read through
+  // the page's own selection: a poll that moves another bottle (or nothing of
+  // this one) returns the same object, so this page doesn't re-render.
+  const subscribe = useCallback(
+    (fn: () => void) => {
+      if (!ctrl) return () => {};
+      const a = rateOutbox.subscribe(fn);
+      const b = ctrl.subscribe(fn);
+      return () => {
+        a();
+        b();
+      };
+    },
+    [ctrl],
+  );
+  const sel = useSyncExternalStore(subscribe, ctrl ? ctrl.selection : nullSelection);
   useEffect(() => {
     ctrl?.setActive(active);
   }, [ctrl, active]);
@@ -99,7 +112,7 @@ export function useImpressionAutosave({
     };
   }
   return {
-    draft: ctrl.draft(),
+    draft: sel?.draft ?? EMPTY_DRAFT,
     setScore: ctrl.setScore,
     stepScore: ctrl.stepScore,
     setNotes: ctrl.setNotes,
@@ -109,12 +122,12 @@ export function useImpressionAutosave({
     drain: ctrl.drain,
     clearBaseline: ctrl.clearBaseline,
     clearRating: (token) => ctrl.clearRating(token ?? undefined),
-    clearPending: ctrl.clearPending(),
+    clearPending: sel?.clearPending ?? false,
     discardPending: ctrl.discardPending,
-    savedState: ctrl.savedState(),
-    error: ctrl.error(),
-    baselineReady: ctrl.baselineReady(),
-    editable: ctrl.editable(),
+    savedState: sel?.savedState ?? null,
+    error: sel?.error ?? null,
+    baselineReady: sel?.baselineReady ?? false,
+    editable: sel?.editable ?? false,
     takeClearAsk: () => rateOutbox.takeClearAsk(viewer, code, wineId),
   };
 }
