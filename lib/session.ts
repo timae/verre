@@ -211,6 +211,12 @@ export type RatingMeta = {
   aromas?: { a: string; m: string | null; p?: boolean }[]
   notes: string
   at: number
+  // The rating's version (`rating_versions.version`, docs/dev/rating-saves.md):
+  // on a signed-in rating of a Postgres-backed moment, written with every key
+  // since the rating-saves release; absent = 0 (never rated, a pre-release
+  // rating with no write since, a guest). 🔒 On the wire ONLY on the caller's
+  // own rows (buildRatingsView strips it from everyone else's).
+  v?: number
 }
 
 export type SessionMeta = {

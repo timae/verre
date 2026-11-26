@@ -4,6 +4,7 @@ import { redis, k, scanKeys } from '@/lib/redis'
 import { mutateWines, type SessionMeta, type WineMeta } from '@/lib/session'
 import { reconcileLineup, bumpLineupRevision, renumber, recordLineup, projectLineup } from '@/lib/occurrences'
 import { withSessionMutation, type MutationCtx } from '@/lib/sessionMutation'
+import { bumpRaterVersions } from '@/lib/ratingVersions'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 import type { Identity } from '@/lib/identity'
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3'
@@ -129,6 +130,7 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
       }
       if (isTombstone) {
         reclaim.push(...await ratingImages(tx, Prisma.sql`r.session_id = ${row.id} AND r.tombstone_key = ${identityId} AND r.user_id IS NULL`))
+        // rating-write: EXEMPT
         await tx.$executeRaw`DELETE FROM ratings WHERE session_id = ${row.id} AND tombstone_key = ${identityId} AND user_id IS NULL`
       } else if (userId !== null && scope === 'kick-keep') {
         await tx.$executeRaw`
@@ -141,6 +143,11 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
         // its ratings' session_id, and a surviving rating would re-admit the
         // user as an author.
         reclaim.push(...await ratingImages(tx, Prisma.sql`r.user_id = ${userId} AND r.session_id = ${row.id}`))
+        // The rater's versions move first (docs/dev/rating-saves.md): an entry
+        // that waited offline through this kick and a rejoin must not re-create
+        // a deleted rating on its old version. No XP change (not their own clear).
+        await bumpRaterVersions(tx, userId, row.id)
+        // rating-write: BUMPS
         await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id = ${row.id}`
         await tx.$executeRaw`DELETE FROM feed_items WHERE user_id = ${userId} AND session_id = ${row.id}`
         // Their cravings from this moment: by the moment the craving stores
@@ -195,6 +202,7 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
     // ── After COMMIT: the rating keys of a removed rater (the record no longer
     // has those ratings). Kick-keep keeps them (the roster guard hides them).
     if (scope !== 'kick-keep') {
+      // rating-write: BUMPS
       const keys = await scanKeys(`s:${code}:r:${identityId}:*`)
       if (keys.length) await ctx.fence!.exec(m => { m.del(keys) })
     }

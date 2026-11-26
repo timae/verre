@@ -3,10 +3,9 @@ import * as Haptics from 'expo-haptics';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Keyboard, Pressable, ScrollView, View, type ViewInstance, type ScrollViewInstance } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AccessibilityInfo, Alert, AppState, Pressable, ScrollView, View, type ViewInstance, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { validateScore, fillFlavourZeros, gateAromaSelections, type AromaSelection } from '@verre/core';
 import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchScroll';
 import { RatingSection } from '@/components/scoring/RatingSection';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
@@ -18,7 +17,7 @@ import { BarTitle, useBarTitleProgress, VBar } from '@/components/VBar';
 import { CenteredMessage, ReconnectingBar } from '@/components/ui/ConnectionState';
 import { SessionFatalView } from '@/components/moments/SessionFatalView';
 import { PersonPreviewProvider } from '@/components/moments/PersonPreviewSheet';
-import { ApiError, deleteWine, getSessionState, hideWine, rateWine, revealWine, setBookmark, type RatingMeta, type SessionState } from '@/lib/api/sessions';
+import { ApiError, deleteWine, getSessionState, hideWine, revealWine, setBookmark, type SessionState } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
@@ -28,6 +27,8 @@ import { radius, useTheme } from '@/theme';
 import { markProfileHeaderStale } from '@/lib/feedCache';
 import { errorText } from '@/lib/errorCopy';
 import { useMeId } from '@/lib/meId';
+import { useImpressionAutosave } from '@/lib/useImpressionAutosave';
+import { createTransitionGuard, type SavedState } from '@/lib/impressionAutosaveCore';
 import { AboutBlock, Hero, NameBlock } from '@/components/moments/ImpressionParts';
 import { NoTopEdgeFade } from '@/components/ui/NoTopEdgeFade';
 
@@ -37,6 +38,9 @@ const isGone = (e: unknown): e is ApiError => e instanceof ApiError && e.kind ==
 // the shared fatal view with a working Try Again (a refetch), never latched.
 const isLimited = (e: unknown): e is ApiError => e instanceof ApiError && e.kind === 'rate-limited';
 const GUTTER = 20; // 02e vbody runs 20px gutters (vs the line-up's 22) — deliberate override
+// The room the content keeps above the footer bar: FOOT_CLEARANCE_IR (130)
+// over the old 114 pt bar at default text.
+const FOOT_BREATHING = 16;
 // Direction of the last sibling-wine replace — read by the incoming screen
 // to pick the replace animation (push for next, pop for previous).
 let navDir: 'next' | 'prev' = 'next';
@@ -45,13 +49,18 @@ let navDir: 'next' | 'prev' = 'next';
 // vero-screens irScreen pixel spec. Photo variant = full-bleed hero with a
 // glass floating header that hands the title in and goes solid as the
 // on-screen name scrolls under it; no-photo variant (the norm) = in-flow
-// bar, dark name block. Rate flow: wide slider + editable number
-// (ScoreInput) + "Add tasting detail" disclosure.
+// bar, dark name block. Rate flow: the shared RatingSection.
 //
-// Flagged deviations (pixel-spec rule):
-// - Previous also saves pending edits (the mock leaves unsaved-edit
-//   handling unspecified; silent discard would lose data and the web's
-//   dirty-guard modal is a web pattern).
+// AUTO-SAVE (tasting-feedback build 1, ruled 2026-11-25): the rating saves
+// itself about 1 s after the input settles and on every leave (Back,
+// swipe-back, a tab switch, the app to the background), as MERGE saves of the
+// changed fields only, through the outbox (lib/useImpressionAutosave.ts →
+// lib/rateOutbox.ts): offline they wait on the phone ("Saved on this phone")
+// and go out by themselves, also after the app was closed. Previous / Next /
+// Finish move on AT ONCE once the edits are stored on the phone (they stay
+// only when storing fails); a definitive failure after leaving is an alert.
+// ONLY "Clear My Rating" deletes (after a confirm): emptying every field by
+// hand keeps the stored rating. "Saved" sits in the footer bar.
 export default function ImpressionDetail() {
   const { code: rawCode, wineId: rawWineId } = useLocalSearchParams<{ code: string; wineId: string }>();
   const code = String(rawCode ?? '');
@@ -70,10 +79,17 @@ export default function ImpressionDetail() {
   // poll — migrate when next touched): paused while this screen isn't
   // focused, resubscribe-and-refetch on return.
   const [screenFocused, setScreenFocused] = useState(true);
+  // The departure check reads focus from this ref, set IN the focus effect and
+  // its cleanup (state would lag the blur by one render).
+  const focusedRef = useRef(true);
   useFocusEffect(
     useCallback(() => {
+      focusedRef.current = true;
       setScreenFocused(true);
-      return () => setScreenFocused(false);
+      return () => {
+        focusedRef.current = false;
+        setScreenFocused(false);
+      };
     }, []),
   );
   // A gone moment (404) is terminal, as on the line-up: LATCHED (keyed on
@@ -118,7 +134,6 @@ export default function ImpressionDetail() {
   const index = wines?.findIndex((w) => w.id === wineId) ?? -1;
   const wine = index >= 0 ? wines![index] : null;
   const total = wines?.length ?? 0;
-  const existing: RatingMeta | undefined = ratings?.[myIdentityId]?.ratings[wineId];
 
   // Host on a blind session gets the bar's reveal/hide control (mirrors the
   // line-up). isHostByIdentity parity: original host, logged-in host fallback,
@@ -146,60 +161,15 @@ export default function ImpressionDetail() {
   const gone = goneError !== null;
   const showReconnecting = !gone && (!online || (state.isError && wine !== null));
 
-  // Local-until-commit (web Rate-pane parity): edits live here, the POST
-  // fires on Save. Re-seed when the route param swaps to a sibling wine.
-  const [score, setScore] = useState(0);
-  const [notes, setNotes] = useState('');
-  const [flavors, setFlavors] = useState<Record<string, number>>({});
-  const [aromas, setAromas] = useState<AromaSelection[]>([]);
-  const seededFor = useRef<string | null>(null);
-  // Whether the local aromas state is TRUSTWORTHY for this wine: seeded from
-  // a real ratings payload, or edited by the user. Until then the save must
-  // OMIT the field (omitted-preserves) — sending the unseeded [] during a
-  // degraded ratings section would present-replace the stored selections
-  // away (review finding). Score/notes claiming the seed slot does NOT make
-  // aromas trustworthy, hence the separate flag.
-  const aromasSeeded = useRef(false);
-  useEffect(() => {
-    if (seededFor.current === wineId || ratings === null) return;
-    seededFor.current = wineId;
-    setScore(existing?.score ?? 0);
-    setNotes(existing?.notes ?? '');
-    // Seed the flavour grid from the stored structure map (keys present = rated,
-    // 0 = perceived None). StructureInput edits it in place.
-    setFlavors(existing?.flavors ?? {});
-    // Stored aromas re-canonicalized through the gate (drops a p:false a
-    // legacy write might carry; the diff below compares canonical-to-canonical).
-    const seedGate = gateAromaSelections(existing?.aromas);
-    setAromas(seedGate.value ?? []);
-    // The gate is ALL-OR-NOTHING: one stored id it can't resolve (a re-homed
-    // taxonomy id, or a binary bundling an older taxonomy than the server's)
-    // nulls the whole seed. That [] is NOT the truth — leave aromas
-    // untrustworthy so the save keeps OMITTING the field (omitted-preserves)
-    // instead of present-replacing the stored list away. A deliberate edit
-    // (editAromas) still becomes authoritative.
-    aromasSeeded.current = !((existing?.aromas?.length ?? 0) > 0 && !!seedGate.error);
-  }, [wineId, ratings, existing]);
-  // An edit before the first ratings payload arrives (cold cache /
-  // degraded /state section) claims the seed slot — a late seed must not
-  // overwrite in-progress input.
-  const editScore = (v: number) => {
-    seededFor.current = wineId;
-    setScore(v);
-  };
-  const editNotes = (s: string) => {
-    seededFor.current = wineId;
-    setNotes(s);
-  };
-  const editFlavors = (next: Record<string, number>) => {
-    seededFor.current = wineId;
-    setFlavors(next);
-  };
-  const editAromas = (next: AromaSelection[]) => {
-    seededFor.current = wineId;
-    aromasSeeded.current = true; // a deliberate edit is authoritative
-    setAromas(next);
-  };
+  // The rating draft, auto-saved (see the header). ONE transition guard for
+  // the controlled departures (Previous, Next, Finish): edits wait while it is
+  // held. The snapshot the draft seeds from comes from the outbox owner.
+  const guard = useMemo(() => createTransitionGuard(), []);
+  const wineLabel = wine ? (wine._blind || !wine.name ? `Impression ${index + 1}` : wine.name) : null;
+  const autosave = useImpressionAutosave({ code, wineId, kind: wine ?? null, active: true, focused: screenFocused, guard, label: wineLabel });
+  const autosaveRef = useRef(autosave);
+  autosaveRef.current = autosave;
+  const { draft } = autosave;
 
   // Crave = save the bottle (optimistic). It reads the row's own `saved`
   // (catalogue model change step 5): on a bottle hidden for you that is your
@@ -231,17 +201,6 @@ export default function ImpressionDetail() {
   useEffect(() => {
     if (craveLocal && craveLocal.wineId === wineId && craveLocal.on === rowSaved && !craveMut.isPending) setCraveLocal(null);
   }, [craveLocal, wineId, rowSaved, craveMut.isPending]);
-
-  const rateMut = useMutation({
-    mutationFn: (body: { wineId: string; score: number; flavors: Record<string, number>; aromas?: AromaSelection[]; notes: string }) =>
-      rateWine(code, body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['session-state', code, myIdentityId] });
-      queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
-      // Your Impressions tile follows (lists plan D12) when you next look at it.
-      void markProfileHeaderStale(queryClient, meIdForLists);
-    },
-  });
 
   // Host reveal/hide of THIS impression (blind session). Optimistically
   // stamps/clears revealedAt in the shared session-state cache so the bar
@@ -282,59 +241,35 @@ export default function ImpressionDetail() {
     }
   };
 
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const saveIfNeeded = async (): Promise<boolean> => {
-    Keyboard.dismiss();
-    setSaveError(null);
-    // Normalise the sparse edit map (structure-wheel §5): if any axis is rated,
-    // every axis of this style is stored — untouched ones as explicit 0
-    // ("perceived None", a centre-point wedge); all-None collapses to {}. Also
-    // the edit-path transform (§6g) — only registry keys survive, so a stale
-    // descriptor row can't 400 the write gate.
-    const cleanFlavors = fillFlavourZeros(flavors, 'wine', wine ?? null);
-    // Diff BOTH sides normalised, so missing ≡ explicit-0. A rating stored under
-    // the old sparse shape ({acid:4}) must not read as "changed" against the
-    // reloaded filled shape ({…,acid:4,…}) — otherwise tapping Next/Back on an
-    // untouched legacy rating reposts it and bumps its `at` timestamp.
-    const cleanExisting = fillFlavourZeros(existing?.flavors ?? {}, 'wine', wine ?? null);
-    // Aromas diff canonical-to-canonical (the local state is always gated;
-    // stored selections re-gate here) so key order / a legacy p:false can't
-    // read as a change.
-    const existingAromas = gateAromaSelections(existing?.aromas).value ?? [];
-    const changed =
-      score !== (existing?.score ?? 0) ||
-      notes !== (existing?.notes ?? '') ||
-      JSON.stringify(cleanFlavors) !== JSON.stringify(cleanExisting) ||
-      JSON.stringify(aromas) !== JSON.stringify(existingAromas);
-    if (!changed) return true;
-    const empty = score === 0 && notes.trim() === '' && Object.keys(cleanFlavors).length === 0 && aromas.length === 0;
-    if (empty && !existing) return true; // nothing rated, nothing stored — no POST
-    if (validateScore(score).error) {
-      setSaveError('Scores go from 0 to 5 in quarter steps.');
-      return false;
-    }
-    try {
-      // `aromas` is PRESENT once the local state is trustworthy (seeded or
-      // user-edited) — present-replaces is right for a client that owns the
-      // field (an [] clear must reach the server). While the ratings section
-      // is degraded and untouched, OMIT it (omitted-preserves) so a
-      // score/notes save can't wipe stored selections with the unseeded [].
-      await rateMut.mutateAsync({
-        wineId,
-        score,
-        flavors: cleanFlavors,
-        ...(aromasSeeded.current ? { aromas } : {}),
-        notes,
-      });
-      // The local edit is now the server state; allow re-seed on next wine.
-      seededFor.current = null;
-      return true;
-    } catch {
-      setSaveError("Couldn't save your rating. Check your connection and try again.");
-      return false;
-    }
+  // Departures. A CONTROLLED one (Previous, Next, Finish) takes the guard,
+  // captures the draft and moves on as soon as the edits are PERSISTED on the
+  // phone (never waiting for the server); a storage failure keeps the page
+  // (the footer says so) and gives the guard back. A navigation blur or
+  // removal captures in the focus cleanup below (best effort, like the OS
+  // suspending the app).
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  // A sibling replace mounts a new screen; should the route ever swap its
+  // params in place, the next wine starts with the guard free.
+  useEffect(() => guard.release(), [wineId, guard]);
+  const depart = (go: () => void) => {
+    if (!guard.acquire()) return; // one transition per waiter
+    const leaving = wineId;
+    void autosaveRef.current.drain().then((ok) => {
+      if (!mountedRef.current) return;
+      // Still this wine AND still focused (Next then Back: the line-up is in
+      // front now, and a replace would hit it): else nothing moves.
+      if (ok && leaving === wineIdRef.current && focusedRef.current) go(); // the guard stays held: this page is going away
+      else guard.release();
+    });
   };
-
+  const wineIdRef = useRef(wineId);
+  wineIdRef.current = wineId;
   const goTo = (i: number) => {
     if (!wines || i < 0 || i >= wines.length) {
       router.back();
@@ -344,34 +279,82 @@ export default function ImpressionDetail() {
     // going back. navDir is module-scoped so the INCOMING screen instance
     // (same route, new params) picks it up in its Stack.Screen options.
     navDir = i < index ? 'prev' : 'next';
-    seededFor.current = null;
-    aromasSeeded.current = false; // the sibling wine must re-earn trust
     router.replace(sessionHref(sessionTab, 'impression/[wineId]', { code, wineId: wines[i].id }));
   };
-  const onPrevious = async () => {
-    if (await saveIfNeeded()) goTo(index - 1);
+  const isFirst = index <= 0;
+  const isLast = index >= total - 1;
+  const onPrevious = () => {
+    if (!isFirst) depart(() => goTo(index - 1));
   };
-  const onNext = async () => {
-    if (!(await saveIfNeeded())) return;
-    // Short "acknowledged" tick on Save & next / Save & finish (Simon,
-    // 2026-07-10) — the M3 commit convention (light impact, no-op in Sim).
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (index >= total - 1) router.back();
-    else goTo(index + 1);
-  };
+  const onNext = () =>
+    depart(() => {
+      // Short "acknowledged" tick on Next / Finish (Simon, 2026-07-10): the M3
+      // commit convention (light impact, no-op in the Simulator).
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      if (isLast) router.back();
+      else goTo(index + 1);
+    });
+
+  // Save on leave: the focus cleanup (a STABLE callback reading the draft
+  // through refs; expo-router re-runs a cleanup whenever its callback
+  // changes) captures on a navigation blur or removal. It doesn't run on
+  // backgrounding, so ONE AppState listener lives only while focused:
+  // `background` captures at once, `inactive` is ignored; a background and a
+  // blur before the app is active again share one departure.
+  useFocusEffect(
+    useCallback(() => {
+      let departed = false;
+      const sub = AppState.addEventListener('change', (st) => {
+        if (st === 'background' && !departed) {
+          departed = true;
+          void autosaveRef.current.drain();
+        } else if (st === 'active') departed = false;
+      });
+      return () => {
+        sub.remove();
+        if (!departed) void autosaveRef.current.drain();
+      };
+    }, []),
+  );
 
   // ⋯ menu — the shared AnchoredMenu (.ir-menu dropdown; Simon's ruling: the
   // brand menu, not the native action sheet). Anchored to the measured ⋯ button.
+  // A row that asks first records ONE single-use intent before the menu closes;
+  // `onClosed` (every dismissal, once the Modal is gone) consumes it and shows
+  // the alert only while the same wine is still focused.
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
-  const clearRating = () => {
-    seededFor.current = wineId; // an edit — a late seed must not undo it
-    aromasSeeded.current = true; // explicit clear: the [] must reach the server
-    setScore(0);
-    setNotes('');
-    setFlavors({});
-    setAromas([]);
+  const menuIntent = useRef<{ kind: 'clear' | 'delete'; wineId: string } | null>(null);
+  const confirmClearRating = () => {
+    // Destructive confirms always NAME what's being deleted (Simon,
+    // 2026-07-18): masked wines get their line-up alias, same as the bar.
+    if (!wineLabel) return;
+    // Only on a KNOWN baseline (Codex P1): before the rating loads there is
+    // nothing the person saw to delete. The baseline on screen NOW: Delete
+    // clears what the person saw (a poll or a rebase since → asked again).
+    if (!autosaveRef.current.baselineReady) return;
+    const token = autosaveRef.current.clearBaseline();
+    Alert.alert(`Delete your rating of “${wineLabel}”?`, undefined, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => void autosaveRef.current.clearRating(token) },
+    ]);
+  };
+  const intentRunners = useRef({ clear: confirmClearRating, delete: () => {} });
+  intentRunners.current.clear = confirmClearRating;
+  const onMenuClosed = useCallback(() => {
+    const intent = menuIntent.current;
+    menuIntent.current = null;
+    if (!intent || intent.wineId !== wineIdRef.current || !focusedRef.current) return;
+    intentRunners.current[intent.kind]();
+  }, []);
+  const askThenClose = (kind: 'clear' | 'delete') => {
+    menuIntent.current = { kind, wineId };
     setMenuAnchor(null);
   };
+  // A Clear the server found STALE (a newer rating from elsewhere) is never
+  // rebased: the page shows the newer rating and asks again.
+  useEffect(() => {
+    if (screenFocused && autosave.takeClearAsk()) confirmClearRating();
+  });
   const editImpression = () => {
     setMenuAnchor(null);
     router.push(sessionHref(sessionTab, 'edit-impression/[wineId]', { code, wineId }));
@@ -379,6 +362,8 @@ export default function ImpressionDetail() {
   const deleteMut = useMutation({
     mutationFn: () => deleteWine(code, wineId),
     onSuccess: () => {
+      // A confirmed terminal outcome: the rating's unsent work goes with it.
+      autosaveRef.current.discardPending();
       router.back();
       queryClient.invalidateQueries({ queryKey: ['session-state', code] });
       queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
@@ -389,7 +374,6 @@ export default function ImpressionDetail() {
     },
   });
   const confirmDeleteImpression = () => {
-    setMenuAnchor(null);
     // Destructive confirms always NAME what's being deleted (Simon,
     // 2026-07-18) — masked wines get their line-up alias, same as the bar.
     const label = wine ? (wine._blind ? `Impression ${index + 1}` : wine.name) : '';
@@ -408,6 +392,18 @@ export default function ImpressionDetail() {
       ],
     );
   };
+  intentRunners.current.delete = confirmDeleteImpression;
+
+  // ONLY a confirmed terminal outcome discards the unsent rating: a PRESENT
+  // line-up without this bottle (deleted, or hidden from you) and a confirmed
+  // removal (kicked / banned). A gone moment, a 429, a failed or degraded poll
+  // replace the page but KEEP the entry for the outbox (a 404 from /rate itself
+  // drops it there).
+  const wineGone = wines !== null && index < 0;
+  const removedNow = state.error instanceof ApiError && state.error.kind === 'removed';
+  useEffect(() => {
+    if (wineGone || removedNow) autosaveRef.current.discardPending();
+  }, [wineGone, removedNow]);
 
   // Collapsing header: the bar title (and the floathead's solid state) hand
   // in when the on-screen name scrolls under the header — mock measures
@@ -438,7 +434,12 @@ export default function ImpressionDetail() {
   // the keyboard — the SHARED screen-side hook (one implementation with the
   // check-in rate stage; see useAromaSearchScroll). blockBelow is AromaInput's
   // MEASURED rendered height (onLayout), not a constant — see the prop doc.
-  const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef, FOOT_CLEARANCE);
+  // The content clears the footer bar by its MEASURED height (it grows with
+  // Dynamic Type and carries the save-status line), with the breathing room
+  // the constant had over the old bar; the constant until it is measured.
+  const [footH, setFootH] = useState(0);
+  const footClearance = footH > 0 ? footH + FOOT_BREATHING : FOOT_CLEARANCE;
+  const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef, footClearance);
 
   const fatalError = goneError ?? limitedError;
   if (fatalError) {
@@ -496,7 +497,6 @@ export default function ImpressionDetail() {
   const blind = !!wine._blind;
   const hasPhoto = !blind && !!wine.imageUrl;
   const barTitle = blind ? `Impression ${index + 1} · Hidden` : wine.name + (wine.vintage ? ` - ${wine.vintage}` : '');
-  const footVariant: 'first' | 'mid' | 'last' = index <= 0 ? 'first' : index >= total - 1 ? 'last' : 'mid';
 
   // Brought-by (provider) resolution — mirrors the web WineInfoPane callout.
   // `addedByDisplayName` is server-resolved (live identities → kicked-user
@@ -517,7 +517,7 @@ export default function ImpressionDetail() {
   const adderImageUrl = adderId ? meta?.participants.find((p) => p.id === adderId)?.imageUrl ?? null : null;
 
   const body = (
-    <View style={{ paddingHorizontal: GUTTER, paddingTop: 18, paddingBottom: FOOT_CLEARANCE }}>
+    <View style={{ paddingHorizontal: GUTTER, paddingTop: 18, paddingBottom: footClearance }}>
       {!blind ? (
         <AboutBlock
           wine={wine}
@@ -534,19 +534,18 @@ export default function ImpressionDetail() {
           redaction (mirrors web RatingPane + wineRedaction). */}
       <RatingSection
         kind={wine}
-        score={score}
-        onScore={editScore}
-        notes={notes}
-        onNotes={editNotes}
-        flavors={flavors}
-        onFlavors={editFlavors}
-        aromas={aromas}
-        onAromas={editAromas}
+        score={draft.score}
+        onScore={autosave.setScore}
+        onScoreStep={autosave.stepScore}
+        notes={draft.notes}
+        onNotes={autosave.setNotes}
+        onNotesFocus={autosave.setNoteFocused}
+        flavors={draft.flavors}
+        onFlavors={autosave.setFlavors}
+        aromas={draft.aromas}
+        onAromas={autosave.setAromas}
         onRequestAromaScroll={scrollAromaSearchTo}
       />
-      {saveError ? (
-        <VText variant="small" style={{ marginTop: 14, color: theme.critical }}>{saveError}</VText>
-      ) : null}
     </View>
   );
 
@@ -706,20 +705,23 @@ export default function ImpressionDetail() {
         </View>
       )}
       <FootBar
-        variant={footVariant}
-        saving={rateMut.isPending}
+        isFirst={isFirst}
+        isLast={isLast}
+        saved={autosave.savedState}
+        error={autosave.error}
         onPrevious={onPrevious}
         onNext={onNext}
+        onHeight={setFootH}
       />
       {/* .ir-menu options dropdown (shared AnchoredMenu). Host/cohost/provider
           CRUD rows follow the design's separator + danger-row grouping. */}
-      <AnchoredMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} right={16} minWidth={184}>
-        <MenuItem icon="undo" label="Clear My Rating" onPress={clearRating} />
+      <AnchoredMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} onClosed={onMenuClosed} right={16} minWidth={184}>
+        <MenuItem icon="undo" label="Clear My Rating" disabled={!autosave.baselineReady} soon={false} onPress={() => askThenClose('clear')} />
         {canEditImpression ? (
           <>
             <MenuSeparator />
             <MenuItem icon="edit" label="Edit" accessibilityLabel="Edit Impression" onPress={editImpression} />
-            <MenuItem icon="trash" label="Delete" accessibilityLabel="Delete Impression" tone="danger" onPress={confirmDeleteImpression} />
+            <MenuItem icon="trash" label="Delete" accessibilityLabel="Delete Impression" tone="danger" onPress={() => askThenClose('delete')} />
           </>
         ) : null}
       </AnchoredMenu>
@@ -912,36 +914,60 @@ function FloatHead({
 // (The private NoteField was replaced by the shared momentForm NotesField —
 // the catalog's pending extraction — when the note moved under the score.)
 
+const SAVED_COPY: Record<Exclude<SavedState, 'error' | null>, string> = {
+  saved: 'Saved',
+  local: 'Saved on this phone',
+  'cleared-local': 'Cleared on this phone',
+};
+
 // .ir-foot — sticky bottom action bar replacing the nav while rating:
-// Previous (flex 1) · Save & next / Save & finish (flex 1.4).
+// Previous (flex 1) · Next / Finish (flex 1.4), from INDEPENDENT first / last
+// (a one-bottle moment: Previous disabled AND Finish). Above them the save
+// status slot ("Saved", "Saved on this phone", "Cleared on this phone", an
+// error). The bar sits behind the keyboard (ruled 2026-11-25: it doesn't
+// move), so "Saved" STAYS until the next change and an error until the next
+// good save: either is there when the keyboard closes. The slot keeps its
+// line when empty, so the bar never changes height; the content clears its
+// MEASURED height (`onHeight`), which follows Dynamic Type.
 function FootBar({
-  variant, saving, onPrevious, onNext,
+  isFirst, isLast, saved, error, onPrevious, onNext, onHeight,
 }: {
-  variant: 'first' | 'mid' | 'last';
-  saving: boolean;
+  isFirst: boolean;
+  isLast: boolean;
+  saved: SavedState;
+  error: string | null;
   onPrevious: () => void;
   onNext: () => void;
+  onHeight: (h: number) => void;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const text = saved === 'error' ? error : saved ? SAVED_COPY[saved] : null;
+  useEffect(() => {
+    if (saved === 'error' && error) AccessibilityInfo.announceForAccessibility(error);
+  }, [saved, error]);
   return (
     // Solid opaque action bar (not transparent; deviates from the mock's
     // blur+wash). A flat theme fill — no BlurView. Rationale:
     // docs/design/decisions/0003-collapsed-bars-opaque.md
-    <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 6, backgroundColor: theme.bg }}>
-      <View style={{ flexDirection: 'row', gap: 10, paddingTop: 14, paddingHorizontal: 16, paddingBottom: insets.bottom + 16 }}>
+    <View
+      onLayout={(e) => onHeight(Math.round(e.nativeEvent.layout.height))}
+      style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 6, backgroundColor: theme.bg }}
+    >
+      <VText
+        variant="caption"
+        color={saved === 'error' ? 'critical' : 'inkSoft'}
+        numberOfLines={1}
+        style={{ textAlign: 'center', paddingTop: 6, paddingHorizontal: 16 }}
+      >
+        {text ?? ' '}
+      </VText>
+      <View style={{ flexDirection: 'row', gap: 10, paddingTop: 4, paddingHorizontal: 16, paddingBottom: insets.bottom + 16 }}>
         <View style={{ flex: 1 }}>
-          <Button title="Previous" variant="secondary" bar block disabled={variant === 'first' || saving} onPress={onPrevious} />
+          <Button title="Previous" variant="secondary" bar block disabled={isFirst} onPress={onPrevious} />
         </View>
         <View style={{ flex: 1.4 }}>
-          <Button
-            title={variant === 'last' ? 'Save & finish' : 'Save & next'}
-            loadingTitle="Saving…"
-            bar
-            block
-            loading={saving}
-            onPress={onNext}
-          />
+          <Button title={isLast ? 'Finish' : 'Next'} bar block onPress={onNext} />
         </View>
       </View>
     </View>

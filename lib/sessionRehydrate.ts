@@ -48,6 +48,8 @@ export const WINE_META_FIELDS: Record<keyof WineMeta, 'rebuilt' | 'ephemeral'> =
 }
 export const RATING_META_FIELDS: Record<keyof RatingMeta, 'rebuilt' | 'ephemeral'> = {
   score: 'rebuilt', flavors: 'rebuilt', aromas: 'rebuilt', notes: 'rebuilt', at: 'rebuilt',
+  // From `rating_versions` (a LEFT JOIN in recordRatings; absent without a row).
+  v: 'rebuilt',
 }
 
 type Db = Prisma.TransactionClient | typeof prisma
@@ -100,15 +102,17 @@ export async function eligibleRoster(db: Db, row: Pick<SessionRow, 'id' | 'code'
 type RatingRow = {
   wine_id: string; user_id: number | null; tombstone_key: string | null; score: unknown
   flavors: unknown; aromas: unknown; notes: string | null; mirror_at: Date | null; rated_at: Date | null
+  version: number | null
 }
 
 // Ratings on the lineup, keyed by their Redis identity: `u:<id>` for a live
 // (not banned) rater, `d:<key>` for a tombstone group (§ 4.3).
 export async function recordRatings(db: Db, sessionId: number, code: string): Promise<Map<string, RatingMeta>> {
   const rows = await db.$queryRaw<RatingRow[]>`
-    SELECT r.wine_id, r.user_id, r.tombstone_key, r.score, r.flavors, r.aromas, r.notes, r.mirror_at, r.rated_at
+    SELECT r.wine_id, r.user_id, r.tombstone_key, r.score, r.flavors, r.aromas, r.notes, r.mirror_at, r.rated_at, rv.version
       FROM ratings r
       JOIN wines w ON w.id = r.wine_id AND w.session_id = r.session_id
+      LEFT JOIN rating_versions rv ON rv.user_id = r.user_id AND rv.wine_id = r.wine_id
      WHERE r.session_id = ${sessionId}
        AND (r.user_id IS NOT NULL OR r.tombstone_key IS NOT NULL)
        AND NOT EXISTS (SELECT 1 FROM session_bans b WHERE b.session_code = ${code} AND b.identity_id = 'u:' || r.user_id)
@@ -120,12 +124,14 @@ export async function recordRatings(db: Db, sessionId: number, code: string): Pr
   for (const r of rows) {
     const identity = r.user_id !== null ? `u:${r.user_id}` : r.tombstone_key!
     const at = r.mirror_at ?? r.rated_at
+    // rating-write: EXEMPT
     out.set(k.rating(code, identity, r.wine_id), {
       score: Number(r.score ?? 0),
       flavors: (r.flavors && typeof r.flavors === 'object' ? r.flavors : {}) as Record<string, number>,
       aromas: Array.isArray(r.aromas) ? r.aromas as RatingMeta['aromas'] : [],
       notes: r.notes ?? '',
       at: at ? at.getTime() : 0,
+      ...(r.version != null ? { v: Number(r.version) } : {}),
     })
   }
   return out
@@ -133,6 +139,7 @@ export async function recordRatings(db: Db, sessionId: number, code: string): Pr
 
 // Identity of a rating key `s:{C}:r:<identity>:<wineId>` (identities carry one colon).
 function ratingKeyIdentity(code: string, key: string): string | null {
+  // rating-write: EXEMPT
   const rest = key.slice(`s:${code}:r:`.length)
   const i = rest.lastIndexOf(':')
   return i > 0 ? rest.slice(0, i) : null
@@ -319,6 +326,7 @@ export async function planPublish(
   }
   for (const d of roster.tombstones) if (!(d in identities)) hset.push([d, '[deleted]'])
   const hdel = Object.keys(identities).filter(id => (id.startsWith('u:') && !eligibleIds.has(id)) || (id.startsWith('d:') && !tombstones.has(id)))
+  // rating-write: EXEMPT
   const ratingKeys = keys.filter(key => key.startsWith(`s:${code}:r:`))
   const delRatings = ratingKeys.filter((key) => {
     const id = ratingKeyIdentity(code, key) ?? ''

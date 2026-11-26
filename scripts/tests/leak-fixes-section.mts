@@ -159,6 +159,7 @@ export async function leakFixes(h: Harness) {
   const routeLimits: [string, number][] = [
     [`rl:catalog-link:u:${Us.id}:1h`, 120], [`rl:catalog-link:ip:${ipA}:1h`, 120], [`rl:cover:user:${Us.id}:1h`, 10],
     [`rl:sessban:u:${Us.id}:10m`, 60], [`rl:sessleave:u:${Us.id}:10m`, 20], [`rl:removed-state:u:${Us.id}:1m`, 10],
+    [`rl:rate:u:${Us.id}:10m`, 600],
   ]
   for (const [key, max] of routeLimits) await redis.set(key, String(max), { EX: 600 })
   await sweep('the ADDRESS budget spent (signed out + signed in, with and without a foreign guest token)', ipA, actors)

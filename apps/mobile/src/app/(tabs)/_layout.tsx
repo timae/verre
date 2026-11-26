@@ -69,7 +69,8 @@ export default function TabsLayout() {
   }, []);
 
   // The design ruling "in-flow footer actions replace the nav while
-  // rating/creating": 02e (Previous / Save & next), 02a (Create), 02b·add
+  // rating/creating": 02e (Previous / Next or Finish, with the rating's save
+  // status above them: the rating saves itself), 02a (Create), 02b·add
   // (Add to line-up), and Moment Details (Discard / Save) carry their own
   // action bars — hide the pill there. The settings HUB keeps the bar (it's a
   // nav list, no footer), and so do Moment Setup and Moment Privacy since they

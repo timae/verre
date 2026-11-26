@@ -82,6 +82,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   // very busy instance the iteration cost grows with total keyspace,
   // but the cost is mitigated here by issuing it in parallel with the
   // other reads.
+  // rating-write: EXEMPT
   const ratingCountP = scanKeys(`s:${c}:r:${targetId}:*`).then(keys => keys.length)
 
   // Wines the target added: the line-up as the record has it in a

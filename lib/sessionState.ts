@@ -362,10 +362,16 @@ export async function buildWineEcho(c: string, meta: SessionMeta, identity: Auth
 // eviction): an empty SCAN for a Postgres-backed session that has committed
 // ratings means the rating keys were lost — a reconciling `force` rebuild, then
 // one rescan (with the identities map it reconciled).
+//
+// 🔒 `v` (the rating's version, docs/dev/rating-saves.md) stays only on the
+// CALLER's own rows (`callerId`, the internal identity id): with auto-save it is
+// an edit count per person and bottle, which the rest of the moment must not see.
 export async function buildRatingsView(
   c: string,
   identities: Record<string, string>,
+  callerId: string,
 ): Promise<RatingsView> {
+  // rating-write: EXEMPT
   const prefix = `s:${c}:r:`
   let keys = await scanKeys(`${prefix}*`)
   const result: RatingsView = {}
@@ -404,7 +410,9 @@ export async function buildRatingsView(
         ratings: {},
       }
     }
-    result[identityId].ratings[wineId] = JSON.parse(val)
+    const rating = JSON.parse(val)
+    if (identityId !== callerId && rating && typeof rating === 'object') delete rating.v
+    result[identityId].ratings[wineId] = rating
   })
 
   // 🔒 Keyed by WIRE identity; a rater whose `u:<int>` has no users row is dropped.

@@ -290,6 +290,30 @@ jobs:
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-catalog-cravings-secret-0123456789
 
+      # Rating saves (tasting feedback 2026-11-25, docs/dev/rating-saves.md):
+      # the census of every session-rating writer against the version check
+      # (BUMPS / COPIES / EXEMPT, its own self-test first), then the suite
+      # through the REAL routes: merge saves and `unchanged`, the version check
+      # (409 `stale` + `lastOpId`, a held-then-released op refused, every
+      # writer bumping: the post edit incl. a soft-deleted moment, the Reset,
+      # a kick with delete, the bottle DELETE, the re-mint copy), the 503 for
+      # a signed-in save while the promotion fails (guests unchanged), `v` on
+      # the caller's own rows only, the committed answer before the background
+      # refresh, counters and XP ONCE per rating on earned-badge fixtures, the
+      # take-back on the three own-clear paths (never below 0, rolled back with
+      # its attempt, no deadlock against account deletion), the migration's
+      # backfill run verbatim over rows written the old way, and the save limit.
+      - name: Rating writes census (the version check)
+        run: node scripts/check-rating-writes.mjs
+
+      - name: Rating saves (merge, versions, once-per-rating XP, the save limit)
+        run: npx tsx scripts/tests/rating-saves-integration.mts
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-rating-saves-suite-secret-0123456789
+
       # You profile step 2 (.local plan § Verification): bio normalisation +
       # PATCH /api/me/profile, the tile pools and pins (D3 re-hide, D7, the
       # dead-pin clear vs a same-URL re-pick on the locked row), the D8 / D9

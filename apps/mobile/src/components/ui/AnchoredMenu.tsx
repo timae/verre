@@ -132,16 +132,18 @@ export function AnchoredMenu({
 // .sess-menu-item / .ir-menu row — the common icon (optional) + label menu row.
 // `tone`: 'default' = ink label + ink-soft icon; 'danger' = critical label.
 // `disabled` greys it + shows a trailing "Soon" caption (the line-up menu's
-// Compare-soon convention). `active` styles the whole row accent (the
+// Compare-soon convention); `soon={false}` greys it without the caption (a row
+// that waits for its data, Clear My Rating before the rating loads). `active` styles the whole row accent (the
 // Blind-for-all press-field state) — accent label/icon + accent-tint bg.
 export function MenuItem({
-  label, icon, onPress, tone = 'default', disabled, active, checked, accessibilityState, accessibilityLabel,
+  label, icon, onPress, tone = 'default', disabled, soon = true, active, checked, accessibilityState, accessibilityLabel,
 }: {
   label: string;
   icon?: IconName;
   onPress?: () => void;
   tone?: 'default' | 'danger';
   disabled?: boolean;
+  soon?: boolean;
   active?: boolean;
   // A switch row (your own post's privacy, Moment Visibility step 3): a check
   // at the end while on. `undefined` = not a switch.
@@ -190,7 +192,7 @@ export function MenuItem({
       >
         {label}
       </VText>
-      {disabled ? <VText variant="caption" color="inkFaint" style={{ marginLeft: 'auto' }}>Soon</VText> : null}
+      {disabled && soon ? <VText variant="caption" color="inkFaint" style={{ marginLeft: 'auto' }}>Soon</VText> : null}
       {checked && !disabled ? <View style={{ marginLeft: 'auto', paddingLeft: 8 }}><Icon name="check" size={18} color={theme.accent} /></View> : null}
     </Pressable>
   );

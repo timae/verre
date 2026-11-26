@@ -6,6 +6,7 @@ import { nanoid } from 'nanoid'
 import { ContractNeedsLease, type Fence, type MutationCtx } from '@/lib/sessionMutation'
 import type { WineMeta } from '@/lib/session'
 import { loadEntries, entryKey, type EntrySnapshot } from '@/lib/catalogEntries'
+import { copyRatingVersions } from '@/lib/ratingVersions'
 
 // Occurrence persistence (docs/dev/proposals/wine-catalog-model-change.md § 8a;
 // build step 3). In a Postgres-backed moment the RECORD decides every bottle
@@ -254,8 +255,13 @@ export async function copyCachedLineup(tx: Prisma.TransactionClient, ctx: Mutati
   }
   const moved = [...ids].filter(([orig, id]) => orig !== id)
   for (const [orig, id] of moved) {
+    // rating-write: COPIES
     await tx.$executeRaw`UPDATE ratings SET wine_id = ${id} WHERE session_id = ${sessionId} AND wine_id = ${orig}`
+    // The moved raters' versions go with their ratings (docs/dev/rating-saves.md):
+    // the copied keys' `v` must still match. The old id keeps its rows.
+    await copyRatingVersions(tx, sessionId, orig, id)
   }
+  // rating-write: COPIES
   if (moved.length && ctx.fence) ctx.after.dropKeys.push(...await copyRatingKeys(ctx.fence, moved))
 }
 
@@ -553,6 +559,7 @@ export async function copyRatingKeys(fence: Fence, moved: [string, string][]): P
   const old: string[] = []
   const pairs: string[] = []
   // One scan of the moment's rating keys (review r3), grouped by bottle id.
+  // rating-write: EXEMPT
   for (const key of await scanKeys(`s:${fence.code}:r:*`)) {
     const from = key.slice(key.lastIndexOf(':') + 1)
     const target = to.get(from)

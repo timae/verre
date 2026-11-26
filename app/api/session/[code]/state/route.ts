@@ -56,7 +56,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const [metaR, winesR, ratingsR] = await Promise.allSettled([
     buildMetaView(c, meta, caller, viewerUserIdFrom(session), identities),
     buildWinesView(c, meta, caller, identities, wines),
-    buildRatingsView(c, identities),
+    buildRatingsView(c, identities, caller.id),
   ])
   for (const [name, r] of [['meta', metaR], ['wines', winesR], ['ratings', ratingsR]] as const) {
     if (r.status === 'rejected') console.error(`session state: ${name} section failed:`, r.reason)

@@ -110,5 +110,27 @@ jobs:
       - name: Catalogue pages handoff pins (app)
         run: npx tsx scripts/tests/picker-flow-units.ts
 
+      # The app's rating auto-save (tasting-feedback build 1 § 1): the outbox
+      # owner + runner and the impression draft (lib/rateOutboxCore.ts,
+      # lib/impressionAutosaveCore.ts) against a fake /rate with the version
+      # check: merge saves of the changed fields only, the base fixed at entry
+      # creation and persisted, the answer table (canonical, unchanged, stale
+      # 409 incl. its own lastOpId and the `rating: null` rule, 404 / 400 /
+      # 401 / 429 / 503 / update_required / 409 wrongViewer), the viewer in
+      # every body, the credential-owner check, the gate re-checked before a
+      # send, waiters, Clear, the line-up overlay, sign-out, the 90-day
+      # clean-up. No DB, no network. A runner loop shows up as a hang, so the
+      # step is capped.
+      - name: Rating auto-save pins (app)
+        timeout-minutes: 5
+        run: npx tsx scripts/tests/rate-outbox-units.ts
+
+      # The server's post-COMMIT steps of a save (tasting-feedback build 1,
+      # lib/afterCommit.ts) are coalesced per key: one run in flight plus one
+      # trailing run with the latest function, keys independent, a failure
+      # logged without stopping the trailing run. No DB, no Redis.
+      - name: After-commit coalescing pins (server)
+        run: npx tsx scripts/tests/after-commit-units.ts
+
       - name: Vintage surface wiring
         run: node scripts/check-vintage-wiring.mjs

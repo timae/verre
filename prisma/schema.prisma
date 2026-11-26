@@ -137,6 +137,7 @@ model User {
   usernameChanges           UsernameChange[]
   momentPrivacy             MomentPrivacy[]
   momentDefaults            MomentDefaults?
+  ratingVersions            RatingVersion[]
   staffRoles                StaffRole[]            @relation("StaffRoleHolder")
   staffRolesGranted         StaffRole[]            @relation("StaffRoleGranter")
   // Catalog attribution. All SetNull — community catalog rows are never
@@ -681,6 +682,20 @@ model Rating {
   // set. Release B adds CHECK (session_id IS NULL OR user_id IS NOT NULL OR
   // tombstone_key IS NOT NULL) once every writer honours it.
   tombstoneKey String?    @map("tombstone_key") @db.VarChar(40)
+  // Count ONCE per rating (tasting feedback 2026-11-25, docs/dev/rating-saves.md):
+  // set by the session rate POST the first time this rating reached 5, 1, or a
+  // note of more than 5 characters (`char_length`, the SQL rule); the lifetime
+  // counters and the action XP fire only on a flag's flip. Backfilled from the
+  // stored values by `20261125234900_rating_flags_backfill` (its own migration
+  // after `20261125234816_rating_saves` adds the columns).
+  fiveStarCounted Boolean @default(false) @map("five_star_counted")
+  oneStarCounted  Boolean @default(false) @map("one_star_counted")
+  noteCounted     Boolean @default(false) @map("note_counted")
+  // The rating-action XP actually credited to `users.xp` for this rating (+10
+  // first save, +5 first five-star, +5 first note), refunded by the owner's own
+  // clear (engagementCascadeIn's own-clear option). Legacy rows 0: their
+  // historical XP stays on the user.
+  ratingActionXp  Int     @default(0) @map("rating_action_xp")
   // Restrict matches the §2 design: hard-deleting a referenced session
   // should fail loudly. Soft-delete (sessions.deletedAt) is the contract;
   // any future GDPR purge must null this FK explicitly first.
@@ -705,6 +720,26 @@ model Rating {
   @@index([userId, wineId])
   @@index([userId, sessionId])
   @@map("ratings")
+}
+
+// The version of one person's session rating of one bottle (docs/dev/rating-saves.md):
+// bumped in the SAME transaction by every write of a signed-in session rating of
+// a Postgres-backed moment (scripts/check-rating-writes.mjs, CI census). A save
+// that says which version it was based on (`baseVersion`) is refused with 409
+// when it differs. Its own table so it survives a Clear (a version on the rating
+// row would die with it). `wine_id` has NO foreign key: bottles are deleted and
+// re-minted, and the row must outlive them (the fence for late requests).
+model RatingVersion {
+  userId   Int     @map("user_id")
+  wineId   String  @map("wine_id") @db.VarChar(21)
+  version  Int
+  lastOpId String? @map("last_op_id") @db.Uuid
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([userId, wineId])
+  // A bottle delete bumps, and a line-up re-key copies, by wine_id.
+  @@index([wineId])
+  @@map("rating_versions")
 }
 
 model SessionMember {

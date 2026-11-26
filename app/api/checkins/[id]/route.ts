@@ -23,6 +23,7 @@ import { afterRelink } from '@/lib/cravings'
 import { prepareLink, applyRelink, type AppliedLink } from '@/lib/catalogLink'
 import { loadEntries, entryKey } from '@/lib/catalogEntries'
 import { cleanBottleNotes } from '@/lib/session'
+import { bumpRatingVersion } from '@/lib/ratingVersions'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
@@ -299,6 +300,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     // Rating-side fields (score, flavors, notes).
     // Rating-side fields: only the ones sent (Codex r2: an omitted field keeps
     // what is stored NOW, never this request's pre-read).
+    // rating-write: EXEMPT
     const updatedRating = await tx.rating.update({
       where: { id: rating.id },
       data: {
@@ -502,6 +504,13 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
   const code = sess?.code ? normalizeCode(sess.code) : null
   type Out = { nextScore: number | null; nextFlavors: Record<string, number>; nextAromas: AromaSelection[]; nextNotes: string | null; reaped: boolean; reclaim: string[]; mirrored: boolean }
   const run = async (tx: Prisma.TransactionClient, liveCode: string | null, ctx: MutationCtx | null): Promise<Out | NextResponse> => {
+    // 🔒 Lock order: the caller's users row BEFORE the rating (both branches).
+    // In a soft-deleted moment this is a plain transaction with no shared
+    // session lock, and account deletion takes the user row first and then
+    // rewrites the rating: rating-then-user would deadlock. The take-back on an
+    // emptied rating debits this row.
+    const owner = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM users WHERE id = ${userId} FOR NO KEY UPDATE`
+    if (!owner[0]) return NextResponse.json({ error: 'not found' }, { status: 404 })
     const rows = await tx.$queryRaw<{ id: number; score: unknown; flavors: unknown; aromas: unknown; notes: string | null; sparkling: boolean }[]>`
       SELECT r.id, r.score, r.flavors, r.aromas, r.notes, w.sparkling FROM ratings r JOIN wines w ON w.id = r.wine_id
        WHERE r.user_id = ${userId} AND r.session_id = ${sessionId} AND r.wine_id = ${wineId} FOR UPDATE OF r`
@@ -536,6 +545,7 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
     const didUpdate = sets.length > 0
     if (didUpdate) {
       sets.push(Prisma.sql`mirror_at = clock_timestamp()`)
+      // rating-write: BUMPS
       const out = await tx.$queryRaw<{ score: unknown; flavors: unknown; aromas: unknown; notes: string | null; ts: Date }[]>`
         UPDATE ratings SET ${Prisma.join(sets, ', ')} WHERE id = ${rating.id}
         RETURNING score, flavors, aromas, notes, mirror_at AS ts`
@@ -551,9 +561,14 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
     // iff it was the last engaged rating) — same rule as an empty rate POST.
     const engaged = (o.nextScore ?? 0) > 0 || Object.keys(o.nextFlavors).length > 0 || o.nextAromas.length > 0 || (o.nextNotes ?? '').length > 0
     if (!engaged) {
-      const urls = await engagementCascadeIn(tx, rating.id, 'empty-only')
+      // The owner's own clear: the row's action XP is taken back.
+      // rating-write: BUMPS
+      const urls = await engagementCascadeIn(tx, rating.id, 'empty-only', { ownClear: true })
       if (urls) { o.reaped = true; o.reclaim = urls }
     }
+    // The rating's version (docs/dev/rating-saves.md), in this transaction, ONE
+    // atomic statement (a soft-deleted moment has no session lock).
+    const version = didUpdate || o.reaped ? await bumpRatingVersion(tx, userId, wineId, null) : null
     // The live mirror of the caller's OWN key, roster-independent (PR #81 P1 —
     // kick-keep retains the key and buildRatingsView hides it off-roster). An
     // absent key is skipped (a cold cache is filled by the next rebuild, which
@@ -564,11 +579,14 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
     // without the lease re-runs the contract with it.
     if (live && liveCode && ctx && (o.reaped || didUpdate)) {
       try {
+        // rating-write: BUMPS
         const key = k.rating(liveCode, `u:${userId}`, wineId)
+        // rating-write: BUMPS
         if (o.reaped) await ratingKeyWrite(ctx, key, null)
         else {
           const pttl = Number(await redis.pTTL(k.meta(liveCode)))
-          o.mirrored = await ratingKeyWrite(ctx, key, JSON.stringify({ score: o.nextScore ?? 0, flavors: o.nextFlavors, aromas: o.nextAromas, notes: o.nextNotes ?? '', at: versionTs }), { pxMs: pttl, onlyIfExists: true })
+          // rating-write: BUMPS
+          o.mirrored = await ratingKeyWrite(ctx, key, JSON.stringify({ score: o.nextScore ?? 0, flavors: o.nextFlavors, aromas: o.nextAromas, notes: o.nextNotes ?? '', at: versionTs, ...(version !== null ? { v: version } : {}) }), { pxMs: pttl, onlyIfExists: true })
         }
       } catch (err) {
         if (err instanceof ContractNeedsLease || err instanceof LockLost || err instanceof ContractBusy) throw err
@@ -646,6 +664,7 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   // standalone with sessionId=NULL; if the user later bookmarks it from
   // somewhere else the row needs to survive). Orphaned wine rows are a
   // known acceptable cost of the no-dedup policy.
+  // rating-write: EXEMPT
   await prisma.rating.delete({ where: { id: feedItem.rating.id } })
 
   for (const url of urlsToReclaim) reclaimImage(url)

@@ -330,6 +330,7 @@ export async function POST(req: NextRequest) {
     //    ratings_standalone_wine_id_key, catalogue model change step 2):
     //    tasting the same wine again is a new check-in, so a new wine row
     //    (step 1) with its own rating — the aging-bottle case.
+    // rating-write: EXEMPT
     const r = await tx.rating.create({
       data: {
         wineId,

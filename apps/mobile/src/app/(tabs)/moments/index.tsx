@@ -295,10 +295,23 @@ const LIVE_CARD_PADDING_BOTTOM = 22;
 const LIVE_CARD_GAP = 12;
 // The visual card surface (bg + radius + padding + shadow). Shared by the
 // live card and its lifted context-menu Preview so they match exactly.
-function CardSurface({ width, height, children }: { width: number; height?: number; children: ReactNode }) {
+// `onPress`: the live card is ONE button (the whole card opens the moment);
+// the preview passes none and stays a plain View.
+function CardSurface({ width, height, children, onPress, accessibilityLabel }: { width: number; height?: number; children: ReactNode; onPress?: () => void; accessibilityLabel?: string }) {
   const { theme } = useTheme();
+  const Surface = onPress ? Pressable : View;
   return (
-    <View
+    <Surface
+      {...(onPress
+        ? {
+            onPress,
+            // A long hold is the context menu's (the OS lift): a no-op
+            // onLongPress keeps that hold from also firing onPress.
+            onLongPress: () => {},
+            accessibilityRole: 'button' as const,
+            accessibilityLabel,
+          }
+        : {})}
       style={{
         width,
         height,
@@ -316,7 +329,7 @@ function CardSurface({ width, height, children }: { width: number; height?: numb
       }}
     >
       {children}
-    </View>
+    </Surface>
   );
 }
 
@@ -356,21 +369,33 @@ function LiveCard({
   // Dimming + "Opening…" on press (and a re-entry guard) makes the first tap
   // unmistakable. `navigating` resets on screen blur/refocus via the key remount.
   const [navigating, setNavigating] = useState(false);
-  // Clear the dim when the user comes BACK to the home screen (the card doesn't
-  // unmount on push), so a returned-to "Rejoin" isn't stuck showing "Opening…".
-  useFocusEffect(useCallback(() => { setNavigating(false); }, []));
+  // A SYNCHRONOUS guard against rapid taps (state lands a render later). The
+  // card stays mounted under the pushed moment, so the guard is reset with
+  // `navigating` when the user comes BACK (a guard that is only set would
+  // block every later tap), and a returned-to "Rejoin" isn't stuck showing
+  // "Opening…".
+  const opening = useRef(false);
+  useFocusEffect(useCallback(() => {
+    opening.current = false;
+    setNavigating(false);
+  }, []));
   const open = () => {
-    if (navigating) return;
+    if (opening.current) return;
+    opening.current = true;
     setNavigating(true);
     router.push({ pathname: '/moments/session/[code]', params: { code: m.code } }, { dangerouslySingular: true });
   };
+  // The WHOLE card opens the moment (ruled 2026-11-25); the Rejoin button stays
+  // as its face, inert to touches and accessibility (the card is the button).
   const card = (
-    <CardSurface width={width} height={cardHeight}>
+    <CardSurface width={width} height={cardHeight} onPress={open} accessibilityLabel={`Rejoin ${m.name || m.host_name}`}>
       <LiveCardBody m={m} />
       {/* flexShrink:0 so the fixed-format card can't compress the button if the
           content ever measures a hair over the derived height (the inverse of
           the stretch bug — keep the button at its surface-scaled height). */}
-      <Button title="Rejoin" loadingTitle="Opening…" loading={navigating} block onPress={open} style={{ flexShrink: 0 }} />
+      <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ flexShrink: 0 }}>
+        <Button title="Rejoin" loadingTitle="Opening…" loading={navigating} block />
+      </View>
     </CardSurface>
   );
   return (

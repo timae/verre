@@ -15,6 +15,7 @@ import { readGrant, grantStatus, type AuthorizedIdentity } from '@/lib/sessionGr
 import { contractFailure } from '@/lib/sessionRehydrate'
 import { openSessionFor } from '@/lib/sessionRoute'
 import { beforeBottleDelete, afterRelink } from '@/lib/cravings'
+import { bumpBottleVersions } from '@/lib/ratingVersions'
 import { reconcileLineup, lockOccurrence, relinkOccurrence, editOccurrenceNotes, withSnapshot, recordLineup, projectLineup, renumber, readOccurrence } from '@/lib/occurrences'
 import type { WineMeta, SessionMeta } from '@/lib/session'
 import { buildWineEcho } from '@/lib/sessionState'
@@ -280,6 +281,11 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
         // ones visible to their owner lose the bottle and keep their moment;
         // the still-hidden ones go with the row (the key's CASCADE).
         await beforeBottleDelete(tx, wineId)
+        // Every version row of the bottle moves BEFORE its ratings cascade
+        // (docs/dev/rating-saves.md): the add path can re-insert a supplied id,
+        // and a late save must not land on it. No XP change.
+        await bumpBottleVersions(tx, wineId)
+        // rating-write: BUMPS
         await tx.$executeRaw`DELETE FROM wines WHERE id = ${wineId} AND session_id = ${ctx.row.id}`
         await renumber(tx, ctx.row.id)
         lineup = await recordLineup(tx, ctx.row.id)
@@ -293,7 +299,9 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
       // lose guests' ratings, which exist only in Redis), by the contract,
       // fenced, before the projection; in a Redis-only moment now, with the
       // bottle (the cache is the data).
+      // rating-write: BUMPS
       const ratingKeys = await scanKeys(`s:${c}:r:*:${wineId}`)
+      // rating-write: BUMPS
       if (ctx.row) ctx.after.dropKeys.push(...ratingKeys)
       else if (ratingKeys.length > 0) await ctx.fence!.exec(m => { m.del(ratingKeys) })
       return { lineup, revision: ctx.row?.lineupRevision ?? null }

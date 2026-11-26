@@ -490,8 +490,12 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
         body: JSON.stringify(body),
       })
       if (!res.ok) {
+        // 503: the moment couldn't be saved to the record right now (its
+        // promotion failed); nothing was written and the form keeps the input.
         const msg = res.status === 429
           ? 'Rate-limited. Try again shortly.'
+          : res.status === 503
+          ? 'Couldn’t save right now. Try again in a moment.'
           : res.status === 403
           ? 'You don’t have permission to rate this wine.'
           : `Save failed (${res.status}). Try again.`

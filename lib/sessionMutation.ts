@@ -105,6 +105,12 @@ export type MutationCtx = {
   // projection), photos reclaimed (after it). Fresh per attempt, so a
   // rolled-back attempt's captures never run.
   after: { reclaim: string[]; dropKeys: string[] }
+  // The rating keys of SIGNED-IN raters this attempt wrote (SET or DEL, through
+  // ratingKeyWrite) in a Postgres-backed moment, BEFORE COMMIT. If the
+  // transaction then fails they no longer match the record (a key carrying a
+  // `v` SQL never reached), so the contract drops them and invalidates the
+  // cache (dropUncommittedKeys). Optional: a hand-built ctx (suites) works.
+  recordKeys?: string[]
 }
 
 export type MutationOpts = {
@@ -234,7 +240,15 @@ async function attemptMutation<T>(
       const out = await work(tx, ctx)
       await mutationHooks.at('beforeCommit', code, opts.label)
       return out
-    }, { timeout: opts.timeoutMs ?? 10_000, maxWait: 5_000 })
+    }, { timeout: opts.timeoutMs ?? 10_000, maxWait: 5_000 }).catch(async (err: unknown) => {
+      // 🔒 Rolled back after a signed-in rater's rating key was written (the
+      // write is deliberately inside the transaction, serialized by the
+      // advisory lock): drop those keys and invalidate, so the next request
+      // rebuilds them from the record. Never for a guest's key or a Redis-only
+      // moment: there the key IS the data.
+      if (ctx?.row?.createdAt && ctx.recordKeys?.length) await dropUncommittedKeys(code, ctx.row.createdAt.getTime(), ctx.recordKeys, opts.label)
+      throw err
+    })
     await mutationHooks.at('afterCommit', code, opts.label)
     // A bottle write that minted a catalogue entry: its new search words, after
     // the COMMIT (lib/catalogWrite.ts; best effort, never fails the request, NOT
@@ -341,10 +355,19 @@ export async function ratingKeyWrite(
   }
   if (value !== null && !(pxMs > 0)) return false
   const client = ctx.fence?.client ?? redis
-  const r = Number(await client.eval(RATING_KEY_SCRIPT, {
-    keys: [k.gen(ctx.code), key, ctx.fence ? sessionLockKey(ctx.code) : key],
-    arguments: [ctx.gen, value ?? '', String(Math.floor(pxMs)), onlyIfExists ? 'xx' : '', ctx.fence?.token ?? ''],
-  }))
+  // A signed-in rater's key in a Postgres-backed moment mirrors the record:
+  // remembered once written (or when the outcome is unknown), so a rollback
+  // after it drops it (MutationCtx.recordKeys).
+  // rating-write: EXEMPT
+  const remember = () => { if (ctx.row && key.startsWith(`s:${ctx.code}:r:u:`)) (ctx.recordKeys ??= []).push(key) }
+  let r: number
+  try {
+    r = Number(await client.eval(RATING_KEY_SCRIPT, {
+      keys: [k.gen(ctx.code), key, ctx.fence ? sessionLockKey(ctx.code) : key],
+      arguments: [ctx.gen, value ?? '', String(Math.floor(pxMs)), onlyIfExists ? 'xx' : '', ctx.fence?.token ?? ''],
+    }))
+  } catch (err) { remember(); throw err }
+  if (r === 1) remember()
   if (r === -1) throw new LockLost(ctx.code)
   // Superseded (another bump since ours): never acknowledge a write that did
   // not land (r2 N2 — for an anonymous / Redis-only rating the key IS the
@@ -358,7 +381,10 @@ export async function ratingKeyWrite(
 // is already absent — r4-2). Deliberately unfenced: we may have lost the lease,
 // and deleting a Postgres-backed session's meta is always recoverable (the next
 // request rebuilds and reconciles from the record). Never for a Redis-only
-// session — there the cache is the data.
+// session — there the cache is the data. KEYS[3..] (optional, `dropKeys`): keys
+// deleted in the SAME script, after the incarnation check and before the bump
+// (a rolled-back attempt's rating keys, dropUncommittedKeys), so they never go
+// without the rebuild that restores them.
 const INVALIDATE_SCRIPT = `
 local raw = redis.call('GET', KEYS[1])
 local ttl = tonumber(ARGV[3])
@@ -369,14 +395,28 @@ if raw then
   if p > 0 then ttl = p end
   redis.call('DEL', KEYS[1])
 end
+for i = 3, #KEYS do redis.call('DEL', KEYS[i]) end
 redis.call('SET', KEYS[2], ARGV[2], 'PX', ttl)
 return 'ok'`
 
-export async function scopedInvalidate(code: string, createdAt: number, client: RedisClient = redis): Promise<string> {
+export async function scopedInvalidate(code: string, createdAt: number, client: RedisClient = redis, dropKeys: string[] = []): Promise<string> {
   return String(await client.eval(INVALIDATE_SCRIPT, {
-    keys: [k.meta(code), k.gen(code)],
+    keys: [k.meta(code), k.gen(code), ...dropKeys],
     arguments: [String(createdAt), randomUUID(), String(lifespanTTL() * 1000)],
   }))
+}
+
+// A rolled-back attempt's signed-in rating keys (MutationCtx.recordKeys): DEL
+// them AND invalidate, in ONE script (scopedInvalidate's, with the keys as
+// `dropKeys`), so a key is never deleted without the rebuild that restores it
+// queued. Both halves are needed: the rebuild writes rating keys NX, so an
+// invalidation alone would keep a key advertising a version SQL never reached.
+// The DEL is unfenced on purpose: it may also remove a successor's correct key,
+// and the invalidation has the next request rebuild every key from the record.
+// Another incarnation's meta (the code reused meanwhile) → nothing deleted.
+// Best effort; the original error is rethrown by the caller.
+async function dropUncommittedKeys(code: string, createdAt: number, keys: string[], label: string): Promise<void> {
+  await scopedInvalidate(code, createdAt, redis, keys).catch(err => console.error('[contract] rollback clean-up failed (uncommitted rating keys kept, no invalidation)', { code, label, err }))
 }
 
 // ── The form that joins an existing transaction (account deletion, § 6) ──────

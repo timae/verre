@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { ALL_BADGES } from '@/lib/badges'
-import { ensureBadgesSeedOnce, checkAndAwardBadges } from '@/lib/badgeService'
+import { ensureBadgesSeedOnce } from '@/lib/badgeService'
 import { isSameOrigin } from '@/lib/csrf'
 
 // GET — return all badges with earned status + XP
@@ -37,20 +37,8 @@ export async function GET(req: NextRequest) {
   })
 }
 
-// POST — manually trigger badge check (e.g. after joining a session)
-export async function POST(req: NextRequest) {
-  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await resolveUser(req)
-  if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
-  const { action } = await req.json().catch(() => ({ action: 'join' }))
-  try {
-    const result = await checkAndAwardBadges(Number(session.user.id), action)
-    return NextResponse.json(result)
-  } catch (err) {
-    console.error('badge check error:', err)
-    return NextResponse.json({ newBadges: [], xpGained: 0, totalXP: 0 })
-  }
-}
+// (No POST: it passed a client `action` straight through, +20 XP per call with
+// no limiter, and no client sent it. Removed 2026-11-25; Next answers 405.)
 
 // PATCH — mark all unseen badges as seen
 export async function PATCH(req: NextRequest) {

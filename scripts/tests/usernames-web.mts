@@ -6,6 +6,7 @@
 //   § 2 malformed, unknown, renamed away, held, a deeper path → 404
 //   § 3 an operator-assigned RESERVED name opens through both forms
 //   § 4 with the limiter spent neither web entry runs the target lookup
+//   § 5 (rating saves, not usernames) POST /api/me/badges answers 405
 //
 // Needs a production build (`npm run build`) and a throwaway Postgres + Redis:
 //
@@ -151,6 +152,16 @@ try {
     await locker.query('ROLLBACK')
     check('…and renders once the lock is gone', (await waiting).status === 200)
   } finally { await locker.query('ROLLBACK').catch(() => {}); await locker.end() }
+
+  // Not a username check: the one built-server probe of the rating-saves work
+  // (docs/dev/rating-saves.md). The badges POST passed a client `action`
+  // through (+20 XP a call, no limiter); its handler is removed, so Next itself
+  // answers 405, which no route-module test can see. GET and PATCH stay.
+  console.log('\n§ 5 (rating saves) POST /api/me/badges is gone')
+  const badgesPost = await fetch(`${BASE}/api/me/badges`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json', origin: BASE }, body: JSON.stringify({ action: 'join' }) })
+  check('🔒 POST /api/me/badges answers 405 (Next: no handler)', badgesPost.status === 405, badgesPost.status)
+  const badgesGet = await fetch(`${BASE}/api/me/badges`, { redirect: 'manual' })
+  check('…GET is still served (signed out: 401)', badgesGet.status === 401, badgesGet.status)
 
   await prisma.$executeRaw`DELETE FROM users WHERE email LIKE ${`${TAG}-%`}`
 } catch (err) {

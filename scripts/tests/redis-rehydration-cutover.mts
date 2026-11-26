@@ -27,6 +27,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { NextRequest } from 'next/server'
 import { prisma } from '../../lib/prisma.ts'
 import { redis, k, scanKeys, lifespanTTL, touchHooks, touchWithMeta } from '../../lib/redis.ts'
+import { settleAfterCommit } from '../../lib/afterCommit.ts'
 import type { SessionMeta } from '../../lib/session.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -362,7 +363,12 @@ async function roundTrip() {
   // T ×2 (one chips-only), R, kicked K (kick-keep keeps them), deleted X as d:.
   check('rating keys: all five non-anonymous ratings are there to compare', ratingKeys.length === 5, ratingKeys)
   const canon = (v: unknown): string => JSON.stringify(v, (_k, x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort()) : x)
-  const rdiff = ratingKeys.filter(x => canon({ ...(before[x] as object), aromas: (before[x] as { aromas?: unknown }).aromas ?? [] }) !== canon(after[x]))
+  // A d: key (a deleted account's ratings, renamed by the d: migration) keeps the
+  // `v` its user wrote; the version row cascaded with the user, so the rebuild
+  // has none (docs/dev/rating-saves.md). Nothing reads it: `v` is shown on the
+  // caller's own rows only, and no caller is d:.
+  const noDv = (x: string, v: unknown) => (x.includes(':r:d:') && v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([f]) => f !== 'v')) : v)
+  const rdiff = ratingKeys.filter(x => canon(noDv(x, { ...(before[x] as object), aromas: (before[x] as { aromas?: unknown }).aromas ?? [] })) !== canon(noDv(x, after[x])))
   check('rating keys: same values incl. the mirror token `at` and the chips-only score 0', rdiff.length === 0, rdiff.map(x => ({ x, before: before[x], after: after[x] })))
   const ttls = async () => Object.fromEntries(await Promise.all((await scanKeys(`s:${s.code}:*`)).map(async x => [x, await redis.ttl(x)] as const)))
   const short = (t: Record<string, number>) => Object.entries(t).filter(([, v]) => !(v > 360 * 86400))
@@ -1898,6 +1904,9 @@ async function operatorScript() {
   await enter(s12.code, { cookie: T12.cookie }, 'Taster OS12')
   const w12 = await addWine(s12.code, { cookie: H12.cookie }, 'w12')
   await rate(s12.code, { cookie: T12.cookie }, w12, 4)
+  // The rate's refresh runs after its answer (lib/afterCommit.ts): let it end
+  // before the MONITOR window opens.
+  await settleAfterCommit()
   await wipeCache(s12.code)
   const m12 = parseMonitor(await monitored(() => runScript({ codes: [s12.code], apply: true })))
   const sig = (a: string[]) => `${a[0]} ${a.slice(1).filter(x => x.startsWith('s:') || x.startsWith('lock:')).join(' ')}`

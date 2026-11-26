@@ -64,9 +64,12 @@ function parseScoreDraft(text: string): number | null {
 interface Props {
   value: number; // 0..5 in 0.25 steps; 0 = not rated
   onChange: (v: number) => void;
+  // VoiceOver's increment / decrement (relative to the shown value); falls
+  // back to onChange. The impression keeps it inert until its baseline loads.
+  onStep?: (v: number) => void;
 }
 
-export function ScoreInput({ value, onChange }: Props) {
+export function ScoreInput({ value, onChange, onStep }: Props) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const scoreSurface = phone.surface('score');
@@ -246,7 +249,9 @@ export function ScoreInput({ value, onChange }: Props) {
           accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
           onAccessibilityAction={(e) => {
             const dir = e.nativeEvent.actionName === 'increment' ? 1 : -1;
-            onChange(stepScore(valueRef.current, dir));
+            // A RELATIVE edit (one step from the shown value): its own callback
+            // when the host tells the two apart (the impression's auto-save).
+            (onStep ?? onChange)(stepScore(valueRef.current, dir));
           }}
           style={{ height: trackH, justifyContent: 'center' }}
         >

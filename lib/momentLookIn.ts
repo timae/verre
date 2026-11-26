@@ -126,6 +126,7 @@ export function planGuestRead(code: string, guests: GuestEntry[], bottleIds: str
     read,
     named: read.filter(g => g.shown).slice(0, GUEST_NAMED_MAX),
     pairs,
+    // rating-write: EXEMPT
     keys: pairs.map(p => k.rating(code, p.guestId, p.wineId)),
   }
 }

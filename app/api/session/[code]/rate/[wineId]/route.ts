@@ -4,9 +4,11 @@ import { k, touchWithMeta } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { engagementCascadeIn, reclaimImages } from '@/lib/engagementCascade'
-import { withSessionMutation, admitted, ratingKeyWrite } from '@/lib/sessionMutation'
+import { withSessionMutation, admitted, refuse, ratingKeyWrite } from '@/lib/sessionMutation'
 import { contractFailure } from '@/lib/sessionRehydrate'
 import { openAsParticipant } from '@/lib/sessionRoute'
+import { bumpRatingVersion } from '@/lib/ratingVersions'
+import { afterCommit } from '@/lib/afterCommit'
 
 // DELETE /api/session/<code>/rate/<wineId> — the explicit "Reset" of the
 // caller's rating of one wine: the rating key, and for a logged-in rater of a
@@ -19,6 +21,16 @@ import { openAsParticipant } from '@/lib/sessionRoute'
 // backend died after its read could republish the deleted rating with its NX
 // publish), with the publication generation bumped and the admission re-made
 // under the locks.
+//
+// 🔒 A signed-in caller in a moment with NO record answers 503 + Retry-After
+// and writes nothing (docs/dev/rating-saves.md: no signed-in rating is written
+// to Redis only any more); no promotion attempt of its own (its only web
+// caller, the Undo chip, follows a successful save). The Postgres branch, when
+// it finds the rating in THIS moment, bumps its version (`rating_versions`) and
+// is the owner's own clear: the row's rating-action XP is taken back
+// (engagementCascadeIn `ownClear`). 🔒 A Reset that finds no rating row here is
+// VERSION-NEUTRAL: the version row is per (user, bottle id), and an id from the
+// path may name a bottle of another moment. Guests keep the Redis-only delete.
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ code: string; wineId: string }> }) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const { code, wineId } = await params
@@ -36,20 +48,28 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
     }, async (tx, ctx) => {
       reclaim = []   // per attempt (r3 P1)
       const caller = admitted(ctx)
+      if (caller.kind === 'user' && !ctx.row) throw refuse(503, 'This moment isn’t ready to save yet. Try again in a moment.', { 'Retry-After': '5' })
       if (caller.kind === 'user' && ctx.row) {
         const userId = Number(caller.id.slice(2))
         // Scoped to (user, session) so a same-(user, wine) standalone or
         // other-session rating is never touched.
         const rating = await tx.$queryRaw<{ id: number }[]>`
           SELECT id FROM ratings WHERE wine_id = ${wineId} AND user_id = ${userId} AND session_id = ${ctx.row.id} LIMIT 1`
-        if (rating[0]) reclaim = (await engagementCascadeIn(tx, rating[0].id, 'force')) ?? []
+        // rating-write: BUMPS
+        if (rating[0]) {
+          reclaim = (await engagementCascadeIn(tx, rating[0].id, 'force', { ownClear: true })) ?? []
+          await bumpRatingVersion(tx, userId, wineId, null)
+        }
       }
+      // rating-write: BUMPS
       await ratingKeyWrite(ctx, k.rating(c, caller.id, wineId), null)
     })
   } catch (err) {
     return contractFailure(err, c, { label: 'rate-delete' })
   }
   reclaimImages(reclaim)
-  await touchWithMeta(c)
+  // After COMMIT, in the background (like the rate POST): a failed or stalled
+  // refresh must not turn a committed Reset into an error.
+  afterCommit('rate-delete', 'touch', c, () => touchWithMeta(c))
   return NextResponse.json({ ok: true })
 }

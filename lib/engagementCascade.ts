@@ -5,12 +5,11 @@
 // session, the session feed_item is reaped too. S3 reclaim runs AFTER
 // commit so a rollback never leaves "DB row + dead bytes" inconsistency.
 //
-// Two trigger sites:
+// Three trigger sites, all the owner's own clear (`ownClear`, below):
 //   1. POST /api/session/[code]/rate — after the upsert lands an empty
-//      payload (user cleared score + chips + notes and saved).
-//   2. DELETE /api/session/[code]/rate/[wineId] — the explicit reset
-//      path. The empty-payload predicate is the safety net here: a Reset
-//      on a still-engaged row will no-op rather than wiping it.
+//      FULL payload (a merge save never reaps: docs/dev/rating-saves.md).
+//   2. DELETE /api/session/[code]/rate/[wineId] — the explicit Reset ('force').
+//   3. PATCH /api/checkins/[id] — a moment rating emptied in the post edit.
 //
 // The CTE pattern earlier drafts used had a subtle MVCC bug — CTE
 // sub-statements share a snapshot, so a `NOT EXISTS (SELECT FROM ratings)`
@@ -51,74 +50,57 @@ async function reclaimImage(url: string | null | undefined) {
   }
 }
 
-/**
- * Run the engagement-deletion cascade against a single rating row.
- *
- * Two trigger sites — different semantics for the rating delete itself,
- * shared semantics for the feed_item cleanup and S3 reclaim:
- *
- * - mode='empty-only' (POST path): only deletes the rating if it's
- *   actually empty (score 0/NULL + no chips + no aromas + no notes). Safe to call
- *   after every upsert; no-ops when the row still carries data. The
- *   empty-payload SQL predicate IS the gate on destruction.
- *
- * - mode='force' (DELETE path / Reset): deletes the rating
- *   unconditionally. The user has explicitly asked to wipe it; we
- *   trust the gate that fired the DELETE (origin check, participant
- *   check, identity check) and run the delete regardless of payload.
- *
- * Application-level ordering, mirroring lib/accountDelete.ts:
- *   1. Capture rating_images.imageUrl into memory.
- *   2. Statement 1 — DELETE FROM ratings WHERE id=... [+ empty predicate].
- *   3. If step 2 returned a row, Statement 2 — DELETE FROM feed_items
- *      WHERE no other ratings remain for (user, session).
- *   4. AFTER step 3, fire reclaimImage on each captured URL.
- *
- * Two separate auto-commit statements (NOT wrapped in $transaction):
- * Postgres CTE sub-statements share an MVCC snapshot, so step 2's
- * NOT EXISTS would still see the just-deleted row from step 1 if
- * they shared a transaction. The id<>$ratingId self-exclusion in
- * step 2 is belt-and-suspenders against any visibility lag.
- *
- * Returns true if a row was deleted. Caller may want to know to refresh
- * client caches.
- */
-export async function engagementDeletionCascade(
-  ratingId: number,
-  mode: 'empty-only' | 'force' = 'empty-only',
-): Promise<boolean> {
-  const imageUrls = await engagementCascadeIn(prisma, ratingId, mode)
-  if (imageUrls === null) return false
-  reclaimImages(imageUrls)
-  return true
-}
-
-// The same cascade inside a caller's transaction (the session mutation contract
-// — redis-rehydration § 5.4: the rate and check-in writers commit their cascade
+// The cascade inside a caller's transaction (the session mutation contract —
+// redis-rehydration § 5.4: the rate and check-in writers commit their cascade
 // with the rating write). Separate statements in one transaction see each
 // other's effects; the id <> $ratingId self-exclusion stays as the belt. Returns
 // the image URLs to reclaim AFTER COMMIT (capture / commit / reclaim-after), or
 // null when nothing was reaped.
+//
+// Two modes for the rating delete itself:
+// - 'empty-only' (the rate POST's empty full save, the post edit): deletes the
+//   rating only if it IS empty (score 0/NULL + no chips + no aromas + no note);
+//   the SQL predicate is the gate on destruction.
+// - 'force' (the web's Reset DELETE): deletes it unconditionally (the gates
+//   that fired the DELETE: origin, participant, identity).
+//
+// 🔒 `ownClear` (tasting feedback 2026-11-25: "could a reset rating just take
+// away the xp?"): passed ONLY by the three paths where the owner clears their
+// OWN rating (the empty save, the Reset, a moment rating emptied in the post
+// edit). The owner is debited exactly the rating-action XP this row was credited
+// (`ratings.rating_action_xp`, from the DELETE's RETURNING), floored at 0, in
+// the caller's transaction. A retry or a repeat finds no row and debits nothing;
+// a legacy row carries 0. Never for a host's bottle delete, a ban's wipe or an
+// account deletion (they don't come through here). Counters never go down and
+// earned badges stay.
 export async function engagementCascadeIn(
   db: Prisma.TransactionClient | typeof prisma,
   ratingId: number,
   mode: 'empty-only' | 'force' = 'empty-only',
+  { ownClear = false }: { ownClear?: boolean } = {},
 ): Promise<string[] | null> {
   const images = await db.ratingImage.findMany({ where: { ratingId }, select: { imageUrl: true } })
   const imageUrls = images.map(i => i.imageUrl).filter((u): u is string => !!u)
+  type Deleted = { user_id: number | null; session_id: number | null; rating_action_xp: number }
   const deleted = mode === 'force'
-    ? await db.$queryRaw<{ user_id: number | null; session_id: number | null }[]>`
-        DELETE FROM ratings WHERE id = ${ratingId} RETURNING user_id, session_id`
-    : await db.$queryRaw<{ user_id: number | null; session_id: number | null }[]>`
+    // rating-write: EXEMPT
+    ? await db.$queryRaw<Deleted[]>`
+        DELETE FROM ratings WHERE id = ${ratingId} RETURNING user_id, session_id, rating_action_xp`
+    // rating-write: EXEMPT
+    : await db.$queryRaw<Deleted[]>`
         DELETE FROM ratings
          WHERE id = ${ratingId}
            AND (score = 0 OR score IS NULL)
            AND flavors = '{}'::jsonb
            AND aromas = '[]'::jsonb
            AND (notes IS NULL OR notes = '')
-         RETURNING user_id, session_id`
+         RETURNING user_id, session_id, rating_action_xp`
   if (deleted.length === 0) return null
   const { user_id, session_id } = deleted[0]
+  const refund = Number(deleted[0].rating_action_xp ?? 0)
+  if (ownClear && user_id != null && refund > 0) {
+    await db.$executeRaw`UPDATE users SET xp = GREATEST(xp - ${refund}, 0) WHERE id = ${user_id}`
+  }
   if (user_id != null && session_id != null) {
     await db.$executeRaw`
       DELETE FROM feed_items

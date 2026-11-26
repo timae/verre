@@ -1,4 +1,10 @@
-import { apiFetch } from '../apiFetch';
+import { apiFetch, LocalCancel } from '../apiFetch';
+import type { RateBody, RateResult, RatingMeta, RatingsView } from './rateTypes';
+
+// The rating wire types live in ./rateTypes (dependency-free, so the pure
+// outbox modules and their node units never reach React Native); re-exported
+// here for every existing caller.
+export type { RateBody, RateResult, RatingMeta, RatingsView } from './rateTypes';
 
 // Typed fetchers for the session surfaces. Wire types mirror the server
 // builders (lib/sessionState.ts, lib/session.ts wineToWire) — keep in sync.
@@ -143,24 +149,6 @@ export type SessionMetaView = {
   banCount: number;
 };
 
-// `aromas` (PR A, aroma-layer.md §4): {a: nodeId, m: modifierId|null} pairs
-// against the @verre/core taxonomy. The node may sit at ANY tier (leaf
-// "strawberry", subfamily "fruity.berry", family "fruity" — any-tier ruling
-// 2026-07-08); resolve via core's getAromaNode. Optional on the wire —
-// ratings written before the column shipped simply lack the key. `p` =
-// pronounced flag (the note that led the impression), present only when true.
-export type RatingMeta = {
-  score: number;
-  flavors: Record<string, number>;
-  aromas?: { a: string; m: string | null; p?: boolean }[];
-  // A look-in's light rating (Moment Visibility, lib/lookInCompare.ts): it has
-  // aromas, which arrive with the details read. Never on a moment's own rating.
-  hasAromas?: true;
-  notes: string;
-  at: number;
-};
-export type RatingsView = Record<string, { displayName: string; ratings: Record<string, RatingMeta> }>;
-
 export type SessionState = {
   meta: SessionMetaView | null;
   wines: WireWine[] | null;
@@ -286,6 +274,35 @@ export async function getSessionState(code: string): Promise<SessionState> {
   return res.json();
 }
 
+// The outbox's background /state read (lib/rateOutbox.ts): ONE deadline over
+// the headers AND the body (apiFetch's own timer stops at the headers, and a
+// stalled body would keep the read in flight, stranding the moment's entries),
+// and abortable through `signal` (TanStack's, so a cancel ends the request).
+export async function getSessionStateWithin(code: string, signal: AbortSignal | undefined, ms = RATE_TIMEOUT_MS, beforeSend?: (cookieSent: boolean) => boolean): Promise<SessionState> {
+  const controller = new AbortController();
+  const forward = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', forward, { once: true });
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error('timeout'));
+    }, ms);
+    controller.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+  });
+  try {
+    const res = await Promise.race([apiFetch(`/api/session/${encodeURIComponent(code)}/state`, { signal: controller.signal, timeoutMs: ms, beforeSend }), deadline]);
+    if (!res.ok) await Promise.race([throwApiError(res), deadline]);
+    return (await Promise.race([res.json(), deadline])) as SessionState;
+  } finally {
+    if (timer) clearTimeout(timer);
+    signal?.removeEventListener('abort', forward);
+  }
+}
+
 // Registers a logged-in visitor in the session's identities map — MUST run
 // (and succeed) before the first /state poll, which 401s for non-participants.
 export async function postVisit(code: string): Promise<void> {
@@ -302,33 +319,104 @@ export async function getRemovedState(code: string): Promise<'banned' | 'kicked'
   return j?.state === 'banned' || j?.state === 'kicked' ? j.state : 'none';
 }
 
-export type RateBody = {
-  wineId: string;
-  score: number; // 0..5 in 0.25 steps; 0 = not rated
-  // 0..5 integer intensities. Structure-wheel zero rule (§5): once ANY axis is
-  // rated, the rest persist as explicit 0 ("perceived none"); if EVERY axis is
-  // None the whole map is empty ({}). So a non-empty map carries zeros — do NOT
-  // assume "zeros omitted" (the pre-structure-wheel contract). The server's
-  // validateFlavors enforces this drop-all-or-keep-all shape.
-  flavors: Record<string, number>;
-  // Aroma selections. PRESENT-REPLACES / OMITTED-PRESERVES on the server:
-  // leave the field off to keep whatever is stored; send [] to clear.
-  aromas?: { a: string; m: string | null; p?: boolean }[];
-  notes: string;
-};
+const RATE_TIMEOUT_MS = 12_000;
 
-// Upserts the caller's rating. Server side-effects (no client work):
-// Postgres archival, the feed_item on first engagement, and the
-// engagement-deletion cascade when score+flavors+aromas+notes are all
-// empty — so "clear my rating" is just an empty rate POST (an OMITTED
-// aromas field preserves stored aromas, which then keep the row alive).
-export async function rateWine(code: string, body: RateBody): Promise<void> {
-  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/rate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+export function parseRetryAfter(h: string | null, now = Date.now()): number | null {
+  if (!h) return null;
+  const n = Number(h);
+  if (Number.isFinite(n) && n >= 0) return n * 1000;
+  const at = Date.parse(h);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
+// The canonical rating as the server sends it (Decimal coerced, shapes held).
+export function parseRating(r: unknown): RatingMeta | null {
+  if (!r || typeof r !== 'object') return null;
+  const o = r as Record<string, unknown>;
+  const score = Number(o.score ?? 0);
+  return {
+    score: Number.isFinite(score) ? score : 0,
+    flavors: o.flavors && typeof o.flavors === 'object' && !Array.isArray(o.flavors) ? (o.flavors as Record<string, number>) : {},
+    ...(Array.isArray(o.aromas) ? { aromas: o.aromas as RatingMeta['aromas'] } : {}),
+    notes: typeof o.notes === 'string' ? o.notes : '',
+    at: Number(o.at ?? 0) || 0,
+    ...(Number.isFinite(Number(o.v)) && o.v !== undefined && o.v !== null ? { v: Number(o.v) } : {}),
+  };
+}
+
+// The rate POST, as a typed result (no throw). The deadline covers the body
+// too: Expo's fetch resolves at the headers (lib/authClient.ts), so a stalled
+// body would otherwise outlive apiFetch's own timer. `beforeSend` runs after
+// the cookie read and may refuse the send (the outbox's viewer / auth gate).
+export async function rateWine(
+  code: string,
+  body: RateBody,
+  opts: { beforeSend?: (cookieSent: boolean) => boolean } = {},
+): Promise<RateResult> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error('timeout'));
+    }, RATE_TIMEOUT_MS);
   });
-  if (!res.ok) await throwApiError(res);
+  try {
+    let res: Response;
+    try {
+      res = await Promise.race([
+        apiFetch(`/api/session/${encodeURIComponent(code)}/rate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+          timeoutMs: RATE_TIMEOUT_MS,
+          beforeSend: opts.beforeSend,
+        }),
+        deadline,
+      ]);
+    } catch (e) {
+      if (e instanceof Error && e.message === 'update_required') return { kind: 'update-required' };
+      if (e instanceof LocalCancel) return { kind: 'cancelled', reason: 'stale' };
+      return { kind: 'network', error: e };
+    }
+    let json: Record<string, unknown> | null = null;
+    try {
+      const text = await Promise.race([res.text(), deadline]);
+      json = text ? (JSON.parse(text) as Record<string, unknown>) : null;
+    } catch (e) {
+      // A 2xx whose body never arrived may have committed: ambiguous.
+      if (res.ok || (e instanceof Error && e.message === 'timeout')) return { kind: 'network', error: e };
+      json = null;
+    }
+    if (res.ok) {
+      const rating = parseRating(json?.rating);
+      if (rating) return { kind: 'rating', status: res.status, rating };
+      if (json?.unchanged === true) return { kind: 'unchanged', status: res.status };
+      return { kind: 'ok', status: res.status };
+    }
+    if (res.status === 409 && json?.wrongViewer === true) return { kind: 'wrong-viewer', status: 409 };
+    if (res.status === 409 && json?.stale === true) {
+      const version = Number(json.version);
+      return {
+        kind: 'stale',
+        status: 409,
+        rating: parseRating(json.rating),
+        version: Number.isFinite(version) ? version : 0,
+        lastOpId: typeof json.lastOpId === 'string' ? json.lastOpId : null,
+      };
+    }
+    const vr = res.headers.get('X-Vr-Auth');
+    return {
+      kind: 'error',
+      status: res.status,
+      retryAfterMs: parseRetryAfter(res.headers.get('Retry-After')),
+      auth: vr === 'removed' || vr === 'invalid' ? vr : null,
+      message: typeof json?.error === 'string' ? json.error : null,
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // Save / unsave a bottle of the moment (signed-in participant) → the new

@@ -387,8 +387,10 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
               SELECT ri.image_url FROM rating_images ri JOIN ratings r ON r.id = ri.rating_id
                WHERE r.user_id = ${userId} AND r.session_id = ${row.id} AND ri.image_url IS NOT NULL`
             reclaimUrls.push(...imgs.map(i => i.image_url))
+            // rating-write: EXEMPT
             await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id = ${row.id}`
           } else {
+            // rating-write: EXEMPT
             const n = await tx.$executeRaw`
               UPDATE ratings SET user_id = NULL, rater_name = ${TOMBSTONE_NAME}, tombstone_key = ${key}
                WHERE user_id = ${userId} AND session_id = ${row.id}`
@@ -430,6 +432,7 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
         SELECT DISTINCT r.session_id FROM ratings r JOIN sessions s ON s.id = r.session_id
          WHERE r.user_id = ${userId} AND s.deleted_at IS NOT NULL`
       for (const { session_id } of dead) {
+        // rating-write: EXEMPT
         await tx.$executeRaw`
           UPDATE ratings SET user_id = NULL, rater_name = ${TOMBSTONE_NAME}, tombstone_key = ${`d:${randomUUID()}`}
            WHERE user_id = ${userId} AND session_id = ${session_id}`
@@ -437,6 +440,7 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
 
       // Account-level work. Standalone ratings hard-cascade (their feed_items and
       // rating_images go with them — images captured before the transaction).
+      // rating-write: EXEMPT
       await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id IS NULL`
       // Session-less (orphaned) wines the user added: no session, no key — the
       // snapshot is the only place the name would survive.
@@ -508,7 +512,9 @@ async function engagedInPostgres(tx: Prisma.TransactionClient, row: LockedSessio
 }
 
 async function engagedInRedis(row: LockedSession, userId: number, durable: DurableRedis): Promise<boolean> {
+  // rating-write: EXEMPT
   const mine = `s:${row.code}:r:${userIdentityId(userId)}:`
+  // rating-write: EXEMPT
   const keys = await durable.step(`engagement ${row.code}`, (c) => scanAll(c, `s:${row.code}:r:*`))
   return keys.some(key => !key.startsWith(mine))
 }
@@ -526,6 +532,7 @@ async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession
      WHERE r.session_id = ${row.id} AND r.user_id = ${userId} AND ri.image_url IS NOT NULL`
   const wines = await tx.$queryRaw<{ id: string; image_url: string }[]>`
     SELECT id, image_url FROM wines WHERE session_id = ${row.id} AND image_url IS NOT NULL`
+  // rating-write: EXEMPT
   await tx.$executeRaw`DELETE FROM ratings WHERE session_id = ${row.id} AND user_id = ${userId}`
   await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${row.id}`
   await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${row.code}`
@@ -753,6 +760,7 @@ export async function migrateTombstonedSession(userId: number, s: SessionOutcome
           : w))
       }
     }
+    // rating-write: EXEMPT
     const src = await scanKeys(`s:${s.code}:r:${uid}:*`)
     const keys = [sessionLockKey(s.code), k.gen(s.code), k.meta(s.code), k.wines(s.code), k.identities(s.code), k.lastSeen(s.code), k.kicked(s.code), k.kickv(s.code)]
     for (const key of src) keys.push(key, key.replace(`:r:${uid}:`, `:r:${s.key}:`))
@@ -788,6 +796,7 @@ async function scrubRedisOnlyRegistrations(userId: number, known: Set<string>, d
         for (let attempt = 0; attempt < 5; attempt++) {
           // Decided under the lease (r2 N7): a wine delete committed while the
           // scrub waited may have taken the user's last rating key.
+          // rating-write: EXEMPT
           const relabel = (await scanKeys(`s:${code}:r:${uid}:*`)).length > 0
           const metaRaw = await redis.get(metaKey)
           if (!metaRaw) break

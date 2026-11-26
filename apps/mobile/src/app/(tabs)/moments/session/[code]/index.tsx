@@ -27,6 +27,7 @@ import { MomentBarName, MomentEditBar, useMomentEdit, type MomentEditApi } from 
 import { markNoShake } from '@/components/ui/InPlaceEdit';
 import { useIsOnline } from '@/lib/query';
 import { lockState, useSessionPoll } from '@/lib/useSessionPoll';
+import { useOwnRatingsOverlay } from '@/lib/rateOutbox';
 import { sessionHref, tabHomeHref, useSessionTab } from '@/lib/sessionStack';
 import { momentStatusLine } from '@/lib/momentVisibilityCopy';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
@@ -56,6 +57,11 @@ export default function SessionLineup() {
   // Visit → /state poll → per-section merge, shared with Compare (02d).
   const { meta, wines, ratings, state, fatal, removedKind, visited, retryVisit, myIdentityId, stateKey } =
     useSessionPoll(code);
+  // YOUR rows and the sort by your score read your ratings as stored on the
+  // phone (the rating outbox: waiting saves + the server's answers), so an
+  // offline Finish never leaves them looking unrated. Compare (`ratings`) and
+  // what other tasters see keep the server's state until the phone syncs.
+  const ownRatings = useOwnRatingsOverlay(code, ratings, myIdentityId);
   // Moment Privacy's read starts here, once the visit has landed (the read is
   // a participant's): the settings hub shows its row only once that read has
   // answered, and started there it drew a round trip after the other rows
@@ -337,7 +343,7 @@ export default function SessionLineup() {
   const shownWines = useMemo(() => {
     const all = wines ?? [];
     const q = luQuery.trim();
-    const myScore = (w: WireWine) => ratings?.[myIdentityId]?.ratings[w.id]?.score ?? 0;
+    const myScore = (w: WireWine) => ownRatings?.[myIdentityId]?.ratings[w.id]?.score ?? 0;
     const idx = (w: WireWine) => luIndexById.get(w.id) ?? 0;
     const base = q ? all.filter((w) => fuzzyIncludes(luSearchHay(w, idx(w)), q)) : all;
     if (luSort === 'lineup') return base;
@@ -347,7 +353,7 @@ export default function SessionLineup() {
       unrated: (a, b) => (myScore(a) > 0 ? 1 : 0) - (myScore(b) > 0 ? 1 : 0) || idx(a) - idx(b),
     };
     return [...base].sort(fns[luSort]);
-  }, [wines, luQuery, luSort, ratings, myIdentityId, luIndexById]);
+  }, [wines, luQuery, luSort, ownRatings, myIdentityId, luIndexById]);
   const luNarrowed = luQuery.trim() !== '';
   // Denied-hold signal → the toolbar explains itself (note + accent flash on
   // the control that blocks reordering).
@@ -580,7 +586,7 @@ export default function SessionLineup() {
           luNarrowed={luNarrowed}
           toolbar={luToolbar}
           reorder={{ enabled: canReorder, denied: reorderDenied, deniedNote: reorderDeniedNote, onCommit: onReorder, onDenied: onReorderDenied }}
-          ratings={ratings}
+          ratings={ownRatings}
           myIdentityId={myIdentityId}
           canAdd={canAdd}
           windowH={windowH}
@@ -686,7 +692,7 @@ export default function SessionLineup() {
                         // never renumber rows.
                         index={luIndexById.get(id) ?? 0}
                         myIdentityId={myIdentityId}
-                        ratings={ratings}
+                        ratings={ownRatings}
                         onPress={() => openImpression(id)}
                         reveal={reveal}
                         move={move}

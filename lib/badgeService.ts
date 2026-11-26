@@ -4,7 +4,7 @@
  */
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { ALL_BADGES, BADGE_MAP, evaluateBadges, XP_REWARDS, type UserStats } from '@/lib/badges'
+import { ALL_BADGES, BADGE_MAP, evaluateBadges, type UserStats } from '@/lib/badges'
 import { redactedSql, hiddenSql } from '@/lib/outsideView'
 import { visibleCravingCount } from '@/lib/cravings'
 import { NON_ALCOHOLIC_MAX_ABV } from '@verre/core'
@@ -162,18 +162,15 @@ export async function getUserStats(userId: number): Promise<UserStats> {
 }
 
 // ── Award ─────────────────────────────────────────────────────
-export async function checkAndAwardBadges(userId: number, action: string): Promise<{newBadges: typeof ALL_BADGES; xpGained: number; totalXP: number}> {
+// Evaluates the badges and awards only NEW badges' own XP. The rating-action
+// XP (+10 first save, +5 first five-star, +5 first note) is credited ONCE per
+// rating inside the rate POST's transaction (docs/dev/rating-saves.md), never
+// here: this runs after the commit, in the background, and a lost run would
+// otherwise lose it (or a repeated one re-award it, as every save did before).
+export async function checkAndAwardBadges(userId: number): Promise<{newBadges: typeof ALL_BADGES; xpGained: number; totalXP: number}> {
   await ensureBadgesSeedOnce()
 
   let xpGain = 0
-  if (action === 'rate')           xpGain = XP_REWARDS.RATE_WINE
-  if (action === 'rate_with_note') xpGain = XP_REWARDS.RATE_WINE + XP_REWARDS.WRITE_NOTE
-  if (action === 'rate_5star')     xpGain = XP_REWARDS.RATE_WINE + XP_REWARDS.GIVE_5_STAR
-  if (action === 'rate_5star_note')xpGain = XP_REWARDS.RATE_WINE + XP_REWARDS.GIVE_5_STAR + XP_REWARDS.WRITE_NOTE
-  if (action === 'host')           xpGain = XP_REWARDS.HOST_SESSION
-  if (action === 'join')           xpGain = XP_REWARDS.JOIN_SESSION
-  if (action === 'bookmark')       xpGain = XP_REWARDS.BOOKMARK
-  if (action === 'photo')          xpGain = XP_REWARDS.ADD_PHOTO
 
   const [stats, existing] = await Promise.all([
     getUserStats(userId),

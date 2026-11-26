@@ -623,7 +623,7 @@ export function DatePickerSheet({
 
 // Description textarea (.field, 2 rows) — same focus convention as TextField.
 export function NotesField({
-  label, placeholder, value, onChange, maxLength, editable = true,
+  label, placeholder, value, onChange, maxLength, editable = true, onFocusChange,
 }: {
   // Optional since the rating block dropped its "Your Note" title (Simon,
   // 2026-07-12) — the placeholder carries the affordance there.
@@ -635,6 +635,8 @@ export function NotesField({
   maxLength?: number;
   // false = read-only (a save that may have landed, ADR-0009).
   editable?: boolean;
+  // Focus in / out (the impression's auto-save keeps the raw text while focused).
+  onFocusChange?: (focused: boolean) => void;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -656,8 +658,14 @@ export function NotesField({
         maxLength={maxLength}
         placeholder={placeholder}
         placeholderTextColor={theme.inkFaint}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
+        onFocus={() => {
+          setFocused(true);
+          onFocusChange?.(true);
+        }}
+        onBlur={() => {
+          setFocused(false);
+          onFocusChange?.(false);
+        }}
         {...surface.textProps}
         style={{
           minHeight: surface.height(64),

@@ -136,14 +136,13 @@ export function getLevel(xp: number) {
   return { ...LEVELS[0], nextXP: LEVELS[1].minXP, index: 0 }
 }
 
+// The rating-action XP, credited ONCE per rating by the session rate POST in
+// its transaction (docs/dev/rating-saves.md) and taken back by the owner's own
+// clear. Nothing else awards action XP (badges award their own `xp_reward`).
 export const XP_REWARDS = {
   RATE_WINE: 10,
   WRITE_NOTE: 5,
-  HOST_SESSION: 25,
-  JOIN_SESSION: 10,
   GIVE_5_STAR: 5,
-  ADD_PHOTO: 3,
-  BOOKMARK: 2,
 }
 
 // ── BADGE EVALUATION ──────────────────────────────────────────

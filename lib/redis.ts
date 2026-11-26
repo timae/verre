@@ -51,6 +51,7 @@ export const k = {
   wines:      (c: string) => `s:${c}:wines`,
   // Rating key uses identity id (e.g. "u:42" or "a:<uuid>"), not display
   // name — names can collide between participants, ids cannot.
+  // rating-write: EXEMPT
   rating:     (c: string, identityId: string, wid: string) => `s:${c}:r:${identityId}:${wid}`,
   // Identity model. Identities maps id (e.g. "u:42" or "a:<uuid>") to the
   // current display name; tokens maps an anon token to its identity id.

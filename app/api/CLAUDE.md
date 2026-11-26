@@ -94,7 +94,7 @@ Exists because NextAuth v5 strips error messages from the client-side `signIn()`
 
 Both `POST /api/session/[code]/rate` and `POST /api/checkins` create `feed_items` rows alongside the underlying ratings. Two contracts shape this:
 
-- **Session rate**: a feed_item materialises on first engagement (score > 0, OR chips, OR notes). Idempotent via the partial unique `(user_id, session_id)` + `ON CONFLICT DO NOTHING` — subsequent rates in the same session no-op, so `created_at` stays anchored on first engagement. Anon ratings skip entirely (schema-enforced via `feed_items.user_id NOT NULL`).
+- **Session rate**: a feed_item materialises on first engagement (score > 0, OR chips, OR notes). Idempotent via the partial unique `(user_id, session_id)` + `ON CONFLICT DO NOTHING` — subsequent rates in the same session no-op, so `created_at` stays anchored on first engagement. Anon ratings skip entirely (schema-enforced via `feed_items.user_id NOT NULL`). 🔒 Only a FULL save reaps (an empty one runs the engagement cascade); a MERGE save (`merge: true`, the app's auto-save) never does: a merged empty result writes nothing and answers `{ ok: true, unchanged: true }` (`docs/dev/rating-saves.md`).
 - **Standalone POST**: the act of POSTing IS the engagement signal; the feed_item is always created (the user explicitly chose to post). One feed_item per check-in (1:1 with the rating via `feed_items.ratingId`).
 
 Full mechanics: see `docs/dev/social-feed.md` §Engagement trigger.
