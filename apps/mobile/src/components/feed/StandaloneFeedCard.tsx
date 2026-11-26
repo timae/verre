@@ -51,6 +51,7 @@ export function StandaloneFeedCard({
   onToggleLike,
   onEdit,
   onDelete,
+  onHadItToo,
 }: {
   author: FeedAuthor;
   checkin: CheckinPayload;
@@ -65,6 +66,9 @@ export function StandaloneFeedCard({
   // delete confirm + server call.
   onEdit?: () => void;
   onDelete?: () => void;
+  // Someone else's check-in whose author you follow (the list passes it only
+  // then, 08-feed § 5a): the ⋯ menu's "Had It Too".
+  onHadItToo?: () => void;
 }) {
   const { theme } = useTheme();
   const axisColor = useFlavourColors();
@@ -115,8 +119,8 @@ export function StandaloneFeedCard({
               .join(' · ')}
           </PrivacyByline>
         </View>
-        {onEdit ? (
-          <FeedCardMenu onEdit={onEdit} onDelete={onDelete} deleteAccessibilityLabel="Delete Check-In" privacy={privacy.rows} />
+        {onEdit || onHadItToo ? (
+          <FeedCardMenu onEdit={onEdit} onHadItToo={onHadItToo} onDelete={onDelete} deleteAccessibilityLabel="Delete Check-In" privacy={privacy.rows} />
         ) : null}
       </View>
 

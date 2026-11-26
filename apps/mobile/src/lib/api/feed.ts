@@ -190,7 +190,7 @@ export async function setFeedItemLike(
 }
 
 // POST /api/checkins — create a standalone check-in (the mobile create form;
-// later "Had it too" rides the same call with copyFromCheckinId). Body mirrors
+// Had It Too rides the same call with copyFromCheckinId + copyPhoto). Body mirrors
 // the route's accepted fields (app/api/checkins/route.ts) minus taggedUserIds +
 // lat/lng (tagging + map UX are their own passes). `flavors` must be the
 // filled-or-empty shape (fillFlavourZeros) — the server 400s stray off-style
@@ -224,6 +224,9 @@ export type CreateCheckinBody = {
   city?: string;
   country?: string; // VENUE country, ISO-2
   copyFromCheckinId?: number;
+  // Had It Too only: false = the source's photo is NOT copied (replaced or
+  // removed; your own photo follows in the PATCH). Absent = copied.
+  copyPhoto?: boolean;
   // Moment Defaults: this check-in's Hide from Feed (absent = your default).
   hiddenFromFeed?: boolean;
 };
@@ -249,7 +252,7 @@ export async function createCheckin(body: CreateCheckinBody): Promise<{ id: numb
 
 // Standalone: wine metadata + rating. Everything optional — send what changed
 // (or the full truth; the server treats both the same).
-export type PatchCheckinBody = Partial<Omit<CreateCheckinBody, 'copyFromCheckinId' | 'occurrenceId'>> & {
+export type PatchCheckinBody = Partial<Omit<CreateCheckinBody, 'copyFromCheckinId' | 'copyPhoto' | 'occurrenceId'>> & {
   // A fresh data URL replaces the photo; null removes it; omitted keeps it.
   // A check-in's FIRST photo goes alone in its own PATCH right after the post.
   imageData?: string | null;

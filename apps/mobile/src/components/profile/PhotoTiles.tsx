@@ -4,8 +4,8 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { LongPressable } from '@/components/ui/InPlaceEdit';
 import { Gradient } from '@/components/ui/Gradient';
 import { VText } from '@/components/ui/VText';
-import { Icon } from '@/components/ui/Icon';
-import { GLASS_FILL, TILE_SCRIM, TILE_SCRIM_STOPS } from '@/lib/layout';
+import { GlassPen } from '@/components/ui/GlassPen';
+import { TILE_SCRIM, TILE_SCRIM_STOPS } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 
 // .yo-ptiles — the profile's three photo tiles (Impressions · Moments ·
@@ -128,11 +128,7 @@ function Tile({ tile }: { tile: PhotoTile }) {
           {tile.label}
         </VText>
       </View>
-      {tile.editable ? (
-        <View pointerEvents="none" style={styles.pen}>
-          <Icon name="edit" size={14} color="#fff" />
-        </View>
-      ) : null}
+      {tile.editable ? <GlassPen /> : null}
     </View>
   );
 }
@@ -143,5 +139,4 @@ const styles = StyleSheet.create({
   sizer: { flex: 1, aspectRatio: 4 / 5 },
   tile: { flex: 1, borderRadius: radius.lg, overflow: 'hidden' },
   txt: { position: 'absolute', left: 11, right: 8, bottom: 10, gap: 1 },
-  pen: { position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: 14, backgroundColor: GLASS_FILL, alignItems: 'center', justifyContent: 'center' },
 });

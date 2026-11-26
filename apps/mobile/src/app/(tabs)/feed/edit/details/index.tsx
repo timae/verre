@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
+import { WhereYouHadIt } from '@/components/feed/WhereYouHadIt';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { Disclosure, MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
@@ -56,7 +57,6 @@ export default function EditCheckinDetails() {
   );
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<ScrollViewInstance>(null);
-  const cityRef = useRef<TextInputInstance>(null);
   const purchaseRef = useRef<TextInputInstance>(null);
 
   // Cold deep link / stale store — nothing to edit; bounce to the list it
@@ -145,14 +145,7 @@ export default function EditCheckinDetails() {
           <VText variant="small" style={{ marginTop: -8, marginBottom: 8, color: theme.critical }}>{photoError}</VText>
         ) : null}
 
-        <View style={{ flexDirection: 'row', gap: 12, marginBottom: 4 }}>
-          <View style={{ flex: 1.4 }}>
-            <TextField label="Where You Had It" placeholder="Bar, restaurant, home…" value={venue} onChangeText={setVenue} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => cityRef.current?.focus()} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <TextField ref={cityRef} label="City" placeholder="City" value={city} onChangeText={setCity} returnKeyType="done" />
-          </View>
-        </View>
+        <WhereYouHadIt venue={venue} city={city} onVenue={setVenue} onCity={setCity} />
 
         {/* .disclosure Add More Details: the bottle's own fields (the fold is
             back, ruled 2026-11-22; open when one of them is set). */}

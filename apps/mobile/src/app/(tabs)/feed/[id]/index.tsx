@@ -564,13 +564,17 @@ export default function FeedImpression() {
   );
 
   // ── Header actions (overflow menu) ───────────────────────────────────────
-  // Crave, Had it too, Share, and owner Edit ALL land in the deferred column
-  // (08-feed §6/§7): Crave needs sourceRatingId + a non-membership endpoint +
-  // a Cravings list (a coherent later pass — the legacy (user,wineId) bookmark
-  // can't remember WHOSE impression you craved); Had it too needs the prefilled
-  // ciSheet; Share needs a per-impression permalink (none exists yet). So the
-  // menu is placeholders this pass — no live write from this screen.
+  // Crave and Share stay placeholders (08-feed §6/§7): Crave needs
+  // sourceRatingId + a non-membership endpoint + a Cravings list (a coherent
+  // later pass — the legacy (user,wineId) bookmark can't remember WHOSE
+  // impression you craved); Share needs a per-impression permalink (none
+  // exists yet). Had It Too (08-feed § 5a) opens its own screen on this stack,
+  // only for a standalone check-in by someone you follow, never your own.
+  // Gated on the LIVE cache copy (`found`), never the pinned one: the screen
+  // reads only the cache, so a post a refetch dropped would open on "This
+  // check-in isn't available".
   const isOwner = myUserId != null && detail?.author.id === myUserId;
+  const canHaveItToo = !isOwner && myUserId != null && item != null && found?.type === 'checkin' && found.checkin.viewerFollowsAuthor;
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
   // Your own post's switches (step 3, R2 / R5 / R11 / R12) and the status
   // line under your name (R3). The PINNED copy is what renders here, so the own-post store
@@ -1141,14 +1145,22 @@ export default function FeedImpression() {
       ) : null}
       </RevealWindow>
 
-      {/* Overflow menu — the shared .ir-menu dropdown (AnchoredMenu). Crave,
-          Had it too (standalone), Share, and owner Edit are all DISABLED
-          placeholders this pass (each renders a "Soon" tag via MenuItem):
-          Crave/Share/Had-it-too are deferred coherent passes (08-feed §6/§7),
-          and no standalone impression editor exists. */}
+      {/* Overflow menu — the shared .ir-menu dropdown (AnchoredMenu). Crave
+          and Share are DISABLED placeholders (each renders a "Soon" tag via
+          MenuItem), deferred coherent passes (08-feed §6/§7). Had It Too:
+          someone you follow's check-in, pushed on this post's stack. */}
       <AnchoredMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} right={16} minWidth={220}>
         <MenuItem icon="heart" label="Crave" disabled />
-        {detail.isSession === false ? <MenuItem icon="plus" label="Had It Too" disabled /> : null}
+        {canHaveItToo ? (
+          <MenuItem
+            icon="plus"
+            label="Had It Too"
+            onPress={() => {
+              setMenuAnchor(null);
+              router.push(feedHref(mount, 'had-it-too', { id: String(feedItemId), user: listUserId ?? undefined, source: fromList }));
+            }}
+          />
+        ) : null}
         <MenuItem icon="share" label="Share" disabled />
         {isOwner ? <MenuSeparator /> : null}
         {isOwner

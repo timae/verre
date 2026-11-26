@@ -2,20 +2,24 @@ import { useState } from 'react';
 import { AnchorButton, AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { useTheme } from '@/theme';
 
-// The feed cards' ⋯ menu (Simon, 2026-07-17), owner-only today (the list
-// screen passes onEdit only for the viewer's own posts, so the trigger simply
-// doesn't render otherwise). Crave/Share/etc. join here when their deferred
+// The feed cards' ⋯ menu (Simon, 2026-07-17): your own post's Edit / Delete
+// (the list screen passes onEdit only for the viewer's own posts), and
+// someone else's check-in's "Had It Too" (passed only for a standalone
+// check-in by someone you follow, 08-feed § 5a). The card renders the trigger
+// only when it has a row. Crave/Share/etc. join here when their deferred
 // passes land (08-feed §6/§7). `deleteLabel` forks the destructive row's copy:
 // standalone = "Delete" (the post goes), session = "Delete Rating" (the
 // active impression's rating resets; the post only goes if that emptied it).
 export function FeedCardMenu({
   onEdit,
+  onHadItToo,
   onDelete,
   deleteLabel = 'Delete',
   deleteAccessibilityLabel = 'Delete Post',
   privacy,
 }: {
-  onEdit: () => void;
+  onEdit?: () => void;
+  onHadItToo?: () => void;
   onDelete?: () => void;
   deleteLabel?: string;
   deleteAccessibilityLabel?: string;
@@ -43,15 +47,27 @@ export function FeedCardMenu({
             }}
           />
         ))}
-        <MenuItem
-          icon="edit"
-          label="Edit"
-          accessibilityLabel="Edit Post"
-          onPress={() => {
-            setAnchor(null);
-            onEdit();
-          }}
-        />
+        {onHadItToo ? (
+          <MenuItem
+            icon="plus"
+            label="Had It Too"
+            onPress={() => {
+              setAnchor(null);
+              onHadItToo();
+            }}
+          />
+        ) : null}
+        {onEdit ? (
+          <MenuItem
+            icon="edit"
+            label="Edit"
+            accessibilityLabel="Edit Post"
+            onPress={() => {
+              setAnchor(null);
+              onEdit();
+            }}
+          />
+        ) : null}
         {onDelete ? (
           <MenuItem
             icon="trash"

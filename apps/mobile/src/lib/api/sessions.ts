@@ -166,19 +166,24 @@ export type ApiErrorKind =
 export class ApiError extends Error {
   kind: ApiErrorKind;
   status: number;
-  constructor(kind: ApiErrorKind, status: number, message?: string) {
+  // The body's machine-readable `code`, when the server sent one (e.g.
+  // `link-required` from a check-in POST, lib/catalogLink.ts). Its own name:
+  // UsernameError's typed `code` is a different field.
+  errorCode?: string;
+  constructor(kind: ApiErrorKind, status: number, message?: string, errorCode?: string) {
     super(message ?? kind);
     this.kind = kind;
     this.status = status;
+    if (errorCode !== undefined) this.errorCode = errorCode;
   }
 }
 
-async function bodyError(res: Response): Promise<string | undefined> {
+async function bodyError(res: Response): Promise<{ msg?: string; code?: string }> {
   try {
     const j = await res.json();
-    return typeof j?.error === 'string' ? j.error : undefined;
+    return { msg: typeof j?.error === 'string' ? j.error : undefined, code: typeof j?.code === 'string' ? j.code : undefined };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -186,11 +191,11 @@ export async function throwApiError(res: Response): Promise<never> {
   const vrAuth = res.headers.get('X-Vr-Auth');
   if (vrAuth === 'removed') throw new ApiError('removed', res.status);
   if (vrAuth === 'invalid') throw new ApiError('invalid', res.status);
-  const msg = await bodyError(res);
-  if (res.status === 404) throw new ApiError('not-found', 404, msg);
-  if (res.status === 429) throw new ApiError('rate-limited', 429, msg);
-  if (res.status === 403 && msg === 'banned') throw new ApiError('banned', 403, msg);
-  throw new ApiError('http', res.status, msg);
+  const { msg, code } = await bodyError(res);
+  if (res.status === 404) throw new ApiError('not-found', 404, msg, code);
+  if (res.status === 429) throw new ApiError('rate-limited', 429, msg, code);
+  if (res.status === 403 && msg === 'banned') throw new ApiError('banned', 403, msg, code);
+  throw new ApiError('http', res.status, msg, code);
 }
 
 // Home screen (index.tsx) — the UNFILTERED recent page + carousel. No params =

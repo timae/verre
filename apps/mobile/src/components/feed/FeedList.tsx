@@ -340,6 +340,8 @@ export function FeedList({
           onToggleLike={(next) => toggleLike(id, next)}
           onEdit={isOwner ? () => router.push(feedHref(tab, 'edit', { id: String(id), user: userParam })) : undefined}
           onDelete={isOwner ? () => confirmDeleteCheckin(id, item.checkin.wineName) : undefined}
+          // Someone you follow (08-feed § 5a): their check-in as yours.
+          onHadItToo={!isOwner && item.checkin.viewerFollowsAuthor ? () => router.push(feedHref(tab, 'had-it-too', { id: String(id), user: userParam })) : undefined}
         />
       );
     },

@@ -138,10 +138,13 @@ export function tabHomeHref(tab: SessionTab): Href {
 //     (lists plan): like 'people', their own route on a post's stack.
 //   • 'palate' (someone's or yours) / 'status' (yours, no id) — the status
 //     line's placeholder pages (2026-11-14): likewise.
-//   `source: 'item'` (post / edit) = opened from a tile list: those screens
-//   read ONLY that post's item query (lib/useFeedPost.ts), and the edit's
-//   "post is gone" exit is a plain pop back to the list (closePost).
-type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile' | 'people' | 'palate' | 'status' | ListSub;
+//   • 'had-it-too' — someone's check-in copied as yours (08-feed § 5a): like
+//     'edit', a plain push on the tab stack (`had-it-too/[id]`), or on the
+//     opened post's stack from inside it (`[id]/had-it-too/[postId]`).
+//   `source: 'item'` (post / edit / had-it-too) = opened from a tile list:
+//   those screens read ONLY that post's item query (lib/useFeedPost.ts), and
+//   the edit's "post is gone" exit is a plain pop back to the list (closePost).
+type FeedSub = 'post' | 'edit' | 'edit/details' | 'had-it-too' | 'profile' | 'people' | 'palate' | 'status' | ListSub;
 type ListSub = 'impressions' | 'moments' | 'cravings';
 
 export function feedHref(
@@ -192,6 +195,15 @@ export function feedHref(
       } else {
         pathname = `/(tabs)/${t}/edit/[id]`;
         out = { id: params.id, wine: params.wine, user: params.user, source: params.source };
+      }
+      break;
+    case 'had-it-too':
+      if (inPost) {
+        pathname = `/(tabs)/${t}/[id]/had-it-too/[postId]`;
+        out = { id: mount.post, postId: params.id, user: params.user, source: params.source };
+      } else {
+        pathname = `/(tabs)/${t}/had-it-too/[id]`;
+        out = { id: params.id, user: params.user, source: params.source };
       }
       break;
     case 'edit/details':

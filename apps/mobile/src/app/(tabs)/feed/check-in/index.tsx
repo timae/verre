@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
+import { WhereYouHadIt } from '@/components/feed/WhereYouHadIt';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { Disclosure, MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
@@ -97,7 +98,6 @@ function CheckinForm({ initial }: { initial: NonNullable<ReturnType<typeof getFl
   const [moreOpen, setMoreOpen] = useState(!!(seed?.vinification || seed?.description || seed?.purchaseUrl));
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<ScrollViewInstance>(null);
-  const cityRef = useRef<TextInputInstance>(null);
   const purchaseRef = useRef<TextInputInstance>(null);
 
   // Back from the rate stage after a post that MAY have landed: the choice is
@@ -162,18 +162,8 @@ function CheckinForm({ initial }: { initial: NonNullable<ReturnType<typeof getFl
           <VText variant="small" style={{ marginTop: -8, marginBottom: 8, color: theme.critical }}>{photoError}</VText>
         ) : null}
 
-        {/* Where — the VENUE (where you had it), always visible, not folded
-            (Simon: "more prominent" — the place is half the memory of a
-            check-in). Distinct from the wine's ORIGIN (the catalogue's). Feed
-            renders it as "venue · city". */}
-        <View style={{ flexDirection: 'row', gap: 12, marginBottom: 4 }}>
-          <View style={{ flex: 1.4 }}>
-            <TextField label="Where You Had It" placeholder="Bar, restaurant, home…" value={venue} onChangeText={setVenue} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => cityRef.current?.focus()} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <TextField ref={cityRef} label="City" placeholder="City" value={city} onChangeText={setCity} returnKeyType="done" />
-          </View>
-        </View>
+        {/* Where: the venue, always visible (components/feed/WhereYouHadIt). */}
+        <WhereYouHadIt venue={venue} city={city} onVenue={setVenue} onCity={setCity} />
 
         {/* .disclosure Add More Details: the bottle's own fields (process ·
             description · purchase link); its origin and grapes are the

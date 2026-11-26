@@ -95,6 +95,9 @@ export default function TabsLayout() {
     // both check-in create stages (sticky Rate It / Check In bars), on Feed
     // and on You (your Impressions' "+ Check In", lists plan D8): suffix-based.
     /\/check-in(\/rate|\/wine)?\/?$/.test(pathname) ||
+    // Had It Too (its sticky Post bar), on every tab stack and every opened
+    // post's stack: suffix-based.
+    /\/had-it-too\/[^/]+\/?$/.test(pathname) ||
     pathname.includes('/feed/edit') || // feed-post edit screens (sticky Save/Done bars)
     pathname.includes('/you/edit') || // the same edit screens mounted on the You stack
     pathname.includes('/moments/edit/') || // … and on the Moments stack (never /moments/edit-…)
