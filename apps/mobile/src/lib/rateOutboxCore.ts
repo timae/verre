@@ -349,9 +349,16 @@ export function createRateOutbox(deps: OutboxDeps) {
         const wasFailed = s.writeFailed;
         s.writeFailed = false;
         settleWaiters(s, null);
-        if (wasFailed) notify();
-        if (s.diskV < s.memV) flush(s);
-        else pump();
+        if (s.diskV < s.memV) {
+          if (wasFailed) notify();
+          return flush(s);
+        }
+        // The current entry is DURABLE: publish it (Codex recheck 11: a page
+        // reads "Saved on this phone" through its own selection), after the
+        // runner had its turn, so an online first attempt is already marked
+        // in flight and holds the local message back.
+        pump();
+        notify();
       },
       (err) => {
         s.writing = false;

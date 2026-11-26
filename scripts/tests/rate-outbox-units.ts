@@ -2099,6 +2099,51 @@ async function main() {
     check('r11-3: another bottle\'s poll keeps this page\'s selection; its own changes it', s2 === s1 && s3 !== s1 && s3.draft.score === 5 && s1.draft.score === 3);
   }
 
+  // ── Codex recheck 11: durable writes are published ───────────────────────
+  const watch = (e: { owner: { subscribe(fn: () => void): () => void } }, c: { selection(): { savedState: unknown } }) => {
+    const seen: unknown[] = [];
+    e.owner.subscribe(() => seen.push(c.selection().savedState));
+    return seen;
+  };
+  {
+    // r12-1: an offline edit → once on disk the page is notified: "Saved on this phone".
+    const e = env({ online: false });
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    const seen = watch(e, c);
+    c.setScore(4);
+    await e.advance(1000);
+    check('r12-1: an offline edit publishes `local` once durable', seen[seen.length - 1] === 'local' && c.selection().savedState === 'local');
+  }
+  {
+    // r12-1: an offline Clear → "Cleared on this phone", notified.
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    const seen = watch(e, c);
+    await c.clearRating(c.clearBaseline());
+    await e.advance(10);
+    check('r12-1: an offline Clear publishes `cleared-local` once durable', seen[seen.length - 1] === 'cleared-local' && c.selection().savedState === 'cleared-local');
+  }
+  {
+    // r12-1: online, the first attempt on the wire → never a local flash.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    const seen = watch(e, c);
+    e.queue('hang');
+    c.setScore(4);
+    await e.advance(1000);
+    const during = [...seen];
+    await e.release();
+    await e.advance(10);
+    check('r12-1: an online first attempt shows no "Saved on this phone" while it is out, then "Saved"', during.length > 0 && !seen.includes('local') && c.selection().savedState === 'saved');
+  }
+
   // ── the 90-day clean-up ──────────────────────────────────────────────────
   {
     const disk = new Map<string, string>();
