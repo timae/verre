@@ -21,10 +21,11 @@
 
 import { fillFlavourZeros, gateAromaSelections, validateScore, type AxisKind } from '@verre/core';
 import type { RatingMeta } from './api/rateTypes';
-import { FIELDS, SAVE_ERROR_TEXT, type Field, type FieldValues, type RateOutbox, type Snapshot } from './rateOutboxCore';
+import { FIELDS, SAVE_ERROR_TEXT, type EntryMark, type Field, type FieldValues, type RateOutbox, type Snapshot } from './rateOutboxCore';
 
 // The baseline a Clear confirm was opened on (`clearBaseline()` → `clearRating(token)`).
-export type ClearToken = { viewer: string; code: string; wineId: string; base: Snapshot; foreign: number };
+// `mark`: the entry pending when it was taken (its ack may advance the base).
+export type ClearToken = { viewer: string; code: string; wineId: string; base: Snapshot; foreign: number; mark?: EntryMark | null };
 
 export const SETTLE_MS = 1000;
 export type SavedState = 'saved' | 'local' | 'cleared-local' | 'error' | null;
@@ -92,10 +93,12 @@ export function createAutosaveController(
   // 🔒 The baseline (snapshot) and the offline provenance, LATCHED at the
   // first accepted edit of a clean draft (Codex P1): the edit is based on what
   // the page showed THEN, not on whatever a poll brought before the ~1 s stage.
-  let latch: { base: Snapshot; offline: boolean } | null = null;
+  let latch: { base: Snapshot; offline: boolean; mark: EntryMark | null } | null = null;
   // Per field, the snapshot value when it was FIRST touched (Codex: the clean
   // value seen then decides "unchanged", never the latch's older snapshot).
-  let seeds = new Map<Field, { snap: boolean; value: unknown }>();
+  // `pred`: the same field's revision pending then; acknowledged during the
+  // debounce, ITS value is the comparison (Codex recheck 2: 4 back to 3).
+  let seeds = new Map<Field, { snap: boolean; value: unknown; pred: { entry: EntryMark; rev: number } | null }>();
   let noteFocused = false;
   let noteRaw: string | null = null; // the note's raw text while focused
   let timer: unknown = null;
@@ -156,7 +159,9 @@ export function createAutosaveController(
       if (f === 'score' && validateScore(v).error) continue; // never a 400 for the slider's rounding
       const value = normalizeField(f, v as never, kind);
       const sd = seeds.get(f);
-      const seed = sd?.snap ? normalizeField(f, sd.value as never, kind) : undefined;
+      let seed = sd?.snap ? normalizeField(f, sd.value as never, kind) : undefined;
+      const acked = sd?.pred ? owner.fieldAck(viewer, code, wineId, f, sd.pred) : null;
+      if (acked) seed = normalizeField(f, acked.value as never, kind);
       owner.stage(viewer, code, wineId, f, value, seed, latch ?? undefined);
     }
     pending = {};
@@ -184,11 +189,12 @@ export function createAutosaveController(
     if (relative && snapshot() === null) return;
     // The draft's first edit latches the baseline; EVERY edit made offline
     // marks it (Codex: the conflict rule follows where the edit was made).
-    if (Object.keys(pending).length === 0 || !latch) latch = { base: snapshot(), offline: false };
+    if (Object.keys(pending).length === 0 || !latch) latch = { base: snapshot(), offline: false, mark: owner.pendingMark(viewer, code, wineId) };
     if (!owner.online()) latch.offline = true;
     if (!seeds.has(field)) {
       const snap = snapshot();
-      seeds.set(field, snap ? { snap: true, value: snapshotField(field, snap.rating) } : { snap: false, value: undefined });
+      const pred = owner.fieldMark(viewer, code, wineId, field);
+      seeds.set(field, snap ? { snap: true, value: snapshotField(field, snap.rating), pred } : { snap: false, value: undefined, pred });
     }
     pending = { ...pending, [field]: value };
     if (field === 'notes' && noteFocused) noteRaw = value as string;
@@ -262,7 +268,7 @@ export function createAutosaveController(
     // The baseline the page DISPLAYS, taken when the Clear confirm OPENS (a
     // poll may move the snapshot while the alert is up).
     clearBaseline(): ClearToken {
-      return { viewer, code, wineId, base: snapshot(), foreign: owner.foreignRebases(viewer, code, wineId) };
+      return { viewer, code, wineId, base: snapshot(), foreign: owner.foreignRebases(viewer, code, wineId), mark: owner.pendingMark(viewer, code, wineId) };
     },
     // Clear My Rating, after the in-place confirm: on the token's baseline when
     // there is no entry yet; the unsettled fields go into the restore snapshot
@@ -280,7 +286,7 @@ export function createAutosaveController(
         return false;
       }
       const extra = unsettled();
-      if (!owner.clear(viewer, code, wineId, { base, extra, foreign: token?.foreign })) {
+      if (!owner.clear(viewer, code, wineId, { base, extra, foreign: token?.foreign, mark: token ? token.mark : undefined })) {
         if (Object.keys(pending).length) arm(); // refused: the unsettled edits still settle
         emit();
         return false;
@@ -294,13 +300,15 @@ export function createAutosaveController(
     },
     // ONLY for a confirmed terminal outcome (the bottle gone from a present
     // line-up, a confirmed removal, a successful Delete Impression).
-    discardPending() {
+    // A REQUEST: the page's work goes now, the stored entry once a current,
+    // confirmed read agrees; `confirmed` (Delete Impression's success) = now.
+    discardPending(opts?: { confirmed?: boolean }) {
       cancelTimer();
       pending = {};
       latch = null;
       seeds = new Map();
       noteRaw = null;
-      owner.discard(viewer, code, wineId);
+      owner.discard(viewer, code, wineId, opts);
       emit();
     },
 

@@ -80,13 +80,17 @@ export type Snapshot = { rating: RatingMeta | null } | null;
 
 export type Stamp = { epoch: number; gen: number };
 export type ReadOutcome =
-  | { kind: 'ok'; ratings: RatingsView | null }
+  // `wineIds`: the line-up's bottle ids; null / absent = the section degraded.
+  | { kind: 'ok'; ratings: RatingsView | null; wineIds?: string[] | null }
   | { kind: 'gone' }
   | { kind: 'removed' }
   | { kind: 'invalid' }
   | { kind: 'update-required' }
   | { kind: 'retry' };
 export type SessionCheck = 'same' | 'other' | 'none' | 'unknown';
+// Opaque: the entry pending when a baseline / a field was captured (its object
+// identity: an entry is mutated in place through its acks, a new one is new).
+export type EntryMark = object;
 
 export interface OutboxStorage {
   getAllKeys(): Promise<readonly string[]>;
@@ -266,8 +270,17 @@ export function createRateOutbox(deps: OutboxDeps) {
     const mp = moment503.get(code);
     if (token !== null && mp && mp.probe === token) mp.probe = null;
   };
-  // The version of this phone's last OWN acknowledged save per key (Fable).
-  const ownAcked = new Map<string, { v: number }>();
+  // This phone's last OWN acknowledged save per key (Fable): its version and
+  // the entry it came from. A captured baseline advances ONLY through an ack
+  // of the entry that was pending when it was captured (Codex recheck 2).
+  const ownAcked = new Map<string, { v: number; entry: Entry }>();
+  // Per key and field, the last acknowledged revision + value and its entry.
+  const fieldAcks = new Map<string, Partial<Record<Field, { entry: Entry; rev: number; value: unknown }>>>();
+  // The outbox's own confirmed /state read per viewer × moment, a snapshot
+  // source until a newer raw section arrives (`raw` = rawGen when stored).
+  const readSections = new Map<string, { ratings: RatingsView; gen: number; raw: number }>();
+  // discard() REQUESTS, answered by a current, confirmed read of the moment.
+  const discardAsks = new Map<string, { code: string; wineId: string }>();
   // Foreign rebases per key (an entry's base moved by another writer's save).
   const foreign = new Map<string, number>();
   const reads = new Map<string, { inFlight: boolean; nextAt: number; attempts: number }>();
@@ -441,8 +454,13 @@ export function createRateOutbox(deps: OutboxDeps) {
     const rem = remembered.get(keyOf(v, code, wineId));
     const gen = rawGen.get(vcOf(v, code)) ?? 0;
     if (rem && rem.gen === gen) return { rating: rem.rating };
+    const current = deps.stamp().gen;
+    const own = readSections.get(vcOf(v, code));
     const cached = deps.readRatings(v, code);
-    const section = cached && cached.gen === deps.stamp().gen && ownerOk() ? cached.ratings : undefined;
+    // The outbox's own read while it is the newest raw section, else the cache.
+    const section = own && own.raw === gen && own.gen === current && ownerOk()
+      ? own.ratings
+      : cached && cached.gen === current && ownerOk() ? cached.ratings : undefined;
     if (section) return { rating: section[`u:${v}`]?.ratings[wineId] ?? null };
     if (rem) return { rating: rem.rating };
     return null;
@@ -453,12 +471,14 @@ export function createRateOutbox(deps: OutboxDeps) {
   const baseFrom = (snap: Snapshot): [number | 'unknown', boolean | 'unknown'] =>
     snap === null ? ['unknown', 'unknown'] : snap.rating ? [snap.rating.v ?? 0, true] : [0, false];
 
-  const newEntry = (v: string, code: string, wineId: string, base?: Snapshot): Entry => {
+  const newEntry = (v: string, code: string, wineId: string, base?: Snapshot, mark?: EntryMark | null): Entry => {
     let [baseVersion, baseHadRating] = baseFrom(base !== undefined ? base : snapshotOf(v, code, wineId));
-    // A latch or Clear token taken before this phone's OWN later save: that
-    // save is what the page now shows (Fable): it is the base.
+    // A latch or Clear token taken while an entry was pending, which has been
+    // acknowledged since: that OWN save is what the page shows, it is the
+    // base (Fable). Any other baseline stays (a confirmed empty one keeps
+    // `0, false`: a re-rate after a web Reset, Codex recheck 2).
     const own = ownAcked.get(keyOf(v, code, wineId));
-    if (own && typeof baseVersion === 'number' && own.v > baseVersion) [baseVersion, baseHadRating] = [own.v, true];
+    if (mark && own && own.entry === mark && typeof baseVersion === 'number' && own.v > baseVersion) [baseVersion, baseHadRating] = [own.v, true];
     const t = deps.now();
     return { viewer: v, code, wineId, fields: {}, ackRev: {}, parked: {}, nextRev: 0, baseVersion, baseHadRating, waited: !online, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t, updatedAt: t, editedAt: t };
   };
@@ -508,6 +528,23 @@ export function createRateOutbox(deps: OutboxDeps) {
       return true;
     }
     return false;
+  };
+
+  // Removed DURABLY. After a failed launch read the stored value is still
+  // unread: the slot is marked so the read doesn't bring it back.
+  const discardNow = (key: string) => {
+    discardAsks.delete(key);
+    const s = slots.get(key);
+    if (hydrationFailed && (!s || !s.verified)) {
+      const d = s ?? slotFor(key);
+      d.discarded = true;
+      d.mem = null;
+      d.incarnation++;
+      commit(d);
+      return;
+    }
+    if (s?.mem) dropSilently(s);
+    notify();
   };
 
   // ── the runner ───────────────────────────────────────────────────────────
@@ -644,6 +681,7 @@ export function createRateOutbox(deps: OutboxDeps) {
       const token = mp ? (mp.probe = ++probeSeq) : null;
       void dispatch(s, op, token);
     }
+    for (const d of discardAsks.values()) needRead.add(d.code);
     for (const code of needRead) void readFor(code);
   };
 
@@ -717,7 +755,13 @@ export function createRateOutbox(deps: OutboxDeps) {
     const op = e.unresolvedOp!;
     delete e.unresolvedOp;
     const canonical = rating ? { ...rating, v: version } : null;
-    if (canonical) ownAcked.set(s.key, { v: version });
+    if (canonical) ownAcked.set(s.key, { v: version, entry: e });
+    const fa = fieldAcks.get(s.key) ?? {};
+    for (const f of FIELDS) {
+      const r = op.revs[f];
+      if (r !== undefined) (fa as Record<string, unknown>)[f] = { entry: e, rev: r, value: (op.body as Record<string, unknown>)[f] };
+    }
+    fieldAcks.set(s.key, fa);
     remember(e.viewer, e.code, e.wineId, canonical);
     deps.patchCache(e.viewer, e.code, e.wineId, canonical);
     ack(e, op.revs);
@@ -736,6 +780,7 @@ export function createRateOutbox(deps: OutboxDeps) {
   const clearSucceeded = (s: Slot) => {
     const e = s.mem!;
     ownAcked.delete(s.key);
+    fieldAcks.delete(s.key);
     remember(e.viewer, e.code, e.wineId, null);
     deps.patchCache(e.viewer, e.code, e.wineId, null);
     clearGens.set(s.key, (clearGens.get(s.key) ?? 0) + 1);
@@ -960,9 +1005,20 @@ export function createRateOutbox(deps: OutboxDeps) {
     // whole (no base, no terminal outcome, no discard); read again.
     if (!deps.stampCurrent(stamp) || !ownerOk()) return pump();
     const unknownSlots = [...slots.values()].filter((s) => s.mem && s.mem.viewer === v && s.mem.code === code && s.mem.baseVersion === 'unknown');
+    // A discard request is answered by this current, confirmed read: the
+    // bottle gone from a PRESENT line-up or the caller removed deletes; any
+    // other answer keeps the entry (a failed read asks again).
+    if (out.kind !== 'retry') {
+      for (const [key, d] of [...discardAsks]) {
+        if (d.code !== code) continue;
+        discardAsks.delete(key);
+        if (out.kind === 'removed' || (out.kind === 'ok' && out.wineIds && !out.wineIds.includes(d.wineId))) discardNow(key);
+      }
+    }
     if (out.kind === 'ok' && out.ratings) {
       r.attempts = 0;
       reads.delete(code);
+      readSections.set(vcOf(v, code), { ratings: out.ratings, gen: stamp.gen, raw: (rawGen.get(vcOf(v, code)) ?? 0) + 1 });
       onRawSection(v, code, out.ratings, stamp.gen);
       return;
     }
@@ -1038,6 +1094,9 @@ export function createRateOutbox(deps: OutboxDeps) {
     ownerMoved = 0;
     ownerNextAt = 0;
     ownAcked.clear();
+    fieldAcks.clear();
+    readSections.clear();
+    discardAsks.clear();
     foreign.clear();
     if (ownerRetry) deps.clearTimer(ownerRetry.timer);
     ownerRetry = null;
@@ -1137,6 +1196,19 @@ export function createRateOutbox(deps: OutboxDeps) {
     viewer: () => viewer,
     online: () => online,
     foreignRebases: (v: string, code: string, wineId: string) => foreign.get(keyOf(v, code, wineId)) ?? 0,
+    // The entry pending now (a baseline captured now may advance only through its ack).
+    pendingMark: (v: string, code: string, wineId: string): EntryMark | null => slots.get(keyOf(v, code, wineId))?.mem ?? null,
+    // The same field's revision in the pending entry (a first touch's predecessor).
+    fieldMark(v: string, code: string, wineId: string, field: Field): { entry: EntryMark; rev: number } | null {
+      const e = slots.get(keyOf(v, code, wineId))?.mem;
+      const f = e?.fields[field];
+      return e && f ? { entry: e, rev: f.rev } : null;
+    },
+    // That predecessor's acknowledged value, once it is acknowledged.
+    fieldAck(v: string, code: string, wineId: string, field: Field, pred: { entry: EntryMark; rev: number }): { value: unknown } | null {
+      const a = fieldAcks.get(keyOf(v, code, wineId))?.[field];
+      return a && a.entry === pred.entry && a.rev >= pred.rev ? { value: a.value } : null;
+    },
     ready: (v: string) => v === viewer && ready,
     setOnline(next: boolean) {
       if (next === online) return;
@@ -1203,7 +1275,7 @@ export function createRateOutbox(deps: OutboxDeps) {
     // `latched`: the baseline (snapshot) and offline provenance taken at the
     // FIRST accepted edit of a clean draft (Codex P1): an entry created now
     // takes ITS base, never the snapshot at staging time.
-    stage<F extends Field>(v: string, code: string, wineId: string, field: F, value: FieldValues[F], seed: FieldValues[F] | undefined, latched?: { base: Snapshot; offline: boolean }): boolean {
+    stage<F extends Field>(v: string, code: string, wineId: string, field: F, value: FieldValues[F], seed: FieldValues[F] | undefined, latched?: { base: Snapshot; offline: boolean; mark?: EntryMark | null }): boolean {
       if (v !== viewer || !ready) return false;
       const s = slotFor(keyOf(v, code, wineId));
       if (s.mem?.clear) return false;
@@ -1219,7 +1291,7 @@ export function createRateOutbox(deps: OutboxDeps) {
       }
       const prior = s.mem?.fields[field];
       if (prior && sameField(field, prior.value, value)) return true;
-      if (!s.mem) s.mem = newEntry(v, code, wineId, latched?.base);
+      if (!s.mem) s.mem = newEntry(v, code, wineId, latched?.base, latched?.mark);
       const e = s.mem;
       if (latched?.offline) e.waited = true;
       (e.fields as Record<string, unknown>)[field] = { value, rev: ++e.nextRev };
@@ -1248,7 +1320,7 @@ export function createRateOutbox(deps: OutboxDeps) {
     // `opts.foreign`: `foreignRebases()` when the confirm opened. An entry
     // rebased onto another writer's save since then → no Clear: the page shows
     // the newer rating and asks again (it may only delete what was seen).
-    clear(v: string, code: string, wineId: string, opts: { base?: Snapshot; extra?: Partial<FieldValues>; foreign?: number } = {}): boolean {
+    clear(v: string, code: string, wineId: string, opts: { base?: Snapshot; extra?: Partial<FieldValues>; foreign?: number; mark?: EntryMark | null } = {}): boolean {
       if (v !== viewer || !ready) return false;
       const s = slotFor(keyOf(v, code, wineId));
       if (s.mem?.clear) return true;
@@ -1257,7 +1329,7 @@ export function createRateOutbox(deps: OutboxDeps) {
         notify();
         return false;
       }
-      if (!s.mem) s.mem = newEntry(v, code, wineId, opts.base);
+      if (!s.mem) s.mem = newEntry(v, code, wineId, opts.base, opts.mark);
       const e = s.mem;
       const restore: Partial<FieldValues> = {};
       for (const f of FIELDS) if (e.fields[f]) (restore as Record<string, unknown>)[f] = e.fields[f]!.value;
@@ -1273,29 +1345,21 @@ export function createRateOutbox(deps: OutboxDeps) {
       pump();
       return true;
     },
-    // A confirmed terminal outcome (the bottle gone from a present line-up, a
-    // confirmed removal, a successful Delete Impression): the entry is removed
-    // DURABLY, its in-flight answer ignored, its alerts suppressed.
-    discard(v: string, code: string, wineId: string) {
+    // A terminal outcome the page saw (the bottle gone from its line-up, a
+    // removal): a REQUEST (Codex recheck 2): the page's own work is let go at
+    // once, the entry is removed only once a current, confirmed read of the
+    // moment agrees. `confirmed` (a successful Delete Impression, its own
+    // answer): removed DURABLY at once, its in-flight answer ignored.
+    discard(v: string, code: string, wineId: string, opts: { confirmed?: boolean } = {}) {
       if (v !== viewer) return;
       const key = keyOf(v, code, wineId);
-      const s = slots.get(key);
       const i = pendingAlerts.indexOf(key);
       if (i >= 0) pendingAlerts.splice(i, 1);
       errors.delete(key);
       clearAsks.delete(key);
-      // After a failed launch read the stored value is still unread: mark the
-      // slot so the read doesn't bring it back, and write the removal.
-      if (hydrationFailed && (!s || !s.verified)) {
-        const d = s ?? slotFor(key);
-        d.discarded = true;
-        d.mem = null;
-        d.incarnation++;
-        commit(d);
-        return;
-      }
-      if (!s?.mem) return;
-      dropSilently(s);
+      if (opts.confirmed) return discardNow(key);
+      discardAsks.set(key, { code, wineId });
+      pump();
     },
     // A page of that wine is VISIBLE (mounted, active, focused; the app's
     // foreground is the owner's own).

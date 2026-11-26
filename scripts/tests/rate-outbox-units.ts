@@ -654,11 +654,11 @@ async function main() {
     c.setScore(4);
     await c.drain();
     check('stored before discard', e.disk.size === 1);
-    c.discardPending();
+    c.discardPending({ confirmed: true }); // Delete Impression's success
     await e.flush();
     await e.setOnline(true);
     await e.advance(10);
-    check('discardPending() → the stored entry is gone, nothing sent', e.disk.size === 0 && e.sent.length === 0);
+    check('discardPending({ confirmed }) → the stored entry is gone at once, nothing sent', e.disk.size === 0 && e.sent.length === 0);
   }
 
   // ── the line-up overlay ──────────────────────────────────────────────────
@@ -1222,7 +1222,7 @@ async function main() {
     await e.start();
     await e.advance(1500);
     const d = e.ctl('w1');
-    d.discardPending();
+    d.discardPending({ confirmed: true });
     await e.advance(10);
     check('fx-4: a discard after a failed launch read is written, not undone by the key read', !disk.has(storageKey(ME, CODE, 'w1')));
     const c = e.ctl('w2');
@@ -1499,6 +1499,135 @@ async function main() {
     await e.advance(10);
     const clr = e.sent.find((x) => x.body.merge === undefined);
     check('r2-7: the Clear goes out on the own ack (v2) and deletes, no re-ask', clr?.body.baseVersion === 2 && e.server.row('w1').rating === null && !e.owner.takeClearAsk(ME, CODE, 'w1'));
+  }
+
+
+  // ── Codex recheck 2 ──────────────────────────────────────────────────────
+  {
+    // r3-1: saved on the phone, Reset on the web, the phone sees it empty,
+    // rated offline, reconnected → saved on `0, false` (never the old ack).
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // own ack v1
+    e.server.webReset('w1'); // v2, no rating
+    e.poll();
+    await e.setOnline(false);
+    c.setScore(3);
+    await e.advance(1000);
+    await e.setOnline(true);
+    await e.advance(10);
+    const merge = e.sent.find((x) => x.body.score === 3);
+    check('r3-1: a re-rate after an observed web Reset goes out on 0 and is saved', merge?.body.baseVersion === 0 && e.server.row('w1').rating?.score === 3);
+  }
+  {
+    // r3-2: a save 3 → 4 held, the shown 4 set back to 3, the first save
+    // acknowledged during the debounce → the 3 IS sent and stays shown.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('hang');
+    c.setScore(4);
+    await e.advance(1000);
+    c.setScore(3);
+    await e.release(); // v2 = 4
+    await e.advance(1000);
+    await e.advance(10);
+    const back = e.sent.find((x) => x.body.score === 3);
+    check('r3-2: the reversal is compared with the acknowledged 4 and saved on v2', back?.body.baseVersion === 2 && e.server.row('w1').rating?.score === 3 && c.draft().score === 3);
+  }
+  {
+    // r3-2: a predecessor that never went out keeps the cancellation.
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // staged, not sent (offline)
+    c.setScore(3);
+    await e.advance(1000);
+    await e.setOnline(true);
+    await e.advance(10);
+    check('r3-2: back to the server\'s value before it went out → nothing sent', e.sent.length === 0 && e.owner.entry(ME, CODE, 'w1') === null);
+  }
+  {
+    // r3-3: discardPending() is a REQUEST: a current, confirmed read that
+    // still lists the bottle keeps the entry, and it goes out.
+    const e = env({ online: false });
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await c.drain();
+    c.discardPending();
+    await e.flush();
+    const kept = e.disk.size === 1;
+    e.setRead(() => ({ kind: 'ok', ratings: e.server.section(), wineIds: ['w1', 'w2'] }));
+    await e.setOnline(true);
+    await e.advance(10);
+    check('r3-3: unverified (offline) and contrary (still listed) → the entry kept and saved', kept && e.reads.length === 1 && e.server.row('w1').rating?.score === 4);
+    e.setRead(null);
+  }
+  {
+    // r3-3: a confirmed read of a present line-up WITHOUT the bottle deletes.
+    const e = env({ online: false });
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await c.drain();
+    c.discardPending();
+    e.holdCookie(true); // the entry's own send waits at the cookie read
+    e.setRead(() => ({ kind: 'ok', ratings: e.server.section(), wineIds: ['w2'] }));
+    await e.setOnline(true);
+    await e.flush();
+    await e.releaseCookie();
+    await e.advance(10);
+    check('r3-3: confirmed gone → deleted, nothing sent', e.disk.size === 0 && e.sent.length === 0 && e.owner.entry(ME, CODE, 'w1') === null);
+    e.setRead(null);
+  }
+  {
+    // r3-3: a `removed` answered by a read sent before an auth change deletes
+    // nothing; the fresh read (still listed) keeps the entry.
+    const e = env({ online: false });
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await c.drain();
+    c.discardPending();
+    e.holdCookie(true);
+    e.holdReads(true);
+    let first = true;
+    e.setRead(() => (first ? ((first = false), { kind: 'removed' as const }) : { kind: 'ok' as const, ratings: e.server.section(), wineIds: ['w1'] }));
+    await e.setOnline(true);
+    await e.flush();
+    e.bumpGen();
+    e.owner.touch();
+    await e.flush();
+    await e.releaseReads();
+    await e.advance(10);
+    check('r3-3: an old read\'s `removed` deletes nothing', e.disk.size === 1 && e.reads.length === 2);
+    await e.releaseCookie();
+    e.setRead(null);
+  }
+  {
+    // r3-4: with the screen cache empty, the outbox's own confirmed read is
+    // the snapshot too: the editor shows the stored 3 and is baseline-ready.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    await e.start(); // no screen poll
+    const c = e.ctl('w1');
+    e.queue('hang');
+    c.setNotes('n');
+    await e.advance(1000); // base unknown → the outbox reads, then sends on v1
+    check('r3-4: the read\'s section reaches the snapshot', e.sent.length === 1 && e.sent[0].body.baseVersion === 1 && c.baselineReady() && c.draft().score === 3);
+    await e.release();
   }
 
   // ── the 90-day clean-up ──────────────────────────────────────────────────

@@ -73,7 +73,7 @@ export const rateOutbox = createRateOutbox({
   async readState(_viewer, code, stamp): Promise<ReadOutcome> {
     try {
       const data = await getSessionStateWithin(code, undefined, READ_DEADLINE_MS, (cookieSent) => cookieSent && !cookieWithheld() && stamp.epoch === viewerCacheEpoch() && stamp.gen === authGeneration());
-      return { kind: 'ok', ratings: data.ratings };
+      return { kind: 'ok', ratings: data.ratings, wineIds: data.wines ? data.wines.map((w) => w.id) : null };
     } catch (e) {
       if (e instanceof ApiError) {
         if (e.kind === 'not-found') return { kind: 'gone' };
