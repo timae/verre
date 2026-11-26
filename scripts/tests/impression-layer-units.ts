@@ -8,13 +8,22 @@
 // runs, and moves only once the edits are stored, exactly once and only if the
 // same page is still the active one; a storage failure leaves that wine active
 // and the pager at rest for a PAGE CHANGE, while a CLOSE still leaves (Back
-// always leaves). A cancelled gesture gives the guard back. A forced (confirmed
-// terminal) teardown captures nothing and keeps everything else out.
+// always leaves). A 'stay' and a cancelled gesture keep the guard until the row
+// is back at rest (`abandon`, Codex recheck 2026-11-26). A forced (confirmed
+// terminal) teardown captures nothing and keeps everything else out. Also: the
+// pull-down's sequencing (its guarded drain starts DURING the drag, once the
+// text capture is in) and the page's text capture (createInputCapture).
 //
 // Run: npx tsx scripts/tests/impression-layer-units.ts
 
 import { createTransitionGuard } from '../../apps/mobile/src/lib/impressionAutosaveCore'
-import { createLayerTransitions, neighbourId, type LayerDest } from '../../apps/mobile/src/lib/impressionLayerCore'
+import {
+  createInputCapture,
+  createLayerTransitions,
+  createPullClose,
+  neighbourId,
+  type LayerDest,
+} from '../../apps/mobile/src/lib/impressionLayerCore'
 
 let failures = 0
 function check(name: string, got: unknown, want: unknown) {
@@ -95,9 +104,14 @@ async function main() {
     h.failDrains()
     h.tx.begin(next)
     check('a page change: end(true) → stay', await h.tx.end(true), 'stay')
-    check('the guard is given back (editing on the same wine)', h.guard.held, false)
+    check('🔒 the guard stays held while the row returns to rest (Codex recheck)', h.guard.held, true)
+    check('returning', h.tx.returning, true)
+    check('nothing else begins while it returns', h.tx.begin(prev), false)
+    h.tx.abandon()
+    check('back at rest: abandon gives it back (editing on the same wine)', h.guard.held, false)
     h.tx.begin(prev)
     check('Previous / an edge swipe: stay too', await h.tx.end(true), 'stay')
+    h.tx.abandon()
     h.tx.begin(close)
     check('🔒 a close (the close button, Finish, Android Back, a pull-down) still goes: never trapped', await h.tx.end(true), 'go')
     check('the close keeps the guard while it folds away', h.guard.held, true)
@@ -119,7 +133,9 @@ async function main() {
     h.state.live = false // blurred (Next then Back) or unmounted meanwhile
     h.pending[0].resolve(true)
     check('not live → stay', await p, 'stay')
-    check('guard released', h.guard.held, false)
+    check('the guard waits for the return', h.guard.held, true)
+    h.tx.abandon()
+    check('guard released once back at rest', h.guard.held, false)
   }
   {
     const h = harness()
@@ -145,7 +161,11 @@ async function main() {
     const h = harness()
     h.tx.begin(prev)
     check('end(false) → stay at once', await h.tx.end(false), 'stay')
-    check('the guard is back', h.guard.held, false)
+    check('🔒 a cancelled swipe keeps the guard until the row is back at rest', h.guard.held, true)
+    check('nothing in flight meanwhile (no slide)', h.tx.current(), null)
+    check('another swipe or a button is refused meanwhile', h.tx.begin(next), false)
+    h.tx.abandon()
+    check('the guard is back once the return landed', h.guard.held, false)
     check('the outgoing page WAS captured (its edits stay in the entry)', h.state.drains, ['b'])
     check('a boundary swipe never begins, so nothing is captured', neighbourId(h.state.ids, 'a', -1), null)
     check('end without a begin is a no-op', await h.tx.end(true), 'stay')
@@ -208,7 +228,8 @@ async function main() {
     })
     check('begin still takes the guard', tx.begin(next), true)
     check('a page change → stay', await tx.end(true), 'stay')
-    check('guard back', guard.held, false)
+    tx.abandon()
+    check('guard back once at rest', guard.held, false)
     check('a close begins', tx.begin(close), true)
     check('a close → go (never trapped)', await tx.end(true), 'go')
   }
@@ -238,6 +259,145 @@ async function main() {
     const h = harness()
     h.tx.abandon()
     check('abandon with nothing in flight is a no-op', h.guard.held, false)
+  }
+
+  console.log('\n§10 the pull-down: its guarded drain starts DURING the drag, once the text capture is in (Codex recheck)')
+  const flush = () => new Promise<void>((r) => setTimeout(r, 0))
+  const pullHarness = () => {
+    const h = harness()
+    let capDone!: () => void
+    const capture = () => new Promise<void>((r) => { capDone = r })
+    const order: string[] = []
+    let closing = false
+    const pull = createPullClose({ tx: h.tx, capture, closing: () => closing, onBegun: () => order.push('begun') })
+    return { h, pull, order, finishCapture: () => capDone(), setClosing: (v: boolean) => { closing = v } }
+  }
+  {
+    const p = pullHarness()
+    check('activate: accepted', p.pull.activate(), true)
+    check('nothing drained while the text is captured', p.h.state.drains, [])
+    check('no guard yet (a field may still report)', p.h.guard.held, false)
+    p.finishCapture()
+    await flush()
+    check('🔒 capture in → the close begins DURING the drag: the guard', p.h.guard.held, true)
+    check('and the drain of the outgoing page', p.h.state.drains, ['b'])
+    check('the layer was told (it revokes a swipe)', p.order, ['begun'])
+    check('release → close once stored', await p.pull.release(), 'close')
+    check('the close keeps the guard while it folds', p.h.guard.held, true)
+    check('nothing for settled() to give back', p.pull.held, false)
+  }
+  {
+    const p = pullHarness()
+    p.pull.activate()
+    const out = p.pull.release() // a quick pull: released before the capture is in
+    await flush()
+    check('a release before the capture waits: no drain yet', p.h.state.drains, [])
+    p.finishCapture()
+    check('then begins and closes', await out, 'close')
+    check('drained once', p.h.state.drains, ['b'])
+  }
+  {
+    const p = pullHarness()
+    p.pull.activate()
+    p.finishCapture()
+    await flush()
+    p.pull.cancel()
+    check('🔒 a cancel short of the line KEEPS the guard while it springs back', p.h.guard.held, true)
+    check('nothing else begins meanwhile', p.h.tx.begin(next), false)
+    check('a new pull is denied meanwhile', p.pull.activate(), false)
+    p.pull.settled()
+    check('settled (back open): the guard goes back', p.h.guard.held, false)
+    check('a new pull may start', p.pull.activate(), true)
+  }
+  {
+    const p = pullHarness()
+    p.pull.activate()
+    p.pull.cancel()
+    p.finishCapture()
+    await flush()
+    check('cancelled before the capture was in: never begins', p.h.guard.held, false)
+    check('no drain', p.h.state.drains, [])
+    p.pull.settled()
+    check('settled is a no-op then', p.h.guard.held, false)
+  }
+  {
+    const p = pullHarness()
+    p.h.tx.begin(next) // a slide / a drain in flight
+    check('denied while another transition holds the guard', p.pull.activate(), false)
+  }
+  {
+    const p = pullHarness()
+    p.h.manual()
+    p.pull.activate()
+    p.finishCapture()
+    await flush()
+    p.h.state.live = false // blurred mid-pull
+    const out = p.pull.release()
+    p.h.pending[0].resolve(true)
+    check('no longer live at the release → back open', await out, 'open')
+    check('the guard waits for the spring back', p.h.guard.held, true)
+    p.pull.settled()
+    check('then goes back', p.h.guard.held, false)
+  }
+  {
+    const p = pullHarness()
+    p.pull.activate()
+    p.finishCapture()
+    await flush()
+    p.h.tx.force() // the bottle gone mid-pull
+    p.setClosing(true)
+    check('a forced close took over: the release does nothing', await p.pull.release(), 'none')
+    p.pull.settled()
+    check('and settled() never releases the forced layer', p.h.guard.held, true)
+  }
+  {
+    const p = pullHarness()
+    p.h.failDrains()
+    p.pull.activate()
+    p.finishCapture()
+    await flush()
+    check('a storage failure still closes (never trapped)', await p.pull.release(), 'close')
+  }
+
+  console.log('\n§11 the page\'s text capture: every departure joins ONE capture that waits for the fields\' native end (Codex recheck)')
+  {
+    let fire: (() => void) | null = null
+    const cap = createInputCapture({ beltMs: 300, setTimer: (fn) => { fire = fn; return 1 }, clearTimer: () => { fire = null } })
+    let settled = false
+    check('no field editing: resolves at once', await cap.capture().then(() => 'done'), 'done')
+    cap.focus('note')
+    // The root dismissed the keyboard on touch-down: React Native's focus
+    // record is already empty, but the note's blur has not reached JS yet.
+    const a = cap.capture().then(() => { settled = true })
+    const b = cap.capture()
+    check('🔒 a second departure JOINS the capture in flight', a !== undefined && b === cap.capture(), true)
+    await flush()
+    check('waits while the note has not reported its end', settled, false)
+    cap.done('note')
+    await a
+    check('the note\'s blur / end-editing resolves it', settled, true)
+    check('the belt was cleared', fire, null)
+  }
+  {
+    let fire: (() => void) | null = null
+    const cap = createInputCapture({ beltMs: 300, setTimer: (fn) => { fire = fn; return 1 }, clearTimer: () => { fire = null } })
+    cap.focus('score')
+    cap.focus('note')
+    let settled = false
+    const a = cap.capture().then(() => { settled = true })
+    cap.done('score')
+    await flush()
+    check('two fields: waits for both', settled, false)
+    cap.done('note')
+    await a
+    check('both ended → resolved', settled, true)
+    cap.focus('score')
+    let late = false
+    const c = cap.capture().then(() => { late = true })
+    fire!()
+    await c
+    check('a field that never reports: the bounded belt resolves it', late, true)
+    check('and it is forgotten (the next capture does not wait on it)', cap.editing, false)
   }
 
   if (failures) {

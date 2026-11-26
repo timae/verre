@@ -19,8 +19,10 @@ import { usePullDownClose, type LayerMotion } from '@/components/moments/impress
 import { ApiError, deleteWine, hideWine, revealWine, setBookmark, type SessionState, type WireWine } from '@/lib/api/sessions';
 import { blockLook } from '@/lib/blockLook';
 import { errorText } from '@/lib/errorCopy';
+import { FieldCaptureContext } from '@/lib/fieldCapture';
 import { markProfileHeaderStale } from '@/lib/feedCache';
 import { type SavedState, type TransitionGuard } from '@/lib/impressionAutosaveCore';
+import { CAPTURE_BELT_MS, createInputCapture } from '@/lib/impressionLayerCore';
 import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, usePhoneTokens } from '@/lib/layout';
 import { useMeId } from '@/lib/meId';
 import { sessionHref, useSessionTab } from '@/lib/sessionStack';
@@ -33,7 +35,9 @@ const GUTTER = 20; // 02e vbody runs 20px gutters (vs the line-up's 22) — deli
 const FOOT_BREATHING = 16;
 
 // What one page hands the layer: its departure capture.
-export type PageHandle = { drain: () => Promise<boolean> };
+// `capture`: resolves once the page's text fields finished their native edit
+// (lib/impressionLayerCore.ts `createInputCapture`); `drain`: the outbox capture.
+export type PageHandle = { capture: () => Promise<void>; drain: () => Promise<boolean> };
 
 // The layer's side of a page (components/moments/ImpressionLayer.tsx): the ONE
 // transition guard, the shared presentation values the pull-down drives, and
@@ -128,9 +132,16 @@ export const ImpressionPage = memo(function ImpressionPage({
   const autosaveRef = useRef(autosave);
   autosaveRef.current = autosave;
   const { draft } = autosave;
+  // The page's text fields report their edits here (FieldCaptureContext), so a
+  // departure waits for the last keystrokes and the end-editing commit
+  // (Codex recheck 2026-11-26).
+  const inputCapture = useMemo(() => createInputCapture({ beltMs: CAPTURE_BELT_MS }), []);
   // The layer captures the ACTIVE page through this (its departures).
   const { register } = controls;
-  useEffect(() => register(wineId, { drain: () => autosaveRef.current.drain() }), [register, wineId]);
+  useEffect(
+    () => register(wineId, { capture: () => inputCapture.capture(), drain: () => autosaveRef.current.drain() }),
+    [register, wineId, inputCapture],
+  );
 
   // Crave = save the bottle (optimistic). It reads the row's own `saved`
   // (catalogue model change step 5): on a bottle hidden for you that is your
@@ -424,20 +435,22 @@ export const ImpressionPage = memo(function ImpressionPage({
           redaction (mirrors web RatingPane + wineRedaction). The canvas zone
           keeps a drag that starts on the aroma canvas out of the pull-down. */}
       <CanvasTouchContext.Provider value={canvas}>
-        <RatingSection
-          kind={wine}
-          score={draft.score}
-          onScore={autosave.setScore}
-          onScoreStep={autosave.stepScore}
-          notes={draft.notes}
-          onNotes={autosave.setNotes}
-          onNotesFocus={autosave.setNoteFocused}
-          flavors={draft.flavors}
-          onFlavors={autosave.setFlavors}
-          aromas={draft.aromas}
-          onAromas={autosave.setAromas}
-          onRequestAromaScroll={scrollAromaSearchTo}
-        />
+        <FieldCaptureContext.Provider value={inputCapture}>
+          <RatingSection
+            kind={wine}
+            score={draft.score}
+            onScore={autosave.setScore}
+            onScoreStep={autosave.stepScore}
+            notes={draft.notes}
+            onNotes={autosave.setNotes}
+            onNotesFocus={autosave.setNoteFocused}
+            flavors={draft.flavors}
+            onFlavors={autosave.setFlavors}
+            aromas={draft.aromas}
+            onAromas={autosave.setAromas}
+            onRequestAromaScroll={scrollAromaSearchTo}
+          />
+        </FieldCaptureContext.Provider>
       </CanvasTouchContext.Provider>
     </View>
   );

@@ -2,7 +2,7 @@ import { useBottomSheetModal } from '@gorhom/bottom-sheet';
 import * as Haptics from 'expo-haptics';
 import { useFocusEffect, useIsFocused } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AppState, BackHandler, Keyboard, StyleSheet, TextInput, useWindowDimensions, View } from 'react-native';
+import { AppState, BackHandler, Keyboard, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
@@ -13,6 +13,7 @@ import { createTransitionGuard } from '@/lib/impressionAutosaveCore';
 import {
   createEdgeRuns,
   createLayerTransitions,
+  createPullClose,
   EDGE_ACTIVATE,
   EDGE_FAIL_Y,
   EDGE_STRIP,
@@ -36,29 +37,6 @@ export type RowLanding = RowFrame & { face: ReactNode };
 // Closing never waits long for its landing frame (a measure has its own 120 ms
 // belt; the scroll it may need is instant, under the opaque layer).
 const CLOSE_BELT_MS = 900;
-const CAPTURE_BELT_MS = 150;
-
-// Pending native text (Codex review 2026-11-26): a focused field's last
-// keystrokes and its end-editing commit reach JS as events AFTER the blur
-// request (React Native clears its focus bookkeeping at once, so there is
-// nothing to poll), so a departure blurs it and waits two frames (bounded)
-// BEFORE it takes the guard: an edit that arrives while the guard is held is
-// dropped by design.
-function captureInput(): Promise<void> {
-  const field = TextInput.State.currentlyFocusedInput();
-  Keyboard.dismiss();
-  if (!field) return Promise.resolve();
-  return new Promise((resolve) => {
-    const belt = setTimeout(resolve, CAPTURE_BELT_MS);
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        clearTimeout(belt);
-        resolve();
-      }),
-    );
-  });
-}
-
 // THE MOMENT IMPRESSION AS A LAYER inside the line-up (build 2, ruled
 // 2026-11-25, ADR-0011): no route. The line-up holds the open wine and renders
 // this as its LAST child, outside the in-place edit's touch handlers; Edit
@@ -88,7 +66,10 @@ function captureInput(): Promise<void> {
 //   storage failure keeps a page change on the page, a close still leaves.
 //   While it is held the outgoing page takes no touch and no VoiceOver action
 //   (its edits would be dropped), and a page change RESERVES its source and
-//   destination (a poll can't swap the page under the slide).
+//   destination (a poll can't swap the page under the slide). Every departure
+//   first joins the page's ONE text capture (its fields report their native
+//   edit's end); a 'stay' or a cancel keeps the guard until the row is back at
+//   rest (one tokenized return).
 // • The AppState listener and the blur capture live here while the layer is
 //   open AND the line-up focused; Android Back dismisses the top sheet first.
 export function ImpressionLayer({
@@ -235,11 +216,14 @@ export function ImpressionLayer({
   const rest = useSharedValue(0);
   const canPrevSV = useSharedValue(0);
   const canNextSV = useSharedValue(0);
-  // The edge swipe in progress (its gesture id, 0 = none) and the swipe that
-  // OWNS the row (granted by JS, 0 = none): a worklet writes the row only while
-  // the two match (Codex review 2026-11-26: a refused swipe writes nothing).
+  // Each edge recognizer's own swipe in progress (its id, 0 = none) and the
+  // swipe that OWNS the row (granted by JS, 0 = none): a worklet writes the row
+  // only while its own id is the owner (Codex review 2026-11-26: a refused
+  // swipe writes nothing; recheck: a second finger on the opposite edge can't
+  // erase the granted swipe's id).
   const edgeSeq = useSharedValue(0);
-  const edgeRun = useSharedValue(0);
+  const edgeRunL = useSharedValue(0);
+  const edgeRunR = useSharedValue(0);
   const edgeOwner = useSharedValue(0);
   const edgeFree = useSharedValue(false);
   const edgeRuns = useMemo(() => createEdgeRuns(), []);
@@ -259,6 +243,9 @@ export function ImpressionLayer({
   }
   const byIdRef = useRef(byId);
   byIdRef.current = byId;
+  // The page is displaced by a pull-down (not VISIBLE, hidden from VoiceOver)
+  // until it closes or has sprung back open.
+  const [displaced, setDisplaced] = useState(false);
   const reserve = useCallback((to: string, dir: -1 | 1) => {
     const w = byIdRef.current.get(to);
     reservedSeen.current = w ? { wine: w, index: idsRef.current.indexOf(to), total: idsRef.current.length } : null;
@@ -280,18 +267,38 @@ export function ImpressionLayer({
     edgeOwner.value = 0;
     edgeRuns.revoke();
   }, [edgeOwner, edgeRuns]);
-  // A page change that may not go ahead (a 'stay'): the reservation goes, the
-  // row back to rest (a revoked rubber band may have left it off rest).
-  const stayPage = useCallback(() => {
+  // Back at rest after a page change that did not go (a 'stay', a cancelled
+  // or interrupted swipe, a slide that did not land): the reservation, the
+  // input freeze and the visibility gate are released only then, with the
+  // guard (Codex recheck 2026-11-26: never while the row still moves).
+  const onReturnEnd = useCallback((tok: number, finished: boolean) => {
+    if (tok !== slideTok.current) return;
+    sliding.current = false;
+    if (!finished) pagerX.value = rest.value;
     unreserve();
-    if (!sliding.current) springRest();
-  }, [unreserve, springRest]);
+    tx.abandon();
+  }, [pagerX, rest, unreserve, tx]);
+  // The ONE way back to the source: a tokenized spring (instant at rest).
+  const returnToSource = useCallback(() => {
+    const tok = ++slideTok.current;
+    sliding.current = true;
+    pagerX.value = withSpring(rest.value, springs.release, (f) => {
+      runOnJS(onReturnEnd)(tok, !!f);
+    });
+  }, [pagerX, rest, onReturnEnd]);
   // Begin a page change: the guard (the capture), then the reservation.
   const beginPage = useCallback((to: string, dir: -1 | 1) => {
     if (!tx.begin({ kind: 'page', wineId: to, dir })) return false;
     reserve(to, dir);
     return true;
   }, [tx, reserve]);
+  // Every departure JOINS the active page's one text capture: the keyboard
+  // goes, then it waits for the page's fields to report their native edit's end
+  // (ImpressionPage, lib/fieldCapture.ts), bounded.
+  const captureActive = useCallback(() => {
+    Keyboard.dismiss();
+    return pageHandles.current.get(activeRef.current.id)?.capture() ?? Promise.resolve();
+  }, []);
 
   // ── close ──────────────────────────────────────────────────────────────
   const finishClose = useCallback(() => {
@@ -323,15 +330,20 @@ export function ImpressionLayer({
   // after the text capture.
   const requestClose = useCallback(async (opts?: { haptic?: boolean }) => {
     if (closingRef.current || tx.busy) return;
-    await captureInput();
+    await captureActive();
     if (!mountedRef.current || closingRef.current || !tx.begin({ kind: 'close' })) return;
     revokeEdge();
     void prepareLanding();
     const outcome = await tx.end(true);
-    if (!mountedRef.current || outcome !== 'go') return;
+    if (!mountedRef.current) return;
+    if (outcome !== 'go') {
+      // Nothing moved (the layer blurred meanwhile): the guard back at once.
+      tx.abandon();
+      return;
+    }
     if (opts?.haptic) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     void runClose(0);
-  }, [tx, revokeEdge, prepareLanding, runClose]);
+  }, [tx, captureActive, revokeEdge, prepareLanding, runClose]);
   // A CONFIRMED terminal outcome (the bottle gone from a present line-up, a
   // successful Delete Impression): no capture, no wait; the fade (no row).
   const forceClose = useCallback(() => {
@@ -347,24 +359,31 @@ export function ImpressionLayer({
   }, [gone, forceClose]);
 
   // ── pull-down (the active page's pan reports here) ─────────────────────
-  // It activates with its touches blocked and the text captured; the guard is
-  // taken at the RELEASE (a pull short of the line takes none).
+  // It activates with its touches blocked and the page displaced; once the
+  // text capture is in, the guarded drain starts DURING the drag
+  // (createPullClose); a cancel keeps the guard, the freeze and the
+  // displacement until the spring back has landed.
   const pullDenied = useSharedValue(false);
-  const pull = useRef<{ captured: Promise<void> } | null>(null);
-  const restoreInteractive = useCallback(() => {
-    if (!closingRef.current && mountedRef.current) setInteractive(true);
-  }, []);
+  const pullClose = useMemo(
+    () => createPullClose({ tx, capture: captureActive, closing: () => closingRef.current, onBegun: revokeEdge }),
+    [tx, captureActive, revokeEdge],
+  );
+  const pullSettled = useCallback(() => {
+    pullClose.settled();
+    if (closingRef.current || !mountedRef.current) return;
+    setInteractive(true);
+    setDisplaced(false);
+  }, [pullClose]);
   const springOpen = useCallback(() => {
     motion.progress.value = withSpring(1, springs.release, (finished) => {
-      if (!finished) return;
-      motion.dismissing.value = false;
-      runOnJS(restoreInteractive)();
+      if (finished) motion.dismissing.value = false;
+      runOnJS(pullSettled)();
     });
-  }, [motion, restoreInteractive]);
+  }, [motion, pullSettled]);
   const onPullActivate = useCallback(() => {
     // A close already runs (a forced one included), or another transition is
-    // in flight (a slide, a drain): the pull does nothing.
-    if (closingRef.current || tx.busy) {
+    // in flight (a slide, a drain, a return): the pull does nothing.
+    if (!pullClose.activate()) {
       pullDenied.value = true;
       if (!closingRef.current) {
         motion.progress.value = withSpring(1, springs.release, (finished) => {
@@ -373,40 +392,22 @@ export function ImpressionLayer({
       }
       return;
     }
-    const run = { captured: captureInput() };
-    pull.current = run;
     setInteractive(false);
+    setDisplaced(true);
     // The fold's frame, as soon as it is known (the band shrinks toward it).
     void prepareLanding().then((l) => {
-      if (mountedRef.current && pull.current === run && !closingRef.current) applyLanding(l);
+      if (mountedRef.current && !closingRef.current && pullClose.active) applyLanding(l);
     });
-  }, [tx, pullDenied, motion, prepareLanding, applyLanding]);
+  }, [pullClose, pullDenied, motion, prepareLanding, applyLanding]);
   const onPullRelease = useCallback(async (velocity: number) => {
-    const run = pull.current;
-    if (closingRef.current || !run) return;
-    await run.captured;
-    if (pull.current !== run) return;
-    pull.current = null;
-    if (!mountedRef.current || closingRef.current) return;
-    if (!tx.begin({ kind: 'close' })) {
-      springOpen();
-      return;
-    }
-    revokeEdge();
-    // Held at the release position until the edits are stored (a storage
-    // failure still closes: never trapped).
-    const outcome = await tx.end(true);
-    // A forced close may have started meanwhile: never spring back open.
-    if (!mountedRef.current || closingRef.current) return;
-    if (outcome === 'go') {
-      void runClose(velocity);
-      return;
-    }
-    springOpen();
-  }, [tx, revokeEdge, runClose, springOpen]);
+    const out = await pullClose.release();
+    if (!mountedRef.current) return;
+    if (out === 'close') void runClose(velocity);
+    else if (out === 'open') springOpen();
+  }, [pullClose, runClose, springOpen]);
   const onPullCancel = useCallback(() => {
-    pull.current = null;
-  }, []);
+    pullClose.cancel();
+  }, [pullClose]);
 
   // ── paging ─────────────────────────────────────────────────────────────
   const at = ids.indexOf(active.id);
@@ -421,21 +422,11 @@ export function ImpressionLayer({
     rest.value = r;
     if (!sliding.current) pagerX.value = r;
   }, [active.slot, width, rest, pagerX]);
-  // Back to the source after a slide that did not land (its spring was cut,
-  // the destination left the line-up, the layer blurred): the guard goes back
-  // once the row is at rest again.
-  const onReturnEnd = useCallback((tok: number, finished: boolean) => {
-    if (tok !== slideTok.current) return;
-    sliding.current = false;
-    if (!finished) pagerX.value = rest.value;
-    unreserve();
-    tx.abandon();
-  }, [pagerX, rest, unreserve, tx]);
   // A slide's completion, for ITS token only: commits the destination only
   // when the spring FINISHED, the destination is still in the line-up and the
-  // layer still live (slideOutcome), else springs back to the source. A
-  // commit makes the destination the active page (the row already sits at its
-  // rest, so no mounted page moves in this commit), then gives the guard back.
+  // layer still live (slideOutcome), else returns to the source. A commit makes
+  // the destination the active page (the row already sits at its rest, so no
+  // mounted page moves in this commit), then gives the guard back.
   const onSlideEnd = useCallback((tok: number, wineId: string, slot: number, finished: boolean) => {
     if (tok !== slideTok.current) return;
     if (!mountedRef.current || tx.forced) {
@@ -450,11 +441,8 @@ export function ImpressionLayer({
       tx.settle();
       return;
     }
-    const back = ++slideTok.current;
-    pagerX.value = withSpring(rest.value, springs.release, (f) => {
-      runOnJS(onReturnEnd)(back, !!f);
-    });
-  }, [tx, pagerX, rest, onReturnEnd]);
+    returnToSource();
+  }, [tx, returnToSource]);
   const slide = useCallback((dir: -1 | 1, vx: number) => {
     const dest = tx.current();
     if (!dest || dest.kind !== 'page') return;
@@ -474,19 +462,19 @@ export function ImpressionLayer({
   // and the reservation.
   const goPage = useCallback(async (dir: -1 | 1, opts?: { haptic?: boolean }) => {
     if (closingRef.current || tx.busy || !neighbourId(idsRef.current, activeRef.current.id, dir)) return;
-    await captureInput();
+    await captureActive();
     const dest = neighbourId(idsRef.current, activeRef.current.id, dir);
     if (!dest || !mountedRef.current || closingRef.current || !beginPage(dest, dir)) return;
     revokeEdge();
     const outcome = await tx.end(true);
     if (!mountedRef.current) return;
     if (outcome !== 'go') {
-      stayPage();
+      returnToSource();
       return;
     }
     if (opts?.haptic) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     slide(dir, 0);
-  }, [tx, beginPage, revokeEdge, stayPage, slide]);
+  }, [tx, captureActive, beginPage, revokeEdge, returnToSource, slide]);
   // A granted swipe's release (or a release that came before its grant).
   const finishEdge = useCallback(async (grant: Exclude<EdgeGrant, 'refused'>, dir: -1 | 1, r: EdgeRelease) => {
     edgeOwner.value = 0;
@@ -495,39 +483,40 @@ export function ImpressionLayer({
       return;
     }
     if (r.target === 0) {
+      // Short of the line: the guard stays held until the row is back.
       void tx.end(false);
-      stayPage();
+      returnToSource();
       return;
     }
     // Held where the finger left it until the edits are stored.
     const outcome = await tx.end(true);
     if (!mountedRef.current) return;
     if (outcome === 'go') slide(dir, r.vx);
-    else stayPage();
-  }, [edgeOwner, springRest, tx, stayPage, slide]);
+    else returnToSource();
+  }, [edgeOwner, springRest, tx, returnToSource, slide]);
   // An edge swipe ACTIVATED (its worklet writes nothing until this grants it):
   // a neighbour → the text capture, then the guard and the reservation
   // ('page'); first / last with nothing in flight → the rubber band ('band');
-  // anything else → refused, the swipe stays idle.
+  // anything else (another swipe holds the row included) → refused.
   const onEdgeStart = useCallback(async (id: number, dir: -1 | 1, can: boolean) => {
-    edgeRuns.start(id, dir);
+    if (!edgeRuns.start(id, dir)) return;
     let grant: EdgeGrant = 'refused';
     if (mountedRef.current && !closingRef.current && !tx.busy) {
       if (!can) {
         Keyboard.dismiss();
         grant = 'band';
       } else {
-        await captureInput();
+        await captureActive();
         const dest = neighbourId(idsRef.current, activeRef.current.id, dir);
         if (edgeRuns.dirOf(id) === dir && dest && mountedRef.current && !closingRef.current && beginPage(dest, dir)) grant = 'page';
       }
     }
     const r = edgeRuns.grant(id, grant);
     if (!r) {
-      // A newer swipe, or another transition took the row meanwhile.
+      // Another transition revoked the swipe meanwhile.
       if (grant === 'page') {
         void tx.end(false);
-        stayPage();
+        returnToSource();
       }
       return;
     }
@@ -535,15 +524,17 @@ export function ImpressionLayer({
     edgeFree.value = grant === 'page';
     edgeOwner.value = id;
     if (r.released) void finishEdge(grant, dir, r.released);
-  }, [edgeRuns, tx, beginPage, stayPage, edgeFree, edgeOwner, finishEdge]);
+  }, [edgeRuns, tx, captureActive, beginPage, returnToSource, edgeFree, edgeOwner, finishEdge]);
   const onEdgeRelease = useCallback((id: number, target: -1 | 0 | 1, vx: number) => {
     const r = edgeRuns.release(id, { target, vx });
     if (r === 'deferred' || r === null) return;
     void finishEdge(r.grant, r.dir, { target, vx });
   }, [edgeRuns, finishEdge]);
   const edgeEnabled = settled && !closing;
-  const edge = (dir: -1 | 1) =>
-    Gesture.Pan()
+  const edge = (dir: -1 | 1) => {
+    // This recognizer's OWN run id: it begins, writes and finalizes only it.
+    const myRun = dir === -1 ? edgeRunL : edgeRunR;
+    return Gesture.Pan()
       // The strips sit on the viewport's left / right edge; a tap or a
       // vertical move there still reaches the page's controls.
       .hitSlop(dir === -1 ? { left: 0, width: EDGE_STRIP } : { right: 0, width: EDGE_STRIP })
@@ -552,33 +543,34 @@ export function ImpressionLayer({
       .failOffsetY([-EDGE_FAIL_Y, EDGE_FAIL_Y])
       .enabled(edgeEnabled)
       .onBegin(() => {
-        edgeRun.value = 0;
+        myRun.value = 0;
       })
       .onStart(() => {
-        // A transition in flight (a slide, a close, a drain): the swipe stays
-        // idle (JS would refuse it too; this saves the round trip).
+        // A transition in flight (a slide, a close, a drain, a return): the
+        // swipe stays idle (JS would refuse it too; this saves the round trip).
         if (busy.value) return;
         edgeSeq.value += 1;
-        edgeRun.value = edgeSeq.value;
+        myRun.value = edgeSeq.value;
         const can = dir === -1 ? canPrevSV.value : canNextSV.value;
         runOnJS(onEdgeStart)(edgeSeq.value, dir, can === 1);
       })
       .onUpdate((e) => {
-        if (edgeRun.value === 0 || edgeOwner.value !== edgeRun.value) return;
+        if (myRun.value === 0 || edgeOwner.value !== myRun.value) return;
         pagerX.value = rest.value + edgeOffset(e.translationX, width, dir, edgeFree.value);
       })
       .onEnd((e, success) => {
-        if (!success || edgeRun.value === 0) return;
-        const id = edgeRun.value;
-        edgeRun.value = 0;
+        if (!success || myRun.value === 0) return;
+        const id = myRun.value;
+        myRun.value = 0;
         runOnJS(onEdgeRelease)(id, releaseTarget(e.translationX, e.velocityX, width, dir, true), e.velocityX);
       })
       .onFinalize((_e, success) => {
-        if (success || edgeRun.value === 0) return;
-        const id = edgeRun.value;
-        edgeRun.value = 0;
+        if (success || myRun.value === 0) return;
+        const id = myRun.value;
+        myRun.value = 0;
         runOnJS(onEdgeRelease)(id, 0, 0);
       });
+  };
   const edges = Gesture.Race(edge(-1), edge(1));
   const pagerStyle = useAnimatedStyle(() => ({ transform: [{ translateX: pagerX.value }] }));
 
@@ -638,8 +630,8 @@ export function ImpressionLayer({
       if (pageHandles.current.get(wineId) === page) pageHandles.current.delete(wineId);
     };
   }, []);
-  const impl = useRef({ requestClose, goPage, forceClose, onPullActivate, onPullRelease, onPullCancel, restoreInteractive });
-  impl.current = { requestClose, goPage, forceClose, onPullActivate, onPullRelease, onPullCancel, restoreInteractive };
+  const impl = useRef({ requestClose, goPage, forceClose, onPullActivate, onPullRelease, onPullCancel, pullSettled });
+  impl.current = { requestClose, goPage, forceClose, onPullActivate, onPullRelease, onPullCancel, pullSettled };
   const controls = useMemo<PageControls>(
     () => ({
       guard,
@@ -653,7 +645,7 @@ export function ImpressionLayer({
       onPullActivate: () => impl.current.onPullActivate(),
       onPullRelease: (v) => void impl.current.onPullRelease(v),
       onPullCancel: () => impl.current.onPullCancel(),
-      onPullRestored: () => impl.current.restoreInteractive(),
+      onPullRestored: () => impl.current.pullSettled(),
     }),
     [guard, motion, pullDenied, register, reportStyle],
   );
@@ -662,9 +654,10 @@ export function ImpressionLayer({
   // in flight shows exactly its reserved source and destination.
   const pages = pagerWindow(ids, active.id, active.slot, neighbours, reserved);
   // VISIBLE (the outbox's after-leave alert rule) ends when a close starts,
-  // and for the outgoing page while a page change moves it (Codex review
-  // 2026-11-26: a definitive failure then goes to the one-shot alert, not to a
-  // footer sliding off screen; back at rest it shows in the footer again).
+  // and for the outgoing page while a page change moves it or a pull-down
+  // displaces it (Codex review / recheck 2026-11-26: a definitive failure then
+  // goes to the one-shot alert, not to a footer sliding or fading away; back at
+  // rest it shows in the footer again).
   const pageFocused = focused && !closing;
 
   return (
@@ -687,8 +680,9 @@ export function ImpressionLayer({
                   if (!wine) return null;
                   const index = p.index >= 0 ? p.index : seen?.index ?? 0;
                   const total = p.index >= 0 ? ids.length : seen?.total ?? ids.length;
-                  // The outgoing page is gated while the guard is held.
-                  const live = p.active && !frozen;
+                  // The outgoing page is gated while the guard is held and
+                  // while a pull-down displaces it.
+                  const live = p.active && !frozen && !displaced;
                   return (
                     <View
                       key={p.id}
@@ -705,7 +699,7 @@ export function ImpressionLayer({
                         meta={meta}
                         myIdentityId={myIdentityId}
                         active={p.active}
-                        focused={pageFocused && !(p.active && reserved)}
+                        focused={pageFocused && !(p.active && (reserved || displaced))}
                         gone={p.active && gone}
                         removed={removed}
                         showReconnecting={showReconnecting}

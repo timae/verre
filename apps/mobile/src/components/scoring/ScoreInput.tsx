@@ -4,6 +4,7 @@ import { TextInput, View, type TextInputInstance } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Svg, { Path } from 'react-native-svg';
 import { STAR_PATH, SCORE_MAX, scoreFromFraction, snapScore, stepScore } from '@verre/core';
+import { useFieldCapture } from '@/lib/fieldCapture';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { scoreWord } from '@/lib/scoreWords';
 import { usePhoneTokens } from '@/lib/layout';
@@ -85,6 +86,9 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const inputRef = useRef<TextInputInstance>(null);
+  // The impression layer waits for the number's native edit to end before a
+  // departure (lib/fieldCapture.ts; a no-op elsewhere).
+  const fieldCapture = useFieldCapture();
   useRegisterInput(inputRef);
   const skipCommitRef = useRef(false);
   const valueRef = useRef(value);
@@ -183,6 +187,7 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
             ref={inputRef}
             value={editing ? draft : value.toFixed(2)}
             onFocus={() => {
+              fieldCapture.began();
               skipCommitRef.current = false;
               // Seed left-anchored: a rated value as a trim string ("3.5", not
               // "3.50"); unrated (0) starts EMPTY so typing fills from the left.
@@ -190,7 +195,11 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
               setEditing(true);
             }}
             onChangeText={updateDraft}
-            onEndEditing={commitDraft}
+            onEndEditing={() => {
+              commitDraft();
+              fieldCapture.ended();
+            }}
+            onBlur={fieldCapture.ended}
             keyboardType="decimal-pad"
             accessibilityLabel="Score out of 5"
             selectTextOnFocus

@@ -53,14 +53,15 @@ merge save, only Clear My Rating deletes.
   outgoing page (stored on the phone, never waiting for the server), move only
   then, once, and only if that page is still the active one; a storage failure
   keeps a page change on the page, while a close always leaves (Back always
-  leaves; the footer error or the after-leave alert reports it). A focused text
-  field is captured first (blurred, its last events land). An edge swipe
-  captures when the layer GRANTS it (just after it activates; a refused swipe
-  moves nothing), a pull-down at its release (its touches are blocked from
-  activation), so the write is normally done by the time the finger lifts; a
-  pending one holds the position until it settles. While the guard is held the
-  outgoing page takes no touch and no VoiceOver action (Codex review
-  2026-11-26).
+  leaves; the footer error or the after-leave alert reports it). The page's
+  text fields are captured first (every departure waits for their native edit
+  to end, bounded). An edge swipe captures when the layer GRANTS it (just after
+  it activates; a refused swipe moves nothing), a pull-down during the drag
+  once that capture is in, so the write is normally done by the time the finger
+  lifts; a pending one holds the position until it settles. While the guard is
+  held the outgoing page takes no touch and no VoiceOver action, and a page
+  change that stays, or a cancelled gesture, keeps it until the page is back at
+  rest (Codex review and recheck 2026-11-26).
 - **A page change reserves its two pages**: from the grant until the slide
   landed or returned, exactly the source and the destination render, by wine id,
   whatever a poll does to the line-up; a slide commits only when its own spring

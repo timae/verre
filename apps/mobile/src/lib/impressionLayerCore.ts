@@ -117,16 +117,23 @@ export function slideOutcome(ids: readonly string[], destId: string, live: boole
 // arrives before the grant (a quick flick while the input was being captured)
 // is kept and replayed by the grant; a stale gesture's grant or release is
 // ignored. The layer authorizes every write of the row with the owner's id.
+// 🔒 ONE run at a time (Codex recheck 2026-11-26): a swipe that starts while
+// another is pending or granted (a second finger on the opposite edge) is
+// refused at `start` and can never displace the run that holds the guard.
 export type EdgeGrant = 'page' | 'band' | 'refused';
 export type EdgeRelease = { target: -1 | 0 | 1; vx: number };
 
 export function createEdgeRuns() {
   let run: { id: number; dir: -1 | 1; grant: EdgeGrant | null; released: EdgeRelease | null } | null = null;
   return {
-    start(id: number, dir: -1 | 1) {
+    // false = another swipe holds the row: this one is refused (its grant and
+    // release are ignored).
+    start(id: number, dir: -1 | 1): boolean {
+      if (run) return false;
       run = { id, dir, grant: null, released: null };
+      return true;
     },
-    // null = a stale id (a newer swipe started); else the release to replay now.
+    // null = a stale id (revoked, or never started); else the release to replay now.
     grant(id: number, grant: EdgeGrant): { released: EdgeRelease | null } | null {
       if (!run || run.id !== id || run.grant !== null) return null;
       run.grant = grant;
@@ -204,7 +211,9 @@ export function landingScroll(f: RowFrame, band: Band, scrollY: number, maxY: nu
 // pull-down) still leaves (build 1's rule: Back always leaves). The draft is
 // already staged in memory, and the footer error or the outbox's after-leave
 // alert says it wasn't stored (review 2026-11-26).
-// `end(false)` (a cancelled gesture) gives the guard back at once; the staged
+// `end(false)` (a cancelled gesture) and every 'stay' KEEP the guard (Codex
+// recheck 2026-11-26): the page stays frozen, reserved and not VISIBLE until
+// the caller's return to rest has landed and it calls `abandon()`; the staged
 // edits stay in the outbox entry. `force` is a CONFIRMED terminal outcome (the
 // bottle gone, Delete Impression): no capture, no wait, nothing after it.
 
@@ -223,7 +232,7 @@ export function createLayerTransitions(deps: {
   // The guard's state, mirrored for the gesture worklets.
   onHeld?: (held: boolean) => void;
 }) {
-  type Run = { from: string; dest: LayerDest; drained: Promise<boolean>; ended: boolean };
+  type Run = { from: string; dest: LayerDest; drained: Promise<boolean>; ended: boolean; returning: boolean };
   let run: Run | null = null;
   let forced = false;
   const release = () => {
@@ -237,8 +246,13 @@ export function createLayerTransitions(deps: {
     get forced(): boolean {
       return forced;
     },
+    // The departure under way (null while none, or while it returns to rest).
     current(): LayerDest | null {
-      return run?.dest ?? null;
+      return run && !run.returning ? run.dest : null;
+    },
+    // A 'stay' (or a cancel) still returning to rest: the guard is held.
+    get returning(): boolean {
+      return !!run?.returning;
     },
     begin(dest: LayerDest): boolean {
       if (forced || run || !deps.guard.acquire()) return false;
@@ -250,24 +264,24 @@ export function createLayerTransitions(deps: {
       } catch {
         drained = Promise.resolve(false);
       }
-      run = { from, dest, drained, ended: false };
+      run = { from, dest, drained, ended: false, returning: false };
       return true;
     },
+    // 'stay' = the guard is still held: the caller returns to rest, then
+    // calls `abandon()`.
     async end(commit: boolean): Promise<LayerOutcome> {
       const r = run;
       if (!r || r.ended) return 'stay';
       r.ended = true;
       if (!commit) {
-        run = null;
-        release();
+        r.returning = true;
         return 'stay';
       }
       const ok = await r.drained;
       if (run !== r) return 'stay'; // a forced teardown took over (it keeps the guard)
       const stored = ok || r.dest.kind === 'close';
       if (!stored || !deps.live() || deps.activeId() !== r.from || !deps.destValid(r.dest, r.from)) {
-        run = null;
-        release();
+        r.returning = true;
         return 'stay';
       }
       return 'go';
@@ -278,8 +292,9 @@ export function createLayerTransitions(deps: {
       run = null;
       release();
     },
-    // A 'go' page change that did not land (the spring interrupted, the
-    // destination gone, the layer blurred): back to the source, guard back.
+    // Back at rest after a 'stay' or a cancel, or a 'go' page change that did
+    // not land (the spring interrupted, the destination gone, the layer
+    // blurred): the source stays active, the guard goes back.
     abandon() {
       if (forced || !run) return;
       run = null;
@@ -294,3 +309,147 @@ export function createLayerTransitions(deps: {
   };
 }
 export type LayerTransitions = ReturnType<typeof createLayerTransitions>;
+
+// ─── text capture (a page's fields mid-edit) ───────────────────────────
+//
+// 🔒 A departure first waits for the page's text fields to FINISH editing
+// natively (Codex recheck 2026-11-26): a field's last keystrokes, an IME
+// commit and its end-editing commit reach JS as events AFTER the blur request,
+// and React Native clears its focused-input record at once (the root's
+// outside-touch dismissal does it on the touch-DOWN, before a button's
+// onPress), so "is a field focused?" can't tell. Each rating field reports
+// `focus` when it starts editing and `done` when its native edit ended (its
+// blur / end-editing event, or its unmount). `capture()` resolves once none is
+// open, or after the bounded belt; every departure JOINS the capture in
+// flight. A field that never reports (the belt) is forgotten.
+export const CAPTURE_BELT_MS = 300;
+export function createInputCapture(opts: {
+  beltMs: number;
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (t: unknown) => void;
+}) {
+  const setTimer = opts.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const clearTimer = opts.clearTimer ?? ((t: unknown) => clearTimeout(t as ReturnType<typeof setTimeout>));
+  const open = new Set<string>();
+  let waiting: { promise: Promise<void>; resolve: () => void; timer: unknown } | null = null;
+  const finish = () => {
+    const w = waiting;
+    if (!w) return;
+    waiting = null;
+    clearTimer(w.timer);
+    w.resolve();
+  };
+  return {
+    focus(id: string) {
+      open.add(id);
+    },
+    done(id: string) {
+      open.delete(id);
+      if (open.size === 0) finish();
+    },
+    capture(): Promise<void> {
+      if (waiting) return waiting.promise;
+      if (open.size === 0) return Promise.resolve();
+      let resolve!: () => void;
+      const promise = new Promise<void>((r) => {
+        resolve = r;
+      });
+      const w = { promise, resolve, timer: null as unknown };
+      waiting = w;
+      w.timer = setTimer(() => {
+        if (waiting !== w) return;
+        open.clear();
+        finish();
+      }, opts.beltMs);
+      return promise;
+    },
+    get editing(): boolean {
+      return open.size > 0;
+    },
+  };
+}
+export type InputCapture = ReturnType<typeof createInputCapture>;
+
+// ─── the pull-down close (its guarded drain starts DURING the drag) ────
+//
+// Codex recheck 2026-11-26: a pull that activates captures the page's text
+// and, once that capture completes and the pull is still on, BEGINS the close
+// (the guard, the drain) while the finger is still down, so the write is
+// normally done by the release. `release()` → 'close' (run the close) or
+// 'open' (spring back, then `settled()`); `cancel()` (short of the line) keeps
+// any guard it took until the spring back has landed and `settled()` gives it
+// back. 'none' = nothing of this pull is left (a close took over).
+export function createPullClose(deps: {
+  tx: Pick<LayerTransitions, 'begin' | 'end' | 'abandon' | 'busy'>;
+  capture: () => Promise<void>;
+  closing: () => boolean;
+  // The pull took the guard (the layer revokes an edge swipe's row).
+  onBegun?: () => void;
+}) {
+  type Run = { cancelled: boolean; begun: boolean; ready: Promise<void> };
+  let run: Run | null = null;
+  let held = false; // a pull's guard waits for `settled()`
+  const begin = (r: Run) => {
+    if (r.begun || r.cancelled || run !== r || deps.closing() || !deps.tx.begin({ kind: 'close' })) return;
+    r.begun = true;
+    held = true;
+    deps.onBegun?.();
+  };
+  return {
+    // false = denied (a close runs, or another transition holds the guard).
+    activate(): boolean {
+      if (deps.closing() || deps.tx.busy || run) return false;
+      const r: Run = { cancelled: false, begun: false, ready: Promise.resolve() };
+      run = r;
+      r.ready = deps.capture().then(
+        () => begin(r),
+        () => begin(r),
+      );
+      return true;
+    },
+    async release(): Promise<'close' | 'open' | 'none'> {
+      const r = run;
+      if (!r || deps.closing()) return 'none';
+      await r.ready;
+      if (run !== r) return 'none'; // cancelled meanwhile
+      run = null;
+      if (deps.closing()) return 'none';
+      if (!r.begun) {
+        // The begin at capture time was refused (something else held the
+        // guard then): one more try; refused → back open, nothing held.
+        if (!deps.tx.begin({ kind: 'close' })) return 'open';
+        r.begun = true;
+        held = true;
+        deps.onBegun?.();
+      }
+      // Held at the release position until the edits are stored (a storage
+      // failure still closes: never trapped).
+      const outcome = await deps.tx.end(true);
+      if (deps.closing()) return 'none';
+      if (outcome === 'go') {
+        held = false; // the close keeps the guard to the end
+        return 'close';
+      }
+      return 'open'; // the guard waits for `settled()`
+    },
+    cancel() {
+      const r = run;
+      if (!r) return;
+      r.cancelled = true;
+      run = null;
+      if (r.begun) void deps.tx.end(false);
+    },
+    // The spring back landed (or was cut by a close): the guard goes back.
+    settled() {
+      if (!held) return;
+      held = false;
+      deps.tx.abandon();
+    },
+    get held(): boolean {
+      return held;
+    },
+    get active(): boolean {
+      return run !== null;
+    },
+  };
+}

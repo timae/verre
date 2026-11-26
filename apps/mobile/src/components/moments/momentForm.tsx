@@ -13,6 +13,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
+import { useFieldCapture } from '@/lib/fieldCapture';
 import { DATE_LOCALE } from '@/lib/locale';
 import { usePhoneTokens } from '@/lib/layout';
 import { fuzzyIncludes } from '@/lib/search';
@@ -644,6 +645,9 @@ export function NotesField({
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<TextInputInstance | null>(null);
   useRegisterInput(inputRef);
+  // The impression layer waits for the note's native edit to end before a
+  // departure (lib/fieldCapture.ts; a no-op elsewhere).
+  const fieldCapture = useFieldCapture();
   return (
     <View style={{ gap: 7 }}>
       {label ? (
@@ -659,12 +663,14 @@ export function NotesField({
         placeholder={placeholder}
         placeholderTextColor={theme.inkFaint}
         onFocus={() => {
+          fieldCapture.began();
           setFocused(true);
           onFocusChange?.(true);
         }}
         onBlur={() => {
           setFocused(false);
           onFocusChange?.(false);
+          fieldCapture.ended();
         }}
         {...surface.textProps}
         style={{

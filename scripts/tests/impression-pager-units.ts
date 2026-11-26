@@ -158,12 +158,26 @@ console.log('\n§9 the edge-swipe arbiter: a swipe writes only once granted, a r
   check('and the run is gone', e.dirOf(4), null)
 }
 {
+  // Codex recheck 2026-11-26: a second finger on the OPPOSITE edge while a
+  // swipe holds the row must never displace it (it held the guard: stranded).
   const e = createEdgeRuns()
-  e.start(5, 1)
-  e.start(6, 1)
-  check('a newer swipe makes the older grant stale (the caller gives its guard back)', e.grant(5, 'page'), null)
-  check('the older release is stale too', e.release(5, { target: 1, vx: 0 }), null)
-  check('the newer one is current', e.dirOf(6), 1)
+  check('the first swipe starts', e.start(5, 1), true)
+  check('🔒 a swipe on the opposite edge meanwhile is refused at start', e.start(6, -1), false)
+  check('its grant is ignored', e.grant(6, 'page'), null)
+  check('its release is ignored', e.release(6, { target: -1, vx: 0 }), null)
+  check('the first one is still current', e.dirOf(5), 1)
+  check('and is granted', e.grant(5, 'page'), { released: null })
+  check('a second finger while it is granted: refused too', e.start(7, -1), false)
+  check('the granted swipe still finishes with its own release', e.release(5, { target: 1, vx: 0 }), { grant: 'page', dir: 1 })
+  check('after it, a new swipe may start', e.start(8, -1), true)
+}
+{
+  const e = createEdgeRuns()
+  e.start(9, 1)
+  e.release(9, { target: 0, vx: 0 })
+  check('a deferred release keeps the run until its grant: a new swipe is refused', e.start(10, 1), false)
+  e.grant(9, 'page')
+  check('the grant replayed it and freed the row', e.start(10, 1), true)
 }
 {
   const e = createEdgeRuns()

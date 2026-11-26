@@ -744,21 +744,29 @@ on the stack hosting the line-up: Back returns to the open layer.
   layer live and the destination still its neighbour; a storage failure keeps
   a PAGE CHANGE on the page, but a CLOSE always leaves (Back always leaves: the
   draft is staged in memory, the footer error or the after-leave alert says it
-  wasn't stored). 🔒 Every departure first CAPTURES a focused text field
-  (`captureInput`: blur, then two frames, bounded: its last keystrokes and
-  end-editing commit arrive as events after the blur, and an edit that arrives
-  under the guard is dropped). While the guard is held the outgoing page takes
-  no touch and no VoiceOver action (`pointerEvents="none"` + hidden from
-  accessibility, React state from the guard's `onHeld`), until the destination
-  is active or the page restored on a stay. Previous / Next / Finish / the close
-  button / Android Back begin after the capture and end at once; an edge swipe
-  begins when GRANTED (below), a pull-down at its RELEASE (its touches are
-  blocked from activation), both held in place while a drain is pending. A
-  cancelled gesture gives the guard back (the staged edits stay in the entry).
-  A slide commits only when ITS spring finished (a token per spring) and the
-  destination is still there and the layer live (`slideOutcome`), else it
-  springs back to the source and `abandon()`s. Gone / Delete Impression =
-  `force()`: no capture, the fade.
+  wasn't stored). 🔒 Every departure first JOINS the active page's ONE text
+  capture (`createInputCapture`, owned by the page): `ScoreInput`'s number and
+  `NotesField` report when their native edit starts and when it ENDED
+  (`lib/fieldCapture.ts`, their blur / end-editing event or their unmount; a
+  no-op without the page's provider), and the capture resolves once none is
+  open, bounded by `CAPTURE_BELT_MS` (300). React Native's focused-input record
+  can't tell: it is cleared at the blur REQUEST, and the root's outside-touch
+  dismissal requests it on the touch-down, before a button's `onPress`; the
+  last keystrokes, an IME commit and the end-editing commit arrive after it,
+  and an edit that arrives under the guard is dropped. While the guard is held
+  the outgoing page takes no touch and no VoiceOver action (`pointerEvents=
+  "none"` + hidden from accessibility, React state from the guard's `onHeld`),
+  until the destination is active or the page is back at rest. Previous / Next
+  / Finish / the close button / Android Back begin after the capture and end at
+  once; an edge swipe begins when GRANTED (below); a pull-down begins DURING
+  the drag, once the capture is in (`createPullClose`), both held in place
+  while a drain is pending. 🔒 A 'stay' and a cancelled gesture KEEP the guard
+  (`returning`) until the row is back at rest: ONE tokenized return
+  (`returnToSource`, or the pull's spring back), then `abandon()` releases the
+  guard, the reservation and the visibility gate together. A slide commits
+  only when ITS spring finished (a token per spring) and the destination is
+  still there and the layer live (`slideOutcome`), else it returns. Gone /
+  Delete Impression = `force()`: no capture, the fade.
 - **Edge strips**: two RNGH pans on the viewport, `hitSlop({ left: 0, width:
   15 })` / `({ right: 0, width: 15 })`, `activeOffsetX(±10)`, `failOffsetX(∓10)`,
   `failOffsetY(±12)`; the row follows 1:1 up to a page, a rubber band at the
@@ -767,7 +775,10 @@ on the stack hosting the line-up: Back returns to the open layer.
   only for the swipe JS GRANTED (`createEdgeRuns`: 'page' took the guard and
   the reservation, 'band' = first / last with nothing in flight; a 'refused'
   swipe writes nothing; a release that beats the grant is replayed by it; a
-  button page change or a close revokes a running swipe). The keyboard is
+  button page change or a close revokes a running swipe). ONE run at a time:
+  a swipe that starts while another is pending or granted (a second finger on
+  the opposite edge) is refused at `start`, and each recognizer keeps its OWN
+  run id (`edgeRunL` / `edgeRunR`), so neither can erase the other's. The keyboard is
   dismissed on activation. The line-up's native back swipe is off while open
   (`gestureEnabled: !layerOpen`, RNS gates its edge recognizer on it).
 - **Pull-down**: the post's pan + `Gesture.Native()` composed per page (the
@@ -777,7 +788,9 @@ on the stack hosting the line-up: Back returns to the open layer.
   transparent, so touches between the controls reach the hero; Back / ⋯ still
   tap), the scroll offset a SHARED value (`useScrollOffset`), `bounces={!atTop}`,
   touches blocked by React-state `pointerEvents` during the open / close (never
-  by changing `enabled`: that cancels a running pan). 🔒 MANUAL activation: a
+  by changing `enabled`: that cancels a running pan). While a pull displaces
+  the page it is not VISIBLE and hidden from VoiceOver (`displaced`), restored
+  when it has sprung back open. 🔒 MANUAL activation: a
   pull that may not close FAILS before it activates (`onTouchesDown` /
   `onTouchesMove`): the touch went down below the scroll top, or on the aroma
   canvas's HEX STAGE (`CanvasTouchZone` around `HexStage` in `CanvasPicker`, by

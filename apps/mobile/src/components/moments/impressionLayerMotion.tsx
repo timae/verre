@@ -143,10 +143,10 @@ export function RevealWindow({ width, height, outer, inner, children }: {
 // its top bounce off while at the top (`bounces={!atTop}`), so a pull-down at
 // rest feeds this pan instead of a rubber band.
 // The layer owns what happens: `onActivate` the moment the pan moves the layer
-// (it captures text input and blocks touches; a close already in flight → it
-// sets `denied`), `onRelease(velocity)` past the commit line (the layer takes
-// the transition guard, holds the position until the edits are stored, then
-// closes; refused → it springs back),
+// (it blocks touches, displaces the page and, once the text capture is in,
+// takes the transition guard and drains during the drag; refused → it sets
+// `denied`), `onRelease(velocity)` past the commit line (the layer holds the
+// position until the edits are stored, then closes; refused → it springs back),
 // `onCancel` for a release short of it (the spring back runs here, then
 // `onRestored`).
 export function usePullDownClose({
@@ -245,9 +245,11 @@ export function usePullDownClose({
       }
       runOnJS(onCancel)();
       if (closing.value) return; // a forced close took over: never spring back open
+      // `onRestored` on every end of the spring back (a cut one too): the
+      // layer gives the pull's guard back only then, and a close that cut it
+      // keeps its own.
       progress.value = withSpring(1, { ...springs.release, velocity: Math.max(0, toward) }, (finished) => {
-        if (!finished) return;
-        dismissing.value = false;
+        if (finished) dismissing.value = false;
         runOnJS(onRestored)();
       });
     })
@@ -257,8 +259,7 @@ export function usePullDownClose({
       runOnJS(onCancel)();
       if (closing.value) return;
       progress.value = withSpring(1, springs.release, (finished) => {
-        if (!finished) return;
-        dismissing.value = false;
+        if (finished) dismissing.value = false;
         runOnJS(onRestored)();
       });
     });
