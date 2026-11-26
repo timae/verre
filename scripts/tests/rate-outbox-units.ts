@@ -124,6 +124,8 @@ function env(opts: { disk?: Map<string, string>; t0?: number; online?: boolean }
   // A hung request: released by committing, or failed with `res` (releaseOne).
   const hung: ((res?: RateResult) => void)[] = [];
   let bumpOnConfirm = 0; // get-session answers that each move the auth generation
+  let holdConfirms = false;
+  const heldConfirms: (() => void)[] = [];
   // `gen`: the auth generation the section's fetch started under (the binding's stamp).
   const cache = new Map<string, { ratings: RatingsView | null; gen?: number; wines?: { id: string; name: string; _blind?: boolean }[] }>();
   let readAnswer: (() => ReadOutcome) | null = null;
@@ -200,6 +202,7 @@ function env(opts: { disk?: Map<string, string>; t0?: number; online?: boolean }
     },
     confirmSession: async () => {
       confirms++;
+      if (holdConfirms) await new Promise<void>((r) => heldConfirms.push(r));
       if (bumpOnConfirm > 0) {
         bumpOnConfirm--;
         gen++;
@@ -261,6 +264,8 @@ function env(opts: { disk?: Map<string, string>; t0?: number; online?: boolean }
     bumpGen: () => { gen++; },
     genNow: () => gen,
     bumpOnConfirm: (n: number) => { bumpOnConfirm = n; },
+    holdConfirms: (on: boolean) => { holdConfirms = on; },
+    releaseConfirms: async () => { holdConfirms = false; while (heldConfirms.length) heldConfirms.shift()!(); await flush(); },
     // The OLDEST hung request answers `res` (a network error, …) without committing.
     releaseOne: async (res: RateResult) => { hung.shift()!(res); await flush(); },
     get confirms() { return confirms; },
@@ -1704,6 +1709,64 @@ async function main() {
     const w2 = e.sent.find((x) => x.body.wineId === 'w2');
     check('r5-2: … an entry staged after the lookup left takes its base from a fresh read (v1)', w2?.body.baseVersion === 1 && e.server.row('w2').rating?.notes === 'web' && e.server.row('w2').rating?.score === 3);
     e.setRead(null);
+  }
+
+  // ── Codex recheck 5: the dedicated read's `invalid` ─────────────────────
+  {
+    // r6-1: the lookup answers 401 `invalid`; get-session held; a screen poll
+    // gives the base and a newer edit is staged; "same" → the entry survives
+    // and is sent.
+    const e = env();
+    await e.start();
+    let first = true;
+    e.setRead(() => (first ? ((first = false), { kind: 'invalid' as const }) : { kind: 'ok' as const, ratings: e.server.section() }));
+    e.holdConfirms(true);
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // unknown base → lookup → invalid → get-session (held)
+    e.poll({}); // the screen's poll: the base
+    c.setNotes('newer');
+    await e.advance(1000);
+    await e.releaseConfirms(); // "same"
+    await e.advance(10);
+    check('r6-1: changed since the lookup → never deleted by its refusal; resumed and sent', e.server.row('w1').rating?.score === 4 && e.server.row('w1').rating?.notes === 'newer');
+    e.setRead(null);
+  }
+  {
+    // r6-2: a newer edit staged while the lookup is pending; the lookup's
+    // `invalid` covers nothing left → a second lookup, then the send.
+    const e = env();
+    await e.start();
+    e.holdReads(true);
+    let first = true;
+    e.setRead(() => (first ? ((first = false), { kind: 'invalid' as const }) : { kind: 'ok' as const, ratings: e.server.section() }));
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // the lookup leaves, held
+    c.setNotes('more');
+    await e.advance(1000); // the entry changed under it
+    await e.releaseReads();
+    await e.advance(10);
+    check('r6-2: an `invalid` covering nothing left wakes a fresh lookup; the edit is sent', e.reads.length === 2 && e.server.row('w1').rating?.notes === 'more' && e.server.row('w1').rating?.score === 4);
+    e.setRead(null);
+  }
+
+  {
+    // r6-3: a /rate 401 `invalid`; get-session held; a newer edit staged;
+    // "same" → the entry survives and is sent.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.holdConfirms(true);
+    e.queue({ status: 401, auth: 'invalid' });
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // 401 → get-session (held)
+    c.setNotes('newer');
+    await e.advance(1000);
+    await e.releaseConfirms(); // "same"
+    await e.advance(10);
+    check('r6-3: edited while the /rate 401 was being confirmed → resumed and sent, never dropped', e.server.row('w1').rating?.score === 4 && e.server.row('w1').rating?.notes === 'newer');
   }
 
   // ── the 90-day clean-up ──────────────────────────────────────────────────

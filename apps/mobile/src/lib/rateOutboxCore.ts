@@ -839,7 +839,12 @@ export function createRateOutbox(deps: OutboxDeps) {
       case 'error': {
         const st = res.status;
         if (st === 404 || st === 403 || (st === 401 && res.auth === 'removed')) return dropSilently(s);
-        if (st === 401) return confirmInvalid([s]);
+        if (st === 401) {
+          // Its coverage NOW: an edit or a rebase while get-session is out is
+          // resumed, never dropped by this refusal (recheck 5, the /rate caller).
+          const cap = { e, rev: e.nextRev, at: e.editedAt, clear: !!e.clear, base: e.baseVersion };
+          return confirmInvalid([s], true, 0, (x) => x.mem === cap.e && cap.e.nextRev === cap.rev && cap.e.editedAt === cap.at && !!cap.e.clear === cap.clear && cap.e.baseVersion === cap.base);
+        }
         if (st === 400) {
           // Never the note (or any value): the op id, which fields, the message.
           log('[rateOutbox] 400 from /rate (a client bug)', { opId: op.opId, fields: FIELDS.filter((f) => f in op.body), message: res.message });
@@ -914,7 +919,9 @@ export function createRateOutbox(deps: OutboxDeps) {
   };
   // 401 `invalid`: not definitive on its own (an expired or revoked sign-in
   // answers the same). Stop, keep everything, ask get-session once.
-  const confirmInvalid = (refused: Slot[], dropOnSame = true, attempt = 0) => {
+  // `stillCovered`: the dedicated read's coverage, rechecked right before each
+  // deletion (Codex recheck 5: an edit or a base since then is resumed, never dropped).
+  const confirmInvalid = (refused: Slot[], dropOnSame = true, attempt = 0, stillCovered?: (s: Slot) => boolean) => {
     const act = activation;
     const who = viewer!;
     const incs = refused.map((s) => s.incarnation);
@@ -950,7 +957,7 @@ export function createRateOutbox(deps: OutboxDeps) {
       // a member); a wrong-viewer answer refused only the cookie it came with.
       if (dropOnSame) {
         refused.forEach((s, i) => {
-          if (s.mem && incs[i] === s.incarnation) dropSilently(s);
+          if (s.mem && incs[i] === s.incarnation && (!stillCovered || stillCovered(s))) dropSilently(s);
         });
       }
       ownerGen = deps.stamp().gen;
@@ -988,9 +995,9 @@ export function createRateOutbox(deps: OutboxDeps) {
     // Answered under another auth state, or an unconfirmed owner: dropped
     // whole (no base, no terminal outcome, no discard); read again.
     if (!deps.stampCurrent(stamp) || !ownerOk()) return pump();
-    const covered = captured
-      .filter((c) => c.s.mem === c.e && c.e.baseVersion === 'unknown' && c.e.nextRev === c.rev && c.e.editedAt === c.at && !!c.e.clear === c.clear)
-      .map((c) => c.s);
+    const unchanged = (c: (typeof captured)[number]) =>
+      c.s.mem === c.e && c.e.baseVersion === 'unknown' && c.e.nextRev === c.rev && c.e.editedAt === c.at && !!c.e.clear === c.clear;
+    const covered = captured.filter(unchanged).map((c) => c.s);
     // The dedicated read supplies BASES only: it never moves the snapshot
     // (no raw generation, Codex recheck 3 + 4); work staged since it left is
     // read again (the runner).
@@ -1008,8 +1015,13 @@ export function createRateOutbox(deps: OutboxDeps) {
       return pump();
     }
     if (out.kind === 'invalid') {
-      if (covered.length) confirmInvalid(covered);
-      return;
+      // Nothing it covered is left: later work gets a fresh lookup.
+      if (!covered.length) return pump();
+      const byS = new Map(captured.map((c) => [c.s, c]));
+      return confirmInvalid(covered, true, 0, (s) => {
+        const c = byS.get(s);
+        return !!c && unchanged(c);
+      });
     }
     if (out.kind === 'update-required') {
       updateStopped = true;
