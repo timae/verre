@@ -837,6 +837,61 @@ async function main() {
       && e.owner.snapshot(ME, CODE, 'w1')?.rating?.score === 5, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
   }
   {
+    // 🔒 Fable recheck: decided on what the REBASE would send (the latest
+    // unsent values), not the answered op's body. An unanswered {score 3},
+    // then 0 staged behind it, then a newer 5 from the web.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('network');
+    c.setScore(3);
+    await e.advance(1000);
+    c.setScore(0);
+    await c.drain({ final: true });
+    e.server.webSave('w1', { score: 5 });
+    await e.advance(30_000);
+    check('🔒 an unanswered {score 3}, 0 staged behind it, a newer 5: the 409 is decided on what the rebase sends ({score 0}): dropped, the 5 stays', e.server.row('w1').rating?.score === 5 && !e.owner.entry(ME, CODE, 'w1'), { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // …and the other way: an unanswered {score 0} with a note staged behind
+    // it rebases as {score 0, notes} (not empty), nothing dropped.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('network');
+    c.setScore(0);
+    await c.drain({ final: true });
+    c.setNotes('mine');
+    await c.drain({ final: true });
+    e.server.webSave('w1', { score: 5 });
+    await e.advance(30_000);
+    check('an unanswered {score 0} + a note staged behind it meet a newer 5: rebased together, score 0 and the note saved', e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'mine', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // A second 409 after the one rebase, now emptying: dropped silently (the
+    // newer save wins), no error.
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'a' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    let n = 0;
+    e.server.beforeCommit = () => {
+      n++;
+      if (n === 1) e.server.webSave('w1', { score: 5, notes: 'b' });
+      if (n === 2) e.server.webSave('w1', { notes: 'c' });
+    };
+    c.setNotes('');
+    await e.advance(1000);
+    await e.advance(10_000);
+    e.server.beforeCommit = null;
+    check('a second, emptying 409 after the rebase: dropped silently, the newer note-only rating stays, no error', e.server.row('w1').rating?.notes === 'c' && e.server.row('w1').rating?.score === 0 && !e.owner.entry(ME, CODE, 'w1') && c.savedState() !== 'error', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
     // A non-emptying live op still rebases (a note over a newer score).
     const e = env();
     e.server.webSave('w1', { score: 4 });

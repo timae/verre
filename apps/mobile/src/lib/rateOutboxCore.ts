@@ -185,7 +185,7 @@ export function isEmptyRating(r: { score?: number; flavors?: Record<string, numb
 
 // A rating with a merge body's fields over it (the server's merge, for the
 // conflict rule: an omitted field keeps the rating's value).
-function withFields(r: RatingMeta, b: RateBody) {
+function withFields(r: RatingMeta, b: Partial<Pick<RateBody, 'score' | 'flavors' | 'aromas' | 'notes'>>) {
   return {
     score: b.score ?? r.score,
     flavors: b.flavors ?? r.flavors,
@@ -950,16 +950,25 @@ export function createRateOutbox(deps: OutboxDeps) {
         // 🔒 The newer save wins (two devices, ruled 2026-11-26): a LIVE op
         // whose fields over the NEWER rating would leave it empty is never
         // rebased (the server would reap that newer rating). Its revisions
-        // retire, the newer rating stays (snapshot, page, line-up); newer
-        // revisions, if any, go out on its version. Decided on the result,
+        // retire (every unsent one: the entry ends empty and is dropped), the
+        // newer rating stays (snapshot, page, line-up). Decided on the result,
         // never on the body. Also the lost-answer case: our reap committed,
         // another device re-rated, and the re-sent op meets that re-rate.
-        if (newer && isEmptyRating(withFields(newer, op.body))) {
+        // 🔒 On what the REBASE would send (Fable recheck): every unsent
+        // field at its latest value, not the answered op's body (an edit
+        // staged behind an unanswered op goes out with the rebase), and then
+        // ALL of those revisions retire.
+        const pending = unsent(e);
+        const sends: Partial<Pick<RateBody, 'score' | 'flavors' | 'aromas' | 'notes'>> = {};
+        for (const f of pending) (sends as Record<string, unknown>)[f] = e.fields[f]!.value;
+        if (newer && isEmptyRating(withFields(newer, sends))) {
           e.baseVersion = res.version;
           e.baseHadRating = true;
           foreign.set(s.key, (foreign.get(s.key) ?? 0) + 1); // a Clear token taken before it asks again
           settled(e);
-          retireOp(s, cov);
+          const revs: Revs = {};
+          for (const f of pending) revs[f] = e.fields[f]!.rev;
+          retireOp(s, { ...cov, revs });
           return;
         }
         if (!e.rebased) {
