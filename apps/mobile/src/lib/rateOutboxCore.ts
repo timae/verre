@@ -192,6 +192,8 @@ function isEmptyEntry(e: Entry): boolean {
   return Object.keys(e.fields).length === 0 && !e.clear && !e.unresolvedOp;
 }
 
+// One refusal waiting on the account check (its slot as it was, what "same" does).
+type Refusal = { s: Slot; inc: number; dropOnSame: boolean; stillCovered?: (s: Slot) => boolean; onSame?: (s: Slot) => void };
 // What one dispatched op submitted (its entry, id, kind, field revisions).
 type Coverage = { entry: Entry; opId: string; kind: 'merge' | 'clear'; revs: Revs };
 
@@ -256,7 +258,7 @@ export function createRateOutbox(deps: OutboxDeps) {
   let ownerNextAt = 0;
   let invalidRetry: { timer: unknown; ask: () => void } | null = null;
   // The ONE pending account check after refusals, with every refusal it covers.
-  let invalidCheck: { act: number; who: string; items: { s: Slot; inc: number; dropOnSame: boolean; stillCovered?: (s: Slot) => boolean; onSame?: (s: Slot) => void }[] } | null = null;
+  let invalidCheck: { act: number; who: string; items: Refusal[]; queued: Refusal[] } | null = null;
   let online = deps.isOnline();
   let appActive = deps.appActive();
   let wakeTimer: unknown = null;
@@ -409,10 +411,17 @@ export function createRateOutbox(deps: OutboxDeps) {
       if (mine?.clear && !stored.clear) {
         // The stored edits under the page's own restore (the page's win).
         const restore: Partial<FieldValues> = {};
-        for (const f of FIELDS) if (stored.fields[f]) (restore as Record<string, unknown>)[f] = stored.fields[f]!.value;
+        const restoreRevs: Revs = {};
+        for (const f of FIELDS) {
+          if (!stored.fields[f]) continue;
+          (restore as Record<string, unknown>)[f] = stored.fields[f]!.value;
+          restoreRevs[f] = stored.fields[f]!.rev; // provenance: a stored op's retirement prunes it
+        }
+        // The newer page draft's values have none: they survive any retirement.
+        for (const f of FIELDS) if (mine.clear.restore[f] !== undefined) delete restoreRevs[f];
         stored.fields = {};
         stored.parked = {};
-        stored.clear = { opId: mine.clear.opId, restore: { ...restore, ...mine.clear.restore } };
+        stored.clear = { opId: mine.clear.opId, restore: { ...restore, ...mine.clear.restore }, restoreRevs };
       } else if (mine && !stored.clear) {
         for (const f of FIELDS) {
           const slot = mine.fields[f];
@@ -981,20 +990,24 @@ export function createRateOutbox(deps: OutboxDeps) {
     const items = refused.map((s) => ({ s, inc: s.incarnation, dropOnSame, stillCovered, onSame }));
     stopped = true;
     notify();
-    // 🔒 ONE shared account check per viewer (Codex recheck 7): a refusal
-    // that arrives while it is pending JOINS it; the runner stays stopped until
-    // it answers, and every joined retirement is applied BEFORE dispatch reopens.
+    // 🔒 ONE account check in flight per viewer (Codex recheck 7 + 8). Each
+    // ask covers only the refusals that arrived BEFORE it started (an answer
+    // sampled earlier can't vouch for a later 401); a refusal arriving during
+    // an ask waits for a FRESH ask after it. Dispatch stays stopped until
+    // every check has settled, and each one's retirements are applied first.
     if (invalidCheck && invalidCheck.act === activation && invalidCheck.who === viewer) {
-      invalidCheck.items.push(...items);
+      invalidCheck.queued.push(...items);
       return;
     }
     if (invalidRetry) {
       deps.clearTimer(invalidRetry.timer);
       invalidRetry = null;
     }
-    const check = { act: activation, who: viewer!, items };
+    const check: NonNullable<typeof invalidCheck> = { act: activation, who: viewer!, items: [], queued: items };
     invalidCheck = check;
     const ask = (n: number) => {
+      check.items.push(...check.queued); // what this ask covers
+      check.queued = [];
       void deps.confirmSession(check.who).then(
         (res) => answer(res, n),
         () => answer('unknown', n),
@@ -1016,8 +1029,10 @@ export function createRateOutbox(deps: OutboxDeps) {
         invalidRetry = { timer, ask: () => { deps.clearTimer(timer); retry(); } };
         return;
       }
-      invalidCheck = null;
-      if (res !== 'same') return;
+      if (res !== 'same') {
+        invalidCheck = null; // stopped, everything kept, until the next sign-in
+        return;
+      }
       // Still this viewer: a 401 means that moment refused it (left, no longer
       // a member); a wrong-viewer answer refused only the cookie it came with.
       for (const it of check.items) {
@@ -1027,6 +1042,10 @@ export function createRateOutbox(deps: OutboxDeps) {
       }
       ownerGen = deps.stamp().gen;
       ownerMismatchGen = null;
+      check.items = [];
+      // Refusals that arrived during this ask: a fresh ask, still stopped.
+      if (check.queued.length) return ask(0);
+      invalidCheck = null;
       stopped = false;
       pump();
     };
@@ -1196,6 +1215,7 @@ export function createRateOutbox(deps: OutboxDeps) {
         for (const s of slots.values()) s.verified = false;
         ready = true;
         notify();
+        pump(); // the owner check (unverified slots wait for their key reads)
         return;
       }
       deps.setTimer(() => { if (act === activation) void hydrate(v, act, attempt + 1); }, WRITE_RETRY_FIRST_MS);

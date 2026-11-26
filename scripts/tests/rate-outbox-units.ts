@@ -202,12 +202,14 @@ function env(opts: { disk?: Map<string, string>; t0?: number; online?: boolean }
     },
     confirmSession: async () => {
       confirms++;
+      // The answer is SAMPLED when the call starts (a held one answers what it saw then).
+      const answer = sessionQueue.length ? sessionQueue.shift()! : session;
       if (holdConfirms) await new Promise<void>((r) => heldConfirms.push(r));
       if (bumpOnConfirm > 0) {
         bumpOnConfirm--;
         gen++;
       }
-      return sessionQueue.length ? sessionQueue.shift()! : session;
+      return answer;
     },
     readRatings: (_v, code) => {
       const c = cache.get(code);
@@ -1876,7 +1878,7 @@ async function main() {
     const sentWhilePending = e.sent.length;
     await e.releaseConfirms();
     await e.advance(10);
-    check('r8-1: one shared check, nothing sent while it is pending, both retired before reopening, the later note saved', e.confirms === asked + 1 && sentWhilePending === 2 && e.server.row('w2').rating?.notes === 'later' && e.server.row('w2').rating?.score !== 2 && e.server.row('w1').rating === null);
+    check('r8-1: no reopen while a check is pending (a 401 arriving during it gets a fresh one), both retired before reopening, the later note saved', e.confirms === asked + 2 && sentWhilePending === 2 && e.server.row('w2').rating?.notes === 'later' && e.server.row('w2').rating?.score !== 2 && e.server.row('w1').rating === null);
   }
   {
     // r8-2: a merge refused (404) with a Clear staged behind it; the Clear
@@ -1918,6 +1920,54 @@ async function main() {
     e.setActive(true);
     await e.advance(10);
     check('r8-3: a 400 whose revisions were all superseded raises no alert; logged', e.server.row('w1').rating?.score === 5 && e.alerts.length === 0 && e.logs.some((l) => /400/.test(l.m)));
+  }
+
+  // ── Codex recheck 8 ──────────────────────────────────────────────────────
+  {
+    // r9-1: get-session held, it already sampled "valid"; a second 401 arrives;
+    // "same" → only the first entry retires; the second gets its OWN check
+    // (here: signed out by then → kept, still stopped).
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue('hang', 'hang');
+    e.ctl('w1').setScore(1);
+    e.ctl('w2').setScore(2);
+    await e.advance(1000);
+    e.holdConfirms(true);
+    const asked = e.confirms;
+    await e.releaseOne(errRes(401, 'invalid')); // w1's 401 → the check starts (samples "same")
+    e.sessions('none'); // revoked after that sample
+    await e.releaseOne(errRes(401, 'invalid')); // w2's 401: after the check started
+    await e.releaseConfirms();
+    await e.advance(10);
+    check('r9-1: an earlier "same" retires only what it covered; the later 401 gets a fresh check', e.confirms === asked + 2 && e.owner.entry(ME, CODE, 'w1') === null && e.disk.has(storageKey(ME, CODE, 'w2')) && e.owner._debug().stopped);
+  }
+  {
+    // r9-2: launch recovery: a stored score op, a failed launch read, a page
+    // Clear (its unsettled note in the restore); the stored op 404s, the
+    // Clear 400s → the retired score is not resent, the later note is.
+    const t0 = 6_000_000_000;
+    const op = { opId: 'op-stored-score', body: { wineId: 'w1', merge: true, opId: 'op-stored-score', baseVersion: 3, viewer: ID, score: 4, notes: 'stored note' }, baseVersion: 3, revs: { score: 1, notes: 2 } };
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 }, notes: { value: 'stored note', rev: 2 } }, ackRev: {}, parked: {}, nextRev: 2, baseVersion: 3, baseHadRating: true, unresolvedOp: op, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 }));
+    const e = env({ disk, t0, online: false });
+    for (let i = 0; i < 3; i++) e.server.webSave('w1', { score: 3 });
+    e.poll();
+    e.failReads(true, 0); // the launch read fails, the per-key reads work
+    await e.start();
+    await e.advance(1500);
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    c.setNotes('later'); // unsettled, over the stored note: the page's newer value
+    const ready = c.baselineReady(); // the owner check ran after the failed launch read
+    await c.clearRating(c.clearBaseline());
+    await e.advance(10); // the per-key read merges the stored entry under the Clear
+    e.queue(errRes(404) as never, errRes(400) as never);
+    await e.setOnline(true);
+    await e.advance(10);
+    const m = e.sent.find((x) => x.body.merge === true && x.body.notes === 'later');
+    check('r9-2: after launch recovery the retired stored score is pruned from the Clear\'s restore; the page\'s newer note (over the stored one) goes out', ready && e.sent[0]?.body.opId === 'op-stored-score' && !!m && m.body.score === undefined && !e.sent.slice(1).some((x) => x.body.score === 4 || x.body.notes === 'stored note'));
   }
 
   // ── the 90-day clean-up ──────────────────────────────────────────────────
