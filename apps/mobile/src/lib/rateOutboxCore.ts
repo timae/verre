@@ -56,7 +56,9 @@ export type Entry = {
   baseVersion: number | 'unknown';
   baseHadRating: boolean | 'unknown';
   unresolvedOp?: StoredOp;
-  clear?: { opId: string; baseVersion?: number; restore: Partial<FieldValues> };
+  // `restoreRevs`: the revision each restored value came from (a predecessor's
+  // retirement prunes what it covered; an unsettled value has none: kept).
+  clear?: { opId: string; baseVersion?: number; restore: Partial<FieldValues>; restoreRevs?: Revs };
   // Loaded from storage at launch, edited offline, or sat through an outage
   // with unsent revisions: "newer rating wins" (a foreign 409 drops it).
   waited: boolean;
@@ -253,6 +255,8 @@ export function createRateOutbox(deps: OutboxDeps) {
   let ownerMoved = 0; // consecutive answers that came back under a moved generation
   let ownerNextAt = 0;
   let invalidRetry: { timer: unknown; ask: () => void } | null = null;
+  // The ONE pending account check after refusals, with every refusal it covers.
+  let invalidCheck: { act: number; who: string; items: { s: Slot; inc: number; dropOnSame: boolean; stillCovered?: (s: Slot) => boolean; onSame?: (s: Slot) => void }[] } | null = null;
   let online = deps.isOnline();
   let appActive = deps.appActive();
   let wakeTimer: unknown = null;
@@ -507,22 +511,41 @@ export function createRateOutbox(deps: OutboxDeps) {
   // recheck 6): X, its revisions and its Clear are retired; newer revisions
   // (or a Clear staged after X) keep the entry and go out as a fresh op that
   // the server answers for itself. `cov` is captured at DISPATCH.
-  const retireOp = (s: Slot, cov: Coverage) => {
+  // Returns whether it discarded a revision the person still wants (one no
+  // newer revision supersedes): only that is worth an error (recheck 7).
+  const retireOp = (s: Slot, cov: Coverage): boolean => {
     const e = s.mem;
-    if (!e || e !== cov.entry) return; // another entry now: not X's to touch
+    if (!e || e !== cov.entry) return false; // another entry now: not X's to touch
+    let lost = false;
     if (e.unresolvedOp?.opId === cov.opId) delete e.unresolvedOp;
-    if (cov.kind === 'clear' && e.clear?.opId === cov.opId) delete e.clear;
+    if (cov.kind === 'clear' && e.clear?.opId === cov.opId) {
+      delete e.clear;
+      lost = true;
+    }
     for (const f of FIELDS) {
       const r = cov.revs[f];
-      if (r !== undefined && e.fields[f] && e.fields[f]!.rev <= r) {
+      if (r === undefined) continue;
+      if (e.fields[f] && e.fields[f]!.rev <= r) {
         delete e.fields[f];
         delete e.parked[f];
+        lost = true;
+      }
+      // A Clear staged behind X keeps what X covered out of its restore
+      // (provenance: later edits stay).
+      const rr = e.clear?.restoreRevs?.[f];
+      if (e.clear && rr !== undefined && rr <= r) {
+        delete e.clear.restore[f];
+        delete e.clear.restoreRevs![f];
       }
     }
-    if (isEmptyEntry(e)) return dropSilently(s);
+    if (isEmptyEntry(e)) {
+      dropSilently(s);
+      return lost;
+    }
     e.attempts = 0;
     e.nextAt = 0;
     commit(s);
+    return lost;
   };
   const raiseError = (s: Slot, message: string) => {
     if (isVisible(s.key)) errors.set(s.key, message);
@@ -764,15 +787,17 @@ export function createRateOutbox(deps: OutboxDeps) {
     e.nextAt = 0;
     moment503.delete(e.code);
   };
-  const mergeSucceeded = (s: Slot, rating: RatingMeta | null, version: number) => {
+  const mergeSucceeded = (s: Slot, rating: RatingMeta | null, version: number, opId: string) => {
     const e = s.mem!;
-    const op = e.unresolvedOp!;
-    delete e.unresolvedOp;
+    // The answered op, if it is still the entry's (a retirement may have
+    // removed it: its revisions are gone, nothing to acknowledge; never a throw).
+    const op = e.unresolvedOp?.opId === opId ? e.unresolvedOp : undefined;
+    if (op) delete e.unresolvedOp;
     const canonical = rating ? { ...rating, v: version } : null;
     if (canonical) ownAcked.set(s.key, { v: version, entry: e });
     remember(e.viewer, e.code, e.wineId, canonical);
     deps.patchCache(e.viewer, e.code, e.wineId, canonical);
-    ack(e, op.revs);
+    if (op) ack(e, op.revs);
     e.baseVersion = version;
     e.baseHadRating = canonical !== null;
     e.rebased = false;
@@ -815,7 +840,7 @@ export function createRateOutbox(deps: OutboxDeps) {
     switch (res.kind) {
       case 'rating':
         if (isClear) return clearSucceeded(s);
-        return mergeSucceeded(s, res.rating, res.rating.v ?? 0);
+        return mergeSucceeded(s, res.rating, res.rating.v ?? 0, op.opId);
       case 'unchanged': {
         if (isClear) return clearSucceeded(s);
         const revs = e.unresolvedOp!.revs;
@@ -833,7 +858,7 @@ export function createRateOutbox(deps: OutboxDeps) {
       case 'stale': {
         if (res.lastOpId === op.opId) {
           if (isClear) return clearSucceeded(s);
-          return mergeSucceeded(s, res.rating, res.version);
+          return mergeSucceeded(s, res.rating, res.version, op.opId);
         }
         // "Not rated" seen, no rating now (a re-rate after a Clear, here or on
         // the web, or after the host deleted it): not a conflict.
@@ -866,9 +891,12 @@ export function createRateOutbox(deps: OutboxDeps) {
       }
       case 'error': {
         const st = res.status;
-        if (st === 404 || st === 403 || (st === 401 && res.auth === 'removed')) return retireOp(s, cov);
+        if (st === 404 || st === 403 || (st === 401 && res.auth === 'removed')) {
+          retireOp(s, cov);
+          return;
+        }
         // "same" from get-session: the moment refused X; only X retires.
-        if (st === 401) return confirmInvalid([s], true, 0, undefined, (x) => retireOp(x, cov));
+        if (st === 401) return confirmInvalid([s], true, 0, undefined, (x) => void retireOp(x, cov));
         if (st === 400) {
           // Never the note (or any value): the op id, which fields, the message.
           log('[rateOutbox] 400 from /rate (a client bug)', { opId: op.opId, fields: FIELDS.filter((f) => f in op.body), message: res.message });
@@ -889,8 +917,9 @@ export function createRateOutbox(deps: OutboxDeps) {
             }
             return;
           }
-          retireOp(s, cov);
-          return raiseError(s, SAVE_ERROR_TEXT);
+          // The log above is always written; the error only for a lost revision.
+          if (retireOp(s, cov)) raiseError(s, SAVE_ERROR_TEXT);
+          return;
         }
         if (st === 429) {
           const until = deps.now() + (res.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS);
@@ -949,29 +978,37 @@ export function createRateOutbox(deps: OutboxDeps) {
   // `onSame`: what "same" does to a refused slot instead of dropping it (a
   // /rate refusal retires only its own op).
   const confirmInvalid = (refused: Slot[], dropOnSame = true, attempt = 0, stillCovered?: (s: Slot) => boolean, onSame?: (s: Slot) => void) => {
-    const act = activation;
-    const who = viewer!;
-    const incs = refused.map((s) => s.incarnation);
+    const items = refused.map((s) => ({ s, inc: s.incarnation, dropOnSame, stillCovered, onSame }));
     stopped = true;
+    notify();
+    // 🔒 ONE shared account check per viewer (Codex recheck 7): a refusal
+    // that arrives while it is pending JOINS it; the runner stays stopped until
+    // it answers, and every joined retirement is applied BEFORE dispatch reopens.
+    if (invalidCheck && invalidCheck.act === activation && invalidCheck.who === viewer) {
+      invalidCheck.items.push(...items);
+      return;
+    }
     if (invalidRetry) {
       deps.clearTimer(invalidRetry.timer);
       invalidRetry = null;
     }
-    notify();
+    const check = { act: activation, who: viewer!, items };
+    invalidCheck = check;
     const ask = (n: number) => {
-      void deps.confirmSession(who).then(
-        (check) => answer(check, n),
+      void deps.confirmSession(check.who).then(
+        (res) => answer(res, n),
         () => answer('unknown', n),
       );
     };
-    const answer = (check: SessionCheck, n: number) => {
-      if (act !== activation || viewer !== who) return; // a viewer change or sign-out ends the retries
+    const answer = (res: SessionCheck, n: number) => {
+      // A viewer change or sign-out ends the retries.
+      if (invalidCheck !== check || check.act !== activation || viewer !== check.who) return;
       // No answer: ask again with the runner's backoff while this viewer is
       // signed in. Signed out / another viewer: kept, the runner starts again
       // at that viewer's next sign-in.
-      if (check === 'unknown') {
+      if (res === 'unknown') {
         const retry = () => {
-          if (act !== activation || viewer !== who) return;
+          if (invalidCheck !== check || check.act !== activation || viewer !== check.who) return;
           invalidRetry = null;
           ask(n + 1);
         };
@@ -979,15 +1016,14 @@ export function createRateOutbox(deps: OutboxDeps) {
         invalidRetry = { timer, ask: () => { deps.clearTimer(timer); retry(); } };
         return;
       }
-      if (check !== 'same') return;
+      invalidCheck = null;
+      if (res !== 'same') return;
       // Still this viewer: a 401 means that moment refused it (left, no longer
       // a member); a wrong-viewer answer refused only the cookie it came with.
-      if (dropOnSame) {
-        refused.forEach((s, i) => {
-          if (!s.mem || incs[i] !== s.incarnation) return;
-          if (onSame) onSame(s);
-          else if (!stillCovered || stillCovered(s)) dropSilently(s);
-        });
+      for (const it of check.items) {
+        if (!it.dropOnSame || !it.s.mem || it.inc !== it.s.incarnation) continue;
+        if (it.onSame) it.onSame(it.s);
+        else if (!it.stillCovered || it.stillCovered(it.s)) dropSilently(it.s);
       }
       ownerGen = deps.stamp().gen;
       ownerMismatchGen = null;
@@ -1126,6 +1162,7 @@ export function createRateOutbox(deps: OutboxDeps) {
     ownerRetry = null;
     if (invalidRetry) deps.clearTimer(invalidRetry.timer);
     invalidRetry = null;
+    invalidCheck = null;
     remembered.clear();
     overlayMemo.clear();
     rawGen.clear();
@@ -1345,11 +1382,20 @@ export function createRateOutbox(deps: OutboxDeps) {
       if (!s.mem) s.mem = newEntry(v, code, wineId, opts.base, opts.mark);
       const e = s.mem;
       const restore: Partial<FieldValues> = {};
-      for (const f of FIELDS) if (e.fields[f]) (restore as Record<string, unknown>)[f] = e.fields[f]!.value;
-      for (const f of FIELDS) if (opts.extra?.[f] !== undefined) (restore as Record<string, unknown>)[f] = opts.extra[f];
+      const restoreRevs: Revs = {};
+      for (const f of FIELDS) {
+        if (!e.fields[f]) continue;
+        (restore as Record<string, unknown>)[f] = e.fields[f]!.value;
+        restoreRevs[f] = e.fields[f]!.rev;
+      }
+      for (const f of FIELDS) {
+        if (opts.extra?.[f] === undefined) continue;
+        (restore as Record<string, unknown>)[f] = opts.extra[f];
+        delete restoreRevs[f]; // the page's unsettled value: newer than any op
+      }
       e.fields = {};
       e.parked = {};
-      e.clear = { opId: deps.newOpId(), restore };
+      e.clear = { opId: deps.newOpId(), restore, restoreRevs };
       e.rebased = false;
       e.editedAt = deps.now();
       if (!online) e.waited = true;

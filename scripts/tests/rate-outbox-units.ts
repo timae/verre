@@ -1854,6 +1854,72 @@ async function main() {
     check(`r7-3: ${label} drops an unchanged entry${label === '400' ? ' (with the error)' : ''}`, e.disk.size === 0 && e.owner.entry(ME, CODE, 'w1') === null && e.sent.length === 1 && (label !== '400' || c.savedState() === 'error'));
   }
 
+  // ── Codex recheck 7 ──────────────────────────────────────────────────────
+  {
+    // r8-1: two `invalid` replies → ONE shared account check; nothing reopens
+    // or retries while it is pending; "same" retires both before dispatch
+    // reopens; the later note on w2 goes out and the ack doesn't throw.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue('hang', 'hang');
+    e.ctl('w1').setScore(1);
+    e.ctl('w2').setScore(2);
+    await e.advance(1000); // X1 and X2 out, held
+    const c2 = e.ctl('w2');
+    c2.setNotes('later');
+    await e.advance(1000);
+    e.holdConfirms(true);
+    const asked = e.confirms;
+    await e.releaseOne(errRes(401, 'invalid'));
+    await e.releaseOne(errRes(401, 'invalid'));
+    const sentWhilePending = e.sent.length;
+    await e.releaseConfirms();
+    await e.advance(10);
+    check('r8-1: one shared check, nothing sent while it is pending, both retired before reopening, the later note saved', e.confirms === asked + 1 && sentWhilePending === 2 && e.server.row('w2').rating?.notes === 'later' && e.server.row('w2').rating?.score !== 2 && e.server.row('w1').rating === null);
+  }
+  {
+    // r8-2: a merge refused (404) with a Clear staged behind it; the Clear
+    // gets a 400 → its restore no longer holds the retired score; the
+    // unsettled note it kept goes out alone.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.queue('hang', errRes(400) as never);
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // X = score 4, held
+    c.setNotes('kept'); // unsettled
+    await c.clearRating(c.clearBaseline()); // the Clear behind X, restore = { score 4 (X's), notes 'kept' }
+    await e.releaseOne(errRes(404)); // X retires → prunes its score from the restore
+    await e.advance(10);
+    const m = e.sent.find((x) => x.body.merge === true && x.body.notes === 'kept');
+    check('r8-2: a Clear\'s 400 restores only what survived: the retired score is never resent', !!m && m.body.score === undefined && !e.sent.slice(2).some((x) => x.body.score === 4));
+  }
+  {
+    // r8-3: 4 held, 5 staged, a 400 for the 4 in the background, the 5 saves,
+    // back to the foreground → no alert (nothing the person wants was lost);
+    // the 400 is still logged.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    e.cache.get(CODE)!.wines = [{ id: 'w1', name: 'Riesling' }]; // a name for the alert
+    await e.start();
+    e.queue('hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    c.setScore(5);
+    await e.advance(1000);
+    e.setActive(false);
+    await e.releaseOne(errRes(400));
+    await e.advance(10); // the 5 saves
+    e.setActive(true);
+    await e.advance(10);
+    check('r8-3: a 400 whose revisions were all superseded raises no alert; logged', e.server.row('w1').rating?.score === 5 && e.alerts.length === 0 && e.logs.some((l) => /400/.test(l.m)));
+  }
+
   // ── the 90-day clean-up ──────────────────────────────────────────────────
   {
     const disk = new Map<string, string>();
