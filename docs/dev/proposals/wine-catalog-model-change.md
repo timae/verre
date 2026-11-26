@@ -803,8 +803,11 @@ re-checked 2026-11-18, not written in until now):
   knows an entry's origin, so the list is load-bearing.
 - **The flagged-link list**: a kept row whose delivered entry disagrees with our string
   (an accent, a name) is linked as is or flagged; flagged rows go to them as a plain list,
-  not as change proposals (that table is phase 3). The occurrence's snapshot keeps our
-  string either way. A LONG list is itself a finding (systematic disagreement).
+  not as change proposals (that table is phase 3). ~~The occurrence's snapshot keeps our
+  string either way.~~ 🔒 **Superseded 2026-11-26 (Simon):** a converted bottle shows the
+  ENTRY's name, producer and type, like every link (the snapshot from the entry), so one
+  wine reads the same everywhere; the flagged-link list still carries our string. A LONG
+  list is itself a finding (systematic disagreement).
 
 🔒 **Ruled 2026-11-18 (Simon), from researching the conversion's rows:**
 - **Corrections to a DELIVERED entry go on that list, never into the row.** Missing
@@ -818,6 +821,24 @@ re-checked 2026-11-18, not written in until now):
   the wine is made), never the source's prose, and nothing vintage-specific on the
   product. The source is kept in our records and on the lists, never on the entry
   (attribution is per collection, never per record).
+
+**As built (release 0.2.0): `scripts/convert-legacy-bottles.mts`** (`docs/dev/deployment.md`
+§ Catalogue model change). Verdicts `link` / `mint` / `producer+mint` / `same-as:<row>` /
+`leave` / `drop`, one row per bottle. ONE transaction, in the live writers' lock order:
+every affected moment's advisory lock and row (`withSessionLocks`, code order, as account
+deletion and the purge), the bottles `FOR UPDATE`, the craving owners (`lockCravings`),
+then the catalogue rows through `lib/catalogWrite.ts`. Links are record-first
+(`relinkOccurrence`, its row count asserted; `afterRelink` moves the cravings and merges a
+collision), each touched moment's revision bumped, the cached line-ups re-projected after
+COMMIT. It refuses: an unlinked bottle not on the list, a target missing / not linkable /
+on the delivery's lists, a deletion that something references now, a year that is no
+catalogue year, file 2 neither applied nor abandoned, and a moment whose cache the warm-up
+has not stamped (its NULL-revision reconciliation would copy the cache over the links).
+It skips and reports a listed bottle deleted or linked since. New entries show as added by
+the bottle's own account, else an operator's (ruled 2026-11-26), each with its review item.
+Rehearsed on the sandbox's prod copy with file 1 (2026-11-26): 57 bottles linked, 1 producer,
+1 wine and 49 years created (48 of them years the delivered wines lack), 67 deleted,
+26 kept, the 5 cravings on them following their bottles; a second run changes nothing.
 
 **This is a hand-curated conversion, not an algorithm.** At this volume every row can be
 read by a human, which is both cheaper and more accurate than any matching rule. It also

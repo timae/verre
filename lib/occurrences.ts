@@ -474,8 +474,8 @@ export async function insertOccurrence(
 export async function relinkOccurrence(
   tx: Prisma.TransactionClient, sessionId: number | null, id: string,
   link: { productId: string; vintageId: string | null }, s: EntrySnapshot,
-): Promise<void> {
-  await tx.$executeRaw`
+): Promise<number> {
+  return tx.$executeRaw`
     UPDATE wines SET name = ${s.name.slice(0, 255)}, producer = ${cut(s.producer, 255)}, vintage = ${cut(s.vintage, 4)},
       grape = ${cut(s.grape, 255)}, style = ${cut(s.type, 64)}, colour = ${s.colour}, sparkling = ${s.sparkling}, abv = ${s.abv}::numeric,
       region = ${cut(s.region, 255)}, country = ${cut(s.country, 2)}, product_id = ${link.productId}, vintage_id = ${link.vintageId}

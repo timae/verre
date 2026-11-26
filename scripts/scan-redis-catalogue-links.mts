@@ -79,7 +79,9 @@ for (const kind of ['removed', 'merged'] as const) {
   lists[kind] = entry
 }
 
-const client = createClient({ url, socket: { tls: url.startsWith('rediss://'), connectTimeout: 5000, reconnectStrategy: false } })
+// The Key-Value Store presents a self-signed chain: lib/redis.ts's socket options (tls + rejectUnauthorized: false),
+// or the scan cannot connect to prod (the defect that stopped public-ids-precheck.mts on 0.1.5 night).
+const client = createClient({ url, socket: { tls: url.startsWith('rediss://'), rejectUnauthorized: false, connectTimeout: 5000, reconnectStrategy: false } })
 client.on('error', () => { /* surfaced by the awaited call */ })
 try { await client.connect() } catch (e) { console.error(`scan-redis-catalogue-links: cannot connect to ${where} (${(e as Error).message})`); process.exit(2) }
 

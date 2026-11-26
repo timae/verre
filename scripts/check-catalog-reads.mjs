@@ -62,6 +62,12 @@ const EXPECTED = {
   // Operator tools: the columns file's guarded update (file 2) checks its
   // target catalogue by digest and id; never a display read.
   'scripts/catalog-columns-update.mjs': 2,
+  // The legacy bottles' conversion: whether each ruled target exists with a
+  // linkable status (and a vintage is its product's), product origins present
+  // (file 2 applied), and an existing year before it adds one (the add flow's
+  // lock); stored ids and statuses only, never a display read. The links' own
+  // snapshot comes from loadEntries.
+  'scripts/convert-legacy-bottles.mts': 5,
 }
 
 const inScope = (f) =>

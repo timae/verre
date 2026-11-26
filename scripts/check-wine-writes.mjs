@@ -95,6 +95,11 @@ const EXPECTED = {
   'scripts/rekey-session-images.mts': 2,
   'scripts/rekey-user-images.mts': 1,
   'scripts/backfill-lineup-positions.mts': 1,
+  // The legacy bottles' conversion (release 0.2.0): its links go through
+  // relinkOccurrence under every affected moment's lock and bump each touched
+  // moment's revision; this one site is the DELETE of the ruled orphans (no
+  // moment, no rating, no craving, re-asserted in the statement).
+  'scripts/convert-legacy-bottles.mts': 1,
 }
 
 const inScope = (f) =>
