@@ -802,7 +802,7 @@ on the stack hosting the line-up: Back returns to the open layer.
   native gesture on the scroll view, the pan on the PAGE ROOT, so a pull may
   start on the bar or the footer too: "from ANYWHERE while the page is at its
   top"; the photo page's `FloatHead` and its bar row are `box-none` while
-  transparent, so touches between the controls reach the hero; Back / ⋯ still
+  transparent, so touches between the controls reach the hero; Close / ⋯ still
   tap), the scroll offset a SHARED value (`useScrollOffset`), `bounces={!atTop}`,
   touches blocked by React-state `pointerEvents` during the open / close (never
   by changing `enabled`: that cancels a running pan). While a pull displaces
@@ -821,6 +821,9 @@ on the stack hosting the line-up: Back returns to the open layer.
   is refused and never writes the row (it would cut the running slide).
 - **Pill**: `pushSheet` held while the layer is open AND the line-up focused
   (`useIsFocused`), so a profile pushed over the layer shows it.
+- **The bar's close control** is the post's DOWN chevron, labelled "Close"
+  (Simon, 2026-11-26): `IrBar` draws the opened post's own glyph and size (the
+  `back` icon rotated -90°, `topBarBackIcon`), never a back arrow.
 - **Back / VoiceOver**: `accessibilityViewIsModal` on the layer, the covered
   line-up `pointerEvents="none"` + hidden from accessibility; ONE focus-scoped
   Android `BackHandler` beneath the line-up's `BottomSheetModalProvider`:

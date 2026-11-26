@@ -649,9 +649,15 @@ function IrBar({
       pointerEvents={onGlass ? 'box-none' : 'auto'}
       style={{ flexDirection: 'row', alignItems: 'center', height: phone.size('topBar'), marginLeft: glass ? 0 : -6 }}
     >
-      <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onBack} hitSlop={8}
+      {/* The post's close control (Simon, 2026-11-26): its DOWN chevron, the
+          back glyph rotated as in the opened post's bar (same stroke and
+          size), labelled "Close"; the layer closes by pull-down, the pager
+          owns left / right. */}
+      <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onBack} hitSlop={8}
         style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}>
-        <Icon name="back" size={phone.size('topBarBackIcon')} color={iconColor} />
+        <View style={{ transform: [{ rotate: '-90deg' }] }}>
+          <Icon name="back" size={phone.size('topBarBackIcon')} color={iconColor} />
+        </View>
       </Pressable>
       {/* .ir-bartitle: the shared BarTitle (18/600, fades in with a 4pt rise) */}
       <BarTitle title={title} progress={anim} inset={10} onGlass={onGlass} />

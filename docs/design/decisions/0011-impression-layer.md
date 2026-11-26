@@ -76,12 +76,11 @@ merge save, only Clear My Rating deletes.
   structure tracks start about 20 pt in and a wider zone kept popping by accident.
   Widen only if the phone shows the score slider and the tracks still take their
   drags. The line-up's native back swipe is off while the layer is open.
+- **The bar's close control is the post's down chevron**, labelled "Close"
+  (Simon, 2026-11-26): the same glyph and size as the opened post's bar (the
+  back glyph rotated); the layer closes like the post, so it no longer shows a
+  back arrow.
 - **The pill** is hidden while the layer is open AND the line-up is focused (the
   footer replaces the nav), so a profile pushed over the layer shows it.
 - **Motion** stays on the transform / opacity allowlist; hit-testing is React
   state; every leg is `springs.enter` / `springs.release`.
-
-## Not done here
-
-- The bar keeps today's back arrow; the post's modal has a down chevron (an open
-  question for Simon, `.local/tasting-feedback/overnight-log.md`).
