@@ -59,7 +59,7 @@ export default function PostStack() {
           options={{ gestureEnabled: false, contentStyle: { backgroundColor: 'transparent' } }}
         />
         {/* The post edit, started inside the post: an ordinary PUSH with
-            swipe-back, like opening an impression (ruled 2026-11-24; it slid
+            swipe-back, like Edit Impression (ruled 2026-11-24; it slid
             up without swipe-back before). Never a native modal over the
             contained post: that hung the app (device pass 2026-11-10). */}
         <Stack.Screen name="edit/[postId]" />

@@ -15,10 +15,10 @@ import { kindLabel } from '@/lib/momentFormat';
 import { radius, useTheme } from '@/theme';
 import { alcoholText, bottleGrapes, bottleOrigin } from '@/lib/bottleFacts';
 
-// The impression screen's read-only parts (moved verbatim from
-// app/(tabs)/moments/session/[code]/impression/[wineId].tsx, Moment Visibility
-// step-2 plan § 4.7): a look-in's bottle page shows the same hero, name block
-// and about block. The impression screen imports them back.
+// The impression's read-only parts (moved verbatim from the old impression
+// route, Moment Visibility step-2 plan § 4.7): a look-in's bottle page shows
+// the same hero, name block and about block. The impression layer's pages
+// (ImpressionPage.tsx, build 2) import them back.
 const GUTTER = 20; // 02e vbody runs 20px gutters (vs the line-up's 22) — deliberate override
 
 // ─── name blocks ───────────────────────────────────────

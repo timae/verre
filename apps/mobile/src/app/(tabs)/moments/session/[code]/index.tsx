@@ -2,9 +2,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getMomentVisibility, momentVisibilityKey } from '@/lib/api/moments';
 import { getVisibility, VISIBILITY_KEY } from '@/lib/api/settings';
 import { StatusBar } from 'expo-status-bar';
-import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, useWindowDimensions, View, type ViewInstance } from 'react-native';
 import Reanimated, { useAnimatedRef, useAnimatedScrollHandler, useSharedValue } from 'react-native-reanimated';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,6 +13,10 @@ import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { PersonPreviewProvider } from '@/components/moments/PersonPreviewSheet';
+import { ImpressionLayer, type RowLanding } from '@/components/moments/ImpressionLayer';
+import type { RowHandle } from '@/components/profile/lists/ListParts';
+import { frameVisible, landingScroll } from '@/lib/impressionLayerCore';
+import { popSheet, pushSheet } from '@/lib/sheetVisibility';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { fuzzyIncludes } from '@/lib/search';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
@@ -33,12 +37,13 @@ import { momentStatusLine } from '@/lib/momentVisibilityCopy';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { useTheme } from '@/theme';
 
-import { type LuSort, luSearchHay, type RevealProps, swapIn, swapOut, useTabTransition, CoverHeroLineup, HeroTopBar, type LuToolbarProps, LineupToolbar, OvcAbout, LockCard, EmptyLineup, AddImpressionRow, LuRow, CollapsingAdd, LineupAddButton } from '@/components/moments/LineupParts';
+import { type LineupScrollApi, type LuSort, luSearchHay, type RevealProps, swapIn, swapOut, useTabTransition, CoverHeroLineup, HeroTopBar, type LuToolbarProps, LineupToolbar, OvcAbout, LockCard, EmptyLineup, AddImpressionRow, LuRow, CollapsingAdd, LineupAddButton } from '@/components/moments/LineupParts';
 
 // 02b line-up to the vero-screens pixel spec: .sess-meta line, .ovc about
 // block, .vtabs, .lurow anatomy, .lock-card with countdown cells, .tempty.
-// Milestone 3: rows open the impression detail (02e); unrated rows carry the
-// .lu-rate pill, rated rows the score chip. The ⋯ menu wires People + Share
+// Milestone 3: rows open the impression detail (02e), since build 2 (ADR-0011)
+// as a LAYER inside this screen (ImpressionLayer, below), no route; unrated
+// rows carry the .lu-rate pill, rated rows the score chip. The ⋯ menu wires People + Share
 // (sheets), a live Blind-for-all toggle, and Settings (02f, a pushed screen
 // stack under settings/); the Compare tab is an IN-SCREEN swap (CompareBody
 // below the shared SessionTabs — no route, everything above the tabs stays).
@@ -304,9 +309,121 @@ export default function SessionLineup() {
   const ovc = meta ? (
     <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} edit={edit} status={status} />
   ) : null;
-  const openImpression = (wineId: string) =>
-    router.push(sessionHref(sessionTab, 'impression/[wineId]', { code, wineId }), { dangerouslySingular: true });
+  // ── the impression LAYER (build 2, ADR-0011) ────────────────────────────
+  // The open impression lives here, not on a route: it grows out of its row
+  // (the post's container transform) and folds back into the current row on
+  // close (paging may have moved it). Every row registers a measurable handle
+  // keyed by wine id; each layout exposes its scroll (LineupScrollApi).
+  const [layer, setLayer] = useState<{ key: number; wineId: string; source: RowLanding | null } | null>(null);
+  const layerRef = useRef(layer);
+  layerRef.current = layer;
+  const rowHandles = useRef(new Map<string, RowHandle>());
+  const registerRow = useCallback((wineId: string, handle: RowHandle) => {
+    rowHandles.current.set(wineId, handle);
+    return () => {
+      if (rowHandles.current.get(wineId) === handle) rowHandles.current.delete(wineId);
+    };
+  }, []);
+  const coverScrollApi = useRef<LineupScrollApi | null>(null);
+  const windowHRef = useRef(windowH);
+  windowHRef.current = windowH;
+  const plainTabsRef = useRef<ViewInstance>(null);
+  const plainToolbarH = useRef(0);
+  const lineupFocused = useIsFocused();
+  const focusedRef = useRef(lineupFocused);
+  focusedRef.current = lineupFocused;
+  // What a landing reads, as of the last render (the measure runs later).
+  const landingCtx = useRef({ heroShown: false, tab: 'lineup' as SessionTab, lock: null as number | null, shown: [] as string[] });
   const openAdd = () => router.push(sessionHref(sessionTab, 'add', { code }));
+
+  const plainScrollApi = useRef<LineupScrollApi | null>(null);
+  // A row's frame for the layer: `scroll` brings it into view first (a close
+  // after paging, under the opaque layer). Null = the bounded fade: the Compare
+  // tab, a locked line-up, a row a SEARCH hides, a frame missing, late, or
+  // not wholly visible: under the pinned toolbar or past the screen's bottom.
+  // The tab bar's clearance is only the landing SCROLL's target (a row behind
+  // the pill is still wholly visible: review 2026-11-26).
+  // Reads refs only (it runs after the tap, after paging).
+  const measureRow = useCallback(async (wineId: string, scroll: boolean): Promise<RowLanding | null> => {
+    const ctx = landingCtx.current;
+    if (ctx.tab !== 'lineup' || ctx.lock !== null || !ctx.shown.includes(wineId)) return null;
+    const api = ctx.heroShown ? coverScrollApi.current : plainScrollApi.current;
+    const first = rowHandles.current.get(wineId);
+    if (!api || !first) return null;
+    const [band, f0] = await Promise.all([api.band(), first.measure()]);
+    if (!band || !f0) return null;
+    let f = f0;
+    const y = scroll ? landingScroll(f, band, api.scrollY(), api.maxY()) : null;
+    if (y !== null) {
+      api.scrollTo(y);
+      await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+      const again = await rowHandles.current.get(wineId)?.measure();
+      if (!again) return null;
+      f = again;
+    }
+    const handle = rowHandles.current.get(wineId);
+    return handle && frameVisible(f, { top: band.top, bottom: windowHRef.current }) ? { ...f, face: handle.face } : null;
+  }, []);
+  const landing = useCallback((wineId: string) => measureRow(wineId, true), [measureRow]);
+  // A tap opens only while the screen can show it: focused, not fatal, the
+  // row still on the line-up tab and shown (not locked, not hidden by a search).
+  const fatalRef = useRef(fatal);
+  fatalRef.current = fatal;
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+  const rowOpenable = (wineId: string) => {
+    const ctx = landingCtx.current;
+    return aliveRef.current && focusedRef.current && !fatalRef.current && !layerRef.current &&
+      ctx.tab === 'lineup' && ctx.lock === null && ctx.shown.includes(wineId);
+  };
+  const openSeq = useRef(0);
+  const openImpression = async (wineId: string) => {
+    if (!rowOpenable(wineId)) return;
+    const seq = ++openSeq.current;
+    const frame = await measureRow(wineId, false);
+    // A newer tap, a fatal result, a blur or an unmount since (each one bumps
+    // the sequence), or the row no longer openable: this tap is void (Codex
+    // review 2026-11-26: never over a fatal view on retained wines).
+    if (seq !== openSeq.current || !rowOpenable(wineId)) return;
+    setLayer({ key: seq, wineId, source: frame });
+  };
+  // Pending opens die with the screen's focus and with a fatal result.
+  useEffect(() => {
+    if (!lineupFocused) openSeq.current++;
+  }, [lineupFocused]);
+  useEffect(
+    () => () => {
+      openSeq.current++;
+    },
+    [],
+  );
+  const [layerStyle, setLayerStyle] = useState<'light' | 'dark' | null>(null);
+  const closeLayer = useCallback(() => {
+    setLayer(null);
+    setLayerStyle(null);
+  }, []);
+  // A fatal moment is the line-up's own view: the layer goes (its pages stage
+  // their drafts on the way out; a confirmed removal also ends the open page's
+  // work, ImpressionPage).
+  useEffect(() => {
+    if (!fatal) return;
+    openSeq.current++;
+    setLayer(null);
+  }, [fatal]);
+  // ⚠️ The pill hides while the layer is open AND this screen is focused (the
+  // footer replaces the nav), never the moment-edit's unconditional hold: a
+  // profile pushed over the layer shows it (§ Person preview).
+  const layerOpen = layer !== null;
+  useEffect(() => {
+    if (!layerOpen || !lineupFocused) return;
+    pushSheet();
+    return () => popSheet();
+  }, [layerOpen, lineupFocused]);
 
   // First tap arms; the second (while armed) fires the reveal.
   const onThumbTap = (wineId: string) => {
@@ -416,6 +533,23 @@ export default function SessionLineup() {
   const plainMaxScroll = useSharedValue(0);
   const plainContentH = useRef(0);
   const plainViewportH = useRef(0);
+  // The plain layout's scroll for the impression layer's landing (the cover
+  // hero installs its own): rows are seen below the pinned toolbar (under the
+  // fixed tabs) and above the tab bar's clearance.
+  plainScrollApi.current = {
+    band: () => new Promise((resolve) => {
+      const node = plainTabsRef.current;
+      if (!node) return resolve(null);
+      const t = setTimeout(() => resolve(null), 120);
+      node.measureInWindow((_x, y, _w, h) => {
+        clearTimeout(t);
+        resolve(h > 0 ? { top: y + h + plainToolbarH.current, bottom: windowH - TAB_BAR_CLEARANCE } : null);
+      });
+    }),
+    scrollY: () => plainScrollY.value,
+    maxY: () => plainMaxScroll.value,
+    scrollTo: (y) => plainRef.current?.scrollTo({ y, animated: false }),
+  };
   // The plain layout's scroll for the in-place edit (the hero installs its own).
   useEffect(() => {
     if (heroShown) return;
@@ -435,7 +569,10 @@ export default function SessionLineup() {
   // Light glyphs only while the photo is actually under the status bar. The
   // reconnecting strip covers the notch with surfaceSunk, so glyphs revert to
   // the theme default (light glyphs would vanish on it).
-  const statusBarStyle = heroShown && !heroCollapsed && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark';
+  const lineupStatusBar = heroShown && !heroCollapsed && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark';
+  // While the impression layer is fully open, its active page's style.
+  const statusBarStyle = layerStyle ?? lineupStatusBar;
+  landingCtx.current = { heroShown, tab, lock, shown: shownWines.map((w) => w.id) };
   // On an opened post's stack the screen option below is never consulted
   // (the post is a modal): forward it to the root (lib/forwardedStatusBar).
   useForwardStatusBarStyle(statusBarStyle);
@@ -456,16 +593,29 @@ export default function SessionLineup() {
     <PersonPreviewProvider code={code} meta={fatal ? null : meta} myIdentityId={myIdentityId}>
     {/* The hero variant runs the photo under the status bar, so its container
         drops the safe-area top padding (the floating bar re-applies it). */}
+    {/* The impression layer renders OUTSIDE the in-place edit's touch
+        handlers (below); while it is open the line-up under it is hidden from
+        touch and VoiceOver (the layer is the modal view). */}
+    <View style={{ flex: 1 }}>
     {/* While a host edits in place, a tap outside the fields, the edit bar
         and Back shakes the bar (spread ALWAYS: editTouchHandlers). */}
-    <View style={{ flex: 1, paddingTop: heroShown ? 0 : insets.top + 8 }} {...momentEdit.touchHandlers}>
+    <View
+      style={{ flex: 1, paddingTop: heroShown ? 0 : insets.top + 8 }}
+      {...momentEdit.touchHandlers}
+      pointerEvents={layerOpen ? 'none' : 'auto'}
+      accessibilityElementsHidden={layerOpen}
+      importantForAccessibility={layerOpen ? 'no-hide-descendants' : 'auto'}
+    >
       {/* iOS reads the screen option (root _layout: screen traits are the only
           status-bar channel there; the deepest screen with one set wins over
           the root's themed default). Android goes through expo-status-bar,
           kept always mounted: it is last-mounted-wins and does NOT restore on
           unmount, so a conditional bar would leave white glyphs stuck if the
           cover is removed mid-screen. */}
-      <Stack.Screen options={{ statusBarStyle }} />
+      {/* While the impression layer is open the native back swipe is off, so
+          the left edge pages the layer (react-native-screens gates its edge
+          recognizer on gestureEnabled). */}
+      <Stack.Screen options={{ statusBarStyle, gestureEnabled: !layerOpen }} />
       <StatusBar style={statusBarStyle} />
       {!heroShown ? (
         <View style={{ paddingHorizontal: GUTTER }}>
@@ -598,8 +748,10 @@ export default function SessionLineup() {
           compare={<CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} sort={cmpSort} query={cmpQuery} />}
           compareRail={cmpRail}
           onCollapsedChange={setHeroCollapsed}
-          onPressWine={openImpression}
+          onPressWine={(id) => void openImpression(id)}
           onAdd={openAdd}
+          registerRow={registerRow}
+          scrollApiRef={coverScrollApi}
         />
       ) : lock ? (
         <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: TAB_BAR_CLEARANCE }}>
@@ -608,7 +760,7 @@ export default function SessionLineup() {
         </ScrollView>
       ) : (
         <>
-          <View style={[{ paddingHorizontal: GUTTER }, dim]} {...inertProps}>
+          <View ref={plainTabsRef} collapsable={false} style={[{ paddingHorizontal: GUTTER }, dim]} {...inertProps}>
             <SessionTabs active={tab} onSelect={selectTab} />
           </View>
           {tab === 'compare' ? (
@@ -656,7 +808,7 @@ export default function SessionLineup() {
             {ovc}
             {/* Solid bg so rows scrolling under the pinned toolbar don't
                 bleed through (content-width fill matches the rows' inset). */}
-            <View style={{ backgroundColor: theme.bg }} {...inertProps}>
+            <View style={{ backgroundColor: theme.bg }} {...inertProps} onLayout={(e) => { plainToolbarH.current = e.nativeEvent.layout.height; }}>
               <View style={dim}>
                 <LineupToolbar toolbar={luToolbar} />
               </View>
@@ -693,9 +845,10 @@ export default function SessionLineup() {
                         index={luIndexById.get(id) ?? 0}
                         myIdentityId={myIdentityId}
                         ratings={ownRatings}
-                        onPress={() => openImpression(id)}
+                        onPress={() => void openImpression(id)}
                         reveal={reveal}
                         move={move}
+                        registerHandle={registerRow}
                       />
                     </>
                   );
@@ -729,6 +882,26 @@ export default function SessionLineup() {
       ) : null}
       {/* The in-place edit's bar (rides the keyboard) + its date sheet. */}
       {edit && meta ? <MomentEditBar edit={edit} hasCover={hasCover} lineup={tab === 'lineup'} /> : null}
+    </View>
+    {/* The moment impression (build 2, ADR-0011): this screen's LAST child,
+        inside its BottomSheetModalProvider + PersonPreviewProvider (the
+        aroma sheets and Brought By's preview present above it). */}
+    {layer ? (
+      <ImpressionLayer
+        key={layer.key}
+        code={code}
+        meta={meta}
+        wines={wines}
+        myIdentityId={myIdentityId}
+        removed={fatal?.kind === 'removed' || (state.error instanceof ApiError && state.error.kind === 'removed')}
+        showReconnecting={showReconnecting}
+        startWineId={layer.wineId}
+        source={layer.source}
+        landing={landing}
+        onClosed={closeLayer}
+        onStatusBar={setLayerStyle}
+      />
+    ) : null}
     </View>
     </PersonPreviewProvider>
     </BottomSheetModalProvider>

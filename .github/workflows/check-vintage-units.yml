@@ -125,6 +125,22 @@ jobs:
         timeout-minutes: 5
         run: npx tsx scripts/tests/rate-outbox-units.ts
 
+      # The moment impression LAYER (tasting-feedback build 2, ADR-0011;
+      # apps/mobile/src/lib/impressionLayerCore.ts). The pager: the ±1 window in
+      # line-up order, first / last page nowhere, the slot kept across a
+      # reorder, the edge follow / rubber band / release decision, the landing
+      # scroll and the whole-row-in-the-band test (else the fade). The
+      # active-page contract, with build 1's REAL transition guard: every
+      # controlled departure captures the OUTGOING page before anything moves,
+      # moves once only if that page is still active, a failure keeps it, a
+      # close and a page change can't race, a forced teardown captures nothing.
+      # No React, no network.
+      - name: Impression layer pager pins (app)
+        run: npx tsx scripts/tests/impression-pager-units.ts
+      - name: Impression layer active-page contract pins (app)
+        timeout-minutes: 2
+        run: npx tsx scripts/tests/impression-layer-units.ts
+
       # The server's post-COMMIT steps of a save (tasting-feedback build 1,
       # lib/afterCommit.ts) are coalesced per key: one run in flight plus one
       # trailing run with the latest function, keys independent, a failure

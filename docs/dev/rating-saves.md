@@ -295,7 +295,11 @@ is the ONLY queue state; there is no list of jobs.
   note) with nothing sent-but-unacknowledged is not staged.
 - A departure resolves as soon as its revisions are persisted (online or
   offline); Previous / Next / Finish move on at once. It fails only when storage
-  fails (the page stays and shows the error).
+  fails (the page stays and shows the error). Since build 2 the impression is a
+  layer inside the line-up (ADR-0011, `apps/mobile/CLAUDE.md` § The impression
+  layer): one page per neighbour, each with its own hook, and ONE transition
+  guard per layer shared by paging (Previous, Next, an edge swipe), Finish and
+  every close (the close button, Android Back, a pull-down).
 
 ### The runner
 
@@ -330,9 +334,11 @@ then persisted); (3) else the fields whose rev > `ackRev` become ONE merge (a ne
   out or replaced viewer (entries are keyed by the viewer's public id and sent
   only for the signed-in viewer, never with another's cookie).
 - Dropped, silently: 404 / 403 / removed, a waited entry meeting a newer rating,
-  a waited entry with an unknown base when a rating exists, `discardPending()`
-  (a present line-up without the wine, a confirmed removal, a successful Delete
-  Impression).
+  a waited entry with an unknown base when a rating exists, and
+  `discardPending({ confirmed: true })` (a successful Delete Impression only).
+  A bare `discardPending()` (a present line-up without the wine, a confirmed
+  removal) ends the page's work and stages its draft into the entry, which is
+  KEPT: the server's 404 / 403 / removed answer then drops it.
 - Dropped with an alert ("Rating Not Saved", "Your last changes to X couldn't be
   saved.") when no page of that wine is visible: a second 409 for live edits, a
   400. A visible page shows the error in its footer instead.

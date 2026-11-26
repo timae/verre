@@ -6,6 +6,7 @@ import { AromaCrumbs, CapHint, RefineAddRow, capFirst, usePendingAdd, type Aroma
 import { HexStage, STAGE_PAD, type HexCell } from './hexStage';
 import { honeyXY } from './hexMath';
 import { LEVEL_R, type MapLevel } from './mapLayout';
+import { CanvasTouchZone } from './canvasTouch';
 
 // H2 · zoom canvas — one of the browse picker variants (ADR-0008; mock:
 // honeyInner('H2') in vero-aroma-input.js, visual reference only). A dive
@@ -114,19 +115,24 @@ export function CanvasPicker({ ops, onEnsureVisible, capText }: {
   return (
     <View style={{ gap: 10 }}>
       <AromaCrumbs path={path} onPop={popTo} />
-      <View style={{ marginHorizontal: -20 }}>
-        <HexStage
-          cells={cells}
-          R={R}
-          stageH={stageH}
-          center={{ x: 0, y: 0 }}
-          onCell={onCell}
-          resetKey={path.join('/')}
-          capFirst={capFirst}
-          enterFrom={enterFrom}
-          onSwipeBack={path.length ? () => popTo(path.length - 1) : undefined}
-        />
-      </View>
+      {/* The moment impression layer's pull-down never starts on the hex
+          stage itself (CanvasTouchZone: a no-op outside the layer); the
+          crumbs and the refine row around it stay pull-eligible. */}
+      <CanvasTouchZone>
+        <View style={{ marginHorizontal: -20 }}>
+          <HexStage
+            cells={cells}
+            R={R}
+            stageH={stageH}
+            center={{ x: 0, y: 0 }}
+            onCell={onCell}
+            resetKey={path.join('/')}
+            capFirst={capFirst}
+            enterFrom={enterFrom}
+            onSwipeBack={path.length ? () => popTo(path.length - 1) : undefined}
+          />
+        </View>
+      </CanvasTouchZone>
       {/* the search refine row — armed by a note tap (or the dived-into
           node, any-tier); its pending Pronounced draws the cell border.
           The ref wraps row + hint: the ensure-visible measure target. */}

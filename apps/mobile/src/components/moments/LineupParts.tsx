@@ -12,7 +12,9 @@ import { Gradient } from '@/components/ui/Gradient';
 import { Icon } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
 import { BarTitle, useBarTitleProgress } from '@/components/VBar';
-import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, heroBarHeight, usePhoneTokens } from '@/lib/layout';
+import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, heroBarHeight, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
+import type { RowHandle } from '@/components/profile/lists/ListParts';
+import type { Band } from '@/lib/impressionLayerCore';
 import { alpha } from '@/theme/color';
 import { StarScore } from '@/components/scoring/StarScore';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
@@ -55,6 +57,21 @@ export type MetaView = SessionState['meta'];
 // are the VIEWER'S own. Sorting never renumbers — .lu-idx keeps the wine's
 // true line-up position via the indexById map.
 export type LuSort = 'lineup' | 'top' | 'bottom' | 'unrated';
+
+// The impression layer's landing (build 2, ADR-0011): each layout exposes its
+// scroll so a closing layer can bring the current row into view under it and
+// fold into it. `band` = the window band rows are seen in (under the pinned
+// toolbar, above the tab bar's clearance), null when it can't be measured.
+export type LineupScrollApi = {
+  band: () => Promise<Band | null>;
+  scrollY: () => number;
+  maxY: () => number;
+  // Instant: the layer covers the line-up while it moves.
+  scrollTo: (y: number) => void;
+};
+// A row's measurable handle, keyed by wine id (the profile list's RowHandle:
+// `measure` + an inert `face`); the returned function unregisters it.
+export type RegisterRow = (wineId: string, handle: RowHandle) => () => void;
 // 'lineup' is the DEFAULT state, not a menu row: tapping the active sort
 // again toggles it off, back to line-up order (Simon's ruling — same toggle
 // in the compare sort menu).
@@ -272,7 +289,7 @@ export function useTabTransition(windowW: number, paired: boolean): TabTransitio
 // real ScrollView (still a UIScrollView), so the dead-end still applies.
 export function CoverHeroLineup({
   meta, coverUrl, edit, scrollByRef, bottomPad, lock, wines, indexById, luNarrowed, toolbar, reorder, ratings, myIdentityId, canAdd, windowH, windowW, ovc, reveal, transition, onSelectTab, compare, compareRail, noTabs, onCollapsedChange, onPressWine, onAdd,
-  renderRow, empty, lockCard,
+  renderRow, empty, lockCard, registerRow, scrollApiRef,
 }: {
   /** Only the name is read (the look-in passes just that). */
   meta: Pick<NonNullable<MetaView>, 'name'>;
@@ -320,6 +337,9 @@ export function CoverHeroLineup({
   renderRow?: (wine: WireWine, index: number) => React.ReactNode;
   empty?: React.ReactNode;
   lockCard?: React.ReactNode;
+  /** The impression layer's row handles + this layout's scroll (the moment screen only). */
+  registerRow?: RegisterRow;
+  scrollApiRef?: React.RefObject<LineupScrollApi | null>;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -509,6 +529,22 @@ export function CoverHeroLineup({
       if (scrollByRef.current === scrollBy) scrollByRef.current = null;
     };
   }, [aref, scrollByRef]);
+  // The impression layer's landing: rows sit under the pinned bar + tabs +
+  // toolbar (the toolbar floor) and above the tab bar's clearance.
+  const lineupToolbarHRef = useRef(0);
+  useEffect(() => {
+    if (!scrollApiRef) return;
+    const api: LineupScrollApi = {
+      band: async () => ({ top: PIN_Y + tabsH.value + lineupToolbarHRef.current, bottom: windowH - TAB_BAR_CLEARANCE }),
+      scrollY: () => lastYRef.current,
+      maxY: () => heroMaxScroll.value,
+      scrollTo: (y) => aref.current?.scrollTo({ y, animated: false }),
+    };
+    scrollApiRef.current = api;
+    return () => {
+      if (scrollApiRef.current === api) scrollApiRef.current = null;
+    };
+  }, [scrollApiRef, PIN_Y, tabsH, windowH, heroMaxScroll, aref]);
   const editing = !!edit?.draft;
   const inertA11y = {
     accessibilityElementsHidden: editing,
@@ -812,6 +848,7 @@ export function CoverHeroLineup({
                               onPress={() => onPressWine(id)}
                               reveal={reveal}
                               move={move}
+                              registerHandle={registerRow}
                             />
                           </>
                         );
@@ -875,7 +912,10 @@ export function CoverHeroLineup({
           pointerEvents={settledLineup && !editing ? 'auto' : 'none'}
           accessibilityElementsHidden={!settledLineup || editing}
           importantForAccessibility={settledLineup && !editing ? 'auto' : 'no-hide-descendants'}
-          onLayout={(e) => setLineupToolbarH(e.nativeEvent.layout.height)}
+          onLayout={(e) => {
+            lineupToolbarHRef.current = e.nativeEvent.layout.height;
+            setLineupToolbarH(e.nativeEvent.layout.height);
+          }}
           style={[lineupStripStyle, { position: 'absolute', left: 0, right: 0, zIndex: 7 }]}
         >
           {LineupToolbarSlot}
@@ -1653,7 +1693,7 @@ export function AddImpressionRow({ onPress }: { onPress: () => void }) {
 //    tap target.
 // Guests' masked rows carry their own hint line (the old quiet strip died).
 export function LuRow({
-  wine, index, myIdentityId, ratings, onPress, reveal, move,
+  wine, index, myIdentityId, ratings, onPress, reveal, move, registerHandle,
 }: {
   wine: WireWine;
   index: number;
@@ -1664,8 +1704,40 @@ export function LuRow({
   /** Accessible reorder (PR #65): VoiceOver rotor actions mirroring the
    *  drag gesture. Null when reordering is unavailable. */
   move?: RowMoveActions | null;
+  /** The impression layer grows out of this row and folds back into it
+   *  (build 2): its window frame on demand + a static copy (the face), keyed
+   *  by wine id. */
+  registerHandle?: RegisterRow;
 }) {
   const { theme } = useTheme();
+  const rowRef = useRef<ViewInstance>(null);
+  // The face is built when asked (a fold after paging needs today's row).
+  const faceProps = useRef({ wine, index, myIdentityId, ratings, reveal });
+  faceProps.current = { wine, index, myIdentityId, ratings, reveal };
+  useEffect(() => {
+    if (!registerHandle) return;
+    const handle: RowHandle = {
+      // A belt on the callback: a row that unmounted never answers.
+      measure: () => new Promise((resolve) => {
+        const node = rowRef.current;
+        if (!node) return resolve(null);
+        const t = setTimeout(() => resolve(null), 120);
+        node.measureInWindow((x, y, width, height) => {
+          clearTimeout(t);
+          resolve(width > 0 && height > 0 ? { x, y, width, height } : null);
+        });
+      }),
+      get face() {
+        const p = faceProps.current;
+        return (
+          <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+            <LuRow wine={p.wine} index={p.index} myIdentityId={p.myIdentityId} ratings={p.ratings} reveal={{ ...p.reveal, armedId: null }} onPress={() => {}} />
+          </View>
+        );
+      },
+    };
+    return registerHandle(wine.id, handle);
+  }, [registerHandle, wine.id]);
   const phone = usePhoneTokens();
   const compact = phone.surface('compactList');
   const badge = phone.surface('badge');
@@ -1698,6 +1770,7 @@ export function LuRow({
   ];
   return (
     <Pressable
+      ref={rowRef}
       onPress={onPress}
       accessibilityActions={moveActions.length > 0 ? moveActions : undefined}
       onAccessibilityAction={(e) => {

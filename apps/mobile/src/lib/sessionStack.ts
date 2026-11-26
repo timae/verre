@@ -76,7 +76,8 @@ type SessionSub =
   | 'settings/reveal'
   | 'settings/visibility'
   | 'settings/my-privacy'
-  | 'impression/[wineId]'
+  // (No 'impression/[wineId]' since build 2: the impression is a layer inside
+  // the line-up, ADR-0011.)
   | 'edit-impression/[wineId]';
 
 // The casts live here and nowhere else: every variant is a REAL route (the

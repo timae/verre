@@ -70,7 +70,8 @@ export default function TabsLayout() {
 
   // The design ruling "in-flow footer actions replace the nav while
   // rating/creating": 02e (Previous / Next or Finish, with the rating's save
-  // status above them: the rating saves itself), 02a (Create), 02b·add
+  // status above them: the rating saves itself; a layer, through the sheet
+  // count), 02a (Create), 02b·add
   // (Add to line-up), and Moment Details (Discard / Save) carry their own
   // action bars — hide the pill there. The settings HUB keeps the bar (it's a
   // nav list, no footer), and so do Moment Setup and Moment Privacy since they
@@ -78,9 +79,9 @@ export default function TabsLayout() {
   const hidden =
     overlayHidesBar ||
     keyboardShown ||
-    // 02e, the moment impression (/…/impression/<wineId>, its footer bar
-    // replaces the nav), on every mount.
-    pathname.includes('/impression/') ||
+    // (02e, the moment impression, is a LAYER inside the line-up since build
+    // 2, ADR-0011, no route: it holds the sheet count while open and its
+    // line-up focused, `overlayHidesBar` above.)
     // The opened post (/feed/<id>, a card /feed/<id>/post/<postId>): immersive,
     // no bottom nav (Simon, 2026-07-08). A moment or profile pushed on the
     // post's stack shows it like anywhere else (Simon, 2026-11-10).
