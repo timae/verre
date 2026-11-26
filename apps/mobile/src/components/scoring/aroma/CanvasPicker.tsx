@@ -145,7 +145,11 @@ export function CanvasPicker({ ops, onEnsureVisible, capText }: {
         onM={pendState.setPendM}
         onP={pendState.togglePendP}
         onAdd={() => {
-          if (pendState.commit()) setPend(null);
+          if (!pendState.commit()) return;
+          // Back to the default view after an add (Simon, 2026-11-26): the
+          // families, zooming out like a crumb tap.
+          if (path.length) popTo(0);
+          else setPend(null);
         }}
       />
       <CapHint show={pendState.capHit} text={capText} />

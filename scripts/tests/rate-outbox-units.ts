@@ -3,7 +3,8 @@
 // and the impression draft controller (impressionAutosaveCore.ts), driven with
 // injected storage, clock, network, auth and fetch, against a fake /rate that
 // implements the version check, the merge, `unchanged` and the reap the way
-// § 1b specifies them. No React Native, no network.
+// § 1b specifies them (an emptied merge over a stored row reaps it: `cleared`,
+// Simon 2026-11-26). No React Native, no network.
 //
 //   npx tsx scripts/tests/rate-outbox-units.ts
 
@@ -14,6 +15,7 @@ import {
   type OutboxDeps, type ReadOutcome, type SessionCheck,
 } from '../../apps/mobile/src/lib/rateOutboxCore';
 import { createAutosaveController, createTransitionGuard } from '../../apps/mobile/src/lib/impressionAutosaveCore';
+import { createLayerTransitions, createPullClose } from '../../apps/mobile/src/lib/impressionLayerCore';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail: unknown = '') => {
@@ -51,7 +53,13 @@ function fakeServer(now: () => number) {
         aromas: b.aromas ?? prev?.aromas ?? [],
         notes: b.notes !== undefined ? scrub(b.notes) ?? '' : prev?.notes ?? '',
       };
-      if (empty(merged)) return { kind: 'unchanged', status: 200 };
+      if (empty(merged)) {
+        // No row: nothing written. A stored row: REAPED, the version bumped.
+        if (!prev) return { kind: 'unchanged', status: 200 };
+        const version = cur.version + 1;
+        rows.set(b.wineId, { rating: null, version, lastOpId: b.opId ?? null });
+        return { kind: 'cleared', status: 200, version };
+      }
       const version = cur.version + 1;
       const rating = { ...merged, at: now(), v: version };
       rows.set(b.wineId, { rating, version, lastOpId: b.opId ?? null });
@@ -686,6 +694,86 @@ async function main() {
     const over = e.owner.overlay(ME, CODE, raw);
     check('an offline Finish: the line-up rows show the stored ratings, Compare (raw) does not', over?.[ID].ratings.w2?.score === 4 && over?.[ID].ratings.w1?.score === 2 && raw?.[ID].ratings.w2 === undefined);
   }
+  // ── 🔒 emptied = deleted, decided by the SERVER (Simon, 2026-11-26) ─────
+  // The app holds an emptied draft while the page is open and stages it as an
+  // ordinary MERGE at the final departure; the server reaps it when the merged
+  // result over the stored row is empty. No Clear body from the app.
+  const fullSaves = (e: Env) => e.sent.filter((x) => x.body.merge !== true);
+  {
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    await e.advance(1000);
+    check('emptied: nothing staged while the page is open (a pause deletes nothing)', !e.owner.entry(ME, CODE, 'w1') && c.draft().score === 0);
+    await c.drain();
+    const entry = e.owner.entry(ME, CODE, 'w1');
+    check('… the final departure stages a MERGE (no Clear): the line-up row reads unrated', !!entry && !entry.clear && entry.fields.score?.value === 0 && !e.owner.overlay(ME, CODE, e.cache.get(CODE)!.ratings)?.[ID].ratings.w1);
+    await e.setOnline(true);
+    await e.advance(10);
+    check('… online: ONE merge of the score on the version seen, the server reaps it', e.sent.length === 1 && e.sent[0].body.merge === true && e.sent[0].body.score === 0 && e.sent[0].body.baseVersion === 1 && e.server.row('w1').rating === null, { sent: e.sent.map((x) => x.body) });
+    check('… the answer (`cleared`): the entry gone, "no rating" at version 2, the row unrated', !e.owner.entry(ME, CODE, 'w1') && e.owner.snapshot(ME, CODE, 'w1')?.rating === null && e.server.row('w1').version === 2 && !e.owner.overlay(ME, CODE, e.cache.get(CODE)!.ratings)?.[ID].ratings.w1);
+    c.setNotes('now with a note');
+    await e.advance(5000);
+    check('… a later note is a new rating (the 4 is not resurrected)', e.server.row('w1').rating?.notes === 'now with a note' && e.server.row('w1').rating?.score === 0, { row: e.server.row('w1') });
+  }
+  {
+    // The reaping merge committed but its answer was lost: the SAME op again →
+    // 409 with its own lastOpId and no rating, which is that op's success.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('commit-network');
+    c.setScore(0);
+    await c.drain();
+    await e.advance(30_000);
+    check('a reaped merge whose answer was lost: re-sent once (same op), taken as "no rating" at the new version', e.sent.length === 2 && e.sent[0].body.opId === e.sent[1].body.opId && !e.owner.entry(ME, CODE, 'w1') && e.owner.snapshot(ME, CODE, 'w1')?.rating === null && e.server.row('w1').version === 2, { sent: e.sent.map((x) => x.body), entry: e.owner.entry(ME, CODE, 'w1') });
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'x' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    c.setNotes('   ');
+    await c.drain();
+    await e.advance(10);
+    check('online Next with every field emptied (a blank note too): one merge, the server reaps, no full save', e.sent.length === 1 && e.sent[0].body.merge === true && fullSaves(e).length === 0 && e.server.row('w1').rating === null, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // 🔒 The draft goes out as ONE merge: score 0 + an aroma over a score-only
+    // rating, staged field by field, would send {score: 0} first, which the
+    // server reaps (the post and its likes with it) before the aroma lands.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    c.setAromas([{ a: 'fruity', m: null }]);
+    await c.drain();
+    await e.advance(10);
+    check('🔒 a draft with several fields is ONE merge (never an intermediate empty one the server would reap)', e.sent.length === 1 && e.sent[0].body.score === 0 && e.sent[0].body.aromas?.length === 1 && e.server.row('w1').version === 2 && e.server.row('w1').rating?.aromas?.length === 1, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'x' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    c.setNotes('');
+    await e.advance(1000);
+    check('online: an emptied page sends nothing while it stays open', e.sent.length === 0 && e.server.row('w1').rating?.score === 4);
+    c.setScore(3);
+    await e.advance(1000);
+    check('… a new score typed before leaving: merges only, the rating kept (3, the note emptied)', e.sent.length > 0 && e.sent.every((x) => x.body.merge === true) && e.server.row('w1').rating?.score === 3 && e.server.row('w1').rating?.notes === '', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
   {
     const e = env({ online: false });
     e.server.webSave('w1', { score: 4 });
@@ -694,15 +782,248 @@ async function main() {
     const c = e.ctl('w1');
     c.setScore(0);
     await c.drain();
-    check('a score-only 4 dragged to 0 + offline Finish → the line-up keeps the 4', e.owner.overlay(ME, CODE, e.cache.get(CODE)!.ratings)?.[ID].ratings.w1?.score === 4);
+    e.server.webSave('w1', { score: 5 }); // the web, while the phone waited
     await e.setOnline(true);
+    await e.advance(10_000);
+    check('a WAITED emptied merge meets a newer web save: dropped (newer rating wins), the 5 stays', e.server.row('w1').rating?.score === 5 && !e.owner.entry(ME, CODE, 'w1'), { row: e.server.row('w1'), sent: e.sent.map((x) => x.body) });
+  }
+  {
+    // 🔒 (a) The newer save wins (two devices, ruled 2026-11-26): a LIVE op
+    // whose fields over the newer rating would EMPTY it is not rebased.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    e.server.webSave('w1', { score: 5 }); // the web, after the page's first edit
+    await c.drain();
+    await e.advance(10_000);
+    const back = e.ctl('w1');
+    check('🔒 (a) a live emptied merge meets a newer 5: dropped, not rebased (ONE send), the server keeps the 5', e.sent.length === 1 && e.server.row('w1').rating?.score === 5 && e.server.row('w1').version === 2, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+    check('… the snapshot, the page and the line-up show the newer 5; the entry is gone', !e.owner.entry(ME, CODE, 'w1') && e.owner.snapshot(ME, CODE, 'w1')?.rating?.score === 5 && back.draft().score === 5
+      && e.owner.overlay(ME, CODE, e.cache.get(CODE)!.ratings)?.[ID].ratings.w1?.score === 5 && c.savedState() !== 'error');
+  }
+  {
+    // (b) …a rebase that would NOT empty the newer rating is rebased and saved as before.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    e.server.webSave('w1', { score: 5, notes: 'from the web' });
+    await c.drain();
+    await e.advance(10_000);
+    check('(b) a live emptied merge meets a newer rating with a note: rebased once, the score 0 saved, the note kept', e.sent.length === 2 && e.sent[1].body.baseVersion === 2 && e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'from the web', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // 🔒 (c) Our reap committed, its answer was lost, the web re-rated, then the
+    // still-live op is re-sent: the 409 names the web's save (not our op), and
+    // the op over that 5 would empty it: dropped, the 5 stays.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('commit-network');
+    c.setScore(0);
+    await c.drain();
+    await e.flush();
+    check('(c) the reap committed, its answer lost', e.server.row('w1').rating === null && e.sent.length === 1);
+    e.server.webSave('w1', { score: 5 });
+    await e.advance(30_000);
+    check('🔒 (c) the re-sent op meets the re-rate: dropped, never rebased, the 5 stays', e.sent.length === 2 && e.sent[0].body.opId === e.sent[1].body.opId && e.server.row('w1').rating?.score === 5 && !e.owner.entry(ME, CODE, 'w1')
+      && e.owner.snapshot(ME, CODE, 'w1')?.rating?.score === 5, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // A non-emptying live op still rebases (a note over a newer score).
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setNotes('mine');
+    e.server.webSave('w1', { score: 5 });
+    await c.drain();
+    await e.advance(10_000);
+    check('(b) a note meets a newer 5: rebased, both kept (5 and the note)', e.server.row('w1').rating?.score === 5 && e.server.row('w1').rating?.notes === 'mine', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // Codex P1 #2 (moot by construction): a fallback display value never
+    // reaches the server. The section went null (a degraded poll): the page
+    // shows an empty note, but only the touched score is sent.
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'keep me' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    e.poll(null);
+    await c.drain();
+    await e.advance(10_000);
+    check('🔒 an untouched note is never sent: only the score (0), the server keeps the note', e.sent.every((x) => x.body.merge === true && x.body.notes === undefined) && e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'keep me', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'keep me' });
+    await e.start(); // no section yet: an unknown baseline
+    const c = e.ctl('w1');
+    c.setScore(0); // an absolute edit: allowed before the baseline
+    await c.drain();
+    e.setRead(() => ({ kind: 'ok', ratings: e.server.section() }));
+    await e.advance(10_000);
+    check('an unknown baseline: the merge carries only the touched score, the stored note stays', fullSaves(e).length === 0 && e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'keep me', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    const e = env();
+    e.poll();
+    await e.start();
+    const c = e.ctl('w2');
+    c.setScore(0);
+    await c.drain();
     await e.advance(10);
-    check('… also after `unchanged` (nothing written, the stored rating kept)', e.sent.length === 1 && e.server.row('w1').rating?.score === 4 && e.owner.overlay(ME, CODE, e.cache.get(CODE)!.ratings)?.[ID].ratings.w1?.score === 4);
-    await e.advance(60_000);
-    check('`unchanged` → parked, no loop', e.sent.length === 1);
-    c.setNotes('now with a note');
+    check('no rating and a score left at 0: nothing sent, nothing deleted', e.sent.length === 0 && !e.owner.entry(ME, CODE, 'w2'));
+  }
+  {
+    // 🔒 Codex P1 #1: a CANCELLED gesture over an emptied page deletes nothing
+    // (the layer's real transitions over the real controller).
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    const guard = createTransitionGuard();
+    c.setSuspended(() => guard.held);
+    const tx = createLayerTransitions({ guard, activeId: () => 'w1', drain: (_id, final) => c.drain({ final }), live: () => true, destValid: () => true });
+    c.setScore(0);
+    tx.begin({ kind: 'page', wineId: 'w2', dir: 1 }); // an edge swipe granted
+    await e.advance(10);
+    check('a swipe\'s grant over an emptied page stages nothing (held)', !e.owner.entry(ME, CODE, 'w1') && e.sent.length === 0);
+    await tx.end(false); // released short of the line
+    tx.abandon();
+    await e.advance(5000);
+    check('🔒 the swipe cancelled: nothing sent, the rating kept, the page still shows 0', e.sent.length === 0 && e.server.row('w1').rating?.score === 4 && c.draft().score === 0);
+    let closing = false;
+    const pull = createPullClose({ tx, capture: () => Promise.resolve(), closing: () => closing });
+    pull.activate();
+    await e.advance(10);
+    pull.cancel();
+    pull.settled();
+    await e.advance(5000);
+    check('🔒 a pull-down cancelled short of the line: nothing sent, the rating kept', e.sent.length === 0 && e.server.row('w1').rating?.score === 4);
+    pull.activate();
+    await e.advance(10);
+    const out = pull.release();
+    await e.advance(10);
+    closing = (await out) === 'close';
+    await e.advance(10);
+    check('a pull-down released past the line: the final drain sends the merge, the server reaps', closing && e.sent.length === 1 && e.sent[0].body.merge === true && e.server.row('w1').rating === null, { sent: e.sent.map((x) => x.body) });
+  }
+  {
+    // A button's departure (Next): the grant holds, the committed end drains final.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    const guard = createTransitionGuard();
+    c.setSuspended(() => guard.held);
+    const tx = createLayerTransitions({ guard, activeId: () => 'w1', drain: (_id, final) => c.drain({ final }), live: () => true, destValid: () => true });
+    c.setScore(0);
+    tx.begin({ kind: 'page', wineId: 'w2', dir: 1 });
+    const outcome = await tx.end(true);
+    await e.advance(10);
+    check('Next over an emptied page: go once the merge is stored, the server reaps', outcome === 'go' && e.server.row('w1').rating === null && fullSaves(e).length === 0);
+  }
+  {
+    // (b) Codex P3: a held draft that turns non-empty settles again. A
+    // note-only rating emptied; the timer holds it; a poll brings a score.
+    const e = env();
+    e.server.webSave('w1', { notes: 'x' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.subscribe(() => c.resumeSettle()); // what the hook does on every owner change
+    c.setNotes('');
     await e.advance(1000);
-    check('a newer edit un-parks: the score goes out with it', e.sent.length === 2 && e.sent[1].body.score === 0 && e.sent[1].body.notes === 'now with a note');
+    check('a note-only rating emptied: held after the settle', !e.owner.entry(ME, CODE, 'w1') && e.sent.length === 0);
+    e.server.webSave('w1', { score: 3, notes: 'x' });
+    e.poll();
+    await e.advance(1000);
+    await e.advance(5000);
+    check('🔒 a poll made the draft non-empty: it settles again (the note cleared over the new 3)', e.server.row('w1').rating?.score === 3 && e.server.row('w1').rating?.notes === '' && c.savedState() === 'saved', { row: e.server.row('w1'), sent: e.sent.map((x) => x.body), saved: c.savedState() });
+  }
+  {
+    // (b) …and a focus change: the note's raw text (empty) masked a newer note.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.subscribe(() => c.resumeSettle());
+    c.setNoteFocused(true);
+    c.setScore(0);
+    await e.advance(1000);
+    e.server.webSave('w1', { score: 4, notes: 'new' });
+    e.poll();
+    await e.advance(2000);
+    check('held while the focused note still shows its raw (empty) text', e.sent.length === 0 && c.draft().notes === '');
+    c.setNoteFocused(false);
+    await e.advance(1000);
+    await e.advance(5000);
+    check('🔒 the focus ended (the newer note shows): it settles again, score 0 over the new note', e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'new', { row: e.server.row('w1'), sent: e.sent.map((x) => x.body) });
+  }
+  {
+    // (d) Codex P2: a refused edit says so (an aroma picker resets only on a landed add).
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    await e.start(); // no section: no baseline
+    const c = e.ctl('w1');
+    check('🔒 a relative edit before the baseline is refused: setAromas → false, nothing pending', c.setAromas([{ a: 'fruity', m: null }]) === false && c.draft().aromas.length === 0);
+    e.poll();
+    check('with the baseline it lands: true', c.setAromas([{ a: 'fruity', m: null }]) === true && c.draft().aromas.length === 1);
+    const guard = createTransitionGuard();
+    c.setSuspended(() => guard.held);
+    guard.acquire();
+    check('while a transition holds the guard: refused (false)', c.setAromas([]) === false && c.setScore(2) === false && c.draft().aromas.length === 1);
+  }
+  {
+    // (e) Codex P2: a close that could not store the edit on the phone alerts
+    // once the page stops being visible (the footer says it while visible).
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.failWrites(true);
+    c.setScore(4);
+    const p = c.drain();
+    await e.advance(2100);
+    check('a close with storage failing: false, the footer error, no alert while visible', (await p) === false && c.savedState() === 'error' && e.alerts.length === 0);
+    e.owner.setVisible(ME, CODE, 'w1', 1, false); // the layer closed
+    check('🔒 the page is gone with the write still outstanding: ONE alert', e.alerts.length === 1 && e.alerts[0].startsWith(ALERT_TITLE), e.alerts);
+    e.owner.setVisible(ME, CODE, 'w1', 2, true);
+    e.owner.setVisible(ME, CODE, 'w1', 2, false);
+    check('…and only once', e.alerts.length === 1, e.alerts);
+  }
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.setVisible(ME, CODE, 'w1', 1, false); // hidden while it moves (a page change, a pull)
+    e.failWrites(true);
+    c.setScore(4);
+    const p = c.drain();
+    await e.advance(2100);
+    await p;
+    check('a failure while the page is hidden mid-move: no alert yet (it may come back to its footer)', e.alerts.length === 0);
+    e.owner.setVisible(ME, CODE, 'w1', 2, true); // the page change stayed: back at rest
+    e.failWrites(false);
+    await e.advance(3000);
+    e.owner.setVisible(ME, CODE, 'w1', 2, false);
+    check('the retry landed before the page left: no alert', e.alerts.length === 0 && e.server.row('w1').rating?.score === 4, e.alerts);
   }
 
   // ── set 4, Next, the answer lands with ratings: null, Previous ───────────

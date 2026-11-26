@@ -14,8 +14,13 @@
 // the line-up order (`wines`), whatever sort or search the line-up shows.
 
 export const EDGE_STRIP = 15; // pt: the structure tracks start ~20 pt in (GUTTER 20)
-export const EDGE_ACTIVATE = 10; // pt of horizontal travel before an edge swipe takes over
-export const EDGE_FAIL_Y = 12; // pt of vertical travel that leaves the touch to the page
+// Forgiving like iOS's own edge pan (Simon, device pass 2026-11-26: the first
+// cut "feels hard to do"): it starts after 5 pt sideways and fails only on a
+// clearly vertical move (30 pt of vertical drift first), not on a few points of
+// wobble. A move the wrong way fails at 10 pt.
+export const EDGE_ACTIVATE = 5; // pt of horizontal travel before an edge swipe takes over
+export const EDGE_FAIL_X = 10; // pt the wrong way (toward the screen edge) that fails it
+export const EDGE_FAIL_Y = 30; // pt of vertical travel (before it activated) that leaves the touch to the page
 export const PAGE_COMMIT_FRACTION = 0.35; // of the width
 export const PAGE_FLICK_VELOCITY = 600; // pt/s
 
@@ -110,6 +115,38 @@ export function slideOutcome(ids: readonly string[], destId: string, live: boole
 
 // ─── edge swipes: who owns the row ──────────────────────────────────────
 //
+// 🔒 The row is taken OPTIMISTICALLY on the UI thread (Simon, device pass
+// 2026-11-26: the page must follow the finger from the first frame, not a
+// frame later): a swipe that activates takes the row lock in its worklet
+// unless a transition holds the guard (its mirror) or another swipe holds the
+// lock (`edgeCanTake`); a refused swipe writes nothing. JS then confirms it
+// (the arbiter below): a page change takes the guard and the reservation; JS
+// refusing in the window before the guard's mirror reached the UI thread
+// drops the run and springs the row back, never under a running slide (a JS
+// transition revokes the row first).
+export function edgeCanTake(busy: number, lock: number): boolean {
+  'worklet';
+  return busy === 0 && lock === 0;
+}
+// Another transition takes the row (a button's page change, a close, a pull,
+// a forced close): the swipe's run is void, so its own release can never bring
+// a row it displaced back (Codex review 2026-11-26: a close inherited a rubber
+// band's offset). A row a swipe OWNED springs back to rest in the same UI step
+// that frees it; a row no swipe owns is under a slide or a return (JS's) and
+// is left alone.
+export function revokeSendsRowHome(owner: number): boolean {
+  'worklet';
+  return owner !== 0;
+}
+// The destination's geometry published after a commit (its rest, its neighbour
+// flags) BEFORE the guard goes back: the row is moved to the new rest only when
+// the rest itself moved and no slide runs (a poll that changes only a neighbour
+// flag never snaps a rubber band in progress).
+export function geometryMovesRow(prevRest: number, nextRest: number, sliding: boolean): boolean {
+  'worklet';
+  return !sliding && prevRest !== nextRest;
+}
+//
 // An edge swipe's worklet starts optimistic, so the JS side decides (Codex
 // review 2026-11-26): a swipe owns the row only once GRANTED ('page' = it took
 // the transition guard; 'band' = first / last with nothing in flight: the
@@ -202,10 +239,15 @@ export function landingScroll(f: RowFrame, band: Band, scrollY: number, maxY: nu
 // before anything moves; an edge swipe begins when it is GRANTED (just after it
 // activates), a pull-down at its release (its touches are blocked from
 // activation), so the write is normally done by the time the finger lifts.
-// `end(true)` waits for that capture, then
-// answers 'go' once (the same page still active, the layer still live and the
-// destination still valid; the guard stays held while the caller slides or
-// closes) or 'stay' (the guard back, the pager / layer returns to rest).
+// 🔒 That grant-time drain is a PREPARATION (`drain(wineId, false)`): ordinary
+// edits are staged, an EMPTIED draft is held (Codex review 2026-11-26: a
+// cancelled edge swipe or pull-down must delete nothing; the server reaps an
+// emptied merge). `end(true)` waits for that capture, then, once the departure
+// is committed and still valid, drains AGAIN as the FINAL departure
+// (`drain(wineId, true)`: the held draft is staged), then answers 'go' once (the
+// same page still active, the layer still live and the destination still
+// valid; the guard stays held while the caller slides or closes) or 'stay'
+// (the guard back, the pager / layer returns to rest).
 // ⚠️ A storage failure keeps a PAGE CHANGE on the page, but never traps the
 // person: a CLOSE (the close button, Finish, Android Back, a committed
 // pull-down) still leaves (build 1's rule: Back always leaves). The draft is
@@ -214,7 +256,7 @@ export function landingScroll(f: RowFrame, band: Band, scrollY: number, maxY: nu
 // `end(false)` (a cancelled gesture) and every 'stay' KEEP the guard (Codex
 // recheck 2026-11-26): the page stays frozen, reserved and not VISIBLE until
 // the caller's return to rest has landed and it calls `abandon()`; the staged
-// edits stay in the outbox entry. `force` is a CONFIRMED terminal outcome (the
+// edits stay in the outbox entry, a held emptied draft stays on the page. `force` is a CONFIRMED terminal outcome (the
 // bottle gone, Delete Impression): no capture, no wait, nothing after it.
 
 export type LayerGuard = { readonly held: boolean; acquire(): boolean; release(): void };
@@ -224,7 +266,8 @@ export type LayerOutcome = 'go' | 'stay';
 export function createLayerTransitions(deps: {
   guard: LayerGuard;
   activeId: () => string;
-  drain: (wineId: string) => Promise<boolean>;
+  // `final` false = the grant's preparation, true = the committed departure.
+  drain: (wineId: string, final: boolean) => Promise<boolean>;
   // Mounted, navigation-focused, not torn down.
   live: () => boolean;
   // The destination is still the outgoing page's neighbour in that direction.
@@ -238,6 +281,14 @@ export function createLayerTransitions(deps: {
   const release = () => {
     deps.guard.release();
     deps.onHeld?.(false);
+  };
+  // A drain that throws counts as a storage failure.
+  const drainSafe = (wineId: string, final: boolean): Promise<boolean> => {
+    try {
+      return deps.drain(wineId, final).catch(() => false);
+    } catch {
+      return Promise.resolve(false);
+    }
   };
   return {
     get busy(): boolean {
@@ -258,13 +309,7 @@ export function createLayerTransitions(deps: {
       if (forced || run || !deps.guard.acquire()) return false;
       deps.onHeld?.(true);
       const from = deps.activeId();
-      let drained: Promise<boolean>;
-      try {
-        drained = deps.drain(from).catch(() => false);
-      } catch {
-        drained = Promise.resolve(false);
-      }
-      run = { from, dest, drained, ended: false, returning: false };
+      run = { from, dest, drained: drainSafe(from, false), ended: false, returning: false };
       return true;
     },
     // 'stay' = the guard is still held: the caller returns to rest, then
@@ -277,10 +322,16 @@ export function createLayerTransitions(deps: {
         r.returning = true;
         return 'stay';
       }
-      const ok = await r.drained;
+      const still = () => deps.live() && deps.activeId() === r.from && deps.destValid(r.dest, r.from);
+      let ok = await r.drained;
       if (run !== r) return 'stay'; // a forced teardown took over (it keeps the guard)
+      // Committed and still valid: the FINAL drain stages what the grant held.
+      if ((ok || r.dest.kind === 'close') && still()) {
+        ok = (await drainSafe(r.from, true)) && ok;
+        if (run !== r) return 'stay';
+      }
       const stored = ok || r.dest.kind === 'close';
-      if (!stored || !deps.live() || deps.activeId() !== r.from || !deps.destValid(r.dest, r.from)) {
+      if (!stored || !still()) {
         r.returning = true;
         return 'stay';
       }

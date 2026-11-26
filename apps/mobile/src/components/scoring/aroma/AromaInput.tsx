@@ -53,7 +53,8 @@ export function AromaInput({
   overflowSheet,
 }: {
   value: AromaSelection[];
-  onChange: (v: AromaSelection[]) => void;
+  // false = the write was refused (the impression's autosave): nothing resets.
+  onChange: (v: AromaSelection[]) => void | boolean;
   // Called when the field focuses (and again whenever the block's rendered
   // height changes), with the search row's window-Y and the MEASURED height
   // below that point (field + suggestions + refine row + cap hint) — the
@@ -116,8 +117,10 @@ export function AromaInput({
   }, [value.length]);
   const commitAdd = () => {
     if (!focus) return;
-    const ok = ops.add(pendP ? { a: focus.a, m: focus.m, p: true } : { a: focus.a, m: focus.m });
-    if (!ok) {
+    const result = ops.add(pendP ? { a: focus.a, m: focus.m, p: true } : { a: focus.a, m: focus.m });
+    // Refused by the editor (not editable now, no baseline yet): the pick stays.
+    if (result === 'unavailable') return;
+    if (result === 'cap') {
       // Gate rejected (the 30 cap) — honest warning tick + a visible hint,
       // keep the pick armed, no flash: never celebrate an add that didn't land.
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -128,6 +131,10 @@ export function AromaInput({
     // (The chips block detects the fresh pair itself and flashes it.)
     setFocus(null);
     setPendP(false);
+    // Back to the default view after an add (Simon, 2026-11-26): the search
+    // empties, so the inline canvas returns at its first level (it unmounts
+    // while a query is live).
+    setQuery('');
   };
 
   // Scroll the block under the header when search engages. Runs on focus

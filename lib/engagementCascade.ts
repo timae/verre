@@ -7,7 +7,8 @@
 //
 // Three trigger sites, all the owner's own clear (`ownClear`, below):
 //   1. POST /api/session/[code]/rate — after the upsert lands an empty
-//      FULL payload (a merge save never reaps: docs/dev/rating-saves.md).
+//      result: a FULL empty payload, or a merge whose merged result over a
+//      stored row is empty (docs/dev/rating-saves.md).
 //   2. DELETE /api/session/[code]/rate/[wineId] — the explicit Reset ('force').
 //   3. PATCH /api/checkins/[id] — a moment rating emptied in the post edit.
 //
@@ -58,7 +59,7 @@ async function reclaimImage(url: string | null | undefined) {
 // null when nothing was reaped.
 //
 // Two modes for the rating delete itself:
-// - 'empty-only' (the rate POST's empty full save, the post edit): deletes the
+// - 'empty-only' (the rate POST's empty result, the post edit): deletes the
 //   rating only if it IS empty (score 0/NULL + no chips + no aromas + no note);
 //   the SQL predicate is the gate on destruction.
 // - 'force' (the web's Reset DELETE): deletes it unconditionally (the gates
@@ -66,7 +67,7 @@ async function reclaimImage(url: string | null | undefined) {
 //
 // 🔒 `ownClear` (tasting feedback 2026-11-25: "could a reset rating just take
 // away the xp?"): passed ONLY by the three paths where the owner clears their
-// OWN rating (the empty save, the Reset, a moment rating emptied in the post
+// OWN rating (the empty save or emptied merge, the Reset, a moment rating emptied in the post
 // edit). The owner is debited exactly the rating-action XP this row was credited
 // (`ratings.rating_action_xp`, from the DELETE's RETURNING), floored at 0, in
 // the caller's transaction. A retry or a repeat finds no row and debits nothing;

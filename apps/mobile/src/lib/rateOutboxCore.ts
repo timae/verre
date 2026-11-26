@@ -183,6 +183,17 @@ export function isEmptyRating(r: { score?: number; flavors?: Record<string, numb
   return !(Number(r.score ?? 0) > 0) && !Object.values(r.flavors ?? {}).some((x) => Number(x) > 0) && !(r.aromas?.length) && noteOut(r.notes) === '';
 }
 
+// A rating with a merge body's fields over it (the server's merge, for the
+// conflict rule: an omitted field keeps the rating's value).
+function withFields(r: RatingMeta, b: RateBody) {
+  return {
+    score: b.score ?? r.score,
+    flavors: b.flavors ?? r.flavors,
+    aromas: b.aromas ?? r.aromas,
+    notes: b.notes !== undefined ? b.notes : r.notes,
+  };
+}
+
 function unsent(e: Entry): Field[] {
   return FIELDS.filter((f) => e.fields[f] !== undefined && e.fields[f]!.rev > (e.ackRev[f] ?? 0));
 }
@@ -280,10 +291,11 @@ export function createRateOutbox(deps: OutboxDeps) {
     const mp = moment503.get(code);
     if (token !== null && mp && mp.probe === token) mp.probe = null;
   };
-  // This phone's last OWN acknowledged save per key (Fable): its version and
-  // the entry it came from. A captured baseline advances ONLY through an ack
-  // of the entry that was pending when it was captured (Codex recheck 2).
-  const ownAcked = new Map<string, { v: number; entry: Entry }>();
+  // This phone's last OWN acknowledged save per key (Fable): its version, the
+  // entry it came from and whether a rating stood after it (an emptied merge the
+  // server reaped: none). A captured baseline advances ONLY through an ack of
+  // the entry that was pending when it was captured (Codex recheck 2).
+  const ownAcked = new Map<string, { v: number; entry: Entry; had: boolean }>();
 
   // Foreign rebases per key (an entry's base moved by another writer's save).
   const foreign = new Map<string, number>();
@@ -291,6 +303,11 @@ export function createRateOutbox(deps: OutboxDeps) {
   const savedMarks = new Set<string>();
   const overlayMemo = new Map<string, { ratings: RatingsView | null; sig: string; result: RatingsView | null }>();
   const errors = new Map<string, string>();
+  // A departure whose edits could not be stored on the phone (its drain failed):
+  // reported through the one-shot alert once no page of that wine is visible
+  // and the write is still outstanding (Codex review 2026-11-26: a close that
+  // could not store said nothing).
+  const failedDepartures = new Set<string>();
   const visible = new Map<string, Set<number>>();
   const labels = new Map<string, string>();
   const clearAsks = new Set<string>();
@@ -499,7 +516,7 @@ export function createRateOutbox(deps: OutboxDeps) {
     // base (Fable). Any other baseline stays (a confirmed empty one keeps
     // `0, false`: a re-rate after a web Reset, Codex recheck 2).
     const own = ownAcked.get(keyOf(v, code, wineId));
-    if (mark && own && own.entry === mark && typeof baseVersion === 'number' && own.v > baseVersion) [baseVersion, baseHadRating] = [own.v, true];
+    if (mark && own && own.entry === mark && typeof baseVersion === 'number' && own.v > baseVersion) [baseVersion, baseHadRating] = [own.v, own.had];
     const t = deps.now();
     return { viewer: v, code, wineId, fields: {}, ackRev: {}, parked: {}, nextRev: 0, baseVersion, baseHadRating, waited: !online, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t, updatedAt: t, editedAt: t };
   };
@@ -582,6 +599,12 @@ export function createRateOutbox(deps: OutboxDeps) {
     s.mem = null;
     s.incarnation++;
     commit(s);
+  };
+  const reportFailedDeparture = (key: string) => {
+    if (!failedDepartures.has(key) || isVisible(key)) return;
+    failedDepartures.delete(key);
+    const s = slots.get(key);
+    if (s && s.diskV < s.memV) raiseError(s, SAVE_ERROR_TEXT);
   };
   const removeIfEmpty = (s: Slot): boolean => {
     if (s.mem && isEmptyEntry(s.mem)) {
@@ -709,7 +732,18 @@ export function createRateOutbox(deps: OutboxDeps) {
     return !mp || (mp.until <= t && (mp.probe === null || mp.probe === token));
   };
 
+  // 🔒 A page's settled draft is staged as ONE batch (`batch`): the runner
+  // builds no op until every field is in, so the draft goes out as one merge.
+  // Field by field, an intermediate merge could be EMPTY over the stored row
+  // and the server would reap it (its post and likes) although the draft as a
+  // whole is not (Simon's ruling 2026-11-26: the server reaps an emptied merge).
+  let batching = 0;
+  let pumpDeferred = false;
   const pump = () => {
+    if (batching) {
+      pumpDeferred = true;
+      return;
+    }
     if (viewer === null || !ready || stopped || updateStopped) return;
     // The owner check first, offline too (it backs off and is asked again at
     // once when the phone is back): the snapshot needs it, not only a send.
@@ -819,8 +853,9 @@ export function createRateOutbox(deps: OutboxDeps) {
     // removed it: its revisions are gone, nothing to acknowledge; never a throw).
     const op = e.unresolvedOp?.opId === opId ? e.unresolvedOp : undefined;
     if (op) delete e.unresolvedOp;
+    // `rating` null: the server reaped it (an emptied merge): no rating, at `version`.
     const canonical = rating ? { ...rating, v: version } : null;
-    if (canonical) ownAcked.set(s.key, { v: version, entry: e });
+    ownAcked.set(s.key, { v: version, entry: e, had: canonical !== null });
     remember(e.viewer, e.code, e.wineId, canonical);
     deps.patchCache(e.viewer, e.code, e.wineId, canonical);
     if (op) ack(e, op.revs);
@@ -862,11 +897,19 @@ export function createRateOutbox(deps: OutboxDeps) {
     const e = s.mem!;
     const isClear = op.kind === 'clear';
     // A 2xx or a 409 from the moment ends its pause (any request's).
-    if (res.kind === 'rating' || res.kind === 'unchanged' || res.kind === 'ok' || res.kind === 'stale') moment503.delete(e.code);
+    if (res.kind === 'rating' || res.kind === 'unchanged' || res.kind === 'cleared' || res.kind === 'ok' || res.kind === 'stale') moment503.delete(e.code);
     switch (res.kind) {
       case 'rating':
         if (isClear) return clearSucceeded(s);
         return mergeSucceeded(s, res.rating, res.rating.v ?? 0, op.opId);
+      // 🔒 An emptied merge the server REAPED (it decides, Simon 2026-11-26):
+      // the rating is gone at that version, exactly like the 409 that answers a
+      // re-send of the same op (`lastOpId`): its revisions acknowledged, the
+      // snapshot "no rating", newer edits kept as a new merge on that base.
+      case 'cleared':
+        if (isClear) return clearSucceeded(s);
+        return mergeSucceeded(s, null, res.version, op.opId);
+      // An emptied merge with no stored row: nothing was written.
       case 'unchanged': {
         if (isClear) return clearSucceeded(s);
         const revs = e.unresolvedOp!.revs;
@@ -904,6 +947,21 @@ export function createRateOutbox(deps: OutboxDeps) {
         remember(e.viewer, e.code, e.wineId, newer);
         deps.patchCache(e.viewer, e.code, e.wineId, newer);
         if (e.waited) return dropSilently(s); // newer rating wins
+        // 🔒 The newer save wins (two devices, ruled 2026-11-26): a LIVE op
+        // whose fields over the NEWER rating would leave it empty is never
+        // rebased (the server would reap that newer rating). Its revisions
+        // retire, the newer rating stays (snapshot, page, line-up); newer
+        // revisions, if any, go out on its version. Decided on the result,
+        // never on the body. Also the lost-answer case: our reap committed,
+        // another device re-rated, and the re-sent op meets that re-rate.
+        if (newer && isEmptyRating(withFields(newer, op.body))) {
+          e.baseVersion = res.version;
+          e.baseHadRating = true;
+          foreign.set(s.key, (foreign.get(s.key) ?? 0) + 1); // a Clear token taken before it asks again
+          settled(e);
+          retireOp(s, cov);
+          return;
+        }
         if (!e.rebased) {
           delete e.unresolvedOp;
           e.baseVersion = res.version;
@@ -1207,6 +1265,7 @@ export function createRateOutbox(deps: OutboxDeps) {
     reads.clear();
     savedMarks.clear();
     errors.clear();
+    failedDepartures.clear();
     clearAsks.clear();
     pendingAlerts.splice(0, pendingAlerts.length);
     labels.clear();
@@ -1422,6 +1481,19 @@ export function createRateOutbox(deps: OutboxDeps) {
       pump();
       return true;
     },
+    // Stage several fields as ONE step: the runner sees them together.
+    batch(fn: () => void) {
+      batching++;
+      try {
+        fn();
+      } finally {
+        batching--;
+        if (!batching && pumpDeferred) {
+          pumpDeferred = false;
+          pump();
+        }
+      }
+    },
     // Resolves true once this wine's entry is on disk (the departure waiter).
     persisted(v: string, code: string, wineId: string, timeoutMs = WAITER_TIMEOUT_MS): Promise<boolean> {
       if (v !== viewer) return Promise.resolve(false);
@@ -1483,6 +1555,7 @@ export function createRateOutbox(deps: OutboxDeps) {
       const i = pendingAlerts.indexOf(key);
       if (i >= 0) pendingAlerts.splice(i, 1);
       errors.delete(key);
+      failedDepartures.delete(key);
       clearAsks.delete(key);
       discardNow(key);
     },
@@ -1495,6 +1568,16 @@ export function createRateOutbox(deps: OutboxDeps) {
       else set.delete(mount);
       if (set.size) visible.set(key, set);
       else visible.delete(key);
+      if (!on) reportFailedDeparture(key);
+    },
+    // A departure's drain failed (storage): the page's footer says so while it
+    // is visible. Reported when a page of that wine STOPS being visible (the
+    // layer closed, the page left; never at the failure itself: a page change
+    // or a pull that stays was hidden only while it moved, and comes back to
+    // its footer): ONE alert if the write is still outstanding (a retry that
+    // landed since: nothing).
+    departureWriteFailed(v: string, code: string, wineId: string) {
+      if (v === viewer) failedDepartures.add(keyOf(v, code, wineId));
     },
     setLabel(v: string, code: string, wineId: string, label: string | null) {
       if (label) labels.set(keyOf(v, code, wineId), label);
@@ -1507,9 +1590,11 @@ export function createRateOutbox(deps: OutboxDeps) {
     clearAskPending: (v: string, code: string, wineId: string): boolean => clearAsks.has(keyOf(v, code, wineId)),
 
     // The line-up's own rows: the entry's edits over the own-rating snapshot
-    // (the poll's retained view only when there is none); an EMPTY result keeps
-    // the underlying rating (emptying by hand never deletes); a pending Clear →
-    // no rating. Returns `ratings` itself when nothing is overlaid.
+    // (the poll's retained view only when there is none); an EMPTY merged
+    // result → no rating (the server reaps it, Simon 2026-11-26); a pending
+    // Clear → no rating. Revisions an `unchanged` PARKED (nothing written, and
+    // never sent on their own) overlay nothing. Returns `ratings` itself when
+    // nothing is overlaid.
     overlay(v: string, code: string, ratings: RatingsView | null): RatingsView | null {
       if (v !== viewer) return ratings;
       const id = `u:${v}`;
@@ -1526,7 +1611,7 @@ export function createRateOutbox(deps: OutboxDeps) {
         const e = entryOf(v, code, w);
         let r: RatingMeta | null = base;
         if (e?.clear) r = null;
-        else if (e && Object.keys(e.fields).length) {
+        else if (e && Object.keys(e.fields).length && (e.unresolvedOp || hasSendable(e))) {
           const merged: RatingMeta = {
             score: e.fields.score?.value ?? base?.score ?? 0,
             notes: e.fields.notes ? noteOut(e.fields.notes.value) : base?.notes ?? '',
@@ -1535,7 +1620,7 @@ export function createRateOutbox(deps: OutboxDeps) {
             at: base?.at ?? e.updatedAt,
             ...(base?.v !== undefined ? { v: base.v } : {}),
           };
-          r = isEmptyRating(merged) ? base : merged;
+          r = isEmptyRating(merged) ? null : merged;
         }
         if (r) out[w] = r;
         else delete out[w];

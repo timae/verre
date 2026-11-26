@@ -36,8 +36,10 @@ const FOOT_BREATHING = 16;
 
 // What one page hands the layer: its departure capture.
 // `capture`: resolves once the page's text fields finished their native edit
-// (lib/impressionLayerCore.ts `createInputCapture`); `drain`: the outbox capture.
-export type PageHandle = { capture: () => Promise<void>; drain: () => Promise<boolean> };
+// (lib/impressionLayerCore.ts `createInputCapture`); `drain`: the outbox capture
+// (`final: false` = a gesture's grant, an emptied draft held; the default = the
+// committed departure).
+export type PageHandle = { capture: () => Promise<void>; drain: (opts?: { final?: boolean }) => Promise<boolean> };
 
 // The layer's side of a page (components/moments/ImpressionLayer.tsx): the ONE
 // transition guard, the shared presentation values the pull-down drives, and
@@ -71,8 +73,10 @@ export type PageControls = {
 // and its `active` flag: an inactive page (a neighbour) is inert for touch,
 // VoiceOver and NEW writes (a captured departure still finishes); on
 // activation each clean field seeds from the entry, then the own-rating
-// snapshot (the hook's per-field rule). ONLY "Clear My Rating" deletes (after a
-// confirm). "Saved" sits in the footer bar.
+// snapshot (the hook's per-field rule). "Clear My Rating" deletes after a
+// confirm; a page left with every field emptied sends that merge and the
+// server reaps it (the hook holds an emptied draft until the final departure).
+// "Saved" sits in the footer bar.
 //
 // The page's data is the line-up's own poll (meta / wines through the layer):
 // no second poll, no second per-section merge. Memoized: the layer re-renders
@@ -139,7 +143,7 @@ export const ImpressionPage = memo(function ImpressionPage({
   // The layer captures the ACTIVE page through this (its departures).
   const { register } = controls;
   useEffect(
-    () => register(wineId, { capture: () => inputCapture.capture(), drain: () => autosaveRef.current.drain() }),
+    () => register(wineId, { capture: () => inputCapture.capture(), drain: (opts) => autosaveRef.current.drain(opts) }),
     [register, wineId, inputCapture],
   );
 
@@ -456,17 +460,20 @@ export const ImpressionPage = memo(function ImpressionPage({
     </View>
   );
 
-  // The scroll view: its native gesture right on it, the pull-down pan on the
-  // PAGE ROOT (below), declared simultaneous with it (the post's wiring), so a
-  // pull may also start on the bar or the footer ("from ANYWHERE while the page
-  // is at its top"; Back, ⋯ and the buttons still tap: the pan needs 8 pt).
-  // NoTopEdgeFade outside the detector (the marker takes the scroll view as its
-  // one native child; a builder-API GestureDetector adds no view). No RNS
-  // dead-end any more: the page's scroll view is not in the screen's
-  // first-descendant chain (the layer is the line-up screen's LAST child), so
-  // react-native-screens never flips its `contentInsetAdjustmentBehavior`.
+  // The scroll view with the post's wiring EXACTLY (DetailPage): the pull-down
+  // pan and the native scroll gesture both on the scroll view, the pan declared
+  // simultaneous with it (Simon, simulator pass 2026-11-26: with the pan on the
+  // page root, around the bar and the footer too, the pull never closed; the
+  // post's closes flawlessly). So a pull starts on the page's scrolling content,
+  // as on the post, not on the bar or the footer. NoTopEdgeFade outside both
+  // detectors (the marker takes the scroll view as its one native child; a
+  // builder-API GestureDetector adds no view). No RNS dead-end any more: the
+  // page's scroll view is not in the screen's first-descendant chain (the
+  // layer is the line-up screen's LAST child), so react-native-screens never
+  // flips its `contentInsetAdjustmentBehavior`.
   const scroll = (children: ReactNode) => (
     <NoTopEdgeFade style={{ flex: 1 }}>
+      <GestureDetector gesture={pan}>
       <GestureDetector gesture={native}>
         <Reanimated.ScrollView
           ref={scrollRef}
@@ -483,11 +490,11 @@ export const ImpressionPage = memo(function ImpressionPage({
           {children}
         </Reanimated.ScrollView>
       </GestureDetector>
+      </GestureDetector>
     </NoTopEdgeFade>
   );
 
   return (
-    <GestureDetector gesture={pan}>
     <View collapsable={false} style={{ flex: 1 }}>
       {hasPhoto ? (
         // Photo variant: hero runs under the status bar; floating header.
@@ -600,7 +607,6 @@ export const ImpressionPage = memo(function ImpressionPage({
         ) : null}
       </AnchoredMenu>
     </View>
-    </GestureDetector>
   );
 });
 

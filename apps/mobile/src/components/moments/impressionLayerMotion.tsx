@@ -135,13 +135,19 @@ export function RevealWindow({ width, height, outer, inner, children }: {
 }
 
 
-// The pull-down close of ONE page (the post's DetailPage pan, its scroll
-// wiring included): a native scroll gesture composed with the pan, eligible
-// only when the touch went down at the scroll top, except a drag that starts on
-// the aroma canvas's hex stage (`canvas`, components/scoring/aroma/canvasTouch.tsx),
-// which stays the canvas's (Simon, 2026-11-25). The page's scroll view turns
-// its top bounce off while at the top (`bounces={!atTop}`), so a pull-down at
-// rest feeds this pan instead of a rubber band.
+// The pull-down close of ONE page: the opened post's DetailPage pan, EXACTLY
+// (Simon, device pass 2026-11-26: "can't really close it", the post's works
+// flawlessly; the earlier manual activation is gone): automatic activation
+// after 8 pt down, failing on 8 pt up or 16 pt sideways, simultaneous with the
+// page's native scroll gesture, armed in `onBegin` when the touch went down at
+// the scroll top (`bounces={!atTop}` keeps a pull at rest from becoming a
+// rubber band). ONE addition: before it activates, a touch that goes down on
+// the aroma canvas's hex stage, or a second finger, FAILS the pan at once
+// (`canvas`, components/scoring/aroma/canvasTouch.tsx, by position on the UI
+// thread; the crumbs and the refine row stay eligible), so a drag there stays
+// the canvas's (Simon, 2026-11-25), also on a stage that fits and doesn't pan,
+// and two fingers can't slip past that check (Codex review 2026-11-26). An
+// ACTIVE pull is left alone (a second finger never cuts it).
 // The layer owns what happens: `onActivate` the moment the pan moves the layer
 // (it blocks touches, displaces the page and, once the text capture is in,
 // takes the transition guard and drains during the drag; refused → it sets
@@ -168,48 +174,22 @@ export function usePullDownClose({
   const armed = useSharedValue(false);
   const moving = useSharedValue(false);
   const buzzed = useSharedValue(false);
-  const startX = useSharedValue(0);
-  const startY = useSharedValue(0);
   const native = Gesture.Native();
-  // 🔒 MANUAL activation (Codex review 2026-11-26): a pull that may not close
-  // (the touch went down on the hex stage, or the page isn't at its top) FAILS
-  // before it activates, so it never claims the touch from the scroll view or
-  // the canvas. Eligible: one finger, down at the scroll top, not on the stage;
-  // it activates after 8 pt downward and fails on 8 pt upward or 16 pt
-  // sideways first.
   const pan = Gesture.Pan()
-    .manualActivation(true)
+    .activeOffsetY(8)
+    .failOffsetY(-8)
+    .failOffsetX([-16, 16])
     .simultaneousWithExternalGesture(native)
     .enabled(enabled)
     .onTouchesDown((e, manager) => {
-      if (e.state === State.ACTIVE) return; // a second finger on a running pull
+      if (e.state === State.ACTIVE) return;
       const t = e.changedTouches[0];
-      if (e.numberOfTouches > 1 || !t) {
-        manager.fail();
-        return;
-      }
-      startX.value = t.absoluteX;
-      startY.value = t.absoluteY;
-      armed.value = scrollY.value <= 1 && !closing.value && !touchOnCanvas(canvas, t.absoluteY);
-      if (!armed.value) manager.fail();
-    })
-    .onTouchesMove((e, manager) => {
-      if (e.state !== State.BEGAN) return; // decided once, before activation
-      const t = e.allTouches[0];
-      if (!t || e.numberOfTouches > 1) {
-        manager.fail();
-        return;
-      }
-      const dx = t.absoluteX - startX.value;
-      const dy = t.absoluteY - startY.value;
-      if (!armed.value || closing.value || scrollY.value > 1 || dy < -8 || Math.abs(dx) > 16) {
-        armed.value = false;
-        manager.fail();
-        return;
-      }
-      if (dy > 8) manager.activate();
+      if (e.numberOfTouches !== 1 || !t || touchOnCanvas(canvas, t.absoluteY)) manager.fail();
     })
     .onBegin(() => {
+      // Armed = the touch went down while the page sat at the top (a drag that
+      // starts mid-page and scrolls to 0 never jump-starts a close).
+      armed.value = scrollY.value <= 1 && !closing.value;
       buzzed.value = false;
       moving.value = false;
       denied.value = false;
@@ -247,7 +227,8 @@ export function usePullDownClose({
       if (closing.value) return; // a forced close took over: never spring back open
       // `onRestored` on every end of the spring back (a cut one too): the
       // layer gives the pull's guard back only then, and a close that cut it
-      // keeps its own.
+      // keeps its own. A pull that travelled back above its origin springs
+      // from 1 to 1 and lands at once.
       progress.value = withSpring(1, { ...springs.release, velocity: Math.max(0, toward) }, (finished) => {
         if (finished) dismissing.value = false;
         runOnJS(onRestored)();

@@ -47,7 +47,7 @@ import { execSync } from 'node:child_process'
 // file → { BUMPS?: [count, why], COPIES?: [count, why], EXEMPT?: [count, why] }
 const EXPECTED = {
   'app/api/session/[code]/rate/route.ts': {
-    BUMPS: [5, 'the rate POST: the upsert, the action-XP column, the Clear\'s reap and its key DEL, the key SET; one bumpRatingVersion per committed write'],
+    BUMPS: [5, 'the rate POST: the upsert, the action-XP column, the reap (a full empty save or an emptied merge over a row) and its key DEL, the key SET; one bumpRatingVersion per committed write'],
     EXEMPT: [2, 'a GUEST\'s Redis-only save (no version: a signed-in save without a record answers 503), and the key spelled for both'],
   },
   'app/api/session/[code]/rate/[wineId]/route.ts': {

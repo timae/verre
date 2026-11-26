@@ -390,6 +390,9 @@ export async function rateWine(
       json = null;
     }
     if (res.ok) {
+      // An emptied merge the server reaped: no rating, at `version`.
+      const version = Number(json?.version);
+      if (json?.cleared === true && Number.isFinite(version)) return { kind: 'cleared', status: res.status, version };
       const rating = parseRating(json?.rating);
       if (rating) return { kind: 'rating', status: res.status, rating };
       if (json?.unchanged === true) return { kind: 'unchanged', status: res.status };

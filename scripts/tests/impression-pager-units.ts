@@ -20,11 +20,13 @@ import {
   PAGE_FLICK_VELOCITY,
   edgeOffset,
   frameVisible,
+  geometryMovesRow,
   landingScroll,
   neighbourId,
   pagerWindow,
   releaseTarget,
   restX,
+  revokeSendsRowHome,
   rubberBand,
   slideOutcome,
 } from '../../apps/mobile/src/lib/impressionLayerCore'
@@ -195,6 +197,26 @@ console.log('\n§9 the edge-swipe arbiter: a swipe writes only once granted, a r
   e.grant(9, 'band')
   check('a granted rubber band finishes as a band', e.release(9, { target: 1, vx: 2000 }), { grant: 'band', dir: 1 })
   check('a second grant for the same id is ignored', e.grant(9, 'page'), null)
+}
+
+console.log('\n§10 another transition takes the row; a landed slide publishes its geometry first (Codex review 2026-11-26)')
+{
+  // revokeEdge frees the lock and, in the SAME worklet, sends home a row a
+  // swipe displaced: the revoked run's own release is void (above), so nothing
+  // else would bring a rubber band's offset back before a close folds it.
+  check('🔒 a row a swipe owned (a rubber band, a swipe not granted yet) goes back to rest', revokeSendsRowHome(7), true)
+  check('a row no swipe owns (a slide or a return under way: JS\'s) is left alone', revokeSendsRowHome(0), false)
+  const e = createEdgeRuns()
+  e.start(11, -1)
+  e.grant(11, 'band')
+  e.revoke()
+  check('…and the revoked band\'s release is void (it never springs the row itself)', e.release(11, { target: 0, vx: 0 }), null)
+  // The layout effect after the commit that made the destination active:
+  // rest, the neighbour flags, then the guard.
+  check('🔒 the commit moved the rest (slot 0 → 1): the row is placed at the new rest', geometryMovesRow(restX(0, W), restX(1, W), false), true)
+  check('a poll that changed only a neighbour flag: the row is not touched (a band in progress keeps its offset)', geometryMovesRow(restX(1, W), restX(1, W), false), false)
+  check('a slide in flight: never written (its spring owns the row)', geometryMovesRow(restX(0, W), restX(1, W), true), false)
+  check('a width change at rest re-places the row', geometryMovesRow(restX(1, W), restX(1, 430), false), true)
 }
 
 if (failures) {

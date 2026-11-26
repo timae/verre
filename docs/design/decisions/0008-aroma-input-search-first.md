@@ -109,3 +109,16 @@ badge-height slider (−4…12, both shipped values marked); the negative range
 continues the shrink past the padding floor by tightening the line box (each
 −1 → −2pt, matching the +1 → +2pt padding rate), so the slider is continuous
 through 0.
+
+## Addendum (2026-11-26): back to the default view after an add
+
+Simon, simulator pass: "after adding an aroma, it should reset back to the
+default view (so aroma view on the first level)". An add from the search
+empties the query, so the inline canvas returns at its first level (it is
+unmounted while a query is live). The keyboard closes at the tap (the app-wide
+outside-touch rule, `lib/keyboardDismiss.ts`); the pick still lands (device
+pass, 2026-11-26). An add from the canvas zooms back out to the families, like a crumb
+tap. Filter for Aromas, the same `AromaInput`, behaves the same. Only an add that
+LANDED resets (Codex review 2026-11-26): the cap keeps the pick with its hint, and
+an add the impression's autosave refuses (not editable yet, no baseline) keeps
+the pick silently (`useAromaOps.add` answers `'added' | 'cap' | 'unavailable'`).

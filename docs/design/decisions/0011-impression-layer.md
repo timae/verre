@@ -10,7 +10,8 @@ swipe should navigate between the impressions (with corresponding visuals)." Unt
 then the impression was a pushed route (`session/[code]/impression/[wineId]`, on
 six stack mounts) and Previous / Next replaced it with a sibling route. Build 1
 (rating auto-save, `docs/dev/rating-saves.md`) is the foundation: every leave is a
-merge save, only Clear My Rating deletes.
+merge save; Clear My Rating deletes, and since 2026-11-26 so does a merge that
+empties the stored rating (the server decides; below).
 
 ## Decisions (Simon, 2026-11-25 interview)
 
@@ -80,6 +81,32 @@ merge save, only Clear My Rating deletes.
   (Simon, 2026-11-26): the same glyph and size as the opened post's bar (the
   back glyph rotated); the layer closes like the post, so it no longer shows a
   back arrow.
+- **Gesture feel, simulator pass (Simon, 2026-11-26)**: "can't really close it
+  by pulling down", "edge swiping feels hard". The pull-down is now the post's
+  recognizer exactly (automatic activation after 8 pt), attached like the
+  post's (on the scroll view, so a pull starts on the page's content, not on the
+  bar or the footer), plus one early fail for a touch on the hex stage. The
+  cause of the dead pull was a page wrapper that React Native flattened away:
+  blocking its touches at the pull's start created its view and moved the page,
+  which cancelled the touch; it is kept as a real view now. The edge swipe starts after 5 pt sideways and
+  fails only on 30 pt of vertical drift, and the page follows the finger from
+  the first frame: the swipe takes the row on the UI thread and JS confirms it
+  (a refused swipe springs back). The strips stay 15 pt. A close, a button page
+  change or a pull that takes the row from a swipe sends a displaced row home in
+  the same UI step, and a landed slide gives the guard back only after the new
+  page's rest is published (Codex review 2026-11-26). A second finger fails the
+  pull before it activates, as the hex stage does.
+- **Leaving an emptied page deletes the rating, decided by the server** (Simon,
+  2026-11-26: "0 should store 0, so that means delete rating"; the server
+  decides, not the app). The page holds an emptied draft while it is open and
+  while a gesture is only granted; the committed departure (a page change, a
+  close, Finish, Back, the background, a blur, the unmount) sends it as an
+  ordinary merge, and the server reaps the rating when the merged result over
+  the stored row is empty. A cancelled edge swipe or pull-down sends nothing
+  (the layer drains twice: a preparation at the grant, the final drain once the
+  departure is committed). Superseded the same day's first build, where the app
+  sent a Clear itself (Codex review: a cancelled gesture, a degraded poll or an
+  unloaded stored edit could each delete).
 - **The pill** is hidden while the layer is open AND the line-up is focused (the
   footer replaces the nav), so a profile pushed over the layer shows it.
 - **Motion** stays on the transform / opacity allowlist; hit-testing is React

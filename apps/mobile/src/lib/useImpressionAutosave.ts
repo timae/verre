@@ -33,8 +33,12 @@ export type ImpressionAutosave = {
   setNotes: (v: string) => void;
   setNoteFocused: (focused: boolean) => void;
   setFlavors: (v: Record<string, number>) => void;
-  setAromas: (v: ImpressionAutosave['draft']['aromas']) => void;
-  drain: () => Promise<boolean>;
+  // false = the edit was refused (not editable, or before the baseline): an
+  // aroma picker resets only on a landed add.
+  setAromas: (v: ImpressionAutosave['draft']['aromas']) => boolean;
+  // A departure (lib/impressionAutosaveCore.ts): `final: false` is a gesture's
+  // grant (an emptied draft is held), the default stages everything.
+  drain: (opts?: { final?: boolean }) => Promise<boolean>;
   // Take the token when the Clear confirm OPENS; pass it to clearRating on Delete.
   clearBaseline: () => ClearToken | null;
   clearRating: (token?: ClearToken | null) => Promise<boolean>;
@@ -79,7 +83,11 @@ export function useImpressionAutosave({
   const subscribe = useCallback(
     (fn: () => void) => {
       if (!ctrl) return () => {};
-      const a = rateOutbox.subscribe(fn);
+      // An owner change may turn a held (emptied) draft non-empty: it settles again.
+      const a = rateOutbox.subscribe(() => {
+        ctrl.resumeSettle();
+        fn();
+      });
       const b = ctrl.subscribe(fn);
       return () => {
         a();
@@ -110,7 +118,7 @@ export function useImpressionAutosave({
 
   if (!ctrl || !viewer) {
     return {
-      draft: EMPTY_DRAFT, setScore: noop, scoreNow: () => EMPTY_DRAFT.score, stepScore: noop, setNotes: noop, setNoteFocused: noop, setFlavors: noop, setAromas: noop,
+      draft: EMPTY_DRAFT, setScore: noop, scoreNow: () => EMPTY_DRAFT.score, stepScore: noop, setNotes: noop, setNoteFocused: noop, setFlavors: noop, setAromas: () => false,
       drain: () => Promise.resolve(true), clearBaseline: () => null, clearRating: resolvedFalse, clearPending: false, discardPending: noop,
       savedState: null, error: null, baselineReady: false, editable: false, takeClearAsk: () => false,
     };

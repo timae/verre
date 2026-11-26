@@ -18,10 +18,23 @@
 // The note keeps its RAW text while focused (the server's `scrub` trims, so a
 // reseeded "dry" under the cursor would store "dryoak"); the canonical text
 // takes over when editing ends, only if no newer edit exists.
+//
+// 🔒 EMPTIED = DELETED, decided by the SERVER (Simon, 2026-11-26: "0 should
+// store 0, so that means delete rating"; the server decides the delete, not
+// the app). The page only HOLDS an emptied draft (every field it shows is
+// empty): the settle timer doesn't stage it while the page is open (a pause
+// while retyping deletes nothing), and neither does a gesture's grant-time
+// drain (a cancelled edge swipe or pull-down deletes nothing). The FINAL
+// departure (a committed page change, a close, Finish, Back, the background,
+// a blur, the unmount: `drain()` / `drain({ final: true })`, `dispose()`)
+// stages it like any edit: a MERGE of the changed fields, which the server
+// reaps when the merged result over the stored row is empty. Typing anything
+// first keeps the rating; a draft that turns non-empty while held (a poll, a
+// focus change) settles again (`resumeSettle`).
 
 import { fillFlavourZeros, gateAromaSelections, validateScore, type AxisKind } from '@verre/core';
 import type { RatingMeta } from './api/rateTypes';
-import { FIELDS, SAVE_ERROR_TEXT, type EntryMark, type Field, type FieldValues, type RateOutbox, type Snapshot } from './rateOutboxCore';
+import { FIELDS, isEmptyRating, SAVE_ERROR_TEXT, type EntryMark, type Field, type FieldValues, type RateOutbox, type Snapshot } from './rateOutboxCore';
 
 // The baseline a Clear confirm was opened on (`clearBaseline()` → `clearRating(token)`).
 // `mark`: the entry pending when it was taken (its ack may advance the base).
@@ -121,6 +134,8 @@ export function createAutosaveController(
   let noteFocused = false;
   let noteRaw: string | null = null; // the note's raw text while focused
   let timer: unknown = null;
+  // The settle timer (or a gesture's grant) found the draft emptied and held it.
+  let heldEmpty = false;
   let clearGenSeen = owner.clearGen(viewer, code, wineId);
   let active = true;
   let suspended: () => boolean = () => false;
@@ -137,6 +152,7 @@ export function createAutosaveController(
   const cancelTimer = () => {
     if (timer !== null) timers.clear(timer);
     timer = null;
+    heldEmpty = false;
   };
   // A successful Clear (here or on another mount of the same wine) invalidates
   // every draft created before it: this page resets from the post-Clear state
@@ -171,22 +187,31 @@ export function createAutosaveController(
     };
   };
 
+  // ONE batch (the owner builds one merge of the whole draft: field by field,
+  // an intermediate merge could be empty over the stored row and be reaped).
   const stageAll = () => {
     syncClearGen();
-    for (const f of FIELDS) {
-      const v = pending[f];
-      if (v === undefined) continue;
-      if (f === 'score' && validateScore(v).error) continue; // never a 400 for the slider's rounding
-      const value = normalizeField(f, v as never, kind);
-      const sd = seeds.get(f);
-      const seed = sd && sd.snap && !sd.dirty ? normalizeField(f, sd.value as never, kind) : undefined;
-      owner.stage(viewer, code, wineId, f, value, seed, latch ?? undefined);
-    }
+    owner.batch(() => {
+      for (const f of FIELDS) {
+        const v = pending[f];
+        if (v === undefined) continue;
+        if (f === 'score' && validateScore(v).error) continue; // never a 400 for the slider's rounding
+        const value = normalizeField(f, v as never, kind);
+        const sd = seeds.get(f);
+        const seed = sd && sd.snap && !sd.dirty ? normalizeField(f, sd.value as never, kind) : undefined;
+        owner.stage(viewer, code, wineId, f, value, seed, latch ?? undefined);
+      }
+    });
     pending = {};
     latch = null;
     seeds = new Map();
+    heldEmpty = false;
     emit();
   };
+  // 🔒 The page's unsettled edits leave the draft EMPTY (every field it shows):
+  // only whether to HOLD them (the header). Never a delete of its own: the
+  // final departure stages the merge and the server decides.
+  const empties = (): boolean => Object.keys(pending).length > 0 && isEmptyRating(draft());
   // The page's unsettled fields, as they would be staged.
   const unsettled = (): Partial<FieldValues> => {
     const out: Partial<FieldValues> = {};
@@ -201,10 +226,13 @@ export function createAutosaveController(
   const editable = () =>
     !disposed && active && !suspended() && owner.ready(viewer) && !owner.entry(viewer, code, wineId)?.clear;
 
-  const edit = <F extends Field>(field: F, value: FieldValues[F], relative: boolean) => {
-    if (!editable()) return;
+  // false = refused (not editable, or a relative edit before the baseline): the
+  // input must not act as if it landed (an aroma picker resets only on a
+  // landed add, Codex review 2026-11-26).
+  const edit = <F extends Field>(field: F, value: FieldValues[F], relative: boolean): boolean => {
+    if (!editable()) return false;
     syncClearGen();
-    if (relative && snapshot() === null) return;
+    if (relative && snapshot() === null) return false;
     // The draft's first edit latches the baseline; EVERY edit made offline
     // marks it (Codex: the conflict rule follows where the edit was made).
     if (Object.keys(pending).length === 0 || !latch) latch = { base: snapshot(), offline: false, mark: owner.pendingMark(viewer, code, wineId) };
@@ -218,15 +246,25 @@ export function createAutosaveController(
     if (field === 'notes' && noteFocused) noteRaw = value as string;
     arm();
     emit();
+    return true;
   };
   // The one trailing timer, re-armed by every edit.
   function arm() {
     cancelTimer();
     timer = timers.set(() => {
       timer = null;
-      if (!disposed) stageAll();
+      if (disposed) return;
+      // An emptied draft waits for the final departure (the header).
+      heldEmpty = empties();
+      if (!heldEmpty) stageAll();
     }, settleMs);
   }
+  // A held draft that turned non-empty (a poll brought a value into a clean
+  // field, the note's focus changed what it shows) settles again (Codex review
+  // 2026-11-26: it waited for the next edit or a departure).
+  const resumeSettle = () => {
+    if (!disposed && heldEmpty && timer === null && Object.keys(pending).length > 0 && !empties()) arm();
+  };
 
   const ctl = {
     subscribe(fn: () => void) {
@@ -285,17 +323,32 @@ export function createAutosaveController(
       noteFocused = focused;
       syncClearGen();
       noteRaw = focused ? draft().notes : null;
+      resumeSettle();
       emit();
     },
+    // The hook calls it on every owner change (a poll, an answer).
+    resumeSettle,
 
     // A departure: cancel the trailing timer, stage what is unstaged and wait
     // until it is PERSISTED (never for the server). false = storage failed or
-    // didn't settle in 2 s (the page stays and shows the error).
-    async drain(): Promise<boolean> {
+    // didn't settle in 2 s (a page change stays and shows the error; a close
+    // still leaves, and the owner alerts once the page is gone).
+    // 🔒 `final: false` = a gesture's GRANT (an edge swipe, a pull-down, or the
+    // grant step of a button's departure): ordinary edits are staged so they
+    // are stored by the release, an EMPTIED draft is HELD (a cancelled gesture
+    // deletes nothing); the committed departure drains again with `final`
+    // (the default), which stages it.
+    async drain(opts: { final?: boolean } = {}): Promise<boolean> {
       cancelTimer();
-      if (Object.keys(pending).length) stageAll();
+      if (Object.keys(pending).length) {
+        if (opts.final === false && empties()) heldEmpty = true;
+        else stageAll();
+      }
       const ok = await owner.persisted(viewer, code, wineId);
-      if (!ok) localError = SAVE_ERROR_TEXT; // stays until the next GOOD save
+      if (!ok) {
+        localError = SAVE_ERROR_TEXT; // stays until the next GOOD save
+        owner.departureWriteFailed(viewer, code, wineId);
+      }
       emit();
       return ok;
     },
@@ -373,7 +426,7 @@ export function createAutosaveController(
       disposed = false;
     },
     // Unmount: anything unstaged goes into the entry (the focus cleanup has
-    // normally captured it already).
+    // normally captured it already), an emptied draft included (a final departure).
     dispose() {
       if (disposed) return;
       cancelTimer();

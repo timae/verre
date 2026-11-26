@@ -42,9 +42,12 @@ const noStore = { 'Cache-Control': 'private, no-store' }
 // - MERGE (`merge: true`, the app's auto-save; signed in only): each of
 //   `score`, `flavors`, `notes`, `aromas` is optional (at least one) and an
 //   omitted one keeps the stored value (a new rating: the defaults; a rating key
-//   without a row is never imported). A merge NEVER reaps: a merged empty result
-//   writes nothing and answers `{ ok: true, unchanged: true }`; a committed one
-//   answers `{ ok: true, rating }` (the canonical RatingMeta incl. `at` and `v`).
+//   without a row is never imported). 🔒 A merged EMPTY result over a stored row
+//   REAPS it exactly like the full empty save (Simon, 2026-11-26: "0 should
+//   store 0, so that means delete rating"; the server decides, never the app)
+//   and answers `{ ok: true, cleared: true, version }`; with no row it writes
+//   nothing (`{ ok: true, unchanged: true }`); a committed one answers
+//   `{ ok: true, rating }` (the canonical RatingMeta incl. `at` and `v`).
 //   Requires `opId` (a UUID) and `baseVersion`.
 // 🔒 `baseVersion` (any form, signed in): under the locks, before anything else,
 // the current version (`rating_versions`, 0 without a row) must equal it, else
@@ -166,27 +169,30 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // plan § 3). Every rate takes the advisory lock (the record is serialized:
   // rate, check-in PATCH, deletes, rebuild) and bumps the publication generation
   // (a rebuild whose backend died cannot publish a stale rating over this one).
-  // 🔒 A FULL rate that may REAP its rating (an empty payload — score 0, no
-  // chips, no notes, aromas omitted or empty) may DELETE the rating key, so it
-  // also takes the Redis lease (r3-3: a key-deleting path must hold it, or a
-  // zombie rebuild's NX publish could resurrect the deleted rating). A merge
-  // never reaps.
+  // 🔒 A rate that may REAP its rating may DELETE the rating key, so it also
+  // takes the Redis lease (r3-3: a key-deleting path must hold it, or a zombie
+  // rebuild's NX publish could resurrect the deleted rating). Decided BEFORE
+  // the row is read: a FULL save with an empty payload (score 0, no chips, no
+  // notes, aromas omitted or empty), or a MERGE whose every SUPPLIED field is
+  // empty-valued (its merged result is empty when the stored row's other
+  // fields are).
   //
   // Inside, in order: admission from the caller's FRESH grant (Redis for
   // anonymous callers); a signed-in caller without a record → 503; the wine
   // read under the locks (an absent lineup is a cold cache → rebuild, never "no
   // such wine"); for a signed-in rater: the version check, the server-side
   // flavour normalisation against the wine's CURRENT style, the merge (a merged
-  // empty result: `unchanged`, before anything is written), the member row, the
+  // empty result with no row: `unchanged`, before anything is written; over a
+  // row: the reap below, like the full empty save), the member row, the
   // rating upsert (mirror_at = the token, § 4.3) with the once-per-rating flags,
   // the feed item or the engagement-deletion cascade (+ the take-back of the
   // action XP), the lifetime counters and the action XP, the version bump, all
   // in this one transaction. The rating key is written last, with the committed
   // row's own token and version: under the advisory lock every writer of the row
   // is serialized, so the last committer also wrote the key last.
-  const reaps = !isMerge && userId !== null && ratingScore === 0 && Object.keys(validFlavors ?? {}).length === 0
-    && !cleanNotes && (!aromasProvided || (ar.value ?? []).length === 0)
-  type Outcome = { kind: 'saved'; rating: ReturnType<typeof canonicalRating> | null } | { kind: 'unchanged' } | { kind: 'cleared' }
+  const reaps = userId !== null && (!scoreGiven || ratingScore === 0) && (!flavorsGiven || Object.keys(validFlavors ?? {}).length === 0)
+    && (!notesGiven || !cleanNotes) && (!aromasProvided || (ar.value ?? []).length === 0)
+  type Outcome = { kind: 'saved'; rating: ReturnType<typeof canonicalRating> | null } | { kind: 'unchanged' } | { kind: 'cleared'; version: number }
   let reclaim: string[] = []
   let outcome = { kind: 'saved', rating: null } as Outcome
   try {
@@ -273,9 +279,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
       const mScore = scoreGiven ? ratingScore : (prior?.score == null ? 0 : Number(prior.score))
       const mFlavors = storedFlavors ?? ((prior?.flavors && typeof prior.flavors === 'object' && !Array.isArray(prior.flavors) ? prior.flavors : {}) as Record<string, number>)
       const mNotes = notesGiven ? cleanNotes : (prior?.notes || null)
-      // 🔒 A merge NEVER reaps: a merged empty result writes nothing (no member
-      // row, no counters, no key), before every side effect.
-      if (isMerge && mScore === 0 && Object.keys(mFlavors).length === 0 && mAromas.length === 0 && !mNotes) {
+      // 🔒 A merged EMPTY result: with no row it writes nothing (no member row,
+      // no counters, no key), before every side effect; over a row it goes on
+      // like the full empty save and is reaped below (the cascade, the take-back
+      // of its own XP, the version bump, the key DEL).
+      if (isMerge && !prior && mScore === 0 && Object.keys(mFlavors).length === 0 && mAromas.length === 0 && !mNotes) {
         outcome = { kind: 'unchanged' }
         return
       }
@@ -312,9 +320,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
       const committed = canonicalRating(row, new Date(row.ts).getTime(), 0)
       // The session feed item materialises on first engagement (score, chips,
       // aromas or a note); idempotent via the partial unique (user_id,
-      // session_id). An emptied rating (a FULL save) is reaped instead
-      // (engagement-deletion cascade, the owner's own clear: its action XP is
-      // taken back) — and its key goes with it.
+      // session_id). An emptied rating (a full save, or a merge whose merged
+      // result is empty) is reaped instead (engagement-deletion cascade, the
+      // owner's own clear: its action XP is taken back) — and its key goes with it.
       const engaged = committed.score > 0 || Object.keys(committed.flavors).length > 0 || (committed.aromas ?? []).length > 0 || committed.notes.length > 0
       if (engaged) {
         await tx.$executeRaw`
@@ -326,10 +334,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         const reaped = await engagementCascadeIn(tx, ratingId, 'empty-only', { ownClear: true })
         if (reaped) {
           reclaim = reaped
-          await bumpRatingVersion(tx, userId, wineId, opId ?? null)
+          const version = await bumpRatingVersion(tx, userId, wineId, opId ?? null)
           // rating-write: BUMPS
           await ratingKeyWrite(ctx, key, null)
-          outcome = { kind: 'cleared' }
+          outcome = { kind: 'cleared', version }
           return
         }
       }
@@ -397,5 +405,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     afterCommit('rate', 'badges', userId, () => import('@/lib/badgeService').then(({ checkAndAwardBadges }) => checkAndAwardBadges(userId)))
   }
   if (isMerge && outcome.kind === 'saved' && outcome.rating) return NextResponse.json({ ok: true, rating: outcome.rating }, { headers: noStore })
+  // A merge that reaped: the rating is gone, at this version (the app's outbox
+  // takes it as "no rating" on that base). The full save's Clear answer is unchanged.
+  if (isMerge && outcome.kind === 'cleared') return NextResponse.json({ ok: true, cleared: true, version: outcome.version }, { headers: noStore })
   return NextResponse.json({ ok: true }, { headers: noStore })
 }

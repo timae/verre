@@ -44,13 +44,19 @@ const deferred = (): Deferred => {
 
 function harness(ids = ['a', 'b', 'c']) {
   const guard = createTransitionGuard()
-  const state = { active: 'b', live: true, ids, drains: [] as string[], held: [] as boolean[] }
+  // `drains`: the grant-time preparations (manual or auto); `finals`: the
+  // committed departures' FINAL drains (resolved at once with `auto`, else true).
+  const state = { active: 'b', live: true, ids, drains: [] as string[], finals: [] as string[], held: [] as boolean[] }
   const pending: Deferred[] = []
   let auto: boolean | null = true // resolve drains at once with this, null = manual
   const tx = createLayerTransitions({
     guard,
     activeId: () => state.active,
-    drain: (id) => {
+    drain: (id, final) => {
+      if (final) {
+        state.finals.push(id)
+        return Promise.resolve(auto ?? true)
+      }
       state.drains.push(id)
       if (auto !== null) return Promise.resolve(auto)
       const d = deferred()
@@ -359,6 +365,85 @@ async function main() {
     p.finishCapture()
     await flush()
     check('a storage failure still closes (never trapped)', await p.pull.release(), 'close')
+  }
+
+  console.log('\n§10b the grant only PREPARES; the FINAL drain runs once the departure is committed (Codex review 2026-11-26: a cancelled gesture deleted the rating)')
+  {
+    const h = harness()
+    h.tx.begin(prev) // an edge swipe granted
+    check('the grant drains the outgoing page as a preparation (an emptied draft is held)', [h.state.drains, h.state.finals], [['b'], []])
+    await h.tx.end(false) // released short of the line
+    h.tx.abandon()
+    check('🔒 a cancelled swipe: NO final drain (nothing emptied is staged, so nothing is deleted)', h.state.finals, [])
+  }
+  {
+    const p = pullHarness()
+    p.pull.activate()
+    p.finishCapture()
+    await flush()
+    p.pull.cancel()
+    p.pull.settled()
+    check('🔒 a pull-down cancelled short of the line: the grant drained, NO final drain', [p.h.state.drains, p.h.state.finals], [['b'], []])
+  }
+  {
+    const p = pullHarness()
+    p.pull.activate()
+    p.finishCapture()
+    await flush()
+    check('a pull-down released past the line: the final drain, then close', [await p.pull.release(), p.h.state.finals], ['close', ['b']])
+  }
+  {
+    const h = harness()
+    h.tx.begin(next)
+    check('a committed page change (Next, a swipe past the line): go after the final drain', [await h.tx.end(true), h.state.finals], ['go', ['b']])
+  }
+  {
+    const h = harness()
+    h.tx.begin(close)
+    check('the close button, Finish, Android Back: the final drain, then go', [await h.tx.end(true), h.state.finals], ['go', ['b']])
+  }
+  {
+    const h = harness()
+    h.failDrains()
+    h.tx.begin(next)
+    check('a page change whose grant drain failed stays, with NO final drain', [await h.tx.end(true), h.state.finals], ['stay', []])
+    h.tx.abandon()
+    h.tx.begin(close)
+    check('a close whose grant drain failed still drains final and goes (never trapped)', [await h.tx.end(true), h.state.finals], ['go', ['b']])
+  }
+  {
+    const h = harness()
+    h.manual()
+    h.tx.begin(next)
+    const p = h.tx.end(true)
+    h.state.live = false
+    h.pending[0].resolve(true)
+    check('a departure no longer valid when the grant drain lands (blurred): stay, NO final drain', [await p, h.state.finals], ['stay', []])
+  }
+  {
+    const h = harness()
+    h.manual()
+    h.tx.begin(next)
+    const p = h.tx.end(true)
+    h.tx.force()
+    h.pending[0].resolve(true)
+    check('a forced teardown meanwhile: NO final drain (its own outcome decides)', [await p, h.state.finals], ['stay', []])
+  }
+  {
+    const guard = createTransitionGuard()
+    const calls: string[] = []
+    const tx = createLayerTransitions({
+      guard,
+      activeId: () => 'b',
+      drain: (id, final) => { calls.push(`${id}:${final}`); return Promise.resolve(!final) },
+      live: () => true,
+      destValid: () => true,
+    })
+    tx.begin(next)
+    check('a page change whose FINAL drain fails stays on the page', [await tx.end(true), calls], ['stay', ['b:false', 'b:true']])
+    tx.abandon()
+    tx.begin(close)
+    check('a close whose final drain fails still goes', await tx.end(true), 'go')
   }
 
   console.log('\n§11 the page\'s text capture: every departure joins ONE capture that waits for the fields\' native end (Codex recheck)')

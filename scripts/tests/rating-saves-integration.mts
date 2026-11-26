@@ -1,5 +1,6 @@
 // Rating saves (tasting feedback 2026-11-25; docs/dev/rating-saves.md, the
-// build prompt § 1b, § 2, § 3): merge saves and `unchanged`; the version check
+// build prompt § 1b, § 2, § 3): merge saves, an emptied merge reaping a stored
+// row (else `unchanged`); the version check
 // (`rating_versions`, 409 `{ stale, rating, version, lastOpId }`) and every
 // writer that bumps or copies it; the 503 for a signed-in save while a moment's
 // promotion fails (guests unchanged); `v` on the caller's own rows only; the
@@ -179,7 +180,7 @@ const STRUCT = { sweet: 0, acid: 0, aroma: 0, flavour: 0, funk: 0, tannin: 3, bo
 
 try {
   // ── § 1 merge saves ───────────────────────────────────────────────────────
-  if (section('merge', '§ 1 merge saves: omitted fields kept, `unchanged`, the canonical answer')) {
+  if (section('merge', '§ 1 merge saves: omitted fields kept, an emptied merge reaps a row (else `unchanged`), the canonical answer')) {
     const { T, code, bottle } = await moment()
     const w = await bottle()
     const r1 = await merge(code, T, w, { score: 4, flavors: { tannin: 3 }, aromas: [{ a: 'fruity', m: null }], notes: 'dark cherry' })
@@ -197,29 +198,62 @@ try {
     check('a structure-only merge on a new wine inserts score 0, no aromas, no note', r3.status === 200 && row3?.score === 0 && deepEq(row3.aromas, []) && row3.notes === null && row3.flavors.tannin === 2, row3)
     check('a note is scrubbed (trimmed) before it is stored and answered', (await merge(code, T, w2, { notes: '  dry ' })).json.rating && (await rowOf(T, code, w2))?.notes === 'dry')
 
-    // A merged empty result writes nothing: no reap, no counters, no XP, no
-    // member row, no carousel unhide, no last-seen bump, no badges.
+    // 🔒 An EMPTIED merge over a stored row REAPS it like the full empty save
+    // (Simon, 2026-11-26: "0 should store 0, so that means delete rating"; the
+    // server decides): the cascade, the take-back of its own XP, the version
+    // bump, the key DEL; answered { ok, cleared, version }.
     const w3 = await bottle()
     await merge(code, T, w3, { score: 3 })
+    const s0 = await statsOf(T)
+    const v0 = await versionOf(T, w3)
+    const reapOp = randomUUID()
+    // The Redis lease is decided before the row is read (every SUPPLIED field
+    // empty-valued): ONE attempt; without it the key DEL re-runs the contract.
+    let attempts = 0
+    mutationHooks.at = async (point, c, label) => { if (point === 'beforeLock' && c === code && label === 'rate') attempts++ }
+    const reaped = await merge(code, T, w3, { score: 0 }, { opId: reapOp })
+    mutationHooks.at = async () => {}
+    check('an emptied merge on an existing row reaps: { ok: true, cleared: true, version }', reaped.status === 200 && deepEq(reaped.json, { ok: true, cleared: true, version: v0.version + 1 }), reaped.json)
+    check('…in ONE attempt: the lease was taken up front (no re-run for the key DEL)', attempts === 1, attempts)
+    check('…the row and the rating key gone, the version bumped once with the op as lastOpId', !(await rowOf(T, code, w3)) && !(await keyOf(code, T, w3)) && deepEq(await versionOf(T, w3), { version: v0.version + 1, lastOpId: reapOp }), await versionOf(T, w3))
+    const s1 = await statsOf(T)
+    check('…its own rating XP taken back (+10 → 0), counters kept', s1.xp === s0.xp - 10 && s1.ratings === s0.ratings, { s0, s1 })
+    const resent = await merge(code, T, w3, { score: 0 }, { opId: reapOp, base: v0.version })
+    check('…the same op re-sent (its answer lost): 409 stale, rating null, lastOpId = the op (the app\'s success)', resent.status === 409 && resent.json.rating === null && resent.json.lastOpId === reapOp && resent.json.version === v0.version + 1, resent.json)
+    // The version check holds for an emptied merge.
+    await merge(code, T, w3, { score: 2 })
+    const vS = await versionOf(T, w3)
+    const sS = await statsOf(T)
+    const stale = await merge(code, T, w3, { score: 0 }, { base: vS.version - 1 })
+    check('an emptied merge on a stale base: 409 stale with the current rating, nothing deleted', stale.status === 409 && stale.json.stale === true && (stale.json.rating as Record<string, unknown>)?.score === 2
+      && (await rowOf(T, code, w3))?.score === 2 && (await versionOf(T, w3)).version === vS.version && deepEq(await statsOf(T), sS), [stale.status, stale.json])
+    // Emptying only the score keeps a stored note: the merged result is not empty.
+    const w7 = await bottle()
+    await merge(code, T, w7, { score: 4, notes: 'keep me' })
+    const kept = await merge(code, T, w7, { score: 0 })
+    check('a merge that empties only the score: score 0 stored, the note kept, answered { ok, rating }', kept.status === 200 && (kept.json.rating as Record<string, unknown>)?.score === 0
+      && (await rowOf(T, code, w7))?.score === 0 && (await rowOf(T, code, w7))?.notes === 'keep me', [kept.json, await rowOf(T, code, w7)])
+
+    // An emptied merge with NO row writes nothing: no counters, no XP, no member
+    // row, no carousel unhide, no last-seen bump, no badges, no version row.
     // T stays admitted as a rating author without a member row from here on.
     await prisma.$executeRaw`DELETE FROM session_members WHERE user_id = ${T.id} AND session_code = ${code}`
     await hideCarousel(T.id, code)
     await redis.hDel(k.lastSeen(code), String(T.id))
     const before = await statsOf(T)
     const badgesBefore = await prisma.userBadge.count({ where: { userId: T.id } })
-    const v0 = await versionOf(T, w3)
-    const empty = await merge(code, T, w3, { score: 0 })
+    const w4 = await bottle()
+    const empty = await merge(code, T, w4, { score: 0 })
     await pause(300)
-    check('a merge to an EMPTY result answers { ok: true, unchanged: true }', empty.status === 200 && deepEq(empty.json, { ok: true, unchanged: true }), empty.json)
-    check('…the stored rating is kept (no reap) and the version did not move', (await rowOf(T, code, w3))?.score === 3 && (await versionOf(T, w3)).version === v0.version)
+    check('an emptied merge with no row answers { ok: true, unchanged: true }', empty.status === 200 && deepEq(empty.json, { ok: true, unchanged: true }), empty.json)
+    check('…nothing inserted, no version row', !(await rowOf(T, code, w4)) && (await versionOf(T, w4)).version === 0)
     check('…no counters, no XP, no member row (lifetime_sessions_joined untouched)', deepEq(await statsOf(T), before) && !(await memberOf(T, code)), { before, after: await statsOf(T) })
     check('…the carousel stays hidden, no last-seen bump, no badge rows', await redis.sIsMember(k.carouselHidden(T.id), code) && !(await redis.hExists(k.lastSeen(code), String(T.id)))
       && (await prisma.userBadge.count({ where: { userId: T.id } })) === badgesBefore)
-    const w4 = await bottle()
     const empty2 = await merge(code, T, w4, { notes: '   ' })
     check('a merge of a blank note on a wine with no rating: unchanged, nothing inserted, no version row', deepEq(empty2.json, { ok: true, unchanged: true }) && !(await rowOf(T, code, w4)) && (await versionOf(T, w4)).version === 0)
     await merge(code, T, w3, { notes: 'back' })
-    check('a full EMPTY save still reaps (today\'s behaviour, the web and the app\'s Clear)', (await full(code, T, w3, {})).status === 200 && !(await rowOf(T, code, w3)))
+    check('a full EMPTY save still reaps (the web and the app\'s Clear), answered { ok: true } as before', deepEq((await full(code, T, w3, {})).json, { ok: true }) && !(await rowOf(T, code, w3)))
     // A FULL save's note is scrubbed too (ruled 2026-11-26): a whitespace-only
     // note is no note, so score 0 with only spaces reaps. And the rating key
     // never seeds a signed-in rater's NEW row.

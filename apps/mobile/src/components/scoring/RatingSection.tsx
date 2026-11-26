@@ -54,7 +54,8 @@ export function RatingSection({
   flavors: Record<string, number>;
   onFlavors: (v: Record<string, number>) => void;
   aromas: AromaSelection[];
-  onAromas: (v: AromaSelection[]) => void;
+  // false = refused (the impression's autosave): the aroma pickers don't reset.
+  onAromas: (v: AromaSelection[]) => void | boolean;
   // Forwarded to AromaInput — see useAromaSearchScroll for the screen half.
   onRequestAromaScroll?: (rowTopInWindow: number, blockBelow: number) => void;
   // The impression's auto-save (lib/useImpressionAutosave.ts): VoiceOver's

@@ -15,8 +15,11 @@ saves wait on the phone and go out by themselves later. Four decisions shape it:
 - **An offline outbox across restarts** (`apps/mobile/src/lib/rateOutbox.ts`);
   unsent entries are cleaned up after 90 days.
 
-Only "Clear My Rating" deletes a rating from the app. The web Rate pane keeps
-its explicit Save (a full save) and its Reset.
+From the app a rating is deleted by "Clear My Rating" (a full empty save, after
+a confirm) and by leaving a page whose every field was emptied: that merge's
+result over the stored row is empty and the SERVER reaps it (ruled 2026-11-26:
+"0 should store 0, so that means delete rating"; the server decides, never the
+app). The web Rate pane keeps its explicit Save (a full save) and its Reset.
 
 ## `POST /api/session/:code/rate`
 
@@ -31,9 +34,9 @@ early 404 → the promotion attempt (signed in) → the session mutation contrac
 |---|---|---|
 | Fields | `score`, `flavors`, `notes` replaced (omitted = 0 / `{}` / none); `aromas` present-replaces, omitted-preserves | each of `score`, `flavors`, `notes`, `aromas` optional (at least one, else 400); an omitted one keeps the stored value |
 | A new rating | the body's values | the supplied fields, the defaults for the rest |
-| An empty result | REAPS the rating (the engagement cascade: photos, and the post with its likes when it was your last rating in the moment) | writes NOTHING: `{ ok: true, unchanged: true }` |
+| An empty result | REAPS the rating (the engagement cascade: photos, and the post with its likes when it was your last rating in the moment) | over a stored row: REAPS it the same way (`{ ok: true, cleared: true, version }`); no row: writes NOTHING (`{ ok: true, unchanged: true }`) |
 | Needs | nothing new (`opId` / `baseVersion` optional) | `opId` and `baseVersion` (400 otherwise); a signed-in rater (a guest's merge is a 400) |
-| Success | `{ ok: true }` (a Clear included) | `{ ok: true, rating }` |
+| Success | `{ ok: true }` (a Clear included) | `{ ok: true, rating }`; a reap `{ ok: true, cleared: true, version }` |
 
 Every present field is validated as before (score `0..5` in 0.25 steps, the
 flavour registry against the bottle's kind, the aroma gate), and the note goes
@@ -42,13 +45,51 @@ forms (ruled 2026-11-26: the free-text rule of `lib/CLAUDE.md`, and a NUL byte n
 longer 500s). A whitespace-only note is no note, so a full save of score 0 with
 only spaces reaps. The app compares its draft with `scrub(draft) ?? ''`.
 
-🔒 **A merge never reaps.** Under the session lock the route computes the MERGED
-result (the locked row ⊕ the validated, normalised supplied fields). When it is
-empty (score 0, no structure, no aromas, no note) it returns the `unchanged`
-outcome BEFORE `ensureMemberRow` (which can bump `lifetime_sessions_joined`), the
-upsert and every side effect, and the route answers before the refresh, the
-last-seen bump, the carousel unhide and badge evaluation. Emptying every field
-by hand and leaving keeps the stored rating.
+🔒 **An emptied merge reaps; the server decides.** Under the session lock the
+route computes the MERGED result (the locked row ⊕ the validated, normalised
+supplied fields). When it is empty (score 0, no structure above 0, no aromas, a
+blank scrubbed note):
+
+- **a stored row** is REAPED exactly like the full empty save: the member row
+  and the upsert, then the engagement cascade (`'empty-only'`, `ownClear`: the
+  take-back of the row's own XP), the version bump with the op's `opId`, the
+  rating key DEL, the photos reclaimed after COMMIT, the background steps. The
+  answer is **`{ ok: true, cleared: true, version }`** (the version after the
+  bump; a re-send of the same op then meets the version check and gets the 409
+  with its own `lastOpId` and `rating: null`);
+- **no row**: the `unchanged` outcome BEFORE `ensureMemberRow` (which can bump
+  `lifetime_sessions_joined`), the upsert and every side effect, and the route
+  answers before the refresh, the last-seen bump, the carousel unhide and badge
+  evaluation.
+
+A merge empties only the fields it carries: an omitted field keeps the stored
+value, so emptying the score of a rating with a note stores score 0 and keeps
+the note. 🔒 The Redis lease (a reap deletes the rating key) is decided BEFORE
+the row is read: a full save with an empty payload, or a merge whose every
+SUPPLIED field is empty-valued, takes it (`redisLock`); the version check
+applies as to any save (409 `stale` on an outdated base, nothing deleted).
+
+The app sends an emptied page as an ordinary merge, only at the FINAL departure
+(`impressionAutosaveCore.ts`, header): a page whose every field is emptied
+stages nothing while it stays open (a pause while retyping deletes nothing) or
+while a gesture is merely granted (a cancelled edge swipe or pull-down sends
+nothing); a committed page change, a close, Finish, Back, the background, a
+blur or the unmount stage it. Typing anything before leaving keeps the rating.
+A draft goes out as ONE merge (`owner.batch`): field by field, an intermediate
+merge could be empty over the stored row and be reaped although the draft as a
+whole is not.
+
+- **The background, a blur and a screen pushed on top count as leaving**
+  (ruled 2026-11-26, Simon: "idea of auto save is, that all you do is saved
+  straight away"): they drain the page as a FINAL departure (`drainActive`,
+  `final: true`), so an emptied page deletes the rating then, even though the
+  page is still open underneath.
+- **An emptied page is held until it goes out of view**, never deleted by the
+  ~1 s settle while it is open (ruled 2026-11-26). Closing the app from the app
+  switcher passes through the background, so the merge is stored on the phone
+  there and sent then or at the next launch. A crash or a dead battery while an
+  emptied page is open loses the held draft: the old rating stays (the safe
+  side).
 
 🔒 **A rating key without a row is never imported** into a merge (it can be a
 post-edit clear whose Redis delete failed, or a rebuild's kept key of a live
@@ -191,7 +232,7 @@ fails too. The list:
 
 | Writer | Kind | How |
 |---|---|---|
-| The rate POST (merge, full, the Clear's reap) | BUMPS | `bumpRatingVersion` with the op's `opId` |
+| The rate POST (merge, full, the reap of an empty result: a full empty save or an emptied merge over a row) | BUMPS | `bumpRatingVersion` with the op's `opId` |
 | The web Reset DELETE (its Postgres branch) | BUMPS | `bumpRatingVersion` when it deleted the rating of THIS moment; a Reset that finds no row here is version-neutral (the version row is per user and bottle id, and an id from the path may name another moment's bottle) |
 | The post edit of a moment rating (`patchSessionRating`, the update and the reap; also in a soft-deleted moment) | BUMPS | `bumpRatingVersion`, `last_op_id` NULL; the live key carries the new `v` |
 | `sessionWipe()` deleting a signed-in rater's ratings (ban, kick with delete, a full leave) | BUMPS | `bumpRaterVersions`: one statement for their rated bottles of the moment, BEFORE the delete (otherwise an entry that waited through a kick and a rejoin re-creates the deleted rating); no XP change for a host's wipe, the XP taken back for a full leave (below) |
@@ -224,8 +265,9 @@ admission → the 503 → the bottle → **the version check → the merge → t
   signed-in save, awarding only NEW badges' own XP (`checkAndAwardBadges(userId)`,
   no action parameter any more).
 - 🔒 **The take-back on your OWN clear**: `engagementCascadeIn(…, { ownClear:
-  true })`, passed ONLY by the empty full save, the web's Reset and a moment
-  rating emptied in the post edit, debits the owner by the row's
+  true })`, passed ONLY by the rate POST's reap (an empty full save, an emptied
+  merge over a row), the web's Reset and a moment rating emptied in the post
+  edit, debits the owner by the row's
   `rating_action_xp` (from `DELETE … RETURNING`), floored at 0, in the caller's
   transaction. A retry or a repeat finds no row and debits nothing; a first empty
   POST (insert + reap) debits 0; legacy rows carry 0 (their historical XP stays).
@@ -290,12 +332,18 @@ is the ONLY queue state; there is no list of jobs.
   found itself offline with unsent revisions.
 - One serialised OWNER per entry key: hydration, staging, applying an answer and
   removal, in order, each PERSISTED before the next op is sent. Staging happens
-  on every settled edit (the ~1 s timer), every departure and every Clear; a
-  field equal to the server value it was seeded from (normalised: `scrub` for the
-  note) with nothing sent-but-unacknowledged is not staged.
+  on every settled edit (the ~1 s timer), every departure and every Clear, a
+  page's whole draft in ONE batch (one merge); a field equal to the server value
+  it was seeded from (normalised: `scrub` for the note) with nothing
+  sent-but-unacknowledged is not staged. 🔒 An EMPTIED draft (every field the
+  page shows is empty) is HELD: not by the timer, not by a gesture's grant-time
+  drain (`drain({ final: false })`), only by the final departure; a held draft
+  that turns non-empty (a poll, the note's focus) settles again.
 - A departure resolves as soon as its revisions are persisted (online or
   offline); Previous / Next / Finish move on at once. It fails only when storage
-  fails (the page stays and shows the error). Since build 2 the impression is a
+  fails (a page change stays and shows the error; a close leaves, and once no
+  page of that wine is visible with the write still outstanding, the one-shot
+  alert says so: `departureWriteFailed`). Since build 2 the impression is a
   layer inside the line-up (ADR-0011, `apps/mobile/CLAUDE.md` § The impression
   layer): one page per neighbour, each with its own hook, and ONE transition
   guard per layer shared by paging (Previous, Next, an edge swipe), Finish and
@@ -314,12 +362,13 @@ then persisted); (3) else the fields whose rev > `ackRev` become ONE merge (a ne
 | Answer | The app |
 |---|---|
 | 2xx `{ ok, rating }` | resolved: acknowledge the revisions it carried, base := `rating.v`, patch the cache; remove the entry when nothing remains |
-| 2xx `{ ok: true, unchanged: true }` | resolved; PARK the attempted revisions until a newer edit; the footer shows nothing new |
+| 2xx `{ ok: true, cleared: true, version }` (an emptied merge the server reaped) | resolved like the 409 below that names this op: acknowledge its revisions, base := `version`, the snapshot / remembered answer and the cache become `rating: null` (the line-up row reads unrated), newer revisions stay as a new merge on that base; remove the entry when nothing remains |
+| 2xx `{ ok: true, unchanged: true }` (an emptied merge, no row) | resolved; PARK the attempted revisions until a newer edit (a parked-only entry overlays nothing); the footer shows nothing new |
 | 2xx `{ ok: true }` for a Clear | resolved: reset the draft, every field acknowledged, the Clear generation bumped, the rating removed from the cache, the entry removed |
-| 409 `stale`, `lastOpId` = this op's `opId` | that op's SUCCESS (its earlier send committed): base := `version`, the cache gets `rating`; a Clear runs the Clear row |
+| 409 `stale`, `lastOpId` = this op's `opId` | that op's SUCCESS (its earlier send committed): base := `version`, the cache gets `rating` (`null` after a reap); a Clear runs the Clear row |
 | 409 `stale`, `rating: null`, the op's base 0 and `baseHadRating` false | not a conflict (a re-rate after a Clear, here or on the web, or after the host deleted it): base := `version`, re-send as a new op (waited entries too); a Clear answered this way is cleared |
 | 409 `{ wrongViewer: true }` | not resolved: the cookie isn't the entry's viewer; like a 401 `invalid`, stop the viewer's runner, keep every entry, confirm with get-session |
-| 409 `stale`, otherwise | a newer write from elsewhere: a WAITED entry is DROPPED (newer rating wins); a LIVE entry rebases ONCE (base := `version`, clean fields re-seeded, the edited ones re-sent); a second such 409 drops it with the footer error. A Clear is never rebased: the newer rating is shown and the person is asked again |
+| 409 `stale`, otherwise | a newer write from elsewhere: a WAITED entry is DROPPED (newer rating wins); 🔒 a LIVE op whose fields over the 409's newer (non-null) rating would leave it EMPTY is not rebased either (ruled 2026-11-26, "the newer save wins": the server would reap it): its revisions retire, base := `version`, the newer rating is shown, nothing is deleted (decided on the result, not the body; it also covers a reap whose answer was lost, re-sent after another device re-rated); every other LIVE entry rebases ONCE (base := `version`, clean fields re-seeded, the edited ones re-sent); a second such 409 drops it with the footer error. A Clear is never rebased: the newer rating is shown and the person is asked again |
 | 404, 403, 401 `X-Vr-Auth: removed` | resolved, entry dropped (the moment or wine gone, kicked, banned) |
 | 401 `X-Vr-Auth: invalid` | not definitive alone: stop the viewer's runner, keep every entry, confirm with one `get-session` (still this viewer → that moment refused it: drop that entry) |
 | 400 | resolved, entry dropped, logged (a client bug) |
@@ -344,8 +393,9 @@ then persisted); (3) else the fields whose rev > `ackRev` become ONE merge (a ne
   400. A visible page shows the error in its footer instead.
 - Entries older than **90 days** are removed unsent at launch (another account's
   waiting saves on a shared phone would otherwise stay until it signs in again).
-- The line-up shows your ratings stored on the phone (the owner's overlay);
-  Compare and other tasters see the server's state until the phone syncs.
+- The line-up shows your ratings stored on the phone (the owner's overlay; an
+  entry whose merged result is empty shows the bottle unrated, as the server
+  will); Compare and other tasters see the server's state until the phone syncs.
 
 ## Rollback floor and deploy (release runbook)
 
@@ -369,11 +419,25 @@ then persisted); (3) else the fields whose rev > `ackRev` become ONE merge (a ne
   until roll-forward.
 - The app half's residuals (two devices at once, a re-linked bottle, a line-up
   hidden meanwhile, …) are listed in the build prompt § 1 "Named residuals".
+- A committed page change whose destination left the line-up during its final
+  drain stays on the page with the emptied merge already staged: the rating is
+  deleted while the page still shows it empty.
+- An earlier op retired by a 400 (a client bug only) can leave a later partial
+  merge whose fields empty the stored row on their own, which the server reaps.
+- A page change that stays after a storage failure still sends its emptying
+  merge later, once the write lands (the page shows it empty meanwhile).
+- Every merge whose supplied fields are all empty-valued takes the Redis lease,
+  so a busy lease can answer 503 and pause the moment's entries (accepted; the
+  alternative was the `ContractNeedsLease` re-run).
+- A close under failing storage can wait up to about 4 s (two drains of 2 s:
+  the grant's preparation and the final one).
 
 ## Tests
 
 `scripts/tests/rating-saves-integration.mts` (`check-schema.yml`, through the
-real routes): merge and `unchanged` (§ 1), the version check and every writer
+real routes): merge, an emptied merge's reap (the XP take-back, the version
+bump, the lease taken up front, the 409 on a stale base) and `unchanged` with no
+row (§ 1), the version check and every writer
 (§ 2, incl. the cross-moment Reset and the rolled-back save), the
 wrong-account guard (§ 1b), the re-mint copy (§ 3), the 503 with the promotion failing and guests
 unchanged (§ 4), the committed answer before the background refresh (§ 5),

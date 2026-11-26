@@ -42,9 +42,10 @@ export type RateBody = {
   aromas?: { a: string; m: string | null; p?: boolean }[];
   notes?: string;
   // A MERGE save (the app's auto-save, docs/dev/rating-saves.md): only the
-  // fields present change; at least one present; a merged EMPTY result writes
-  // nothing (`unchanged`), so a merge never deletes. Without it: a full
-  // replace, and an empty one reaps (the app's Clear My Rating).
+  // fields present change; at least one present; a merged EMPTY result over a
+  // stored row REAPS it (`cleared`), with no row it writes nothing
+  // (`unchanged`). Without it: a full replace, and an empty one reaps (the
+  // app's Clear My Rating).
   merge?: true;
   // The app's merges and Clears: the op id (a plain UUID) and the version the
   // edits are based on (0 = no version row). A stale base → 409 `stale`.
@@ -60,7 +61,8 @@ export type RateBody = {
 // table, lib/rateOutboxCore.ts `apply`).
 export type RateResult =
   | { kind: 'rating'; status: number; rating: RatingMeta } // a committed merge: the canonical row, with `v`
-  | { kind: 'unchanged'; status: number } // a merge whose merged result was empty: nothing written
+  | { kind: 'unchanged'; status: number } // a merge whose merged result was empty and no row: nothing written
+  | { kind: 'cleared'; status: number; version: number } // a merge whose merged result was empty over a row: reaped, at `version`
   | { kind: 'ok'; status: number } // a full save (the Clear) committed
   | { kind: 'stale'; status: 409; rating: RatingMeta | null; version: number; lastOpId: string | null }
   | { kind: 'wrong-viewer'; status: 409 } // the body's viewer isn't the cookie's: nothing written
