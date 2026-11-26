@@ -3,9 +3,10 @@ import { useRef, useState } from 'react';
 import { TextInput, View, type TextInputInstance } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Svg, { Path } from 'react-native-svg';
-import { STAR_PATH, SCORE_MAX, scoreFromFraction, snapScore, stepScore } from '@verre/core';
+import { STAR_PATH, SCORE_MAX, scoreFromFraction, stepScore } from '@verre/core';
 import { useFieldCapture } from '@/lib/fieldCapture';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
+import { endEditScore, sanitizeScoreDraft, scoreFromDraft } from '@/lib/scoreDraft';
 import { scoreWord } from '@/lib/scoreWords';
 import { usePhoneTokens } from '@/lib/layout';
 import { VText } from '@/components/ui/VText';
@@ -33,34 +34,6 @@ const TRACK_H = 50;
 const TRACK_H_COMFORT = 54;
 const RAIL_H = 6;
 const RAIL_H_COMFORT = 7;
-
-// Sanitize a raw keystroke string into a left-anchored decimal the user is
-// typing: keep digits + a single separator, cap the integer part at one digit
-// (scores are 0..5), and cap to two fraction digits. NO reformatting to a fixed
-// X.XX — that fought the caret and made the field flicker on every keystroke.
-// "2" stays "2"; "2.5" stays "2.5"; "25" (no dot) is read as 2.5 by parseScoreDraft.
-function sanitizeScoreDraft(text: string) {
-  let s = text.replace(/[^0-9.,]/g, '').replace(',', '.');
-  const dot = s.indexOf('.');
-  if (dot !== -1) {
-    const intPart = s.slice(0, dot).slice(0, 1);
-    const fracPart = s.slice(dot + 1).replace(/\./g, '').slice(0, 2);
-    s = `${intPart}.${fracPart}`;
-  } else {
-    // No separator yet: a lone "25" means 2.5 — keep first digit as units, the
-    // rest flow into the fraction so the bar can track digit-by-digit.
-    if (s.length > 1) s = `${s.slice(0, 1)}.${s.slice(1, 3)}`;
-  }
-  return s;
-}
-
-// Parse a typed draft to a raw 0..5 number (pre-snap), for the LIVE bar.
-function parseScoreDraft(text: string): number | null {
-  if (!text || text === '.') return null;
-  const n = Number.parseFloat(text);
-  if (!Number.isFinite(n)) return null;
-  return Math.min(SCORE_MAX, Math.max(0, n));
-}
 
 interface Props {
   value: number; // 0..5 in 0.25 steps; 0 = not rated
@@ -140,31 +113,25 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
   // `text` = the field's FINAL native text (`onEndEditing`'s nativeEvent.text),
   // never the `draft` state, which may not have re-rendered with the last
   // keystroke yet (Codex recheck 2, 2026-11-26).
+  // The SAME conversion as the live keystrokes (lib/scoreDraft.ts): an erased
+  // number is 0 here too (Codex recheck 3: a deletion only the end-editing
+  // event carried kept the old score). The slider's abandon still wins.
   const commitDraft = (text: string) => {
-    if (skipCommitRef.current) {
-      // The slider took over while the field was open: the draft is abandoned.
-      skipCommitRef.current = false;
-      return;
-    }
-    setEditing(false);
-    const parsed = parseScoreDraft(sanitizeScoreDraft(text));
-    // Empty/garbage draft leaves the value as last live-tracked (updateDraft
-    // already pushed each keystroke through). Only snap+commit a parseable one.
-    if (parsed == null) return;
-    const next = snapScore(parsed);
-    if (next !== valueRef.current) {
-      onChange(next);
-      commitHaptic();
-    }
+    const abandoned = skipCommitRef.current;
+    skipCommitRef.current = false;
+    if (!abandoned) setEditing(false);
+    const next = endEditScore(text, abandoned, valueRef.current);
+    if (next === null) return;
+    onChange(next);
+    commitHaptic();
   };
 
   const updateDraft = (text: string) => {
     const clean = sanitizeScoreDraft(text);
     setDraft(clean); // raw as typed — no X.XX reformat, so the field can't flicker
     // Live-track the bar: snap each keystroke's value and push it up. "2" → 2,
-    // "2" then "5" → 2.5; an off-grid "2.6" snaps the bar+value to 2.5.
-    const parsed = parseScoreDraft(clean);
-    const next = parsed == null ? 0 : snapScore(parsed);
+    // "2" then "5" → 2.5; an off-grid "2.6" snaps the bar+value to 2.5; erased → 0.
+    const next = scoreFromDraft(text);
     if (next !== valueRef.current) onChange(next);
   };
 

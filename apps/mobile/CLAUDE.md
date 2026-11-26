@@ -752,7 +752,9 @@ on the stack hosting the line-up: Back returns to the open layer.
   (iOS end-editing then blur, Android blur then end-editing), and only
   end-editing carries the FINAL text, so the field applies `nativeEvent.text`
   through its own setter first (the score: `commitDraft(text)`, never the
-  `draft` state; the note: only when it differs from its last change), then
+  `draft` state, through the SAME conversion as its live keystrokes,
+  `lib/scoreDraft.ts` `scoreFromDraft`: an erased number is 0 in both; the
+  note: only when it differs from its last change), then
   reports (`fieldEndEditing`); blur is the focus UI's; the unmount and the belt
   are the fallbacks; the slider's draft abandon still wins. The capture resolves once none is
   open, bounded by `CAPTURE_BELT_MS` (300). React Native's focused-input record

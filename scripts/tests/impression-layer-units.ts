@@ -18,6 +18,7 @@
 
 import { fieldEndEditing } from '../../apps/mobile/src/lib/fieldCapture'
 import { createTransitionGuard } from '../../apps/mobile/src/lib/impressionAutosaveCore'
+import { endEditScore, scoreFromDraft } from '../../apps/mobile/src/lib/scoreDraft'
 import {
   createInputCapture,
   createLayerTransitions,
@@ -455,6 +456,37 @@ async function main() {
     cap.done('score') // the score field unmounted mid-edit (the fallback)
     await p
     check('the unmount fallback ends the last one', n, 1)
+  }
+
+  console.log('\n§13 the score number: ONE conversion live and at end-editing; an erased score is 0 before the departure drains (Codex recheck 3)')
+  {
+    // ScoreInput as wired: the stored score is what the rating setter holds.
+    // The person erases 4.5; the deletion never reaches onChangeText, only the
+    // end-editing event carries the empty text; then they depart.
+    const cap = createInputCapture({ beltMs: 300 })
+    let score = 4.5 // live-tracked from "4.5"
+    let drainedWith: number | null = null
+    cap.focus('score')
+    const departure = cap.capture().then(() => { drainedWith = score }) // the layer drains after the capture
+    fieldEndEditing(cap, 'score', () => {
+      const next = endEditScore('', false, score)
+      if (next !== null) score = next
+    })
+    await departure
+    check('🔒 erased at end-editing → the departure drains 0, not the old 4.5', drainedWith, 0)
+  }
+  {
+    const texts = ['', '.', 'abc', '0', '2', '25', '2.5', '2.6', '4,75', '9', '3.', '.5']
+    check(
+      'live and end-editing agree for every text (the same conversion)',
+      texts.map((t) => endEditScore(t, false, -1)),
+      texts.map((t) => scoreFromDraft(t)),
+    )
+    check('empty / unreadable → 0 (not rated)', ['', '.', 'abc'].map(scoreFromDraft), [0, 0, 0])
+    check('"25" reads 2.5, off-grid snaps, the cap holds', ['25', '2.6', '9', '4,75'].map(scoreFromDraft), [2.5, 2.5, 5, 4.75])
+    check('the final text equal to the stored score writes nothing', endEditScore('3.5', false, 3.5), null)
+    check('the slider took over while the field was open: the typed draft is dropped', endEditScore('1', true, 4), null)
+    check('even an erased draft is dropped then (the slider wins)', endEditScore('', true, 4), null)
   }
 
   if (failures) {
