@@ -41,6 +41,7 @@ export function RatingSection({
   onRequestAromaScroll,
   onScoreStep,
   onNotesFocus,
+  scoreNow,
 }: {
   // The bottle's kind for the structure axes (`{ sparkling }`: Bubbles; null =
   // the base wine set). NOT masked on blind (colour and sparkling stay on a
@@ -60,12 +61,14 @@ export function RatingSection({
   // relative score step, and the note's focus (its raw text while typing).
   onScoreStep?: (v: number) => void;
   onNotesFocus?: (focused: boolean) => void;
+  // The draft's score NOW (the autosave's `scoreNow`): the number field's dedupe.
+  scoreNow?: () => number;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   return (
     <View>
-      <ScoreInput value={score} onChange={onScore} onStep={onScoreStep} />
+      <ScoreInput value={score} onChange={onScore} onStep={onScoreStep} current={scoreNow} />
       {/* note — tucked right under the score, NO title (Simon, 2026-07-12 —
           the placeholder carries the affordance), and the .ir-rate separator
           rule moved from ScoreInput to BELOW the note so score + note read as

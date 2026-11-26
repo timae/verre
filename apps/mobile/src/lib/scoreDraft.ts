@@ -41,11 +41,54 @@ export function scoreFromDraft(text: string): number {
   return parsed == null ? 0 : snapScore(parsed);
 }
 
-// What the end of an edit writes: nothing when the slider took over while the
-// field was open (`abandoned`: the typed draft is dropped, the slider's value
-// wins) or when the final text means the current value; else that score.
-export function endEditScore(text: string, abandoned: boolean, current: number): number | null {
-  if (abandoned) return null;
-  const next = scoreFromDraft(text);
-  return next === current ? null : next;
+// ONE edit session of the score number (focus → end-editing), pure so the
+// units drive exactly what ScoreInput does (Codex recheck 4, 2026-11-26):
+// • the edit remembers its INITIAL text and whether the person CHANGED it; an
+//   untouched field writes nothing at its end (a score that loaded while it
+//   was focused stays), a real erase writes 0, also when only the end-editing
+//   event carries it;
+// • every write is deduped against `current()`, the score in the draft NOW
+//   (the impression's autosave updates it synchronously; the last RENDERED
+//   score lags a burst of native events), never the rendered value;
+// • `abandon()`: the slider took over while the field was open, the typed
+//   draft is dropped (nothing written at its end).
+export type ScoreEndResult = 'abandoned' | 'wrote' | 'none';
+export function createScoreField(deps: { current: () => number; write: (v: number) => void }) {
+  let edit: { initial: string; changed: boolean } | null = null;
+  let abandoned = false;
+  const writeIfNew = (text: string): boolean => {
+    const next = scoreFromDraft(text);
+    if (next === deps.current()) return false;
+    deps.write(next);
+    return true;
+  };
+  return {
+    // onFocus, with the text the field starts from.
+    focus(seed: string) {
+      edit = { initial: seed, changed: false };
+      abandoned = false;
+    },
+    // onChangeText: the live bar.
+    change(text: string): boolean {
+      if (edit && text !== edit.initial) edit.changed = true;
+      return writeIfNew(text);
+    },
+    abandon() {
+      abandoned = true;
+    },
+    // onEndEditing, with the FINAL native text.
+    end(text: string): ScoreEndResult {
+      const e = edit;
+      edit = null;
+      if (abandoned) {
+        abandoned = false;
+        return 'abandoned';
+      }
+      if (!e) return 'none';
+      if (text !== e.initial) e.changed = true;
+      if (!e.changed) return 'none';
+      return writeIfNew(text) ? 'wrote' : 'none';
+    },
+  };
 }
+export type ScoreField = ReturnType<typeof createScoreField>;

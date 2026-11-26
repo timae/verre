@@ -18,7 +18,7 @@
 
 import { fieldEndEditing } from '../../apps/mobile/src/lib/fieldCapture'
 import { createTransitionGuard } from '../../apps/mobile/src/lib/impressionAutosaveCore'
-import { endEditScore, scoreFromDraft } from '../../apps/mobile/src/lib/scoreDraft'
+import { createScoreField, scoreFromDraft } from '../../apps/mobile/src/lib/scoreDraft'
 import {
   createInputCapture,
   createLayerTransitions,
@@ -458,35 +458,88 @@ async function main() {
     check('the unmount fallback ends the last one', n, 1)
   }
 
-  console.log('\n§13 the score number: ONE conversion live and at end-editing; an erased score is 0 before the departure drains (Codex recheck 3)')
+  console.log('\n§13 the score number: ONE conversion live and at end-editing; a CHANGED edit only; deduped against the draft NOW (Codex rechecks 3 + 4)')
+  // ScoreInput as wired: the store is the autosave draft (its setter updates it
+  // synchronously; `scoreNow` reads it); `rendered` is the last rendered score,
+  // which ScoreInput never dedupes against. The focus seed is the component's
+  // own: `value > 0 ? String(value) : ''` of the RENDERED value; `change` /
+  // `end` take the raw onChangeText / onEndEditing nativeEvent.text.
+  const scoreHost = (start: number) => {
+    const host = { store: start, rendered: start, writes: [] as number[] }
+    const field = createScoreField({ current: () => host.store, write: (v) => { host.store = v; host.writes.push(v) } })
+    const focus = () => field.focus(host.rendered > 0 ? String(host.rendered) : '')
+    const render = () => { host.rendered = host.store }
+    return { host, field, focus, render }
+  }
   {
-    // ScoreInput as wired: the stored score is what the rating setter holds.
-    // The person erases 4.5; the deletion never reaches onChangeText, only the
-    // end-editing event carries the empty text; then they depart.
+    // Recheck 3: erase 4.5; the deletion never reaches onChangeText, only the
+    // end-editing event carries ""; then depart (the capture resolves after).
+    const t = scoreHost(4.5)
     const cap = createInputCapture({ beltMs: 300 })
-    let score = 4.5 // live-tracked from "4.5"
     let drainedWith: number | null = null
+    t.focus()
     cap.focus('score')
-    const departure = cap.capture().then(() => { drainedWith = score }) // the layer drains after the capture
-    fieldEndEditing(cap, 'score', () => {
-      const next = endEditScore('', false, score)
-      if (next !== null) score = next
-    })
+    const departure = cap.capture().then(() => { drainedWith = t.host.store })
+    fieldEndEditing(cap, 'score', () => { t.field.end('') })
     await departure
     check('🔒 erased at end-editing → the departure drains 0, not the old 4.5', drainedWith, 0)
   }
   {
+    // Recheck 4 (a): an unrated field is focused (seed ""), the stored score
+    // loads meanwhile (the autosave seeds the clean field: 4.5), the person
+    // types nothing and leaves.
+    const t = scoreHost(0)
+    t.focus()
+    t.host.store = 4.5 // the snapshot arrived while the field was focused
+    t.render()
+    check('🔒 untouched field, a score loaded while it was focused: nothing written at the end', t.field.end(''), 'none')
+    check('the stored score stays', t.host.store, 4.5)
+    check('no write at all', t.host.writes, [])
+  }
+  {
+    // Recheck 4 (b): rendered 0; a live "4" and the final erase arrive before
+    // React renders again.
+    const t = scoreHost(0)
+    t.focus()
+    check('live "4" writes 4 (the draft NOW)', t.field.change('4'), true)
+    check('no render in between: rendered is still 0', t.host.rendered, 0)
+    check('🔒 the final erase writes 0 (deduped against the draft, not the rendered 0)', t.field.end(''), 'wrote')
+    check('the score is 0', t.host.store, 0)
+    // The same burst deduped against the RENDERED score (the old wiring) loses it:
+    const old = { store: 0 }
+    const stale = createScoreField({ current: () => 0 /* rendered, never re-rendered */, write: (v) => { old.store = v } })
+    stale.focus('')
+    stale.change('4')
+    stale.end('')
+    check('(contrast) deduped against the rendered score, 4 would have drained', old.store, 4)
+  }
+  {
+    const t = scoreHost(3)
+    t.focus()
+    t.field.change('1')
+    t.host.store = 4 // the slider took over while the field was open
+    t.field.abandon()
+    check('the slider took over: the typed draft is dropped at the end', t.field.end('1'), 'abandoned')
+    check('the slider\'s value stays', t.host.store, 4)
+    t.focus()
+    check('the next edit starts clean (no stale abandon)', t.field.end('2'), 'wrote')
+  }
+  {
+    const t = scoreHost(3.5)
+    t.focus() // seed "3.5"
+    check('live writes only when the score moves: "3" → 3, "3." → still 3, "3.5" → 3.5', [t.field.change('3'), t.field.change('3.'), t.field.change('3.5')], [true, false, true])
+    check('a changed edit that ends on the score the draft already holds writes nothing more', t.field.end('3.5'), 'none')
+    check('the score is the typed one', t.host.store, 3.5)
+    check('an end with no focus (a stray event) writes nothing', t.field.end('1'), 'none')
+  }
+  {
     const texts = ['', '.', 'abc', '0', '2', '25', '2.5', '2.6', '4,75', '9', '3.', '.5']
-    check(
-      'live and end-editing agree for every text (the same conversion)',
-      texts.map((t) => endEditScore(t, false, -1)),
-      texts.map((t) => scoreFromDraft(t)),
-    )
+    // From a stored 1 (seed "1"), so every text in the table is a change.
+    const live = texts.map((x) => { const t = scoreHost(1); t.focus(); t.field.change(x); return t.host.store })
+    const end = texts.map((x) => { const t = scoreHost(1); t.focus(); t.field.end(x); return t.host.store })
+    check('live and end-editing write the same score for every text (one conversion)', end, live)
     check('empty / unreadable → 0 (not rated)', ['', '.', 'abc'].map(scoreFromDraft), [0, 0, 0])
     check('"25" reads 2.5, off-grid snaps, the cap holds', ['25', '2.6', '9', '4,75'].map(scoreFromDraft), [2.5, 2.5, 5, 4.75])
-    check('the final text equal to the stored score writes nothing', endEditScore('3.5', false, 3.5), null)
-    check('the slider took over while the field was open: the typed draft is dropped', endEditScore('1', true, 4), null)
-    check('even an erased draft is dropped then (the slider wins)', endEditScore('', true, 4), null)
   }
 
   if (failures) {

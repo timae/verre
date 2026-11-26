@@ -25,6 +25,10 @@ const TIMERS = { set: (fn: () => void, ms: number) => setTimeout(fn, ms), clear:
 export type ImpressionAutosave = {
   draft: { score: number; notes: string; flavors: Record<string, number>; aromas: AromaSelection[] };
   setScore: (v: number) => void;
+  // The score in the draft NOW (the setters update it synchronously; `draft`
+  // is the last rendered one): the score field's dedupe reads it (Codex
+  // recheck 4, components/scoring/ScoreInput.tsx).
+  scoreNow: () => number;
   stepScore: (v: number) => void;
   setNotes: (v: string) => void;
   setNoteFocused: (focused: boolean) => void;
@@ -106,7 +110,7 @@ export function useImpressionAutosave({
 
   if (!ctrl || !viewer) {
     return {
-      draft: EMPTY_DRAFT, setScore: noop, stepScore: noop, setNotes: noop, setNoteFocused: noop, setFlavors: noop, setAromas: noop,
+      draft: EMPTY_DRAFT, setScore: noop, scoreNow: () => EMPTY_DRAFT.score, stepScore: noop, setNotes: noop, setNoteFocused: noop, setFlavors: noop, setAromas: noop,
       drain: () => Promise.resolve(true), clearBaseline: () => null, clearRating: resolvedFalse, clearPending: false, discardPending: noop,
       savedState: null, error: null, baselineReady: false, editable: false, takeClearAsk: () => false,
     };
@@ -114,6 +118,7 @@ export function useImpressionAutosave({
   return {
     draft: sel?.draft ?? EMPTY_DRAFT,
     setScore: ctrl.setScore,
+    scoreNow: () => ctrl.draft().score,
     stepScore: ctrl.stepScore,
     setNotes: ctrl.setNotes,
     setNoteFocused: ctrl.setNoteFocused,

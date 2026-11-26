@@ -1,12 +1,12 @@
 import * as Haptics from 'expo-haptics';
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { TextInput, View, type TextInputInstance } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Svg, { Path } from 'react-native-svg';
 import { STAR_PATH, SCORE_MAX, scoreFromFraction, stepScore } from '@verre/core';
 import { useFieldCapture } from '@/lib/fieldCapture';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
-import { endEditScore, sanitizeScoreDraft, scoreFromDraft } from '@/lib/scoreDraft';
+import { createScoreField, sanitizeScoreDraft } from '@/lib/scoreDraft';
 import { scoreWord } from '@/lib/scoreWords';
 import { usePhoneTokens } from '@/lib/layout';
 import { VText } from '@/components/ui/VText';
@@ -41,9 +41,14 @@ interface Props {
   // VoiceOver's increment / decrement (relative to the shown value); falls
   // back to onChange. The impression keeps it inert until its baseline loads.
   onStep?: (v: number) => void;
+  // The score as it is NOW in the host's store (its setter updates it before
+  // the next render): the number field dedupes its writes against it. The
+  // impression passes its autosave's `scoreNow`; without it, the rendered value
+  // plus this field's own writes.
+  current?: () => number;
 }
 
-export function ScoreInput({ value, onChange, onStep }: Props) {
+export function ScoreInput({ value, onChange, onStep, current }: Props) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const scoreSurface = phone.surface('score');
@@ -63,9 +68,29 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
   // departure (lib/fieldCapture.ts; a no-op elsewhere).
   const fieldCapture = useFieldCapture();
   useRegisterInput(inputRef);
-  const skipCommitRef = useRef(false);
   const valueRef = useRef(value);
   valueRef.current = value;
+  // The score as it is NOW: the host's live getter when it has one (the
+  // impression's autosave draft, updated synchronously by its setter), else
+  // the rendered value plus this field's own writes since (Codex recheck 4).
+  const latestRef = useRef(value);
+  latestRef.current = value;
+  const liveRef = useRef({ current, onChange });
+  liveRef.current = { current, onChange };
+  // One edit session of the number (lib/scoreDraft.ts, pure + pinned): its
+  // initial text, whether it was changed, the slider's abandon, every write
+  // deduped against the score as it is now.
+  const field = useMemo(
+    () =>
+      createScoreField({
+        current: () => liveRef.current.current?.() ?? latestRef.current,
+        write: (v) => {
+          latestRef.current = v;
+          liveRef.current.onChange(v);
+        },
+      }),
+    [],
+  );
   const editingRef = useRef(editing);
   editingRef.current = editing;
 
@@ -75,7 +100,7 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
       // A slider touch while the number field is open abandons the draft —
       // otherwise the field's eventual blur would commit the stale draft
       // over the drag.
-      skipCommitRef.current = true;
+      field.abandon();
       setEditing(false);
       inputRef.current?.blur();
     }
@@ -84,6 +109,7 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
     if (next !== valueRef.current) {
       // Selection tick on each 0.25 step while dragging (interaction-spec).
       Haptics.selectionAsync().catch(() => {});
+      latestRef.current = next;
       onChange(next);
     }
   };
@@ -112,18 +138,14 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
 
   // `text` = the field's FINAL native text (`onEndEditing`'s nativeEvent.text),
   // never the `draft` state, which may not have re-rendered with the last
-  // keystroke yet (Codex recheck 2, 2026-11-26).
-  // The SAME conversion as the live keystrokes (lib/scoreDraft.ts): an erased
-  // number is 0 here too (Codex recheck 3: a deletion only the end-editing
-  // event carried kept the old score). The slider's abandon still wins.
+  // keystroke yet (Codex recheck 2). The SAME conversion as the live
+  // keystrokes (an erased number is 0, recheck 3), but only for an edit the
+  // person CHANGED (recheck 4: an untouched blank kept over a score that
+  // loaded meanwhile). The slider's abandon still wins.
   const commitDraft = (text: string) => {
-    const abandoned = skipCommitRef.current;
-    skipCommitRef.current = false;
-    if (!abandoned) setEditing(false);
-    const next = endEditScore(text, abandoned, valueRef.current);
-    if (next === null) return;
-    onChange(next);
-    commitHaptic();
+    const r = field.end(text);
+    if (r !== 'abandoned') setEditing(false);
+    if (r === 'wrote') commitHaptic();
   };
 
   const updateDraft = (text: string) => {
@@ -131,8 +153,7 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
     setDraft(clean); // raw as typed — no X.XX reformat, so the field can't flicker
     // Live-track the bar: snap each keystroke's value and push it up. "2" → 2,
     // "2" then "5" → 2.5; an off-grid "2.6" snaps the bar+value to 2.5; erased → 0.
-    const next = scoreFromDraft(text);
-    if (next !== valueRef.current) onChange(next);
+    field.change(text);
   };
 
   const rated = value > 0;
@@ -159,10 +180,11 @@ export function ScoreInput({ value, onChange, onStep }: Props) {
             value={editing ? draft : value.toFixed(2)}
             onFocus={() => {
               fieldCapture.began();
-              skipCommitRef.current = false;
               // Seed left-anchored: a rated value as a trim string ("3.5", not
               // "3.50"); unrated (0) starts EMPTY so typing fills from the left.
-              setDraft(value > 0 ? String(value) : '');
+              const seed = value > 0 ? String(value) : '';
+              field.focus(seed);
+              setDraft(seed);
               setEditing(true);
             }}
             onChangeText={updateDraft}

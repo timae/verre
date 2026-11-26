@@ -441,6 +441,7 @@ export const ImpressionPage = memo(function ImpressionPage({
             score={draft.score}
             onScore={autosave.setScore}
             onScoreStep={autosave.stepScore}
+            scoreNow={autosave.scoreNow}
             notes={draft.notes}
             onNotes={autosave.setNotes}
             onNotesFocus={autosave.setNoteFocused}
