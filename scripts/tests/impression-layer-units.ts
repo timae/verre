@@ -461,13 +461,13 @@ async function main() {
   console.log('\n§13 the score number: ONE conversion live and at end-editing; a CHANGED edit only; deduped against the draft NOW (Codex rechecks 3 + 4)')
   // ScoreInput as wired: the store is the autosave draft (its setter updates it
   // synchronously; `scoreNow` reads it); `rendered` is the last rendered score,
-  // which ScoreInput never dedupes against. The focus seed is the component's
-  // own: `value > 0 ? String(value) : ''` of the RENDERED value; `change` /
-  // `end` take the raw onChangeText / onEndEditing nativeEvent.text.
+  // which ScoreInput never dedupes against. `focus` takes the RENDERED value
+  // (the component's `field.focus(value)`); `change` / `end` take the raw
+  // onChangeText / onEndEditing nativeEvent.text; `slide` the slider's pick.
   const scoreHost = (start: number) => {
     const host = { store: start, rendered: start, writes: [] as number[] }
     const field = createScoreField({ current: () => host.store, write: (v) => { host.store = v; host.writes.push(v) } })
-    const focus = () => field.focus(host.rendered > 0 ? String(host.rendered) : '')
+    const focus = () => field.focus(host.rendered)
     const render = () => { host.rendered = host.store }
     return { host, field, focus, render }
   }
@@ -508,25 +508,58 @@ async function main() {
     // The same burst deduped against the RENDERED score (the old wiring) loses it:
     const old = { store: 0 }
     const stale = createScoreField({ current: () => 0 /* rendered, never re-rendered */, write: (v) => { old.store = v } })
-    stale.focus('')
+    stale.focus(0)
     stale.change('4')
     stale.end('')
     check('(contrast) deduped against the rendered score, 4 would have drained', old.store, 4)
   }
   {
+    // Recheck 5 (1): a quick focus and blur. Native ends the edit before the
+    // focus seed "" reached it and reports the pre-focus "0.00"; a saved score
+    // loaded meanwhile.
+    const t = scoreHost(0)
+    t.focus()
+    t.host.store = 4.5
+    check('🔒 no live change, final "0.00" means the shown 0: untouched, nothing written', t.field.end('0.00'), 'none')
+    check('the loaded 4.5 stays', t.host.store, 4.5)
+    const r = scoreHost(4.5)
+    r.focus()
+    check('rated: the pre-focus "4.50" is untouched too', r.field.end('4.50'), 'none')
+    r.focus()
+    check('and the seed "4.5"', r.field.end('4.5'), 'none')
+    r.focus()
+    check('🔒 a real erase of a rated score still writes 0', [r.field.end(''), r.host.store], ['wrote', 0])
+    const u = scoreHost(0)
+    u.focus()
+    u.field.change('4')
+    check('a live change makes it an edit: typed 4 then back to "", the end writes 0', [u.field.end(''), u.host.store], ['wrote', 0])
+  }
+  for (const order of ['keystroke, slider', 'slider, keystroke'] as const) {
+    // Recheck 5 (2): 3 rendered; the typed "2" and the slider's 3 land before
+    // the next render, in either order; then the field ends with the typed text.
     const t = scoreHost(3)
     t.focus()
-    t.field.change('1')
-    t.host.store = 4 // the slider took over while the field was open
-    t.field.abandon()
-    check('the slider took over: the typed draft is dropped at the end', t.field.end('1'), 'abandoned')
-    check('the slider\'s value stays', t.host.store, 4)
+    const keystroke = () => t.field.change('2')
+    const slider = () => { t.field.abandon(); t.field.slide(3) } // setFromX: abandon while editing, then the pick
+    if (order === 'keystroke, slider') { keystroke(); slider() } else { slider(); keystroke() }
+    check(`${order}: no render in between`, t.host.rendered, 3)
+    check(`🔒 ${order}: the slider's 3 is the score (deduped against the draft NOW; the queued keystroke rejected)`, t.host.store, 3)
+    check(`${order}: the end writes nothing (abandoned)`, t.field.end('2'), 'abandoned')
+    check(`${order}: still the slider's 3`, t.host.store, 3)
+  }
+  {
+    const t = scoreHost(3)
     t.focus()
-    check('the next edit starts clean (no stale abandon)', t.field.end('2'), 'wrote')
+    t.field.abandon()
+    t.field.end('1')
+    t.focus()
+    check('the next edit starts clean (no stale abandon)', t.field.change('2'), true)
+    check('and ends normally', t.field.end('2'), 'none')
+    check('the score is the typed one', t.host.store, 2)
   }
   {
     const t = scoreHost(3.5)
-    t.focus() // seed "3.5"
+    t.focus()
     check('live writes only when the score moves: "3" → 3, "3." → still 3, "3.5" → 3.5', [t.field.change('3'), t.field.change('3.'), t.field.change('3.5')], [true, false, true])
     check('a changed edit that ends on the score the draft already holds writes nothing more', t.field.end('3.5'), 'none')
     check('the score is the typed one', t.host.store, 3.5)
@@ -534,7 +567,7 @@ async function main() {
   }
   {
     const texts = ['', '.', 'abc', '0', '2', '25', '2.5', '2.6', '4,75', '9', '3.', '.5']
-    // From a stored 1 (seed "1"), so every text in the table is a change.
+    // From a shown 1, so every text in the table means another score.
     const live = texts.map((x) => { const t = scoreHost(1); t.focus(); t.field.change(x); return t.host.store })
     const end = texts.map((x) => { const t = scoreHost(1); t.focus(); t.field.end(x); return t.host.store })
     check('live and end-editing write the same score for every text (one conversion)', end, live)

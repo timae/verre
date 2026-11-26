@@ -42,36 +42,45 @@ export function scoreFromDraft(text: string): number {
 }
 
 // ONE edit session of the score number (focus → end-editing), pure so the
-// units drive exactly what ScoreInput does (Codex recheck 4, 2026-11-26):
-// • the edit remembers its INITIAL text and whether the person CHANGED it; an
-//   untouched field writes nothing at its end (a score that loaded while it
-//   was focused stays), a real erase writes 0, also when only the end-editing
-//   event carries it;
-// • every write is deduped against `current()`, the score in the draft NOW
-//   (the impression's autosave updates it synchronously; the last RENDERED
-//   score lags a burst of native events), never the rendered value;
-// • `abandon()`: the slider took over while the field was open, the typed
-//   draft is dropped (nothing written at its end).
+// units drive exactly what ScoreInput does (Codex rechecks 4 + 5, 2026-11-26):
+// • UNTOUCHED is decided on the VALUE: an edit with no live change whose final
+//   text means the score shown before the focus writes nothing (a score that
+//   loaded while it was focused stays), whatever form the native text takes
+//   (the focus seed "" / "4.5", or the pre-focus "0.00" / "4.50" when native
+//   ends the edit before the seed reached it). The seed always means the shown
+//   score (`value > 0 ? String(value) : ''`), so one comparison covers both. A
+//   real erase of a rated score still writes 0, also when only end-editing
+//   carries it;
+// • every write (a keystroke, the end, the SLIDER) is deduped against
+//   `current()`, the score in the draft NOW (the impression's autosave updates
+//   it synchronously; the last rendered score lags a burst of events);
+// • `abandon()`: the slider took over while the field was open: from then on
+//   the edit's native text is ignored, a queued keystroke included, and its end
+//   writes nothing (the slider's value wins).
 export type ScoreEndResult = 'abandoned' | 'wrote' | 'none';
 export function createScoreField(deps: { current: () => number; write: (v: number) => void }) {
-  let edit: { initial: string; changed: boolean } | null = null;
+  let edit: { shown: number; changed: boolean } | null = null;
   let abandoned = false;
-  const writeIfNew = (text: string): boolean => {
-    const next = scoreFromDraft(text);
+  const writeIfNew = (next: number): boolean => {
     if (next === deps.current()) return false;
     deps.write(next);
     return true;
   };
   return {
-    // onFocus, with the text the field starts from.
-    focus(seed: string) {
-      edit = { initial: seed, changed: false };
+    // onFocus, with the score the field showed before it.
+    focus(shown: number) {
+      edit = { shown, changed: false };
       abandoned = false;
     },
     // onChangeText: the live bar.
     change(text: string): boolean {
-      if (edit && text !== edit.initial) edit.changed = true;
-      return writeIfNew(text);
+      if (abandoned) return false;
+      if (edit) edit.changed = true;
+      return writeIfNew(scoreFromDraft(text));
+    },
+    // The slider's pick (the same dedupe as the field's own writes).
+    slide(next: number): boolean {
+      return writeIfNew(next);
     },
     abandon() {
       abandoned = true;
@@ -85,9 +94,9 @@ export function createScoreField(deps: { current: () => number; write: (v: numbe
         return 'abandoned';
       }
       if (!e) return 'none';
-      if (text !== e.initial) e.changed = true;
-      if (!e.changed) return 'none';
-      return writeIfNew(text) ? 'wrote' : 'none';
+      const final = scoreFromDraft(text);
+      if (!e.changed && final === e.shown) return 'none';
+      return writeIfNew(final) ? 'wrote' : 'none';
     },
   };
 }

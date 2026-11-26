@@ -106,12 +106,10 @@ export function ScoreInput({ value, onChange, onStep, current }: Props) {
     }
     // Range-input semantics: the thumb travels within [thumb/2, W - thumb/2].
     const next = scoreFromFraction((x - thumb / 2) / (trackW - thumb));
-    if (next !== valueRef.current) {
-      // Selection tick on each 0.25 step while dragging (interaction-spec).
-      Haptics.selectionAsync().catch(() => {});
-      latestRef.current = next;
-      onChange(next);
-    }
+    // Deduped against the score NOW, not the last render (Codex recheck 5: a
+    // typed score staged before the render made the slider skip its write).
+    // Selection tick on each 0.25 step while dragging (interaction-spec).
+    if (field.slide(next)) Haptics.selectionAsync().catch(() => {});
   };
   const commitHaptic = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -183,7 +181,7 @@ export function ScoreInput({ value, onChange, onStep, current }: Props) {
               // Seed left-anchored: a rated value as a trim string ("3.5", not
               // "3.50"); unrated (0) starts EMPTY so typing fills from the left.
               const seed = value > 0 ? String(value) : '';
-              field.focus(seed);
+              field.focus(value);
               setDraft(seed);
               setEditing(true);
             }}
