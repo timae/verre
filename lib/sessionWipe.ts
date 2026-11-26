@@ -56,6 +56,11 @@ async function reclaimImage(url: string | null | undefined) {
 //                     a Postgres-backed session; the Redis set is its cache).
 //   Wines the target added are orphaned (session_id NULL, never hard-deleted —
 //   other tasters' bookmarks survive) when the caller passes deleteAddedWines.
+//   🔒 When the CALLER is the target (a removed person's own "Delete my
+//   ratings", /leave?cleanup=full), the rating-action XP of the ratings it
+//   deletes is taken back, once, floored at 0 (ruled 2026-11-26, the own-clear
+//   rule of docs/dev/rating-saves.md). A host's kick or ban with delete takes
+//   nothing back. Counters and badges never go down.
 //
 // 🔒 A mutation-contract participant (redis-rehydration § 5.4; release-B plan
 // § 3): the caller's authorization and the TARGET's role/host status are
@@ -98,6 +103,8 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
   const isTombstone = identityId.startsWith('d:')
   if (isTombstone && scope !== 'kick-delete') throw new Error(`sessionWipe: ${scope} is not valid for a tombstone identity`)
   const deleteAddedWines = !isTombstone && (opts.deleteAddedWines ?? false)
+  // The person's own choice (only /leave wipes its own caller).
+  const ownChoice = userId !== null && opts.caller.id === identityId
   const reclaim: string[] = []
 
   // bumpGen: the wipe deletes rating keys — an unleased writer's late SET with
@@ -145,10 +152,17 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
         reclaim.push(...await ratingImages(tx, Prisma.sql`r.user_id = ${userId} AND r.session_id = ${row.id}`))
         // The rater's versions move first (docs/dev/rating-saves.md): an entry
         // that waited offline through this kick and a rejoin must not re-create
-        // a deleted rating on its old version. No XP change (not their own clear).
+        // a deleted rating on its old version.
         await bumpRaterVersions(tx, userId, row.id)
         // rating-write: BUMPS
-        await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id = ${row.id}`
+        const gone = await tx.$queryRaw<{ xp: number }[]>`
+          WITH d AS (DELETE FROM ratings WHERE user_id = ${userId} AND session_id = ${row.id} RETURNING rating_action_xp)
+          SELECT COALESCE(SUM(rating_action_xp), 0)::int AS xp FROM d`
+        // Their own choice: the action XP those ratings earned goes back, ONE
+        // debit, floored at 0 (the session's advisory lock serialises this with
+        // account deletion, whose touched set holds this moment).
+        const refund = Number(gone[0]?.xp ?? 0)
+        if (ownChoice && refund > 0) await tx.$executeRaw`UPDATE users SET xp = GREATEST(xp - ${refund}, 0) WHERE id = ${userId}`
         await tx.$executeRaw`DELETE FROM feed_items WHERE user_id = ${userId} AND session_id = ${row.id}`
         // Their cravings from this moment: by the moment the craving stores
         // (catalogue model change § 5: kept when its bottle is orphaned or

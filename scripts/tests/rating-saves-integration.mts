@@ -220,11 +220,14 @@ try {
     check('a merge of a blank note on a wine with no rating: unchanged, nothing inserted, no version row', deepEq(empty2.json, { ok: true, unchanged: true }) && !(await rowOf(T, code, w4)) && (await versionOf(T, w4)).version === 0)
     await merge(code, T, w3, { notes: 'back' })
     check('a full EMPTY save still reaps (today\'s behaviour, the web and the app\'s Clear)', (await full(code, T, w3, {})).status === 200 && !(await rowOf(T, code, w3)))
-    // A FULL save stores its note as sent (scrubbing it too is parked), and
-    // the rating key never seeds a signed-in rater's NEW row.
+    // A FULL save's note is scrubbed too (ruled 2026-11-26): a whitespace-only
+    // note is no note, so score 0 with only spaces reaps. And the rating key
+    // never seeds a signed-in rater's NEW row.
     const w5 = await bottle()
+    const wd = await full(code, T, w5, { score: 3, notes: ' dry \u0000' })
+    check('a full save scrubs its note (trimmed, a NUL byte stripped, no 500)', wd.status === 200 && (await rowOf(T, code, w5))?.notes === 'dry', [wd.status, await rowOf(T, code, w5)])
     const ws = await full(code, T, w5, { notes: '  ' })
-    check('a full save keeps its note as sent: a whitespace-only note at score 0 is stored, not reaped', ws.status === 200 && (await rowOf(T, code, w5))?.notes === '  ', [ws.status, await rowOf(T, code, w5)])
+    check('a full save of score 0 with a whitespace-only note reaps the rating', ws.status === 200 && !(await rowOf(T, code, w5)), [ws.status, await rowOf(T, code, w5)])
     const w6 = await bottle()
     await redis.set(k.rating(code, `u:${T.id}`, w6), JSON.stringify({ score: 3, flavors: {}, aromas: [{ a: 'fruity', m: null }], notes: '', at: Date.now() }), { EX: 3600 })
     await full(code, T, w6, { score: 2 })
@@ -582,6 +585,41 @@ try {
     await call(wineRoute.DELETE, 'DELETE', `/api/session/${code}/wines/${wh}`, as(H), undefined, { code, wineId: wh })
     check('a host\'s bottle DELETE takes no XP', (await statsOf(T)).xp === sh.xp && !(await rowOf(T, code, wh)))
     check('earned badges survive every clear', (await prisma.userBadge.count({ where: { userId: T.id } })) === (await prisma.badge.count()))
+    // A removed person's own "Delete my ratings" (/leave?cleanup=full, the
+    // wipe with its caller as the target) takes the rating XP back (ruled
+    // 2026-11-26); a host's ban, which deletes the ratings too, does not.
+    {
+      const r = await moment()
+      const wa = await r.bottle(), wb = await r.bottle()
+      await merge(r.code, r.T, wa, { score: 5, notes: 'a long enough note' })
+      await merge(r.code, r.T, wb, { score: 3 })
+      const sum = (await prisma.$queryRaw<{ xp: number }[]>`SELECT COALESCE(SUM(rating_action_xp), 0)::int AS xp FROM ratings WHERE user_id = ${r.T.id}`)[0].xp
+      const before = await statsOf(r.T)
+      await resetLimits()
+      const kick = await call(bansRoute.POST, 'POST', `/api/session/${r.code}/bans`, as(r.H), { identityId: `u:${r.T.id}`, mode: 'kick' }, { code: r.code })
+      const kept = await statsOf(r.T)
+      const leave = await call(leaveRoute.POST, 'POST', `/api/session/${r.code}/leave?cleanup=full`, as(r.T), {}, { code: r.code })
+      const after = await statsOf(r.T)
+      check('a host\'s kick (ratings kept) takes nothing; the person\'s own "Delete my ratings" then takes back exactly the sum (20 + 10)',
+        kick.status === 200 && deepEq(kept, before) && leave.status === 200 && sum === 30 && after.xp === before.xp - 30 && !(await rowOf(r.T, r.code, wa)), { kick: kick.status, leave: [leave.status, leave.json], sum, before, after })
+      check('…counters and badges never go down', after.ratings === before.ratings && after.five === before.five && after.notes === before.notes
+        && (await prisma.userBadge.count({ where: { userId: r.T.id } })) === (await prisma.badge.count()), { before, after })
+      const V = await mkUser('Vera Floor')
+      await join(r.code, as(V), 'Vera')
+      await visit(r.code, as(V))
+      await merge(r.code, V, wa, { score: 5 })
+      await prisma.$executeRaw`UPDATE users SET xp = 4 WHERE id = ${V.id}`
+      await call(bansRoute.POST, 'POST', `/api/session/${r.code}/bans`, as(r.H), { identityId: `u:${V.id}`, mode: 'kick' }, { code: r.code })
+      const vl = await call(leaveRoute.POST, 'POST', `/api/session/${r.code}/leave?cleanup=full`, as(V), {}, { code: r.code })
+      check('…floored at 0 (xp 4, refund 15 → 0)', vl.status === 200 && (await statsOf(V)).xp === 0, [vl.status, await statsOf(V)])
+      const U = await mkUser('Ulla Banned')
+      await join(r.code, as(U), 'Ulla')
+      await visit(r.code, as(U))
+      await merge(r.code, U, wa, { score: 4, notes: 'another long note' })
+      const ub = await statsOf(U)
+      const ban = await call(bansRoute.POST, 'POST', `/api/session/${r.code}/bans`, as(r.H), { identityId: `u:${U.id}`, mode: 'ban' }, { code: r.code })
+      check('a host\'s BAN (it deletes the ratings) takes no XP back', ban.status === 200 && !(await rowOf(U, r.code, wa)) && deepEq(await statsOf(U), ub), { ban: ban.status, ub, after: await statsOf(U) })
+    }
   }
 
   // ── § 7 the soft-deleted moment's clear vs account deletion ───────────────

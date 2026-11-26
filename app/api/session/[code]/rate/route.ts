@@ -137,11 +137,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   if (typeof notes === 'string' && notes.length > 4000) {
     return NextResponse.json({ error: 'notes too long' }, { status: 400 })
   }
-  // The note as it is stored and compared. A MERGE (the app's auto-save) is
-  // scrubbed (control / bidi / zero-width strip + trim, '' → none): the app
-  // compares against the same `scrub`. A FULL save keeps today's `notes || null`
-  // (scrubbing it too would make a whitespace-only full save reap: parked).
-  const cleanNotes: string | null = isMerge ? scrub(notes) : (typeof notes === 'string' && notes.length > 0 ? notes : null)
+  // The note as it is stored and compared, in BOTH forms (ruled 2026-11-26):
+  // scrubbed (control / bidi / zero-width strip + trim, '' → none; the
+  // lib/CLAUDE.md free-text rule, and no NUL-byte 500). The app compares against
+  // the same `scrub`. A whitespace-only note is no note, so a full save of score
+  // 0 with only spaces reaps.
+  const cleanNotes: string | null = scrub(notes)
 
   // Early 404 for a wine that isn't in the session (re-checked under the locks):
   // a rate landing after a wine DELETE must not write an orphan rating.

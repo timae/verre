@@ -36,11 +36,11 @@ early 404 → the promotion attempt (signed in) → the session mutation contrac
 | Success | `{ ok: true }` (a Clear included) | `{ ok: true, rating }` |
 
 Every present field is validated as before (score `0..5` in 0.25 steps, the
-flavour registry against the bottle's kind, the aroma gate). A MERGE's note
-goes through `scrub` (control / bidi / zero-width strip + trim; blank = none),
-and the app compares its draft with `scrub(draft) ?? ''`. A FULL save stores the
-note as sent (`notes || null`, as before this change; scrubbing it too is an
-open question, since it would make a whitespace-only full save reap).
+flavour registry against the bottle's kind, the aroma gate), and the note goes
+through `scrub` (control / bidi / zero-width strip + trim; blank = none) in BOTH
+forms (ruled 2026-11-26: the free-text rule of `lib/CLAUDE.md`, and a NUL byte no
+longer 500s). A whitespace-only note is no note, so a full save of score 0 with
+only spaces reaps. The app compares its draft with `scrub(draft) ?? ''`.
 
 🔒 **A merge never reaps.** Under the session lock the route computes the MERGED
 result (the locked row ⊕ the validated, normalised supplied fields). When it is
@@ -194,7 +194,7 @@ fails too. The list:
 | The rate POST (merge, full, the Clear's reap) | BUMPS | `bumpRatingVersion` with the op's `opId` |
 | The web Reset DELETE (its Postgres branch) | BUMPS | `bumpRatingVersion` when it deleted the rating of THIS moment; a Reset that finds no row here is version-neutral (the version row is per user and bottle id, and an id from the path may name another moment's bottle) |
 | The post edit of a moment rating (`patchSessionRating`, the update and the reap; also in a soft-deleted moment) | BUMPS | `bumpRatingVersion`, `last_op_id` NULL; the live key carries the new `v` |
-| `sessionWipe()` deleting a signed-in rater's ratings (ban, kick with delete, a full leave) | BUMPS | `bumpRaterVersions`: one statement for their rated bottles of the moment, BEFORE the delete, no XP change (otherwise an entry that waited through a kick and a rejoin re-creates the deleted rating) |
+| `sessionWipe()` deleting a signed-in rater's ratings (ban, kick with delete, a full leave) | BUMPS | `bumpRaterVersions`: one statement for their rated bottles of the moment, BEFORE the delete (otherwise an entry that waited through a kick and a rejoin re-creates the deleted rating); no XP change for a host's wipe, the XP taken back for a full leave (below) |
 | The host's bottle DELETE | BUMPS | `bumpBottleVersions` before the cascade: every rater of the bottle and every version row it already has (the add path can re-insert a supplied id) |
 | The bottle re-mint (`copyCachedLineup`) | COPIES | `copyRatingVersions` for the raters whose ratings moved to the new id (`ON CONFLICT DO NOTHING`; the old id keeps its rows as the fence), so the copied keys' `v` still matches |
 | Account deletion | EXEMPT | the rows cascade with the user |
@@ -229,8 +229,16 @@ admission → the 503 → the bottle → **the version check → the merge → t
   `rating_action_xp` (from `DELETE … RETURNING`), floored at 0, in the caller's
   transaction. A retry or a repeat finds no row and debits nothing; a first empty
   POST (insert + reap) debits 0; legacy rows carry 0 (their historical XP stays).
-  Never for a host's bottle delete, a ban's wipe or an account deletion. Counters
-  never go down and earned badges stay; a take-back can drop a level (accepted).
+  Never for a host's bottle delete, a host's kick or ban with delete, or an
+  account deletion. Counters never go down and earned badges stay; a take-back
+  can drop a level (accepted).
+- 🔒 **The take-back on your own "Delete my ratings"** (ruled 2026-11-26): a
+  removed person (kicked or banned) who deletes their ratings of the moment
+  (`POST /api/session/:code/leave?cleanup=full`, `sessionWipe` with its CALLER
+  as the target) is debited the SUM of the deleted rows' `rating_action_xp`
+  (`DELETE … RETURNING`), ONCE, floored at 0, in the wipe's transaction. A
+  host's wipe of the same scope takes nothing. Otherwise leave, rejoin and
+  re-rate would re-earn the XP every cycle.
 - ⚠️ Lock order in `patchSessionRating`: the caller's `users` row `FOR NO KEY
   UPDATE` BEFORE the rating `FOR UPDATE`, in both branches (a soft-deleted moment
   runs a plain transaction, and account deletion takes the user row first and
@@ -364,7 +372,8 @@ real routes): merge and `unchanged` (§ 1), the version check and every writer
 wrong-account guard (§ 1b), the re-mint copy (§ 3), the 503 with the promotion failing and guests
 unchanged (§ 4), the committed answer before the background refresh (§ 5),
 counters and XP once per rating with every badge already earned, the take-back
-on the three paths (§ 6), the soft-deleted moment's clear vs account deletion
+on the three own-clear paths and the removed person's own "Delete my ratings",
+none on a host's ban (§ 6), the soft-deleted moment's clear vs account deletion
 (§ 7), the backfill verbatim (§ 8), the save limit (§ 9). The built-server 405 of
 the badges POST: `scripts/tests/usernames-web.mts` § 5. The entrance-gate sweep
 pre-fills `rl:rate:u:<id>:10m` (`scripts/tests/leak-fixes-section.mts`). The

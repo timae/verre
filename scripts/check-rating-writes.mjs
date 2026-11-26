@@ -64,7 +64,7 @@ const EXPECTED = {
     BUMPS: [3, 'the host\'s bottle DELETE: every version row of the bottle moves before its ratings cascade; its rating keys dropped after COMMIT'],
   },
   'lib/sessionWipe.ts': {
-    BUMPS: [2, 'kick / ban with delete, a full leave: the rater\'s versions move before their ratings go; the keys after COMMIT'],
+    BUMPS: [2, 'kick / ban with delete, a full leave: the rater\'s versions move before their ratings go (a full leave, the person\'s own choice, also takes their rating XP back); the keys after COMMIT'],
     EXEMPT: [1, 'a d: tombstone group\'s ratings (a deleted account: no user, no version)'],
   },
   'lib/occurrences.ts': {
