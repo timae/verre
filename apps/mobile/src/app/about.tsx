@@ -1,10 +1,13 @@
+import * as Clipboard from 'expo-clipboard';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
-import { ScrollView, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SetGroup, SetNav } from '@/components/moments/settingsParts';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
+import { APP_BUILD } from '@/lib/clientVersion';
 import { GUTTER } from '@/lib/layout';
 import { legalHref, useSessionTab } from '@/lib/sessionStack';
 import { space } from '@/theme';
@@ -25,6 +28,15 @@ export default function About() {
   // legalHref): Attributions follows where this hub is mounted.
   const mount = useSessionTab();
   const version = Constants.expoConfig?.version ?? '—';
+  // Which code this is (app.config.ts `extra.commit`): a tap copies it.
+  const commit = (Constants.expoConfig?.extra as { commit?: string | null } | undefined)?.commit ?? null;
+  const build = [`Verre ${version}`, APP_BUILD ? `Build ${APP_BUILD}` : null, commit].filter(Boolean).join(' · ');
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
 
   return (
     <ScrollView
@@ -41,9 +53,19 @@ export default function About() {
         <SetNav icon="info" label="Attributions" onPress={() => router.push(legalHref(mount, 'attributions'), { dangerouslySingular: true })} />
       </SetGroup>
 
-      <VText variant="caption" color="inkFaint" style={{ textAlign: 'center', marginTop: space.xs }}>
-        Verre {version}
-      </VText>
+      <Pressable
+        onPress={() => {
+          void Clipboard.setStringAsync(build);
+          setCopied(true);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={`${build}. Copy`}
+        style={{ alignSelf: 'center', marginTop: space.xs, paddingVertical: space.xs }}
+      >
+        <VText variant="caption" color="inkFaint" style={{ textAlign: 'center' }}>
+          {copied ? 'Copied' : build}
+        </VText>
+      </Pressable>
       <View style={{ height: space.lg }} />
     </ScrollView>
   );
