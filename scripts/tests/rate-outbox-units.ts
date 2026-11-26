@@ -1753,7 +1753,7 @@ async function main() {
 
   {
     // r6-3: a /rate 401 `invalid`; get-session held; a newer edit staged;
-    // "same" → the entry survives and is sent.
+    // "same" → only the refused op retires: the newer note survives and is sent.
     const e = env();
     e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
     await e.start();
@@ -1766,7 +1766,92 @@ async function main() {
     await e.advance(1000);
     await e.releaseConfirms(); // "same"
     await e.advance(10);
-    check('r6-3: edited while the /rate 401 was being confirmed → resumed and sent, never dropped', e.server.row('w1').rating?.score === 4 && e.server.row('w1').rating?.notes === 'newer');
+    check('r6-3: edited while the /rate 401 was being confirmed → the refused score retires, the newer note is sent', e.server.row('w1').rating?.notes === 'newer' && e.server.row('w1').rating?.score !== 4);
+  }
+
+  // ── Codex recheck 6: a terminal answer acts only on what its op submitted ──
+  const errRes = (status: number, auth: 'invalid' | 'removed' | null = null): RateResult => ({ kind: 'error', status, retryAfterMs: null, auth, message: null });
+  for (const [label, res] of [['removed', errRes(401, 'removed')], ['invalid → same', errRes(401, 'invalid')], ['404', errRes(404)], ['403', errRes(403)]] as const) {
+    // r7-1: a score save held, a later note staged, then the refusal → the
+    // note survives and goes out as its own op.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue('hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // X = the score, held
+    c.setNotes('later');
+    await e.advance(1000);
+    await e.releaseOne(res);
+    await e.advance(10);
+    const second = e.sent[1];
+    check(`r7-1: ${label} for the score retires only it; the later note is sent on its own and saved`, second?.body.notes === 'later' && second.body.score === undefined && e.server.row('w1').rating?.notes === 'later' && e.server.row('w1').rating?.score !== 4);
+  }
+  {
+    // r7-2: a request held, a newer note staged, then 400 → the note survives
+    // and is sent; the error shows until that good save.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.queue('hang', 'hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    c.setNotes('later');
+    await e.advance(1000);
+    await e.releaseOne(errRes(400)); // X refused; the note goes out (held)
+    await e.flush();
+    const shown = c.savedState() === 'error' && e.sent[1]?.body.notes === 'later' && e.sent[1].body.score === undefined;
+    await e.release();
+    await e.advance(10);
+    check('r7-2: a 400 retires only its op: the error shows, the newer note is sent and saved, the good save clears the error', shown && e.server.row('w1').rating?.notes === 'later' && c.savedState() !== 'error');
+  }
+  {
+    // r7-1: a newer revision of the SAME field survives: 4 held, 5 staged, 404 → 5 goes out.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue('hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    c.setScore(5);
+    await e.advance(1000);
+    await e.releaseOne(errRes(404));
+    await e.advance(10);
+    check('r7-1: … a newer revision of the same field is sent as its own op', e.sent[1]?.body.score === 5 && e.server.row('w1').rating?.score === 5);
+  }
+  {
+    // r7-1: a Clear staged after X survives X's 404 and goes out as its own op.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.queue('hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    await c.clearRating(c.clearBaseline());
+    await e.releaseOne(errRes(404));
+    await e.advance(10);
+    check('r7-1: … a Clear staged after the refused op is sent for itself', e.sent.length === 2 && e.sent[1].body.merge === undefined && e.server.row('w1').rating === null);
+  }
+  for (const [label, res] of [['removed', errRes(401, 'removed')], ['invalid → same', errRes(401, 'invalid')], ['404', errRes(404)], ['403', errRes(403)], ['400', errRes(400)]] as const) {
+    // r7-3: an entry with nothing newer is still dropped by each.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.queue('hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    await e.releaseOne(res);
+    await e.advance(60_000);
+    check(`r7-3: ${label} drops an unchanged entry${label === '400' ? ' (with the error)' : ''}`, e.disk.size === 0 && e.owner.entry(ME, CODE, 'w1') === null && e.sent.length === 1 && (label !== '400' || c.savedState() === 'error'));
   }
 
   // ── the 90-day clean-up ──────────────────────────────────────────────────

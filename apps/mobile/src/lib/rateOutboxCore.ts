@@ -190,6 +190,9 @@ function isEmptyEntry(e: Entry): boolean {
   return Object.keys(e.fields).length === 0 && !e.clear && !e.unresolvedOp;
 }
 
+// What one dispatched op submitted (its entry, id, kind, field revisions).
+type Coverage = { entry: Entry; opId: string; kind: 'merge' | 'clear'; revs: Revs };
+
 export type KeyStatus = {
   ready: boolean;
   pending: boolean; // unsent or unanswered revisions (parked ones excluded)
@@ -498,6 +501,30 @@ export function createRateOutbox(deps: OutboxDeps) {
     s.mem = null;
     s.incarnation++;
     commit(s);
+    raiseError(s, message);
+  };
+  // 🔒 A terminal answer about op X acts ONLY on what X submitted (Codex
+  // recheck 6): X, its revisions and its Clear are retired; newer revisions
+  // (or a Clear staged after X) keep the entry and go out as a fresh op that
+  // the server answers for itself. `cov` is captured at DISPATCH.
+  const retireOp = (s: Slot, cov: Coverage) => {
+    const e = s.mem;
+    if (!e || e !== cov.entry) return; // another entry now: not X's to touch
+    if (e.unresolvedOp?.opId === cov.opId) delete e.unresolvedOp;
+    if (cov.kind === 'clear' && e.clear?.opId === cov.opId) delete e.clear;
+    for (const f of FIELDS) {
+      const r = cov.revs[f];
+      if (r !== undefined && e.fields[f] && e.fields[f]!.rev <= r) {
+        delete e.fields[f];
+        delete e.parked[f];
+      }
+    }
+    if (isEmptyEntry(e)) return dropSilently(s);
+    e.attempts = 0;
+    e.nextAt = 0;
+    commit(s);
+  };
+  const raiseError = (s: Slot, message: string) => {
     if (isVisible(s.key)) errors.set(s.key, message);
     else if (!pendingAlerts.includes(s.key)) {
       pendingAlerts.splice(0, pendingAlerts.length);
@@ -675,6 +702,7 @@ export function createRateOutbox(deps: OutboxDeps) {
     const e = s.mem!;
     const act = activation;
     const inc = s.incarnation;
+    const cov: Coverage = { entry: e, opId: op.opId, kind: op.kind, revs: op.kind === 'merge' ? { ...(e.unresolvedOp?.revs ?? {}) } : {} };
     s.inFlight = true;
     s.firstAttempt = e.attempts === 0;
     notify();
@@ -713,7 +741,7 @@ export function createRateOutbox(deps: OutboxDeps) {
       notify();
       return pump();
     }
-    apply(s, op, res, token);
+    apply(s, op, res, token, cov);
     releaseProbe(e.code, token); // only this dispatch's own answer ends its probe
     notify();
     pump();
@@ -779,7 +807,7 @@ export function createRateOutbox(deps: OutboxDeps) {
     commit(s);
   };
 
-  const apply = (s: Slot, op: { kind: 'merge' | 'clear'; opId: string; body: RateBody; baseVersion: number }, res: RateResult, token: number | null) => {
+  const apply = (s: Slot, op: { kind: 'merge' | 'clear'; opId: string; body: RateBody; baseVersion: number }, res: RateResult, token: number | null, cov: Coverage) => {
     const e = s.mem!;
     const isClear = op.kind === 'clear';
     // A 2xx or a 409 from the moment ends its pause (any request's).
@@ -838,13 +866,9 @@ export function createRateOutbox(deps: OutboxDeps) {
       }
       case 'error': {
         const st = res.status;
-        if (st === 404 || st === 403 || (st === 401 && res.auth === 'removed')) return dropSilently(s);
-        if (st === 401) {
-          // Its coverage NOW: an edit or a rebase while get-session is out is
-          // resumed, never dropped by this refusal (recheck 5, the /rate caller).
-          const cap = { e, rev: e.nextRev, at: e.editedAt, clear: !!e.clear, base: e.baseVersion };
-          return confirmInvalid([s], true, 0, (x) => x.mem === cap.e && cap.e.nextRev === cap.rev && cap.e.editedAt === cap.at && !!cap.e.clear === cap.clear && cap.e.baseVersion === cap.base);
-        }
+        if (st === 404 || st === 403 || (st === 401 && res.auth === 'removed')) return retireOp(s, cov);
+        // "same" from get-session: the moment refused X; only X retires.
+        if (st === 401) return confirmInvalid([s], true, 0, undefined, (x) => retireOp(x, cov));
         if (st === 400) {
           // Never the note (or any value): the op id, which fields, the message.
           log('[rateOutbox] 400 from /rate (a client bug)', { opId: op.opId, fields: FIELDS.filter((f) => f in op.body), message: res.message });
@@ -865,7 +889,8 @@ export function createRateOutbox(deps: OutboxDeps) {
             }
             return;
           }
-          return dropWithError(s, SAVE_ERROR_TEXT);
+          retireOp(s, cov);
+          return raiseError(s, SAVE_ERROR_TEXT);
         }
         if (st === 429) {
           const until = deps.now() + (res.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS);
@@ -921,7 +946,9 @@ export function createRateOutbox(deps: OutboxDeps) {
   // answers the same). Stop, keep everything, ask get-session once.
   // `stillCovered`: the dedicated read's coverage, rechecked right before each
   // deletion (Codex recheck 5: an edit or a base since then is resumed, never dropped).
-  const confirmInvalid = (refused: Slot[], dropOnSame = true, attempt = 0, stillCovered?: (s: Slot) => boolean) => {
+  // `onSame`: what "same" does to a refused slot instead of dropping it (a
+  // /rate refusal retires only its own op).
+  const confirmInvalid = (refused: Slot[], dropOnSame = true, attempt = 0, stillCovered?: (s: Slot) => boolean, onSame?: (s: Slot) => void) => {
     const act = activation;
     const who = viewer!;
     const incs = refused.map((s) => s.incarnation);
@@ -957,7 +984,9 @@ export function createRateOutbox(deps: OutboxDeps) {
       // a member); a wrong-viewer answer refused only the cookie it came with.
       if (dropOnSame) {
         refused.forEach((s, i) => {
-          if (s.mem && incs[i] === s.incarnation && (!stillCovered || stillCovered(s))) dropSilently(s);
+          if (!s.mem || incs[i] !== s.incarnation) return;
+          if (onSame) onSame(s);
+          else if (!stillCovered || stillCovered(s)) dropSilently(s);
         });
       }
       ownerGen = deps.stamp().gen;
