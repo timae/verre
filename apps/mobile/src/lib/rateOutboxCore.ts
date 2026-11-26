@@ -152,7 +152,9 @@ const WRITE_RETRY_CAP_MS = 30_000;
 // first sentence of the screen's earlier save error.
 export const SAVE_ERROR_TEXT = 'Couldn’t save your rating.';
 export const ALERT_TITLE = 'Rating Not Saved';
-export const alertMessage = (label: string) => `Your last changes to ${label} couldn’t be saved.`;
+// No name known for the bottle (an entry from an earlier launch whose moment
+// isn't loaded): "this impression" (ruled by Simon, 2026-11-26).
+export const alertMessage = (label: string | null) => `Your last changes to ${label ?? 'this impression'} couldn’t be saved.`;
 
 export const keyOf = (viewer: string, code: string, wineId: string) => `${viewer}\u0001${code}\u0001${wineId}`;
 const vcOf = (viewer: string, code: string) => `${viewer}\u0001${code}`;
@@ -510,10 +512,7 @@ export function createRateOutbox(deps: OutboxDeps) {
     if (key === undefined) return;
     const [v, c, w] = key.split('\u0001');
     if (v !== viewer) return showNextAlert();
-    // No name known for it (an entry from an earlier launch whose moment
-    // isn't loaded): no alert rather than copy that wasn't ruled (parked).
-    const label = labels.get(key) ?? deps.label(v, c, w);
-    if (!label) return showNextAlert();
+    const label = labels.get(key) ?? deps.label(v, c, w) ?? null;
     alertOpen = true;
     const act = activation;
     deps.alert(ALERT_TITLE, alertMessage(label), () => {

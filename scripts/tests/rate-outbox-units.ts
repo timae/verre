@@ -2144,6 +2144,20 @@ async function main() {
     check('r12-1: an online first attempt shows no "Saved on this phone" while it is out, then "Saved"', during.length > 0 && !seen.includes('local') && c.selection().savedState === 'saved');
   }
 
+  // ── Simon's ruling, 2026-11-26: the alert without a known name ────────────
+  {
+    // r13-1: an entry from an earlier launch, its moment not loaded (no name
+    // for the bottle), gets a 400 → exactly one alert with the ruled sentence.
+    const t0 = 9_000_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 }));
+    const e = env({ disk, t0 });
+    e.queue(errRes(400) as never);
+    await e.start(); // Home: no moment loaded, no page
+    await e.advance(10);
+    check('r13-1: no known name → the one-shot alert says "this impression"', e.alerts.length === 1 && e.alerts[0] === `${ALERT_TITLE}: Your last changes to this impression couldn’t be saved.` && e.disk.size === 0);
+  }
+
   // ── the 90-day clean-up ──────────────────────────────────────────────────
   {
     const disk = new Map<string, string>();
