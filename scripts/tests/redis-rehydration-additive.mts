@@ -29,6 +29,7 @@ import { NextRequest } from 'next/server'
 import bcrypt from 'bcrypt'
 import { prisma } from '../../lib/prisma.ts'
 import { redis, k, scanKeys } from '../../lib/redis.ts'
+import { settleAfterCommit } from '../../lib/afterCommit.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = pjoin(HERE, '..', '..')
@@ -570,6 +571,9 @@ async function crashAndRedis() {
   const Z1 = await mkUser('Redis-down Z1')
   await join(SB.code, { cookie: Z1.cookie }, 'Taster Z1'); await visit(SB.code, { cookie: Z1.cookie }); await rate(SB.code, { cookie: Z1.cookie }, wb)
   await prisma.$executeRaw`DELETE FROM auth_sessions WHERE user_id = ${Z1.id}`
+  // The rate's own background refresh (last-seen bump, TTL re-stamp) must land
+  // before the MONITOR window, or it reads as a deletion-worker command.
+  await settleAfterCommit()
   const { createConnection } = await import('node:net')
   const ru = new URL(process.env.REDIS_URL!)
   const monitor = createConnection({ host: ru.hostname, port: Number(ru.port || 6379) })
