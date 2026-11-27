@@ -26,6 +26,11 @@ const HELPER_PULL = -4;
 // stroke included); a switch fills its frame, so it is inset by the same 6 to
 // end where the chevrons end.
 const CHEVRON_TIP_INSET = 6;
+// A ChoiceRow is at least as tall as a switch row (the iOS switch is 31 pt):
+// a one-line choice row between switch rows read squeezed (Simon, 2026-11-25:
+// Moment Privacy's / Moment Defaults' "Visible To"). A floor only: larger text
+// still grows the row.
+const SWITCH_ROW_MIN = 31;
 
 export type SettingsRole = 'host' | 'cohost' | 'provider' | 'taster';
 
@@ -146,7 +151,7 @@ export function SetSection({ label, children }: { label?: string; children: Reac
 // actions: Remove All Other Devices, Delete Account), value `body`, rows ~12
 // apart (`flush` = none above).
 export function SetNav({
-  icon, leading, label, subtitle, value, trailing, onPress, action, critical, accent, disabled, soon, busy, bare, flush,
+  icon, leading, label, subtitle, value, trailing, onPress, action, critical, accent, disabled, soon, busy, bare, flush, small,
 }: {
   icon?: IconName;
   leading?: ReactNode;
@@ -163,6 +168,9 @@ export function SetNav({
   busy?: boolean;
   bare?: boolean;
   flush?: boolean;
+  /** A `bare` row at the helper size (`small`, icon 15): a link that sits
+   * under a line of `small` text (Moment Privacy's Change Account Privacy). */
+  small?: boolean;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -178,8 +186,8 @@ export function SetNav({
       onPress={onPress}
       style={({ pressed }) => (bare
         ? {
-            flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16),
-            paddingTop: flush ? 0 : ROW_GAP, paddingBottom: 2,
+            flexDirection: 'row', alignItems: 'center', gap: small ? phone.lerp(8, 10) : phone.lerp(12, 16),
+            paddingTop: flush ? 0 : small ? ROW_GAP / 2 : ROW_GAP, paddingBottom: small ? 6 : 2,
             opacity: pressed && !disabled && onPress ? 0.6 : 1,
           }
         : {
@@ -192,10 +200,10 @@ export function SetNav({
             backgroundColor: pressed && !disabled ? theme.surfaceSunk : 'transparent',
           })}
     >
-      {leading ?? (icon ? <Icon name={icon} size={19} color={iconTint} /> : null)}
+      {leading ?? (icon ? <Icon name={icon} size={small ? 15 : 19} color={iconTint} /> : null)}
       <View style={{ flex: 1, minWidth: 0 }}>
         <VText
-          variant="body"
+          variant={small ? 'small' : 'body'}
           style={bare ? (action ? { fontFamily: 'InstrumentSans_500Medium' } : null) : { fontFamily: action ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium' }}
           color={tint}
         >
@@ -343,7 +351,12 @@ export function ToggleRow({
         trackColor={{ false: offTrack, true: theme.accent }}
         ios_backgroundColor={offTrack}
         accessibilityLabel={title}
-        style={{ marginRight: CHEVRON_TIP_INSET }}
+        // 🔒 `alignSelf: 'center'`: React Native's iOS Switch composes a
+        // default `alignSelf: 'flex-start'` under our style (Switch.js), which
+        // beat the row's `alignItems: 'center'` and pinned every switch to its
+        // title line (Simon, phone 2026-11-25: "not vertically aligned with
+        // the option & helper text").
+        style={{ alignSelf: 'center', marginRight: CHEVRON_TIP_INSET }}
       />
     </View>
   );
@@ -428,11 +441,21 @@ export function SetNote({ children, style }: { children: ReactNode; style?: Styl
 // A settings section title (the You Privacy page, ruled 2026-11-11): `bodyLg`
 // 600, -0.01em, ink, Title Case, 6 above its first row. Not the uppercase
 // micro-label.
-export function SetTitle({ children }: { children: string }) {
-  return (
-    <VText variant="bodyLg" accessibilityRole="header" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: -0.17, marginBottom: 6 }}>
+export function SetTitle({ children, info }: { children: string; info?: ReactNode }) {
+  const title = (
+    <VText variant="bodyLg" accessibilityRole="header" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: -0.17, marginBottom: info ? 0 : 6, ...(info ? { flexShrink: 1, minWidth: 0 } : null) }}>
       {children}
     </VText>
+  );
+  if (!info) return title;
+  // `info`: an ⓘ right after the title (ui/InfoTip, Moment Privacy); its touch
+  // target overhangs, so the title keeps its own line height. The title wraps
+  // before it pushes the ⓘ off the row (large text, Codex 2026-11-24).
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2, marginBottom: 6 }}>
+      {title}
+      <View style={{ marginVertical: -10 }}>{info}</View>
+    </View>
   );
 }
 
@@ -443,10 +466,12 @@ export function SetTitle({ children }: { children: string }) {
 // sheet, so the chevron points DOWN (a page = right; ruled 2026-11-11).
 // `icon`: a leading glyph (19, ink-soft, as on SetNav). Same rhythm as
 // ToggleRow (`flush` = no top padding).
-export function ChoiceRow({ icon, label, value, helper, onPress, dropdown, disabled, busy, flush, accessibilityLabel }: {
+export function ChoiceRow({ icon, label, value, valueLines = 1, helper, onPress, dropdown, disabled, busy, flush, accessibilityLabel }: {
   icon?: IconName;
   label: string;
   value: string;
+  // A value that may run long (Moment Privacy's summary): wraps, right-aligned.
+  valueLines?: number;
   helper?: string;
   onPress?: () => void;
   dropdown?: boolean;
@@ -466,6 +491,7 @@ export function ChoiceRow({ icon, label, value, helper, onPress, dropdown, disab
       onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row', alignItems: 'center', gap: 10, paddingTop: flush ? 0 : ROW_GAP, paddingBottom: 2,
+        minHeight: (flush ? 0 : ROW_GAP) + SWITCH_ROW_MIN + 2,
         opacity: pressed ? 0.6 : 1,
       })}
     >
@@ -474,7 +500,7 @@ export function ChoiceRow({ icon, label, value, helper, onPress, dropdown, disab
         <VText variant="body" color={disabled ? 'inkFaint' : 'ink'}>{label}</VText>
         {helper ? <VText variant="small" color={disabled ? 'inkFaint' : 'inkSoft'} style={{ marginTop: HELPER_PULL }}>{helper}</VText> : null}
       </View>
-      {value ? <VText variant="body" color={disabled ? 'inkFaint' : 'inkSoft'} numberOfLines={1} style={{ maxWidth: '60%' }}>{value}</VText> : null}
+      {value ? <VText variant="body" color={disabled ? 'inkFaint' : 'inkSoft'} numberOfLines={valueLines} style={{ maxWidth: '60%', textAlign: valueLines > 1 ? 'right' : undefined }}>{value}</VText> : null}
       {/* The down chevron's tip sits ~2 pt nearer the edge than the right one's
           (path to 18.8 vs 16.3 of 24): inset it so every row ends on the same
           line as the switches (CHEVRON_TIP_INSET). */}

@@ -4,8 +4,10 @@
  */
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { ALL_BADGES, BADGE_MAP, evaluateBadges, XP_REWARDS, type UserStats } from '@/lib/badges'
+import { ALL_BADGES, BADGE_MAP, evaluateBadges, type UserStats } from '@/lib/badges'
 import { redactedSql, hiddenSql } from '@/lib/outsideView'
+import { visibleCravingCount } from '@/lib/cravings'
+import { NON_ALCOHOLIC_MAX_ABV } from '@verre/core'
 
 // Errors we expect during best-effort badge inserts: a duplicate from a
 // concurrent award (P2002) or a missing badge id when the in-code badge
@@ -87,19 +89,28 @@ export async function getUserStats(userId: number): Promise<UserStats> {
   // you its grape is new to you. The moment is found through the RATING
   // (`wines.session_id` is NULL for a banned adder's bottles while the moment
   // runs). The badge may then arrive with the next rating after the reveal;
-  // earned badges never go away. Style counts are unaffected (style is not
+  // earned badges never go away. Kind counts are unaffected (the kind is not
   // masked).
+  //
+  // 🔒 Kinds count from the bottle's SNAPSHOT (catalogue model change step 4;
+  // always set, so a badge does not move when a curator fills a colour later):
+  // sparkling from `sparkling`, the colours from `colour` (a sparkling rosé is
+  // also a rosé, an alcohol-free red also a red), alcohol-free from the abv by
+  // the ONE rule (`isNonAlcoholic`, abv ≤ 0.5: a legacy alcohol-free bottle
+  // carries abv 0). A distinct kind is one of the five that counts at least one.
   const [types] = await prisma.$queryRaw<[{
     red_count:bigint; white_count:bigint; spark_count:bigint; rose_count:bigint
-    nonalc_count:bigint; unique_styles:bigint; unique_grapes:bigint
+    nonalc_count:bigint; unique_grapes:bigint
   }]>`
     SELECT
-      COUNT(*) FILTER (WHERE w.style='red')    AS red_count,
-      COUNT(*) FILTER (WHERE w.style='white')  AS white_count,
-      COUNT(*) FILTER (WHERE w.style='spark')  AS spark_count,
-      COUNT(*) FILTER (WHERE w.style='rose')   AS rose_count,
-      COUNT(*) FILTER (WHERE w.style='nonalc') AS nonalc_count,
-      COUNT(DISTINCT LOWER(w.style))  FILTER (WHERE w.style IS NOT NULL) AS unique_styles,
+      COUNT(*) FILTER (WHERE w.colour='red')   AS red_count,
+      COUNT(*) FILTER (WHERE w.colour='white') AS white_count,
+      COUNT(*) FILTER (WHERE w.sparkling)      AS spark_count,
+      COUNT(*) FILTER (WHERE w.colour='rose')  AS rose_count,
+      -- 🔒 Like the grape count: an unrevealed blind bottle's alcohol is hidden
+      -- (ruled 2026-11-20: no alcohol-free mark before the reveal), so rating it
+      -- must not complete an alcohol-free badge (security review r1).
+      COUNT(*) FILTER (WHERE w.abv IS NOT NULL AND w.abv <= ${NON_ALCOHOLIC_MAX_ABV} AND NOT ${redactedSql(userId, 's', 'w')} AND NOT ${hiddenSql(userId, 's')}) AS nonalc_count,
       COUNT(DISTINCT LOWER(w.grape))  FILTER (WHERE w.grape IS NOT NULL AND w.grape<>'' AND NOT ${redactedSql(userId, 's', 'w')} AND NOT ${hiddenSql(userId, 's')}) AS unique_grapes
     FROM ratings r JOIN wines w ON w.id=r.wine_id LEFT JOIN sessions s ON s.id = r.session_id
     WHERE r.user_id=${userId}`
@@ -112,7 +123,10 @@ export async function getUserStats(userId: number): Promise<UserStats> {
     LEFT JOIN (SELECT session_code, COUNT(*) AS cnt FROM session_members GROUP BY session_code) mc ON mc.session_code=sm.session_code
     WHERE sm.user_id=${userId}`
 
-  const bookmarkCount = await prisma.bookmark.count({ where: { userId } })
+  // Visible cravings only (catalogue model change § 5): a craving whose source
+  // is still hidden for its owner counts after its reveal, so a badge never
+  // tells what "Wine N" is. No crave path awards anything in its own answer.
+  const bookmarkCount = await visibleCravingCount(userId)
 
   // daysSinceFirst is derived from the snapshotted firstRatedAt — never
   // shrinks, even if the original first rating gets deleted later.
@@ -136,7 +150,7 @@ export async function getUserStats(userId: number): Promise<UserStats> {
     sparkCount:          Number(types.spark_count),
     roseCount:           Number(types.rose_count),
     nonalcCount:         Number(types.nonalc_count),
-    uniqueStyles:        Number(types.unique_styles),
+    uniqueStyles:        [types.red_count, types.white_count, types.spark_count, types.rose_count, types.nonalc_count].filter(n => Number(n) > 0).length,
     uniqueGrapes:        Number(types.unique_grapes),
     totalSessions:       snap?.lifetimeSessionsJoined ?? 0,
     sessionsHosted:      snap?.lifetimeSessionsHosted ?? 0,
@@ -148,18 +162,15 @@ export async function getUserStats(userId: number): Promise<UserStats> {
 }
 
 // ── Award ─────────────────────────────────────────────────────
-export async function checkAndAwardBadges(userId: number, action: string): Promise<{newBadges: typeof ALL_BADGES; xpGained: number; totalXP: number}> {
+// Evaluates the badges and awards only NEW badges' own XP. The rating-action
+// XP (+10 first save, +5 first five-star, +5 first note) is credited ONCE per
+// rating inside the rate POST's transaction (docs/dev/rating-saves.md), never
+// here: this runs after the commit, in the background, and a lost run would
+// otherwise lose it (or a repeated one re-award it, as every save did before).
+export async function checkAndAwardBadges(userId: number): Promise<{newBadges: typeof ALL_BADGES; xpGained: number; totalXP: number}> {
   await ensureBadgesSeedOnce()
 
   let xpGain = 0
-  if (action === 'rate')           xpGain = XP_REWARDS.RATE_WINE
-  if (action === 'rate_with_note') xpGain = XP_REWARDS.RATE_WINE + XP_REWARDS.WRITE_NOTE
-  if (action === 'rate_5star')     xpGain = XP_REWARDS.RATE_WINE + XP_REWARDS.GIVE_5_STAR
-  if (action === 'rate_5star_note')xpGain = XP_REWARDS.RATE_WINE + XP_REWARDS.GIVE_5_STAR + XP_REWARDS.WRITE_NOTE
-  if (action === 'host')           xpGain = XP_REWARDS.HOST_SESSION
-  if (action === 'join')           xpGain = XP_REWARDS.JOIN_SESSION
-  if (action === 'bookmark')       xpGain = XP_REWARDS.BOOKMARK
-  if (action === 'photo')          xpGain = XP_REWARDS.ADD_PHOTO
 
   const [stats, existing] = await Promise.all([
     getUserStats(userId),

@@ -1,44 +1,41 @@
 import { hasStaffRole } from '@/lib/staffRole'
 
-// ── catalogGate: the phase-2/phase-3 release boundary, enforced ────────────
+// ── catalogGate: the catalogue's kill switch ───────────────────────────────
 //
-// 🔒 PHASE 2 AND PHASE 3 GO PUBLIC TOGETHER. Phase 2 (this code) lets a user
-// mint catalog entries; phase 3 builds the review queue that confirms, merges,
-// or rejects them. The implementation plan's release boundary is explicit about
-// why they cannot ship separately:
-//
-//   an UNREVIEWED PROVISIONAL is a valid steady state, whereas PUBLICLY
-//   SEARCHABLE USER-AUTHORED CONTENT WITH NO MODERATION PATH is not.
-//
-// If phase 3 slips there is no supported way to handle abuse, junk, duplicate
-// accumulation, or mistaken entries — and "phase 3 is next" is sequencing
-// intent, not an operational guarantee. So the switch below defaults CLOSED and
-// the boundary is a runtime gate rather than a note in a doc.
+// 🔒 OPEN BY DEFAULT since the catalogue model change (step 4, spec § 7 "The
+// fence opens WITH the code"): every new bottle links to an entry, so a closed
+// gate would mean only staff could add a bottle at all. The phase-2/3 boundary
+// this file used to enforce (no public minting before the review queue) was
+// reversed by ruling (Simon, 2026-07-25: negligible volume at current scale);
+// its standing condition is met in code instead: every user mint is RECORDED
+// as awaiting review in its own transaction (lib/catalogWrite.ts,
+// `catalog_review_items`), so nothing minted before phase 3 goes unrecorded.
 //
 // Three states, deliberately:
-//   • unset / anything but 'true'  → closed to the public (the default)
-//   • staff caller                 → open regardless, so the flow can be
-//                                    dogfooded and tuned before it is public
-//   • CATALOG_PUBLIC_ENABLED=true  → open to everyone (flip in phase 3)
+//   • unset / anything else              → open to everyone (the default)
+//   • CATALOG_PUBLIC_ENABLED=false       → CLOSED: the kill switch (exactly the
+//                                          string 'false'). Search, the moment's
+//                                          search and entry creation 404 / refuse
+//                                          again; adding a bottle then needs staff
+//   • staff caller                       → open regardless (curators keep working
+//                                          with the switch off)
 //
-// The staff bypass is what makes early matcher tuning possible without opening
-// public creation: per the plan, useful tuning signal comes from CURATOR
-// DECISIONS (same/distinct verdicts), not from raw search activity. A limited
-// external cohort is reachable by flipping the env var for one deploy — that is
-// the plan's "expose it to a limited cohort behind a kill switch".
+// The env is read at boot by Deplo.io, so flipping it is a restart, not an
+// instant change (docs/dev/deployment.md § CATALOG_PUBLIC_ENABLED).
 
 export function catalogPublicEnabled(): boolean {
-  return process.env.CATALOG_PUBLIC_ENABLED === 'true'
+  return process.env.CATALOG_PUBLIC_ENABLED !== 'false'
 }
 
 // May this caller reach the catalog add-flow at all?
 //
-// 🔒 A REFUSAL MUST BE 404, NEVER 403. A 403 says "this exists and you may not
-// use it", which advertises an unreleased surface and distinguishes staff from
+// 🔒 On the catalogue's own routes a refusal is 404, NEVER 403. A 403 says
+// "this exists and you may not use it", which distinguishes staff from
 // everyone else — the same leak-prevention rule the API already applies to
-// tier-gated profiles (app/api/CLAUDE.md § Status code rules). While the switch
-// is off, the endpoint should be indistinguishable from one that does not
-// exist.
+// tier-gated profiles (app/api/CLAUDE.md § Status code rules). While the
+// switch is off, those endpoints look as if they do not exist. (A bottle add
+// that would MINT answers its own refusal instead: the moment route's 404
+// means "moment gone" to the clients.)
 //
 // `userId` must come from the authenticated server context, never a request
 // body (root CLAUDE.md § Trust model). Anonymous callers pass null and are

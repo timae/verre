@@ -2,10 +2,10 @@ import { useMemo, useReducer, useRef, useState, useEffect } from 'react';
 import { Pressable, View, type LayoutRectangle, type ViewInstance } from 'react-native';
 import { BottomSheetScrollView, type BottomSheetScrollViewMethods } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
 import { AromaChip } from '@/components/scoring/aroma/parts';
 import { AromaReadChips } from '@/components/scoring/aroma/AromaReadChips';
 import { Icon } from '@/components/ui/Icon';
+import { Gradient } from '@/components/ui/Gradient';
 import Svg, { G, Polygon, Text as SvgText } from 'react-native-svg';
 import { aromaModifierDisplay, getAromaNode } from '@verre/core';
 import {
@@ -358,11 +358,10 @@ function FingerprintStrip({ shares, aromaColor, onPressSegment }: {
             a11yLabel={`${f.label} family. Show who perceived it`}
             onPress={(rect) => onPressSegment({ kind: 'node', a: f.familyId }, rect)}
           >
-            <LinearGradient
+            <Gradient
               colors={[mix(own, prev, 0.5), own, own, mix(own, next, 0.5)]}
               locations={[0, 0.25, 0.75, 1]}
-              start={{ x: 0, y: 0.5 }}
-              end={{ x: 1, y: 0.5 }}
+              direction="right"
               style={{ height: 18 }}
             />
           </BarSegment>

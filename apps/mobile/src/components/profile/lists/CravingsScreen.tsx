@@ -12,13 +12,15 @@ import { errorText } from '@/lib/errorCopy';
 import { invalidateProfileHeader } from '@/lib/feedCache';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { useMeId } from '@/lib/meId';
-import { wineTypeLabel } from '@/lib/momentFormat';
+import { kindLabel } from '@/lib/momentFormat';
 import { viewerCacheEpoch } from '@/lib/query';
 import { useTheme } from '@/theme';
 import { ListNote, ListRow, ToolRow, type RowHandle } from './ListParts';
 import { ToolButton, type ToolAnchor } from '@/components/ui/ToolButton';
 import { useListRefresh } from './useListRefresh';
-import { useOpenListPost } from './useOpenListPost';
+import { useListTapGuard, useOpenListImpression, useOpenListPost } from './useOpenListPost';
+import { listRowTarget } from '@/lib/impressionRoute';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // Your Cravings (design 04·10) or someone's (lists plan D6): sort + search,
 // Recently Saved (default) or Highest Rated (offered only while scores show:
@@ -34,6 +36,7 @@ import { useOpenListPost } from './useOpenListPost';
 // whom" (04·10b) and the Places sorts.
 
 export function CravingsPane({ userId, active: shown }: { userId: string; active: boolean }) {
+  const screenReader = useScreenReaderEnabled();
   const { theme } = useTheme();
   const { width: windowW } = useWindowDimensions();
   const queryClient = useQueryClient();
@@ -60,15 +63,19 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
     retry: (n, e) => !(e instanceof ListGoneError) && n < 1,
     enabled: meId != null,
   });
+  // Your rows key on their remove handle; someone else's carry none (a save's
+  // id is a coarse save time) and key on their place in the page.
   const rows = useMemo(() => {
     const seen = new Set<string>();
-    return (listQ.data?.pages ?? []).flatMap((p) => p.items).filter((r) => (seen.has(r.wineId) ? false : (seen.add(r.wineId), true)));
+    return (listQ.data?.pages ?? []).flatMap((p) => p.items).filter((r) => (!r.key ? true : seen.has(r.key) ? false : (seen.add(r.key), true)));
   }, [listQ.data]);
   // Yours always offers the score sort; someone's only once a loaded row shows
   // a score (their scores follow their post visibility).
   const scored = own || rows.some((r) => r.score != null) || sort === 'score';
   const { pulling, onPullRefresh, refetchInPlace } = useListRefresh(listQ.refetch);
-  const openPost = useOpenListPost(userId, refetchInPlace, shown);
+  const tapGuard = useListTapGuard(shown);
+  const openPost = useOpenListPost(userId, refetchInPlace, tapGuard);
+  const openImpression = useOpenListImpression(userId, refetchInPlace, tapGuard);
 
   // Remove at once: off every one of your Cravings lists (cancel first, so an
   // in-flight page can't put it back), then the server; a failure says so and
@@ -89,7 +96,8 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
       Alert.alert('Couldn’t Remove', errorText(e));
     }
     if (epoch !== viewerCacheEpoch()) return;
-    void queryClient.invalidateQueries({ queryKey: ['bookmarks'] });
+    // An open moment's hearts read `saved` off its line-up rows.
+    void queryClient.invalidateQueries({ queryKey: ['session-state'] });
     void invalidateProfileHeader(queryClient, meId);
   }, [queryClient, userId, meId]);
 
@@ -104,8 +112,9 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
     const rowWidth = windowW - 2 * GUTTER;
     body = (
       <FlatList
+        removeClippedSubviews={!screenReader}
         data={rows}
-        keyExtractor={(r) => r.wineId}
+        keyExtractor={(r, i) => r.key ?? `p${i}`}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: TAB_BAR_CLEARANCE }}
@@ -117,7 +126,16 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
         ListEmptyComponent={<ListNote>{search ? 'Nothing matches.' : 'No cravings yet.'}</ListNote>}
         ListFooterComponent={listQ.isFetchingNextPage ? <View style={{ paddingVertical: 16, alignItems: 'center' }}><ActivityIndicator color={theme.inkSoft} /></View> : undefined}
         renderItem={({ item }) => {
-          const row = <CravingListRow row={item} onPress={item.postId != null ? (handle) => void openPost(item.postId, item.wineId, handle) : undefined} />;
+          // The post opens on the row of the rating the score comes from (step 7
+          // review: not the craving's bottle, which can be another one).
+          // Without a post you may open, the impression's page by that rating
+          // (Moment Visibility step 3, T14); neither = inert, as before.
+          const ratingId = item.ratingId;
+          const to = listRowTarget(item.postId, ratingId);
+          const onPress = to.kind === 'post' && ratingId != null
+            ? (handle?: RowHandle) => void openPost(to.postId, { ratingId }, handle)
+            : to.kind === 'impression' ? (handle?: RowHandle) => void openImpression(to.ratingId, handle) : undefined;
+          const row = <CravingListRow row={item} onPress={onPress} />;
           return own && item.key ? <RemovableRow width={rowWidth} onRemove={() => void remove(item.key!)}>{row}</RemovableRow> : row;
         }}
       />
@@ -145,13 +163,12 @@ export function CravingsPane({ userId, active: shown }: { userId: string; active
 }
 
 function CravingListRow({ row, onPress }: { row: CravingRow; onPress?: (row: RowHandle) => void }) {
-  const title = row.blind ? 'Blind Impression' : row.name;
-  const meta = row.blind ? row.momentName ?? null : [row.producer, wineTypeLabel(row.type)].filter(Boolean).join(' · ') || null;
+  const meta = [row.producer, kindLabel(row)].filter(Boolean).join(' · ') || null;
   return (
     <ListRow
       uri={row.imageUrl}
-      title={title}
-      vintage={row.blind ? null : row.vintage}
+      title={row.name}
+      vintage={row.vintage}
       meta={meta}
       right={row.score ? <StarScore value={row.score} /> : null}
       onPress={onPress}

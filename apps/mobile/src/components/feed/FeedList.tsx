@@ -14,6 +14,8 @@ import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { closeOpenedPost, feedHref, useSessionTab } from '@/lib/sessionStack';
 import { space, useTheme } from '@/theme';
 import { useMeId } from '@/lib/meId';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
+import { NoTopEdgeFade } from '@/components/ui/NoTopEdgeFade';
 
 // The caller's handle on the list's scroll position, whichever layout is
 // showing (the list, or the error state's scroll view).
@@ -88,6 +90,7 @@ export function FeedList({
   const { theme } = useTheme();
   const router = useRouter();
   const tab = useSessionTab();
+  const screenReader = useScreenReaderEnabled();
   const queryClient = useQueryClient();
   // Tapping the tab while on its root scrolls the list to top (Simon) — the
   // standard tabPress→scrollToTop behavior via react-navigation's hook.
@@ -337,6 +340,8 @@ export function FeedList({
           onToggleLike={(next) => toggleLike(id, next)}
           onEdit={isOwner ? () => router.push(feedHref(tab, 'edit', { id: String(id), user: userParam })) : undefined}
           onDelete={isOwner ? () => confirmDeleteCheckin(id, item.checkin.wineName) : undefined}
+          // Someone you follow (08-feed § 5a): their check-in as yours.
+          onHadItToo={!isOwner && item.checkin.viewerFollowsAuthor ? () => router.push(feedHref(tab, 'had-it-too', { id: String(id), user: userParam })) : undefined}
         />
       );
     },
@@ -385,6 +390,7 @@ export function FeedList({
     return (
       <View style={{ flex: 1 }}>
         {deadEnd}
+        <NoTopEdgeFade style={{ flex: 1 }} enabled={fullBleed}>
         <ScrollView
           ref={errorScrollRef}
           contentInsetAdjustmentBehavior={fullBleed ? 'never' : undefined}
@@ -399,6 +405,7 @@ export function FeedList({
             <ErrorState onRetry={() => feed.refetch()} retrying={feed.isFetching} />
           </View>
         </ScrollView>
+        </NoTopEdgeFade>
       </View>
     );
   }
@@ -407,7 +414,17 @@ export function FeedList({
     <View style={{ flex: 1 }}>
       {deadEnd}
       {conn === 'banner' && <ConnectionBanner onRetry={() => feed.refetch()} />}
+      <NoTopEdgeFade style={{ flex: 1 }} enabled={fullBleed}>
       <FlatList
+        // iOS keeps every row's native views attached by default (Android
+        // detaches off-screen ones): with every loaded post attached, each
+        // navigation into or out of this screen stalled the main thread
+        // (~300 ms for 20 posts, the 0.1.5 You-tab lag); not while a screen
+        // reader is on (a detached row leaves its tree). strictMode: cells
+        // re-render only when their item, renderItem or extraData changes, not
+        // on every list render (keep renderItem's deps complete).
+        removeClippedSubviews={!screenReader}
+        strictMode
         ref={listRef}
         data={postsHidden ? [] : items}
         keyExtractor={(item) => `${item.type}:${feedItemId(item)}`}
@@ -457,6 +474,7 @@ export function FeedList({
           ))
         }
       />
+      </NoTopEdgeFade>
     </View>
   );
 }

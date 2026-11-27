@@ -1,14 +1,15 @@
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
 import { router, Stack, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
+import { Gradient } from '@/components/ui/Gradient';
 import { VText } from '@/components/ui/VText';
 import { usePhoneTokens, WELCOME_SCRIM, WELCOME_SCRIM_STOPS } from '@/lib/layout';
 import welcomeHero from '../../../assets/images/welcome-hero.jpg';
+import { NoTopEdgeFade } from '@/components/ui/NoTopEdgeFade';
 
 // 01·1 Launch — prototype .welcome, now with the real hero asset (Simon's
 // dessert photo == the design's P.dessert): full-bleed cover photo
@@ -51,7 +52,7 @@ export default function Launch() {
         alt=""
       />
       {/* .welcome .scrim — the design's 4-stop gradient. */}
-      <LinearGradient
+      <Gradient
         pointerEvents="none"
         colors={[...WELCOME_SCRIM]}
         locations={[...WELCOME_SCRIM_STOPS]}
@@ -61,7 +62,9 @@ export default function Launch() {
           flexGrow:1 + space-between keeps the wordmark top / CTAs bottom when
           content fits, and lets it scroll instead of clipping when scaled text
           on a short device would overflow. The image + scrim stay absolute
-          behind it (transparent scroll bg). */}
+          behind it (transparent scroll bg). No iOS 26 band under the status
+          bar (ui/NoTopEdgeFade). */}
+      <NoTopEdgeFade style={{ flex: 1 }}>
       <ScrollView
         style={{ flex: 1 }}
         // ── Vertical distribution (Simon, 2026-07-26) ──────────────────────
@@ -138,6 +141,7 @@ export default function Launch() {
           </Pressable>
         </View>
       </ScrollView>
+      </NoTopEdgeFade>
     </View>
   );
 }

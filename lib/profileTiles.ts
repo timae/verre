@@ -15,7 +15,7 @@
 //     the create path until 2026-11-08 and the settings path until 2026-11-11):
 //     the tile is served outside the moment and a code joins. A pin on one
 //     reads as dead and is cleared, like any removed source.
-//   - cravings: a bookmark whose wine has that image.
+//   - cravings: a craving whose source bottle has that image.
 // - PICK = what may be newly chosen, and what the automatic photo draws from:
 //   impressions + cravings = LIVE + SAFE_PHOTO (never an unrevealed blind
 //   wine); moments = LIVE (a cover is never blind-redacted,
@@ -41,7 +41,11 @@
 
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { cravingSessionIdSql, lineupHiddenNowSql } from '@/lib/outsideView'
+import { lineupHiddenNowSql, cravingSessionIdSql } from '@/lib/outsideView'
+import { onlyInsideSql } from '@/lib/postPrivacy'
+import { ownerCravingsSql, ownerWasThereSql, SAVE_MOMENT } from '@/lib/cravings'
+import { sharedMomentSql } from '@/lib/momentAudience'
+import { momentLookInEnabled } from '@/lib/momentGate'
 
 export const TILE_KEYS = ['impressions', 'moments', 'cravings'] as const
 export type TileKey = (typeof TILE_KEYS)[number]
@@ -96,10 +100,40 @@ const COLUMN: Record<TileKey, Prisma.Sql> = {
 export const SAFE_PHOTO = Prisma.sql`((s.id IS NULL OR s.deleted_at IS NOT NULL OR s.blind IS NOT TRUE OR w.revealed_at IS NOT NULL)
   AND NOT ${lineupHiddenNowSql('s')})`
 
-// Every pool yields (url, at): the photo and the recency it sorts by.
-function pool(tile: TileKey, profileId: number, pick: boolean): Prisma.Sql {
-  if (tile === 'impressions') return Prisma.sql`
-    SELECT COALESCE(ri.image_url, w.image_url) AS url, r.rated_at AS at
+// 🔒 A cover whose URL carries the moment's code (`sessions/<code>_…`, the
+// create path until 2026-11-08 and the settings path until 2026-11-11): a code
+// joins, so it is never served outside the moment. ONE predicate for the tile
+// pools, the look-in and someone's Moments' open rows (step-1 plan C4). Alias
+// `s` = a LIVE sessions row (its code is set).
+export function legacyCoverSql(sName: 's'): Prisma.Sql {
+  return Prisma.sql`strpos(${Prisma.raw(sName)}.cover_photo_url, 'sessions/' || ${Prisma.raw(sName)}.code || '_') > 0`
+}
+// The cover as it may be shown outside the moment: NULL for a code-bearing one,
+// and NULL when the predicate can't be evaluated (fails closed).
+export function coverOutsideSql(sName: 's'): Prisma.Sql {
+  return Prisma.sql`CASE WHEN NOT (${legacyCoverSql(sName)}) THEN ${Prisma.raw(sName)}.cover_photo_url END`
+}
+
+// Every pool yields (url, at): the photo and the recency it sorts by. Three
+// modes: PICK (the picker and the automatic photo: safe for every visitor),
+// LIVE (a pin's reference still exists: only ever clears a pin), SHOWN (a live
+// pin as anyone but the owner may see it).
+// 🔒 Only Inside This Moment (Moment Visibility step 3, T7): a tile is shown
+// to every visitor, so PICK and SHOWN leave out the photos of the owner's
+// Only Inside moments (Impressions: the moment's wine photo, their own rating
+// photos stay; Moments: the cover; Cravings: the bottle of a craving from
+// one). LIVE keeps them: the pin stays stored and shows to its owner, and
+// turning the switch off brings it back. Not behind the flag (T1).
+// `sharedWith` (the moments PICK pool for someone else's automatic cover only,
+// T12): only moments that viewer is in; null = nobody's.
+type PoolMode = 'pick' | 'live' | 'shown'
+function pool(tile: TileKey, profileId: number, mode: PoolMode, sharedWith?: number | null): Prisma.Sql {
+  const owner = Prisma.sql`${profileId}::integer`
+  if (tile === 'impressions') {
+    const winePhoto = mode === 'live' ? Prisma.sql`w.image_url`
+      : Prisma.sql`CASE WHEN NOT ${onlyInsideSql(owner, Prisma.sql`r.session_id`)} THEN w.image_url END`
+    return Prisma.sql`
+    SELECT COALESCE(ri.image_url, ${winePhoto}) AS url, r.rated_at AS at
     FROM ratings r
     JOIN wines w ON w.id = r.wine_id
     LEFT JOIN sessions s ON s.id = r.session_id
@@ -107,8 +141,9 @@ function pool(tile: TileKey, profileId: number, pick: boolean): Prisma.Sql {
       SELECT image_url FROM rating_images WHERE rating_id = r.id ORDER BY sort_order ASC LIMIT 1
     ) ri ON true
     WHERE r.user_id = ${profileId}
-      AND COALESCE(ri.image_url, w.image_url) IS NOT NULL
-      ${pick ? Prisma.sql`AND ${SAFE_PHOTO}` : Prisma.empty}`
+      AND COALESCE(ri.image_url, ${winePhoto}) IS NOT NULL
+      ${mode === 'pick' ? Prisma.sql`AND ${SAFE_PHOTO}` : Prisma.empty}`
+  }
   if (tile === 'moments') return Prisma.sql`
     SELECT s.cover_photo_url AS url, sm.joined_at AS at
     FROM session_members sm
@@ -116,41 +151,73 @@ function pool(tile: TileKey, profileId: number, pick: boolean): Prisma.Sql {
     WHERE sm.user_id = ${profileId} AND s.deleted_at IS NULL
       AND sm.removed_state IS DISTINCT FROM 'kicked'
       AND s.cover_photo_url IS NOT NULL
-      AND strpos(s.cover_photo_url, 'sessions/' || s.code || '_') = 0`
-  // A craving's moment: the bottle's own, else a session rating's (a banned
-  // adder's bottles in a running moment lose wines.session_id). One whose
-  // moment can't be found never gives a picked photo.
-  return Prisma.sql`
+      AND NOT (${legacyCoverSql('s')})
+      ${mode === 'live' ? Prisma.empty : Prisma.sql`AND NOT ${onlyInsideSql(owner, Prisma.sql`s.id`)}`}
+      ${sharedWith === undefined ? Prisma.empty : sharedWith === null ? Prisma.sql`AND FALSE` : Prisma.sql`AND ${sharedMomentSql(sharedWith)}`}`
+  // A craving's photo is its bottle's (lib/cravings.ts: the owner's shown set,
+  // real cravings and the blind saves that count as one). A source-less craving
+  // gives none. A picked photo (shown to every visitor) also needs a moment that
+  // can be found, unless the bottle is a check-in's, and one the owner was IN:
+  // a bottle saved from someone else's post shows only to people who may see
+  // that post (ruled 2026-11-20), which a tile cannot tell.
+  // LIVE (a pin's reference still exists): every real craving and every blind
+  // save of that photo, whatever their state (review r2: a pin picked from a
+  // matured blind save must not read as dead), as before: a pin is not cleared
+  // because its craving is hidden for a while.
+  // SHOWN: the same, minus a craving whose moment (lib/outsideView.ts
+  // cravingSessionIdSql, a blind save's SAVE_MOMENT) is an Only Inside one.
+  if (mode !== 'pick') return Prisma.sql`
     SELECT w.image_url AS url, b.saved_at AS at
-    FROM bookmarks b
-    JOIN wines w ON w.id = b.wine_id
-    LEFT JOIN sessions s ON s.id = ${cravingSessionIdSql('w')}
-    WHERE b.user_id = ${profileId}
-      AND w.image_url IS NOT NULL
-      ${pick ? Prisma.sql`AND s.id IS NOT NULL AND ${SAFE_PHOTO}` : Prisma.empty}`
+    FROM bookmarks b JOIN wines w ON w.id = b.wine_id
+    WHERE b.user_id = ${profileId} AND w.image_url IS NOT NULL
+      ${mode === 'shown' ? Prisma.sql`AND NOT ${onlyInsideSql(owner, cravingSessionIdSql('b', 'w'))}` : Prisma.empty}
+    UNION ALL
+    SELECT w.image_url, bs.saved_at
+    FROM blind_saves bs JOIN wines w ON w.id = bs.wine_id
+    WHERE bs.user_id = ${profileId} AND w.image_url IS NOT NULL
+      ${mode === 'shown' ? Prisma.sql`AND NOT ${onlyInsideSql(owner, SAVE_MOMENT)}` : Prisma.empty}`
+  return Prisma.sql`
+    SELECT w.image_url AS url, oc.saved_at AS at
+    FROM (${ownerCravingsSql(profileId)}) oc
+    JOIN wines w ON w.id = oc.wine_id
+    LEFT JOIN sessions s ON s.id = oc.sid
+    WHERE w.image_url IS NOT NULL
+      AND (s.id IS NOT NULL OR w.origin = 'standalone') AND ${SAFE_PHOTO} AND ${ownerWasThereSql(profileId)}
+      AND NOT ${onlyInsideSql(owner, Prisma.sql`oc.sid`)}`
 }
 
 type Db = Pick<typeof prisma, '$queryRaw'> | Prisma.TransactionClient
 
-async function inPool(db: Db, tile: TileKey, profileId: number, url: string, pick: boolean): Promise<boolean> {
+async function inPool(db: Db, tile: TileKey, profileId: number, url: string, mode: PoolMode): Promise<boolean> {
   const rows = await db.$queryRaw<{ hit: boolean }[]>`
-    SELECT EXISTS (SELECT 1 FROM (${pool(tile, profileId, pick)}) p WHERE p.url = ${url}) AS hit`
+    SELECT EXISTS (SELECT 1 FROM (${pool(tile, profileId, mode)}) p WHERE p.url = ${url}) AS hit`
   return rows[0]?.hit === true
 }
 
-export const isPickable = (tile: TileKey, profileId: number, url: string) => inPool(prisma, tile, profileId, url, true)
+// A pin's LIVE and SHOWN in ONE statement (a visitor's header read, every
+// pinned tile; the owner needs only LIVE).
+async function pinState(tile: TileKey, profileId: number, url: string): Promise<{ live: boolean; shown: boolean }> {
+  const rows = await prisma.$queryRaw<{ live: boolean; shown: boolean }[]>`
+    SELECT EXISTS (SELECT 1 FROM (${pool(tile, profileId, 'live')}) p WHERE p.url = ${url}) AS live,
+           EXISTS (SELECT 1 FROM (${pool(tile, profileId, 'shown')}) p WHERE p.url = ${url}) AS shown`
+  return { live: rows[0]?.live === true, shown: rows[0]?.shown === true }
+}
 
-// Step 1's automatic photo: the latest PICK photo.
-async function autoLatest(tile: TileKey, profileId: number): Promise<string | null> {
+export const isPickable = (tile: TileKey, profileId: number, url: string) => inPool(prisma, tile, profileId, url, 'pick')
+
+// Step 1's automatic photo: the latest PICK photo. For someone else's Moments
+// tile (Moment Visibility on, T12) only from the moments the viewer is in: an
+// open moment's cover never feeds it (one cheap condition on a hot read).
+async function autoLatest(tile: TileKey, profileId: number, sharedWith?: number | null): Promise<string | null> {
   const rows = await prisma.$queryRaw<{ url: string }[]>`
-    SELECT url FROM (${pool(tile, profileId, true)}) p ORDER BY at DESC LIMIT 1`
+    SELECT url FROM (${pool(tile, profileId, 'pick', tile === 'moments' ? sharedWith : undefined)}) p ORDER BY at DESC LIMIT 1`
   return rows[0]?.url ?? null
 }
 
 // The picker: the latest `limit` distinct PICK photos.
 export async function listPickable(tile: TileKey, profileId: number, limit: number): Promise<string[]> {
   const rows = await prisma.$queryRaw<{ url: string }[]>`
-    SELECT url FROM (${pool(tile, profileId, true)}) p
+    SELECT url FROM (${pool(tile, profileId, 'pick')}) p
     GROUP BY url ORDER BY MAX(at) DESC LIMIT ${limit}`
   return rows.map(r => r.url)
 }
@@ -182,7 +249,8 @@ async function clearDeadPin(tile: TileKey, profileId: number, dead: string): Pro
     if (rows[0]?.pin !== dead) return null
     // Own under the lock (an own upload landed since the read): live, keep it.
     if (isOwnTile(dead, rows[0].own, tile, profileId)) return dead
-    if (await inPool(tx, tile, profileId, dead, false)) return dead
+    // 🔒 LIVE, never SHOWN: an Only Inside switch never clears a pin.
+    if (await inPool(tx, tile, profileId, dead, 'live')) return dead
     await tx.$executeRaw`UPDATE users SET ${COLUMN[tile]} = NULL WHERE id = ${profileId}`
     return null
   })
@@ -199,16 +267,32 @@ export type TilePhoto = { imageUrl: string | null; pinned: boolean }
 // `tiles` is REQUIRED (no "all" default) and the result holds only those
 // keys: a tile hidden from the viewer (lib/profileHeader.ts) is never
 // requested, so its photo query never runs and its stored pin is kept.
-export async function resolveTilePhotos(profileId: number, tiles: readonly TileKey[]): Promise<Partial<Record<TileKey, TilePhoto>>> {
+// `viewerId` is who is looking (null = signed out). 🔒 It restricts the
+// AUTOMATIC Moments cover only (T12, Moment Visibility on, someone else's
+// profile): the pin's liveness and the owner's picker keep the full pool, or a
+// stranger's view would read the owner's pin as dead and erase it for everyone.
+export async function resolveTilePhotos(profileId: number, tiles: readonly TileKey[], viewerId: number | null): Promise<Partial<Record<TileKey, TilePhoto>>> {
   if (tiles.length === 0) return {}
+  const sharedWith = viewerId === profileId || !momentLookInEnabled() ? undefined : viewerId
   const pins = await readPins(profileId)
   const entries = await Promise.all(tiles.map(async (tile): Promise<[TileKey, TilePhoto]> => {
     const { url: pin, own } = pins[tile]
     if (pin) {
-      const live = own || (await inPool(prisma, tile, profileId, pin, false)) || (await clearDeadPin(tile, profileId, pin)) !== null
-      if (live) return [tile, { imageUrl: pin, pinned: true }]
+      // 🔒 Anyone but the owner (signed out included) sees a pin only while
+      // it is SHOWN (not a photo of the owner's Only Inside moments); the
+      // automatic photo instead. Whatever the flag says (T1). A pin that
+      // reads dead is cleared on LIVE only (clearDeadPin), never on SHOWN.
+      if (own) return [tile, { imageUrl: pin, pinned: true }]
+      const owner = viewerId === profileId
+      const state = owner ? { live: await inPool(prisma, tile, profileId, pin, 'live'), shown: true } : await pinState(tile, profileId, pin)
+      // A pin that read dead but is live under clearDeadPin's lock has no
+      // SHOWN answer from this read: this one visitor read gets the automatic
+      // photo (the safe side, transient; the next read decides; recheck
+      // 2026-11-24, accepted).
+      const live = state.live || (await clearDeadPin(tile, profileId, pin)) !== null
+      if (live && state.shown) return [tile, { imageUrl: pin, pinned: true }]
     }
-    return [tile, { imageUrl: await autoLatest(tile, profileId), pinned: false }]
+    return [tile, { imageUrl: await autoLatest(tile, profileId, sharedWith), pinned: false }]
   }))
   return Object.fromEntries(entries)
 }

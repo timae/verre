@@ -58,6 +58,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   if (p.status === 'kicked') {
     // Did they have any ratings to keep/delete? Surface as a hint so the
     // bounce can skip the prompt when there's nothing actionable.
+    // rating-write: EXEMPT
     const hasRatings = !!p.identity.grant?.author || await hasKey(`s:${c}:r:${identity.id}:*`)
     return NextResponse.json({ state: 'kicked', identityId: await wireIdentity(identity.id), hasRatings }, { headers: noStore })
   }

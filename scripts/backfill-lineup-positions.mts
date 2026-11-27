@@ -51,6 +51,9 @@ for (const { code } of live) {
         UPDATE wines AS w SET position = (v.ord - 1)::int
           FROM unnest(${lineup}::text[]) WITH ORDINALITY AS v(id, ord)
          WHERE w.id = v.id AND w.session_id = ${row.id} AND w.position IS NULL`
+      // A line-up writer bumps a reconciled revision (catalogue model change
+      // § 8a); NULL stays NULL.
+      await tx.$executeRaw`UPDATE sessions SET lineup_revision = lineup_revision + 1 WHERE id = ${row.id} AND lineup_revision IS NOT NULL`
     }
     return { o: 'filled' as const, n: lineup.length }
   })

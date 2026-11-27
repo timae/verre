@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, View } from 'react-native';
@@ -10,6 +11,7 @@ import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { PersonPreviewProvider } from '@/components/moments/PersonPreviewSheet';
 import { ReadCard, SetGroup, SetNav, type SettingsRole } from '@/components/moments/settingsParts';
 import { ApiError, deleteMoment } from '@/lib/api/sessions';
+import { getMomentVisibility, momentVisibilityKey } from '@/lib/api/moments';
 import { authClient } from '@/lib/authClient';
 import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen } from '@/lib/momentFormat';
@@ -56,6 +58,15 @@ export default function SettingsHub() {
   // it has no set date (date-less moments carry no time to show).
   const metaDate = sessionWhen(meta?.dateFrom, meta?.dateTo)
     ?? shortDay(meta ? new Date(meta.createdAt).toISOString() : null);
+  // Moment Privacy (step-2 plan § 4.6; renamed from Moment Visibility, ruled
+  // 2026-11-24): read from the record. A 404 means the feature is off (T10):
+  // no row. No value beside it (ruled 2026-11-24: it broke the row's lines);
+  // everyone opens the page, which only reads for anyone but the host and
+  // cohosts (R11).
+  const vis = useQuery({ queryKey: momentVisibilityKey(code), queryFn: () => getMomentVisibility(code), enabled: !!meta, retry: false });
+  const visibilityRow = vis.data ? (
+    <SetNav key="visibility" icon="users" label="Moment Privacy" onPress={() => router.push(sessionHref(sessionTab, 'settings/visibility', { code }))} />
+  ) : null;
 
   const confirmDelete = () => {
     // Destructive confirms always NAME what's being deleted (Simon, 2026-07-18).
@@ -169,6 +180,7 @@ export default function SettingsHub() {
                       label="Moment Setup"
                       onPress={() => router.push(sessionHref(sessionTab, 'settings/reveal', { code }))}
                     />
+                    {visibilityRow}
                   </SetGroup>
                   <SetGroup>
                     <SetNav icon="share" label="Share Moment" action onPress={() => setInviteOpen(true)} />
@@ -186,6 +198,7 @@ export default function SettingsHub() {
                 <>
                   <SetGroup>
                     <SetNav icon="user" label="People" onPress={() => setPeopleOpen(true)} />
+                    {visibilityRow}
                   </SetGroup>
                   <SetGroup>
                     <SetNav icon="share" label="Share Moment" action onPress={() => setInviteOpen(true)} />

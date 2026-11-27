@@ -6,13 +6,17 @@ import { facetsExpensive, parseMomentFacets } from '@/lib/momentFacets'
 import { loadSharedMoments } from '@/lib/profileLists'
 import { NO_STORE, openProfileList } from '@/lib/profileListRoute'
 
-// GET /api/users/:id/moments — someone's moments, ONLY the ones you share
-// (lists plan D5), when their Show Moments lets you, newest first. The same
-// filter params and meaning as /api/me/sessions (D14, lib/momentFacets.ts):
-// q, from, to, roles (THEIR role), hosts, people, category; cursor + limit.
-// The first page carries `otherCount` (their other moments, unfiltered).
-// 🔒 A moment you're not in (or were kicked from) is never a row, a name or a
-// code. Your own moments are read from /api/me/sessions.
+// GET /api/users/:id/moments — someone's moments, when their Show Moments lets
+// you, newest first: the ones you share (with the code), and with Moment
+// Visibility on the ones you may look into where they are named to you (open
+// rows: `momentId`, no code; lib/profileLists.ts). The same filter params and
+// meaning as /api/me/sessions (D14, lib/momentFacets.ts): q, from, to, roles
+// (THEIR role), hosts, people, category; cursor + limit. On an open row a
+// filter only matches people named to you. The first page carries
+// `otherCount` (their other moments, unfiltered).
+// 🔒 A moment you're not in (or were kicked from) never carries its code; one
+// you can't look into is never a row or a name. Your own moments are read from
+// /api/me/sessions.
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const opened = await openProfileList(req, params)
   if (opened instanceof NextResponse) return opened

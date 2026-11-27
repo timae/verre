@@ -2,7 +2,6 @@ import { nanoid } from 'nanoid'
 import { prisma } from '@/lib/prisma'
 import type { Prisma } from '@prisma/client'
 import { scrub, cleanUrl, cleanCountry } from '@/lib/textSafe'
-import { normalizeVintageText } from '@verre/core'
 
 // ── catalogWrite: THE catalog mutation chokepoint ──────────────────────────
 //
@@ -51,6 +50,17 @@ const PROVISIONAL = 'provisional'
 // 'shared', i.e. public. This constant exists so the value is spelled once;
 // it does not make omission safe, and the DB is still the backstop.
 const SHARED_SCOPE = 'shared'
+
+// 🔒 EVERY USER MINT IS RECORDED AS AWAITING REVIEW, in the mint's own
+// transaction (catalogue model change § 7): the fence opens before the review
+// queue exists, and `status = 'provisional'` alone is not that record (a
+// delivery may later move a user's entry to 'confirmed', and then nothing would
+// say no curator ever looked at it). A mint with no user (an import, a fixture)
+// writes none. Rolls back with the mint.
+async function recordUserMint(tx: Prisma.TransactionClient, entityType: 'producer' | 'product' | 'vintage', entityId: string, addedBy: number | null): Promise<void> {
+  if (addedBy === null) return
+  await tx.catalogReviewItem.create({ data: { entityType, entityId, reason: 'user-mint' }, select: { id: true } })
+}
 
 export class CatalogValidationError extends Error {
   constructor(message: string) {
@@ -215,7 +225,7 @@ function normalizeGrapes(raw: unknown): string[] {
 //   • The free-text ENCOUNTER string (`@verre/core` `normalizeVintageText`)
 //     applies a STRUCTURAL grammar only — any four-digit value, or an NV token.
 //     No plausibility range whatsoever.
-//   • THIS function, at CATALOG PROMOTION, accepts only 1900..current+1, because
+//   • THIS function, at CATALOG PROMOTION, accepts only 1900..the current year, because
 //     a promoted value becomes permanent shared identity that every later taster
 //     inherits.
 //
@@ -235,16 +245,25 @@ function normalizeGrapes(raw: unknown): string[] {
 //
 // The backfill's promotion rule (the handoff contract):
 //   recognized NV token → the NV row (year = null)
-//   1900..current+1     → that dated vintage row
+//   1900..current year  → that dated vintage row
 //   anything else (pre-1900, implausible future, legacy junk) → PRESERVE the
 //                         encounter string, default to PRODUCT-grain linkage +
 //                         manual disposition; never auto-mint a vintage
+// 🔒 THE one year range (1900 to the current year, UTC; a vintage is the harvest
+// year, so no bottle carries next year's: ruled 2026-11-22, was current + 1):
+// the write boundary below AND the
+// bottle search's year detection (lib/catalogSearch.ts: a typed word in this
+// range is the year; plan 7b review r1 P1 found two definitions).
+export const YEAR_MIN = 1900
+export function yearMax(): number { return new Date().getUTCFullYear() }
+export function isCatalogYear(n: number): boolean { return Number.isInteger(n) && n >= YEAR_MIN && n <= yearMax() }
+
 export function validateYear(year: number | null): number | null {
   if (year === null) return null
   if (!Number.isInteger(year)) throw new CatalogValidationError('year must be an integer')
-  const max = new Date().getUTCFullYear() + 1
-  if (year < 1900 || year > max) {
-    throw new CatalogValidationError(`year must be between 1900 and ${max}`)
+  const max = yearMax()
+  if (year < YEAR_MIN || year > max) {
+    throw new CatalogValidationError(`year must be between ${YEAR_MIN} and ${max}`)
   }
   return year
 }
@@ -268,6 +287,9 @@ export type NewProductInput = {
   abv?: number | null
   grapes?: unknown
   region?: unknown
+  // The wine's ORIGIN (contract v3, `wine_products.country`): where the wine is
+  // from, never the producer's home. ISO 3166-1 alpha-2 via the allow-list.
+  country?: unknown
 }
 
 // ── Mint a producer ────────────────────────────────────────────────────────
@@ -299,6 +321,8 @@ export async function createProducer(
   // rejects any supplied value with 428C9 — a loud runtime error rather than
   // silent drift (prisma/CLAUDE.md). Never add them here.
   await client.producer.create({ data, select: { id: true } })
+  await recordUserMint(tx, 'producer', data.id, addedBy)
+  await indexProducer(tx, data.id)
   return { id: data.id }
 }
 
@@ -328,6 +352,7 @@ export async function createProduct(
   const colour = productColour(input.colour)
   const sparkling = productSparkling(input.sparkling)
   const region = optionalFact(input.region)
+  const country = optionalCountry(input.country)
   const grapes = normalizeGrapes(input.grapes)
   const abv = normalizeAbv(input.abv)
   if (!input.producerId) throw new CatalogValidationError('producerId is required')
@@ -337,6 +362,16 @@ export async function createProduct(
   const collaborators = [...new Set(collaboratorIds)].filter(p => p && p !== input.producerId)
 
   const run = async (t: Prisma.TransactionClient) => {
+    // The adder's user row FIRST (the key the product's `added_by` takes anyway,
+    // FOR KEY SHARE): before the producer lock below, an account deletion of
+    // the adder (users row, then its producers' `added_by` SET NULL) and this
+    // mint could each hold what the other waits for (40P01; review 2026-11-21).
+    if (addedBy !== null) await t.$queryRaw`SELECT 1 FROM users WHERE id = ${addedBy} FOR KEY SHARE`
+    // The search doc's row rule (lockForSearchDoc): the lead's chain FOR SHARE
+    // BEFORE the source rows, so a concurrent rename of the lead serialises with
+    // this mint and the later of the two computes the doc from what the first
+    // committed. The product row is new, so it needs no lock.
+    await lockForSearchDoc(t, [input.producerId], [])
     await t.wineProduct.create({
       data: {
         id,
@@ -348,6 +383,7 @@ export async function createProduct(
         abv,
         grapes,
         region,
+        country,
         // 🔒 EXPLICIT, always — see SHARED_SCOPE.
         scope: SHARED_SCOPE,
         status: PROVISIONAL,
@@ -363,6 +399,9 @@ export async function createProduct(
         data: collaborators.map(producerId => ({ productId: id, producerId, role: 'collaborator' })),
       })
     }
+    await recordUserMint(t, 'product', id, addedBy)
+    // Findable the moment this mint commits (in its own transaction already).
+    await indexProduct(t, id)
     return { id }
   }
   // An outer transaction is reused rather than nested: the lead link must
@@ -424,6 +463,7 @@ export async function createVintage(
   }
   const client = tx
   await client.wineVintage.create({ data, select: { id: true } })
+  await recordUserMint(tx, 'vintage', data.id, addedBy)
   return { id: data.id }
 }
 
@@ -432,6 +472,10 @@ export async function createVintage(
 // first, so an out-of-range value raises "numeric field overflow" from the
 // TYPE before the CHECK is ever reached. Bounding here gives a clean 400
 // instead of a 500 from either.
+// The abv rule on its own (the add flow validates a typed abv even when it is
+// not written: an existing vintage keeps its own).
+export function assertAbv(raw: unknown): void { normalizeAbv(raw) }
+
 function normalizeAbv(raw: unknown): number | null {
   if (raw === null || raw === undefined || raw === '') return null
   const n = Number(raw)
@@ -508,12 +552,16 @@ function productStyle(raw: unknown, category: string): string | null {
 // had the PRODUCT link destroyed too, silently, with a 200: an omitted
 // `productId` read as "no link" rather than "unchanged". With `existing`,
 // omitted means KEEP and null means CLEAR, per field, matching the semantics
-// `addWineToSession` already implements one layer down. Callers that have no
+// `normalizeWine` (lib/session.ts) already implements one layer down. Callers that have no
 // stored link (creates) simply omit it.
+// `db`: the caller's transaction when it runs inside one (review r2: a pick is
+// resolved under the writer's locks, and a second pool connection taken while
+// the transaction holds its own could wait on a pool nobody releases).
 export async function resolveCatalogLink(
   productId: unknown,
   vintageId: unknown,
   existing?: { productId?: string | null; vintageId?: string | null },
+  db: Prisma.TransactionClient | typeof prisma = prisma,
 ): Promise<{ productId: string | null; vintageId: string | null }> {
   // 🔒 A PRESENT-BUT-MALFORMED id is a 400, NOT a silent clear.
   //
@@ -557,7 +605,7 @@ export async function resolveCatalogLink(
   // safe to be specific about — they reveal nothing about which ids exist.
   if (!p && v) throw new CatalogValidationError('vintageId requires productId')
 
-  const product = await prisma.wineProduct.findUnique({
+  const product = await db.wineProduct.findUnique({
     where: { id: p! },
     select: { id: true, status: true, scope: true },
   })
@@ -582,7 +630,7 @@ export async function resolveCatalogLink(
   if (product.scope !== SHARED_SCOPE) throw deny(`product scope is ${product.scope}`)
   if (!v) return { productId: product.id, vintageId: null }
 
-  const vintage = await prisma.wineVintage.findUnique({
+  const vintage = await db.wineVintage.findUnique({
     where: { id: v },
     select: { id: true, productId: true, status: true },
   })
@@ -597,104 +645,288 @@ export async function resolveCatalogLink(
 // from add-time suggestions. `linked` and `rejected` are not.
 const LINKABLE_STATUSES = ['provisional', 'confirmed', 'archived']
 
-// ── The identity-changing-edit rule ────────────────────────────────────────
+// ── The identity-changing-edit rule: RETIRED (catalogue model change step 4) ─
 //
-// 🔒 A wine-instance edit that changes the instance's IDENTITY must not
-// silently keep a now-incompatible catalog link (RFC § Identity-changing wine
-// edits). Wine-instance fields are historical SNAPSHOTS — they do not derive
-// from live catalog facts — so an edit that renames the wine, changes its
-// producer, or changes its year has, as far as the catalog is concerned,
-// pointed the instance at a different thing. Keeping the old link there would
-// silently attribute one label's ratings to another.
+// A bottle's identity is its catalogue LINK: an edit that changes producer,
+// name or year is a RE-LINK through the add flow (lib/catalogLink.ts), which
+// writes the whole snapshot from the new entry. Typed identity text is ignored
+// on every write, so there is no free-text change left to detect.
+
+// ── The hard purge's reference clearing (catalogue model change § 5a) ───────
 //
-// Cosmetic edits (photo, description, region, a typo-level fix confirmed
-// against the SAME entry) keep the link. That is why this compares the three
-// IDENTITY fields only — widening it to every field would clear links on a
-// photo upload, and narrowing it to `name` alone would keep the link across a
-// producer change, which is the worst case.
-//
-// The editor can always RE-LINK explicitly in the same request by sending
-// productId/vintageId, which takes precedence — this only decides what happens
-// when they DON'T.
-//
-// Returns the link the write should carry.
-export function applyIdentityEditRule(
-  existing: { name: string; producer: string; vintage: string; productId?: string | null; vintageId?: string | null },
-  incoming: { name?: unknown; producer?: unknown; vintage?: unknown },
-  explicitLink: { productId: string | null; vintageId: string | null } | null,
-): { productId: string | null; vintageId: string | null } {
-  // An explicit re-link (or an explicit clear) always wins — the editor said so.
-  if (explicitLink) return explicitLink
-  if (!existing.productId) return { productId: null, vintageId: null }
-  // Only fields PRESENT in the body count. A PATCH that omits `producer`
-  // entirely is not changing the producer, so it must not be read as a change
-  // to the empty string.
-  // 🔒 COMPARE WHAT WILL ACTUALLY BE STORED, not the raw body value.
-  //
-  // The write paths normalize before storing — `scrub()` strips control and
-  // zero-width characters, and `vintage` goes through the shared canonicalizer
-  // — so comparing the RAW incoming value against the STORED one reports a
-  // change where the stored value would not actually move. Verified example: a
-  // name carrying a zero-width character cleared the link, because scrub()
-  // removes the character and leaves the stored value byte-identical.
-  //
-  // ⚠️ The vintage rule is NOT truncation. It is exactly-four-digits-or-NV,
-  // else empty, so an overlong '2019-2020' becomes EMPTY rather than '2019' —
-  // that genuinely moves the stored value and MUST clear the link. An earlier
-  // version of this comment (and an integration expectation) described the
-  // truncating write and became wrong when the contract tightened.
-  //
-  // Over-clearing fails SAFE but silently drops correct links on edits that
-  // change nothing, which is the failure this rule exists to avoid.
-  //
-  // On top of the write's own normalization: trim, case-fold, and collapse
-  // internal whitespace. Those three are typographic, not identity — "Grand
-  // Vin" and "Grand  Vin" are the same wine.
-  //
-  // Deliberately NOT accent-folded. Accents can distinguish real labels, and
-  // unlike the catalog's own matching path there is no generated column here to
-  // keep a second fold honest — so this stays a conservative string compare.
-  const norm = (v: unknown, field: 'name' | 'producer' | 'vintage') => {
-    // Mirrors lib/session.ts `clean()` (scrub → '') and its vintage rule. If
-    // those write-path rules change, this must change with them.
-    //
-    // 🔒 NO `String(v)` COERCION — the write path does `scrub(v)`, and `scrub`
-    // returns null for any non-string. Stringifying here made the comparator
-    // strictly more permissive than the write: a PATCH carrying NUMERIC 2019
-    // compared equal to a stored '2019' (so the link was KEPT) while the write
-    // stored '' — a blank vintage still linked to a vintage-grain catalog row.
-    // Same defect class as the omitted-vs-empty edit bug, reached by a different
-    // route. The comparator must model what the write ACTUALLY does, including
-    // its type rejection.
-    let s = scrub(v) ?? ''
-    // 🔒 The SHARED normalizer, not `.slice(0, 4)`. The write path canonicalizes
-    // NV tokens ('N.V.' → 'NV'), so a slice-based compare reported a change on
-    // an edit that only canonicalized — silently CLEARING a correct catalog
-    // link. Measured: stored 'N.V.' + incoming 'NV' → {productId: null,
-    // vintageId: null}. Using the same function the write uses makes
-    // "compare what will actually be stored" true rather than approximate.
-    if (field === 'vintage') s = normalizeVintageText(s)
-    return s.trim().toLowerCase().replace(/\s+/g, ' ')
+// 🔒 A purge clears or redirects catalogue references; it NEVER deletes an
+// occurrence, a rating or a craving. The staff purge itself (`catalog.purge`,
+// admin, audited) is phase 3's; these are the steps it runs inside its one
+// transaction:
+//   • a VINTAGE: the bottles and the cravings fall back to product grain; a
+//     craving that then collides with the same person's "any year" craving of
+//     that wine is merged (keep the row visible to its owner, else the earlier
+//     saved_at, lib/cravings.ts); its review item goes; the row is deleted.
+//   • a PRODUCT: its vintages first, then the bottles and cravings unlinked
+//     (each keeps its snapshot, so it still renders; an unlinked craving is
+//     exempt from the one-per-wine unique; a blind save that already counts as
+//     a craving becomes one first, Codex r1); its review item; the row (its
+//     product_producers rows cascade, by ruling, prisma/CLAUDE.md).
+// The moments whose bottles changed get a new line-up revision (their caches
+// still carry the old link).
+// 🔒 Lock order as every writer takes it (Codex r1: bottles first deadlocked
+// against a moment's own contract): the moments' advisory locks and rows, in
+// code order (`withSessionLocks`, as account deletion does), then the bottles,
+// then the people's craving locks. The plan is read once, before the locks;
+// only what was locked is written. A reference made meanwhile (a bottle linked
+// in another moment, a craving by someone not locked) keeps its link, and so
+// does a reference class these steps forget (an EAN, a merge pointing at the
+// row): the delete FAILS on its NO ACTION key and the whole purge rolls back
+// (the keys are the backstop; the caller retries).
+// The plan also holds the moments a product purge's blind saves carry (an
+// orphaned bottle's save keeps its moment, which the craving it becomes
+// references, Codex r2) and every owner of a craving sourced from a locked
+// bottle (an old instance's craving has no stored link). A save made after the
+// plan in a moment it does not hold → `PurgeRaced` (rolled back, retry).
+// (lib/cravings.ts, lib/occurrences.ts and lib/sessionMutation.ts read this
+// module's neighbours, so they are loaded when a purge runs, never at import:
+// no module cycle.)
+export class PurgeRaced extends Error {}
+
+export async function purgeVintage(tx: Prisma.TransactionClient, vintageId: string): Promise<void> {
+  await purgeReferences(tx, null, [vintageId])
+}
+
+export async function purgeProduct(tx: Prisma.TransactionClient, productId: string): Promise<void> {
+  const vintages = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM wine_vintages WHERE product_id = ${productId} ORDER BY id`
+  await purgeReferences(tx, productId, vintages.map(v => v.id))
+}
+
+async function purgeReferences(tx: Prisma.TransactionClient, productId: string | null, vintageIds: string[]): Promise<void> {
+  const { CRAVING_FROM, SAVE_MOMENT, cravingHiddenSql, lockCravings, maturedSavesToCravings } = await import('@/lib/cravings')
+  const { bumpLineupRevision } = await import('@/lib/occurrences')
+  const { withSessionLocks } = await import('@/lib/sessionMutation')
+  const { Prisma: P } = await import('@prisma/client')
+  const hit = (a: string) => (productId
+    ? P.sql`${P.raw(a)}.product_id = ${productId}`
+    : P.sql`${P.raw(a)}.vintage_id = ANY(${vintageIds}::text[])`)
+  const codes = await tx.$queryRaw<{ code: string }[]>`
+    SELECT s.code FROM wines w JOIN sessions s ON s.id = w.session_id WHERE ${hit('w')} AND s.code IS NOT NULL
+    ${productId ? P.sql`UNION SELECT s.code FROM blind_saves bs JOIN wines w ON w.id = bs.wine_id JOIN sessions s ON s.id = ${SAVE_MOMENT}
+     WHERE ${hit('w')} AND s.code IS NOT NULL` : P.empty}`
+  const moments = [...(await withSessionLocks(tx, codes.map(c => c.code))).values()].flatMap(r => (r ? [r.id] : []))
+  const bottles = await tx.$queryRaw<{ id: string; session_id: number | null }[]>`
+    SELECT w.id, w.session_id FROM wines w
+     WHERE ${hit('w')} AND (w.session_id IS NULL OR w.session_id = ANY(${moments}::int[])) ORDER BY w.id FOR UPDATE`
+  const wineIds = bottles.map(b => b.id)
+  const owners = (await tx.$queryRaw<{ u: number }[]>`
+    SELECT user_id AS u FROM bookmarks b WHERE ${hit('b')}
+    UNION SELECT user_id FROM bookmarks WHERE wine_id = ANY(${wineIds}::text[])
+    UNION SELECT user_id FROM blind_saves WHERE wine_id = ANY(${wineIds}::text[])`).map(r => r.u)
+  await lockCravings(tx, owners)
+  if (productId && !(await maturedSavesToCravings(tx, wineIds, moments))) throw new PurgeRaced('a save was made in a moment this purge does not hold: retry')
+  if (wineIds.length) {
+    if (productId) await tx.$executeRaw`UPDATE wines SET vintage_id = NULL, product_id = NULL WHERE id = ANY(${wineIds}::text[])`
+    else await tx.$executeRaw`UPDATE wines SET vintage_id = NULL WHERE id = ANY(${wineIds}::text[])`
   }
-  const changed = (field: 'name' | 'producer' | 'vintage'): boolean => {
-    const next = incoming[field]
-    if (next === undefined) return false
-    // 🔒 MODEL THE WRITE'S FALLBACK, not just its normalization. `name` is
-    // REQUIRED, so both write paths do `scrub(name) || existing` — an invalid
-    // (non-string) or blank name is IGNORED and the stored name is retained.
-    // Nothing moves, so the link must survive. Without this the comparator
-    // cleared a correct link on an edit the write discarded, which is the same
-    // over-clearing class as the `.slice(0,4)` and `String(v)` defects.
-    //
-    // ⚠️ `vintage` is deliberately NOT symmetric: it is OPTIONAL, so the write
-    // stores the normalized value even when that is empty — a blank or numeric
-    // vintage really does move the stored value, and really must clear the link.
-    // The asymmetry is the write paths', not this function's invention.
-    if (field === 'name' && norm(next, field) === '') return false
-    return norm(existing[field], field) !== norm(next, field)
+  for (const id of new Set(bottles.map(b => b.session_id).filter((x): x is number => x !== null))) await bumpLineupRevision(tx, id)
+  for (const vintageId of vintageIds) {
+    const pairs = await tx.$queryRaw<{ a: number; b: number }[]>`
+      SELECT x.id AS a, y.id AS b FROM bookmarks x
+        JOIN bookmarks y ON y.user_id = x.user_id AND y.product_id = x.product_id AND y.vintage_id IS NULL
+       WHERE x.vintage_id = ${vintageId} AND x.user_id = ANY(${owners}::int[])`
+    for (const { a, b } of pairs) {
+      const rows = await tx.$queryRaw<{ id: number; saved_at: Date; hidden: boolean }[]>`
+        SELECT b.id, b.saved_at, ${cravingHiddenSql(P.sql`b.user_id`)} AS hidden FROM ${CRAVING_FROM} WHERE b.id IN (${a}, ${b})`
+      const [x, y] = [rows.find(r => r.id === a), rows.find(r => r.id === b)]
+      if (!x || !y) continue
+      const keepX = (x.hidden === false) !== (y.hidden === false) ? x.hidden === false : (+x.saved_at < +y.saved_at || (+x.saved_at === +y.saved_at && x.id < y.id))
+      await tx.$executeRaw`DELETE FROM bookmarks WHERE id = ${keepX ? y.id : x.id}`
+    }
+    await tx.$executeRaw`UPDATE bookmarks SET vintage_id = NULL WHERE vintage_id = ${vintageId} AND user_id = ANY(${owners}::int[])`
   }
-  if (changed('name') || changed('producer') || changed('vintage')) {
-    return { productId: null, vintageId: null }
+  if (productId) await tx.$executeRaw`UPDATE bookmarks SET product_id = NULL WHERE product_id = ${productId} AND user_id = ANY(${owners}::int[])`
+  for (const vintageId of vintageIds) {
+    await tx.$executeRaw`DELETE FROM catalog_review_items WHERE entity_type = 'vintage' AND entity_id = ${vintageId}`
+    await tx.$executeRaw`DELETE FROM wine_vintages WHERE id = ${vintageId}`
   }
-  return { productId: existing.productId ?? null, vintageId: existing.vintageId ?? null }
+  if (productId) {
+    await tx.$executeRaw`DELETE FROM catalog_review_items WHERE entity_type = 'product' AND entity_id = ${productId}`
+    await tx.$executeRaw`DELETE FROM wine_products WHERE id = ${productId}`
+    // Its search doc goes with it (the DELETE above holds the product row; a
+    // purge writes no other doc). A rebuild racing this re-writes nothing it
+    // keeps: its "source gone" delete runs after its upserts.
+    await tx.$executeRaw`DELETE FROM catalog_search_docs WHERE product_id = ${productId}`
+  }
+}
+
+// ── The search docs (catalogue model change step 7b) ───────────────────────
+//
+// 🔒 OUR writes keep `catalog_search_docs` / `catalog_search_producer_docs`
+// current (migration 20261121180000_catalog_search; the read is
+// lib/catalogSearch.ts `searchBottles` / `searchProducers`), inside the SAME
+// transaction as the catalogue row they describe, so a wine is findable the
+// moment its mint commits. Outside writers (a catalogue load, psql) are what the
+// rebuild and its drift report are for (scripts/rebuild-catalog-search.mts). CI
+// census: scripts/check-catalog-writes.mjs.
+//
+// 🔒 THE ROW RULE, every doc write, in ONE order taken BEFORE any source
+// mutation (plan 7b, Codex r4 P1: a product edit holding its product and
+// wanting its producer, against a producer rename holding the producer and
+// wanting the product, deadlocked): (1) the producer rows involved (each lead
+// and its effective chain), sorted by id; (2) the product rows involved, sorted
+// by id; (3) the source mutations; (4) the doc computed in a NEW statement, so
+// its snapshot is taken after any wait. A mint locks its lead's chain FOR SHARE
+// (its product row is new); a purge locks its product row (its DELETE does) and
+// writes no other doc. Phase 3's writers (rename, region, lead, merge, unmerge)
+// follow it too, and also take the SHARED catalog-search advisory lock as the
+// FIRST statement of their transaction (the rebuild takes the exclusive one):
+// `CATALOG_SEARCH_LOCK`. Mints take no advisory lock: a mint only INSERTS a new
+// key, which a rebuild either sees committed (the same doc) or not at all.
+export const CATALOG_SEARCH_LOCK = 'verre:catalog-search'
+
+// (1) + (2) of the row rule. `producers`: the leads (and any producer the
+// writer changes); their effective chains (links_to followed like
+// resolveEffectiveIds: at most 10 hops, MERGE_DEPTH_CAP, stop on a revisit) are
+// read, then every row is locked in id order, then the chains are read again:
+// a chain that moved meanwhile is locked again (a merge in phase 3). A producer
+// the writer CHANGES (`changing`) FOR UPDATE, every other one FOR SHARE; the
+// products FOR NO KEY UPDATE (a writer changing a product, or re-indexing it,
+// passes it here: two re-index writers feeding one doc both lock its product,
+// so they serialise).
+// A merge chain moved under the lock (phase 3): locking a newly found row
+// now could take it out of the id order every writer keeps, so the caller
+// restarts its transaction (Codex 2026-11-21, r1 + r2). Unreachable before
+// phase 3 (no writer merges); a mint that meets it fails once and its retry
+// (the same client id) runs again.
+export class SearchLockRetry extends Error {}
+
+export async function lockForSearchDoc(
+  tx: Prisma.TransactionClient,
+  producers: string[], products: string[], changing: string[] = [],
+): Promise<void> {
+  const seeds = [...new Set([...producers, ...changing])]
+  const chain = async () => (await tx.$queryRaw<{ id: string }[]>`
+    WITH RECURSIVE walk(id, links_to, depth, path) AS (
+      SELECT id, links_to, 0, ARRAY[id::text] FROM producers WHERE id = ANY(${seeds}::text[])
+      UNION ALL
+      SELECT p.id, p.links_to, w.depth + 1, w.path || p.id::text
+        FROM walk w JOIN producers p ON p.id = w.links_to
+       WHERE w.depth < 10 AND p.id::text <> ALL(w.path)
+    ) SELECT DISTINCT id FROM walk ORDER BY id`).map(r => r.id)
+  // ONE pass in the database's id order (the chain query's ORDER BY), then
+  // the chain read again: a row it holds that is not locked yet (the chain
+  // moved during a wait) could only be locked out of order now (a concurrent
+  // writer may hold it and wait on one of ours: 40P01), so the transaction
+  // restarts instead. A locked row that LEFT the chain is harmless.
+  const locked = new Set<string>()
+  for (const id of seeds.length ? await chain() : []) {
+    if (changing.includes(id)) await tx.$queryRaw`SELECT id FROM producers WHERE id = ${id} FOR UPDATE`
+    else await tx.$queryRaw`SELECT id FROM producers WHERE id = ${id} FOR SHARE`
+    locked.add(id)
+  }
+  if (seeds.length && !(await chain()).every(id => locked.has(id))) {
+    throw new SearchLockRetry('a merge chain moved while its rows were being locked: retry the transaction')
+  }
+  if (products.length) {
+    await tx.$queryRaw`SELECT id FROM wine_products WHERE id = ANY(${[...new Set(products)].sort()}::text[]) ORDER BY id FOR NO KEY UPDATE`
+  }
+}
+
+// The words a transaction's docs brought, published after its COMMIT
+// (`publishSearchWords`). Keyed by the transaction client, so a rolled-back
+// transaction's words are simply never published.
+const pendingWords = new WeakMap<object, Set<string>>()
+function noteWords(tx: Prisma.TransactionClient, words: string[]): void {
+  if (!words.length) return
+  const set = pendingWords.get(tx) ?? new Set<string>()
+  for (const w of words) set.add(w)
+  pendingWords.set(tx, set)
+}
+
+// (4) of the row rule: ONE statement each, computed from the rows as this
+// transaction now sees them. Upserts, so a re-index (phase 3) is the same call.
+export async function indexProducer(tx: Prisma.TransactionClient, producerId: string): Promise<void> {
+  const rows = await tx.$queryRaw<{ words: string[] }[]>`
+    INSERT INTO catalog_search_producer_docs (producer_id, tsv)
+    SELECT p.id, array_to_tsvector(public.catalog_search_words_v1(p.name_folded)) FROM producers p WHERE p.id = ${producerId}
+    ON CONFLICT (producer_id) DO UPDATE SET tsv = EXCLUDED.tsv
+    RETURNING tsvector_to_array(tsv) AS words`
+  noteWords(tx, rows[0]?.words ?? [])
+}
+
+export async function indexProduct(tx: Prisma.TransactionClient, productId: string): Promise<void> {
+  const rows = await tx.$queryRaw<{ words: string[] }[]>`
+    WITH RECURSIVE lead AS (
+      SELECT pr.id, pr.name_folded, pr.links_to FROM product_producers pp JOIN producers pr ON pr.id = pp.producer_id
+       WHERE pp.product_id = ${productId} AND pp.role = 'lead'
+    ), walk(id, links_to, depth, path) AS (
+      SELECT id, links_to, 0, ARRAY[id::text] FROM lead
+      UNION ALL
+      SELECT p.id, p.links_to, w.depth + 1, w.path || p.id::text
+        FROM walk w JOIN producers p ON p.id = w.links_to
+       WHERE w.depth < 10 AND p.id::text <> ALL(w.path)
+    ), eff AS (SELECT id FROM walk ORDER BY depth DESC LIMIT 1),
+    doc AS (
+      SELECT wp.id AS product_id,
+             public.catalog_search_words_v1(lead.name_folded) AS producer_words,
+             CASE WHEN eff.id IS NULL OR eff.id = lead.id THEN ARRAY[]::text[]
+                  ELSE public.catalog_search_words_v1(sv.name_folded) END AS survivor_words,
+             public.catalog_search_words_v1(wp.name_folded) AS name_words,
+             public.catalog_search_words_v1(wp.region_folded) AS region_words
+        FROM wine_products wp CROSS JOIN lead LEFT JOIN eff ON true LEFT JOIN producers sv ON sv.id = eff.id
+       WHERE wp.id = ${productId}
+    )
+    INSERT INTO catalog_search_docs (product_id, producer_words, survivor_words, name_words, region_words, tsv_name, tsv)
+    SELECT product_id, producer_words, survivor_words, name_words, region_words,
+           array_to_tsvector(producer_words || survivor_words || name_words),
+           array_to_tsvector(producer_words || survivor_words || name_words || region_words)
+      FROM doc
+    ON CONFLICT (product_id) DO UPDATE SET
+      producer_words = EXCLUDED.producer_words, survivor_words = EXCLUDED.survivor_words, name_words = EXCLUDED.name_words,
+      region_words = EXCLUDED.region_words, tsv_name = EXCLUDED.tsv_name, tsv = EXCLUDED.tsv
+    RETURNING tsvector_to_array(tsv) AS words`
+  noteWords(tx, rows[0]?.words ?? [])
+}
+
+// 🔒 The word list is kept LOOSELY: it never decides whether a wine is found,
+// only whether a typo lookup runs (lib/catalogSearch.ts: a typed word is always
+// its own alternative). So a mint's words are added AFTER its COMMIT, best
+// effort, in ONE statement: sorted in byte order (the rebuild inserts in the
+// same order), ndoc 1, never updating an
+// existing word (no hot row, no lock held through a bottle's transaction)
+// EXCEPT one at 0 (no live doc held it: a purged or rejected entry's word),
+// which is lifted to 1, or the typo lookup (it skips 0) would not offer the new
+// wine's word until the next rebuild (found by the review's mutation run,
+// 2026-11-21). A failure is logged and costs at most a typo lookup until the
+// next rebuild.
+// 🔒 It takes the SHARED catalog-search advisory lock (the rebuild holds the
+// exclusive one), so a publication never runs inside a rebuild: one that did
+// could have its new word zeroed by the rebuild's orphan step, or deadlock with
+// the rebuild's two word passes (re-review 2026-11-21). Bounded by a 2 s
+// `lock_timeout`: during a rebuild (about 10 s) it gives up, and the words wait
+// for the next rebuild (the wine is found by its words meanwhile). Only words
+// that are new or at 0 reach the INSERT's conflict path, so a common word's row
+// is never locked by a mint.
+export async function addWords(words: string[]): Promise<void> {
+  if (!words.length) return
+  await prisma.$transaction([
+    prisma.$executeRaw`SET LOCAL lock_timeout = '2s'`,
+    prisma.$executeRaw`SELECT pg_advisory_xact_lock_shared(hashtext(${CATALOG_SEARCH_LOCK}))`,
+    prisma.$executeRaw`
+      INSERT INTO catalog_search_words (word, ndoc)
+      SELECT w, 1 FROM unnest(${[...new Set(words)]}::text[]) AS x(w)
+       WHERE NOT EXISTS (SELECT 1 FROM catalog_search_words e WHERE e.word = x.w COLLATE "C" AND e.ndoc > 0)
+       ORDER BY w COLLATE "C"
+      ON CONFLICT (word) DO UPDATE SET ndoc = 1 WHERE catalog_search_words.ndoc = 0`,
+  ])
+}
+
+// Called by every transaction that can mint, right after its COMMIT: the
+// session mutation contract (bottle adds and edits), the check-in POST and
+// PATCH, and `mintEntries` when it runs its own transaction. A transaction that
+// rolled back never gets here, so its words are never published. 🔒 Not
+// awaited by the request paths (`void`): it never fails a request, and inside
+// the session contract it must not hold the lease before the projection.
+export async function publishSearchWords(tx: Prisma.TransactionClient | null | undefined): Promise<void> {
+  if (!tx) return
+  const set = pendingWords.get(tx)
+  if (!set) return
+  pendingWords.delete(tx)
+  await addWords([...set]).catch(err => console.error('[catalog-search] new words not published (a typo lookup until the next rebuild)', err))
 }

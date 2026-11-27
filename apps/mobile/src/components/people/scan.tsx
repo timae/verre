@@ -14,7 +14,7 @@ import { ApiError, getMomentPreview, momentPreviewKey, type MomentPreview } from
 import { getProfileByUsername } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
 import { WEB_BASE } from '@/lib/config';
-import { joinByCode, joinErrorText } from '@/lib/joinByCode';
+import { joinByCode, joinErrorText, notThisMomentText } from '@/lib/joinByCode';
 import { sessionWhen } from '@/lib/momentFormat';
 import { parseVerreCode, type VerreCode } from '@/lib/scanCode';
 import { feedHref, sessionHref, useSessionTab } from '@/lib/sessionStack';
@@ -129,7 +129,14 @@ export function useVerreScanner(active: boolean, onCode: (code: VerreCode) => vo
 // (tappable), when, where; Join, or Open Moment when you're in it).
 // `leaveTo` closes the host sheet, then pushes (a profile, the moment), on
 // the caller's own stack (Moments has its own profile mount since 2026-11-15).
-export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId: string | null; leaveTo: (push: () => void) => void }) {
+// `onOpenMoment`: where a scanned moment you joined (or were already in) opens;
+// absent, it is pushed on this mount (a look-in's Join sheet replaces itself
+// with it instead, Moment Visibility step 2).
+// `onlyMoment` (a look-in's Join): only that moment's code goes on; anything
+// else scanned (another moment, a profile) says it isn't that moment's code.
+export function ScanResult({ result, meId, leaveTo, onOpenMoment, onlyMoment }: {
+  result: VerreCode; meId: string | null; leaveTo: (push: () => void) => void; onOpenMoment?: (code: string) => void; onlyMoment?: { momentId: string; name: string };
+}) {
   const router = useRouter();
   const mount = useSessionTab();
   const queryClient = useQueryClient();
@@ -142,15 +149,16 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
   const namedQ = useQuery({
     queryKey: ['profile-by-username', byName],
     queryFn: () => getProfileByUsername(byName!),
-    enabled: byName != null,
+    // A look-in's Join answers any non-moment code without a lookup.
+    enabled: byName != null && !onlyMoment,
     gcTime: 0,
   });
   const named = namedQ.data && namedQ.data.state !== 'gone' ? namedQ.data : null;
   const scannedId = result.kind === 'profile' ? result.id : named?.id ?? null;
   const momentCode = result.kind === 'moment' ? result.code : null;
   const previewQ = useQuery({
-    queryKey: momentPreviewKey(momentCode ?? ''),
-    queryFn: () => getMomentPreview(momentCode!),
+    queryKey: momentPreviewKey(momentCode ?? '', onlyMoment?.momentId),
+    queryFn: () => getMomentPreview(momentCode!, onlyMoment?.momentId),
     enabled: momentCode != null,
     // Never a cached answer: `joined` changes with a join.
     gcTime: 0,
@@ -170,7 +178,7 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
     leaveTo(push);
   };
   const openProfile = (id: string) => go(() => router.push(feedHref(mount, 'profile', { id })));
-  const openMoment = (code: string) => go(() => router.push(sessionHref(mount, '', { code })));
+  const openMoment = (code: string) => go(() => (onOpenMoment ? onOpenMoment(code) : router.push(sessionHref(mount, '', { code }))));
   const join = async (code: string) => {
     if (joining) return;
     setJoining(true);
@@ -184,9 +192,13 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
     }
   };
 
+  if (onlyMoment && result.kind !== 'moment') return <PreviewMessage text={notThisMomentText(onlyMoment.name)} />;
   if (result.kind === 'moment') {
     const { data, error } = previewQ;
     if (previewQ.isPending) return <PreviewSpinner />;
+    if (onlyMoment && ((error instanceof ApiError && error.kind === 'not-found') || (data && data.sameMoment !== true))) {
+      return <PreviewMessage text={notThisMomentText(onlyMoment.name)} />;
+    }
     if (error instanceof ApiError && error.kind === 'not-found') return <PreviewMessage text="This code isn’t available." />;
     if (error instanceof ApiError && (error.kind === 'banned' || error.kind === 'rate-limited')) return <PreviewMessage text={joinErrorText(error)} />;
     if (error || !data) {

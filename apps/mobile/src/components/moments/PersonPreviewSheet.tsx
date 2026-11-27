@@ -48,10 +48,14 @@ export function PersonPreviewBridge({ value, children }: { value: PersonPreviewA
 }
 
 // `meta` null (not loaded, or the moment is gone / you were removed) closes
-// the sheet and makes nobody tappable.
-export function PersonPreviewProvider({ code, meta, myIdentityId, children }: {
-  code: string;
+// the sheet and makes nobody tappable. A LOOK-IN (Moment Visibility T13) has no
+// code and no meta: it passes `roster` (the named people's identity ids,
+// `u:<publicId>`) instead; with no code nothing refreshes the moment's poll
+// (the look-in refetches its own read).
+export function PersonPreviewProvider({ code, meta, roster: lookInRoster, myIdentityId, children }: {
+  code?: string;
   meta: SessionMetaView | null;
+  roster?: readonly string[] | null;
   myIdentityId: string;
   children: React.ReactNode;
 }) {
@@ -63,8 +67,8 @@ export function PersonPreviewProvider({ code, meta, myIdentityId, children }: {
   const blocksOut = meta?.viewerBlocksOut;
   const blocksIn = meta?.viewerBlocksIn;
   const participants = meta?.participants;
-  const live = meta != null;
-  const roster = useMemo(() => new Set((participants ?? []).map((p) => p.id)), [participants]);
+  const live = meta != null || lookInRoster != null;
+  const roster = useMemo(() => new Set(lookInRoster ?? (participants ?? []).map((p) => p.id)), [participants, lookInRoster]);
   const canOpen = useCallback(
     (id: string | null | undefined, from: PreviewFrom = 'moment') =>
       live && !!id && myIdentityId.startsWith('u:') && (from === 'friends' || roster.has(id)) &&
@@ -101,7 +105,7 @@ export function PersonPreviewProvider({ code, meta, myIdentityId, children }: {
   // header. Cancel first: an invalidate JOINS a first load still in flight,
   // whose pre-write answer would stand (Codex 2026-11-15).
   const onRelated = (op: RelOp) => {
-    const keys = [...(op === 'unblock' ? [['session-state', code]] : []), ['my-friends']];
+    const keys = [...(op === 'unblock' && code ? [['session-state', code]] : []), ['my-friends']];
     const epoch = viewerCacheEpoch();
     void Promise.all(keys.map((queryKey) => queryClient.cancelQueries({ queryKey }))).then(() => {
       if (viewerCacheEpoch() !== epoch) return;

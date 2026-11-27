@@ -15,8 +15,14 @@ import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
 import { mutedUserIds } from '@/lib/userMute'
 import { blockPairIds, viewerBlockedAmong } from '@/lib/userBlock'
 import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
-import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
+import { hiddenSessionIds } from '@/lib/outsideView'
+import { pagePostIds } from '@/lib/postPrivacy'
 import { parsePathId } from '@/lib/parsePathId'
+import { entryKey, loadEntriesSoft } from '@/lib/catalogEntries'
+import { entryYear } from '@/lib/wineDisplay'
+import { savedFlags } from '@/lib/cravings'
+import { decideMoments, type MomentDecision } from '@/lib/momentAudience'
+import { momentLookInEnabled, hideFromFeedEnabled } from '@/lib/momentGate'
 import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 const PAGE = 20
@@ -99,17 +105,16 @@ export async function GET(req: NextRequest) {
   // the relations. Naive per-row accessors would N+1; the include shape
   // avoids it (one round-trip plus one per included relation, all
   // resolved via Prisma's WHERE … IN under the hood).
-  // 🔒 A moment post whose line-up is hidden from this viewer is left out IN
-  // the query, before paging (lib/outsideView.ts): `nextCursor` below is the
-  // last RAW row's time, so dropping them after the read would hand out a
-  // hidden post's exact time.
+  // 🔒 The page's ids come from ONE statement that leaves out, BEFORE its
+  // LIMIT, every post hidden from this viewer: a moment post whose line-up is
+  // hidden (lib/outsideView.ts), an Only Inside author's post outside their
+  // moment, a check-in hidden from feeds (lib/postPrivacy.ts, T4).
+  // `nextCursor` below is the last RAW row's time, so dropping posts after the
+  // read would hand out a hidden post's exact time.
   const hidden = await hiddenSessionIds(userId, allowedNetworkIds)
-  const feedItems = await prisma.feedItem.findMany({
-    where: {
-      userId: { in: allowedNetworkIds }, createdAt: { lt: cursor },
-      ...(itemId !== null ? { id: itemId } : {}),
-      ...notHiddenPosts(hidden),
-    },
+  const page = await pagePostIds({ viewerId: userId, authors: allowedNetworkIds, before: cursor, item: itemId, hiddenSessions: hidden, limit: PAGE })
+  const feedItems = page.length === 0 ? [] : await prisma.feedItem.findMany({
+    where: { id: { in: page.map(p => p.id) } },
     include: {
       user: { select: { id: true, publicId: true, name: true, username: true, xp: true, imageUrl: true } },
       _count: { select: { likes: true } },
@@ -129,8 +134,7 @@ export async function GET(req: NextRequest) {
         },
       },
     },
-    orderBy: { createdAt: 'desc' },
-    take: PAGE,
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
   })
 
   // Which of these feed_items has the current user already liked?
@@ -219,7 +223,40 @@ export async function GET(req: NextRequest) {
   // still scrubbed at the payload layer below.
   const sessionPairs: SessionFeedPair[] = feedItems.flatMap(f =>
     f.kind === 'session' && f.session ? [{ authorId: f.user.id, sessionId: f.session.id }] : [])
-  const sessionWines = await loadSessionFeedWines(sessionPairs, userId)
+  // Moment Visibility (lib/momentAudience.ts), ONE batch for the page's live
+  // moments, beside the bottles: 🔒 `hostName` only to a viewer in the moment
+  // or one the host is named to (live, not behind the flag); `momentId` (flag
+  // on) to a member (the by-moment read needs it) or a viewer who may look in.
+  // 🔒 The moment's NAME (step 3b, R16) only on your own post or to a viewer
+  // who could open it (`member || open`); anyone else gets `privateMoment`
+  // with no name, no host and no `sessionId` (T5). Never behind the flag (with
+  // it off `open` is false). A failure hides every host and every momentId,
+  // and names only your own posts (fails closed, T8), never the page.
+  const [sessionWines, moments] = await Promise.all([
+    loadSessionFeedWines(sessionPairs, userId),
+    decideMoments(userId, feedItems.flatMap(f => (f.kind === 'session' && f.session && !f.session.deletedAt ? [f.session.id] : [])))
+      .catch((err: unknown) => { console.error('[feed] moment audience unavailable:', err); return new Map<number, MomentDecision>() }),
+  ])
+  const lookIn = momentLookInEnabled()
+  const hideFromFeed = hideFromFeedEnabled()
+  // Your OWN posts' switches, each only with its flag: Incognito (`onlyInside`)
+  // on a moment post, Hide from Feed on a moment post (its moment's choice,
+  // R12) and on a check-in. Nobody else's post ever carries either. (The app
+  // shows only Hide from Feed on a post since R13; Incognito is set on Moment
+  // Privacy, whose cache patch keeps `onlyInside` current.)
+  const ownMoments = lookIn || hideFromFeed ? feedItems.flatMap(f => (f.kind === 'session' && f.user.id === userId && f.sessionId !== null ? [f.sessionId] : [])) : []
+  const ownChoices = new Map((ownMoments.length === 0 ? [] : await prisma.momentPrivacy.findMany({
+    where: { userId, sessionId: { in: ownMoments } }, select: { sessionId: true, onlyInside: true, hiddenFromFeed: true },
+  })).map(r => [r.sessionId, r]))
+  // A check-in's bottle: shown from its catalogue entry (merges followed), else
+  // its snapshot; the viewer's save state (a check-in is never blind).
+  const checkinWines = feedItems.flatMap(f => (f.kind === 'standalone' && f.rating ? [f.rating.wine] : []))
+  const checkinEntries = await loadEntriesSoft(checkinWines.map(w => ({ productId: w.productId, vintageId: w.vintageId })))
+  const entryOfWine = (w: { productId: string | null; vintageId: string | null }) => (w.productId ? checkinEntries.get(entryKey(w.productId, w.vintageId)) : undefined)
+  const checkinSaved = await savedFlags(userId, checkinWines.map(w => {
+    const e = entryOfWine(w)
+    return { id: w.id, hidden: false, effective: e ? { productId: e.productId, vintageId: e.vintageId } : null }
+  })).catch((err) => { console.error('[feed] saved flags unavailable:', err); return null })
 
   // Badge unlocks used to merge in as standalone 'badge' feed items.
   // Removed: they cluttered the feed and didn't carry the context of
@@ -244,6 +281,7 @@ export async function GET(req: NextRequest) {
       if (f.kind === 'standalone') {
         if (!f.rating) return []  // defensive — schema invariant says standalone has ratingId set
         const wine = f.rating.wine
+        const e = entryOfWine(wine)
         const ratingImage = f.rating.images[0]?.imageUrl ?? null
         // Show My Locations: the author's flag from their settings (fail
         // closed when absent), never from `f.user` (shipped as `author`).
@@ -254,11 +292,17 @@ export async function GET(req: NextRequest) {
           author: wireAuthor(f.user),
           checkin: {
             id: f.id,
-            wineName: wine.name,
-            producer: wine.producer,
-            vintage: wine.vintage,
-            grape: wine.grape,
-            type: wine.style,
+            // The bottle (a key: the post's save needs no body, its bottle is the post's own).
+            wineId: wine.id,
+            wineName: e?.name ?? wine.name,
+            producer: e?.producer ?? wine.producer,
+            vintage: e ? (entryYear(e) || null) : wine.vintage,
+            grape: e ? (e.grapes.join(', ') || null) : wine.grape,
+            // The bottle's kind (its snapshot; the axes read `sparkling`) and
+            // alcohol (catalogue model change step 4).
+            colour: wine.colour,
+            sparkling: wine.sparkling,
+            abv: wine.abv === null ? null : Number(wine.abv),
             score: decimalToNumber(f.rating.score),
             notes: f.rating.notes,
             // Image priority: the rating's own photo first (the user's
@@ -277,8 +321,8 @@ export async function GET(req: NextRequest) {
             // so no redaction fork. `wineRegion`/`wineCountry` are the WINE's
             // ORIGIN (Origin row) — deliberately NOT `f.country` (the venue), a
             // conflation the old standalone card had.
-            wineRegion: wine.region,
-            wineCountry: wine.country,
+            wineRegion: e?.region ?? wine.region,
+            wineCountry: e?.country ?? wine.country,
             vinification: wine.vinification,
             description: wine.description,
             purchaseUrl: wine.purchaseUrl,
@@ -294,6 +338,8 @@ export async function GET(req: NextRequest) {
             tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`) && !viewerTagBlocked.has(t.user.id)).map(t => ({ id: t.user.publicId, name: t.user.name, username: t.user.username })),
             liked: myLikes.has(f.id),
             viewerFollowsAuthor: myFollowing.has(f.user.id),
+            ...(checkinSaved ? { saved: checkinSaved.get(wine.id) ?? false } : {}),
+            ...(hideFromFeed && f.user.id === userId ? { hiddenFromFeed: f.hiddenFromFeed } : {}),
           },
         }]
       }
@@ -312,23 +358,30 @@ export async function GET(req: NextRequest) {
         // posts pass through regardless: their ratings survive the session
         // scrub and the "[deleted session]" render is deliberate.
         if (!deleted && wines.length === 0) return []
+        const d = s && !deleted ? moments.get(s.id) : undefined
+        // T4: decided by liveness, never by whether a name is present.
+        const privateMoment = !!s && !deleted && f.user.id !== userId && !(d && (d.member || d.open))
         return [{
           type: 'session' as const,
           createdAt: f.createdAt,
           author: wireAuthor(f.user),
           session: {
             id: f.id,
-            sessionId: s?.id ?? null,
+            sessionId: privateMoment ? null : (s?.id ?? null),
+            ...(lookIn && d && (d.member || d.open) ? { momentId: d.publicId } : {}),
             // §8 contract: when soft-deleted, name + hostName + code are
             // scrubbed. Renderer shows the "[deleted session]" header in
             // place of the live name; the wine list still renders.
-            sessionName: deleted ? null : (s?.name ?? null),
-            hostName: deleted ? null : (s?.hostName ?? null),
+            sessionName: deleted || privateMoment ? null : (s?.name ?? null),
+            hostName: !privateMoment && d && (d.member || d.hostNamed) ? (s?.hostName ?? null) : null,
+            ...(privateMoment ? { privateMoment: true as const } : {}),
             deleted,
             blind: !!s?.blind,
             wines,
             likeCount: Math.max(0, f._count.likes - (blockAdjustedLikeCount.get(f.id) ?? 0)),
             liked: myLikes.has(f.id),
+            ...(lookIn && f.user.id === userId && s ? { onlyInside: ownChoices.get(s.id)?.onlyInside === true } : {}),
+            ...(hideFromFeed && f.user.id === userId && s ? { hiddenFromFeed: ownChoices.get(s.id)?.hiddenFromFeed === true } : {}),
           },
         }]
       }
@@ -344,8 +397,8 @@ export async function GET(req: NextRequest) {
   // cursor is the last RAW row's createdAt so dropped trailing rows aren't
   // rescanned; a page may ship fewer than PAGE items with a non-null cursor —
   // clients just keep paging.
-  const nextCursor = feedItems.length === PAGE
-    ? feedItems[feedItems.length - 1].createdAt.toISOString()
+  const nextCursor = page.length === PAGE
+    ? page[page.length - 1].created_at.toISOString()
     : null
 
   // Response varies by viewer (myLikes, viewerFollowsAuthor, tag filter,
@@ -372,6 +425,11 @@ async function networkAuthors(userId: number): Promise<{ ids: number[]; settings
       FROM session_members sm1
       JOIN session_members sm2 ON sm2.session_code = sm1.session_code
       WHERE sm1.user_id = ${userId} AND sm2.user_id <> ${userId}
+        -- 🔒 Only while neither row is kicked (lib/peopleSql.ts, together):
+        -- a kick-keep row (lib/sessionWipe.ts) would otherwise keep adding
+        -- everyone who joins later to the kicked person's network, and an Only
+        -- Inside person's unrelated check-ins would tell them who was there.
+        AND sm1.removed_state IS DISTINCT FROM 'kicked' AND sm2.removed_state IS DISTINCT FROM 'kicked'
     ) n
   `
   const networkIds = network.map(r => r.user_id)

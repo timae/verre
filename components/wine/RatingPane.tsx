@@ -1,7 +1,7 @@
 'use client'
 import { useRef, useState } from 'react'
 import { StarIcon } from '@/components/ui/icons'
-import { resolveAxesColoured, perRatingAxes, type FlItem } from '@/lib/flavours'
+import { resolveAxesColoured, perRatingAxes, type FlItem, type BottleKind } from '@/lib/flavours'
 import type { RatingValue } from '@/lib/rating'
 
 // Re-exported for back-compat — callers historically imported from this
@@ -12,7 +12,7 @@ interface BasePaneProps {
   // Wine STYLE (red/white/spark/rose) — drives the structure axis set
   // (resolveAxes); spark adds Bubbles. Pass the real style even for a blind-
   // redacted wine (style is not identity). null/unknown → base wine set.
-  wineType: string | null
+  kind: BottleKind | null
 }
 
 interface EditableProps extends BasePaneProps {
@@ -47,23 +47,22 @@ type Props = EditableProps | ReadOnlyProps
 // Read-only mode still owns its state — it derives display values from
 // `existing` once at mount; no need for the caller to manage anything.
 export function RatingPane(props: Props) {
-  const { wineType } = props
+  const { kind } = props
   const readOnly = 'readOnly' in props && props.readOnly === true
 
   if (readOnly) {
-    return <ReadOnlyPane wineType={wineType} existing={(props as ReadOnlyProps).existing} />
+    return <ReadOnlyPane kind={kind} existing={(props as ReadOnlyProps).existing} />
   }
 
   const { value, onChange } = props as EditableProps
 
-  // INPUT surface (§6d): hand the full structure axis set for this style so the
-  // user rates every structure axis. A blind-redacted wine passes its REAL style
-  // (style isn't identity — the taster perceives fizz from the glass), so a blind
-  // sparkling wine still offers Bubbles. wineType only falls to null/base for a
-  // genuinely unknown style (the defensive resolveAxes fallback). Legacy
+  // INPUT surface (§6d): hand the full structure axis set for this bottle's kind
+  // so the user rates every structure axis. A blind-redacted wine passes its
+  // REAL kind (colour and sparkling aren't identity — the taster perceives fizz
+  // from the glass), so a blind sparkling wine still offers Bubbles. Legacy
   // descriptor keys in a loaded rating are NOT shown as chips — the edit-path
   // transform (§6g) strips them on save (in WineModal.commitWineRating).
-  const fl = resolveAxesColoured('wine', wineType)
+  const fl = resolveAxesColoured('wine', kind)
 
   function setScore(score: number) { onChange({ ...value, score }) }
   function setFlavor(k: string, v: number) {
@@ -80,11 +79,11 @@ export function RatingPane(props: Props) {
   )
 }
 
-function ReadOnlyPane({ wineType, existing }: { wineType: string | null; existing: RatingValue | null }) {
+function ReadOnlyPane({ kind, existing }: { kind: BottleKind | null; existing: RatingValue | null }) {
   // READ surface (§6d): only the axes present in the rating (present-and-0
   // drawn as a centre point).
   const ex = existing?.flavors as Record<string, number> | undefined
-  const fl = perRatingAxes(ex, resolveAxesColoured('wine', wineType))
+  const fl = perRatingAxes(ex, resolveAxesColoured('wine', kind))
   const flavors = ex ?? {}
   return (
     <div style={{display:'flex',flexDirection:'column',gap:24}}>

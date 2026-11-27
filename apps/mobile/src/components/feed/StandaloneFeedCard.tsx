@@ -1,5 +1,4 @@
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View, useWindowDimensions, type ViewInstance } from 'react-native';
@@ -12,7 +11,10 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Avatar } from '@/components/ui/Avatar';
+import { Gradient } from '@/components/ui/Gradient';
 import { FeedCardMenu } from '@/components/feed/FeedCardMenu';
+import { PrivacyByline } from '@/components/feed/PrivacyByline';
+import { usePostPrivacyRow } from '@/lib/postPrivacyActions';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
@@ -49,6 +51,7 @@ export function StandaloneFeedCard({
   onToggleLike,
   onEdit,
   onDelete,
+  onHadItToo,
 }: {
   author: FeedAuthor;
   checkin: CheckinPayload;
@@ -63,6 +66,9 @@ export function StandaloneFeedCard({
   // delete confirm + server call.
   onEdit?: () => void;
   onDelete?: () => void;
+  // Someone else's check-in whose author you follow (the list passes it only
+  // then, 08-feed § 5a): the ⋯ menu's "Had It Too".
+  onHadItToo?: () => void;
 }) {
   const { theme } = useTheme();
   const axisColor = useFlavourColors();
@@ -72,6 +78,8 @@ export function StandaloneFeedCard({
   // hero speak — ONE adapter (checkinToWine), shared with the detail screen's
   // detailFromItem, so the card and the detail page can never drift apart.
   const wine = useMemo<SessionFeedWine>(() => checkinToWine(checkin), [checkin]);
+  // Your own check-in only: Hide from Feed's ⋯ row and the status line (R3, R5).
+  const privacy = usePostPrivacyRow({ type: 'checkin', checkin });
 
   const uri = checkin.imageUrl;
 
@@ -105,14 +113,14 @@ export function StandaloneFeedCard({
               had a wine
             </VText>
           </VText>
-          <VText variant="caption" color="inkSoft" numberOfLines={1}>
+          <PrivacyByline line={privacy.line}>
             {[[checkin.venueName, checkin.city].filter(Boolean).join(', '), timeAgo(createdAt)]
               .filter(Boolean)
               .join(' · ')}
-          </VText>
+          </PrivacyByline>
         </View>
-        {onEdit ? (
-          <FeedCardMenu onEdit={onEdit} onDelete={onDelete} deleteAccessibilityLabel="Delete Check-In" />
+        {onEdit || onHadItToo ? (
+          <FeedCardMenu onEdit={onEdit} onHadItToo={onHadItToo} onDelete={onDelete} deleteAccessibilityLabel="Delete Check-In" privacy={privacy.rows} />
         ) : null}
       </View>
 
@@ -266,7 +274,7 @@ function PhotoHero({
             if (src?.width && src?.height) setRaw(rawAspect(src.width, src.height));
           }}
         />
-        <LinearGradient
+        <Gradient
           colors={FEED_PANEL_SCRIM}
           style={StyleSheet.absoluteFill}
           pointerEvents="none"

@@ -4,7 +4,7 @@ import { resolveAxes } from '@/lib/flavours'
 // Profile-aggregate keys = the STRUCTURE axes (no longer hardcoded descriptors).
 // Derived from the registry so this can't drift from the axis set — the
 // "second hardcoded list" that broke the day descriptors were dropped (§6a) is
-// gone. The base wine set (resolveAxes('wine','red')) is the 8 universal wine
+// gone. The base wine set (resolveAxes('wine', { sparkling: false })) is the 8 universal wine
 // axes (incl. Funk since 2026-07-09); `bubbles` (sparkling-only) is intentionally excluded — the profile
 // wheel is a cross-wine structure profile, not a per-style one.
 //
@@ -18,7 +18,7 @@ import { resolveAxes } from '@/lib/flavours'
 // axes (finish/aroma/flavour) averaged over fewer rows than the carried-over
 // ones. The blend is accepted for now; per-axis n / post-migration-only is a
 // later product call.
-export const FL_KEYS = resolveAxes('wine', 'red').map(a => a.k)
+export const FL_KEYS = resolveAxes('wine', { sparkling: false }).map(a => a.k)
 
 if (!FL_KEYS.every(k => /^[a-z_]+$/.test(k))) {
   throw new Error('FL_KEYS contains a value that is unsafe to interpolate into SQL')

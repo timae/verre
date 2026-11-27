@@ -72,5 +72,81 @@ jobs:
       - name: Username UI pins (app)
         run: npx tsx scripts/tests/username-ui-units.ts
 
+      # Opening a post from a profile list: Impressions match by the rating id,
+      # Cravings by the wine id; an absent id never matches a blind row.
+      - name: List row → post row pins (app)
+        run: npx tsx scripts/tests/list-post-units.ts
+
+      # Moment Visibility step 2 (the app): the entry rule, the look-in link's
+      # matcher on the RAW URL + its in-memory store (the token never in a
+      # route), the details scheduler and its fetch gate (≤ 42 requests a
+      # minute), the link opener's decision; Compare in a look-in (buildItems
+      # unchanged without the new props, R4, the adapter, a bottle's stars).
+      - name: Look-in pins (app)
+        run: npx tsx scripts/tests/look-in-units.ts
+      - name: Look-in Compare pins (app)
+        run: npx tsx scripts/tests/look-in-compare-units.ts
+      # Moment Visibility step 3 (the app): the privacy-write generation (a late
+      # audience / link answer keeps the newer `me`), the own-post store over a
+      # pinned detail, the impression page's `r…` address and the row → page
+      # decision, the feed cache patch and stamp, the ⋯ rows' presence rule.
+      - name: Post privacy pins (app)
+        run: npx tsx scripts/tests/post-privacy-units.ts
+
+      # The app's bottle picker rules (catalogue model change step 7, ADR-0009):
+      # the client id, the year field + NV chip, the pick / create bodies, the
+      # freeze rule's outcome, the details' alcohol and origin.
+      - name: Bottle picker pins (app)
+        run: npx tsx scripts/tests/catalog-choice-units.ts
+
+      # The bottle picker's search controller (step 7b, ADR-0010): a request
+      # GENERATION identifies the current search (A → B → A, a late answer, a
+      # scope change), and "+ New Wine" only follows a successful answer for it.
+      - name: Bottle search controller pins (app)
+        run: npx tsx scripts/tests/bottle-search-units.ts
+
+      # The "Add Wine to Catalogue" pages' handoff (2026-11-22): one key per
+      # invocation, the result taken once, a dead flow refuses, the pop depth.
+      - name: Catalogue pages handoff pins (app)
+        run: npx tsx scripts/tests/picker-flow-units.ts
+
+      # The app's rating auto-save (tasting-feedback build 1 § 1): the outbox
+      # owner + runner and the impression draft (lib/rateOutboxCore.ts,
+      # lib/impressionAutosaveCore.ts) against a fake /rate with the version
+      # check: merge saves of the changed fields only, the base fixed at entry
+      # creation and persisted, the answer table (canonical, unchanged, stale
+      # 409 incl. its own lastOpId and the `rating: null` rule, 404 / 400 /
+      # 401 / 429 / 503 / update_required / 409 wrongViewer), the viewer in
+      # every body, the credential-owner check, the gate re-checked before a
+      # send, waiters, Clear, the line-up overlay, sign-out, the 90-day
+      # clean-up. No DB, no network. A runner loop shows up as a hang, so the
+      # step is capped.
+      - name: Rating auto-save pins (app)
+        timeout-minutes: 5
+        run: npx tsx scripts/tests/rate-outbox-units.ts
+
+      # The moment impression LAYER (tasting-feedback build 2, ADR-0011;
+      # apps/mobile/src/lib/impressionLayerCore.ts). The pager: the ±1 window in
+      # line-up order, first / last page nowhere, the slot kept across a
+      # reorder, the edge follow / rubber band / release decision, the landing
+      # scroll and the whole-row-in-the-band test (else the fade). The
+      # active-page contract, with build 1's REAL transition guard: every
+      # controlled departure captures the OUTGOING page before anything moves,
+      # moves once only if that page is still active, a failure keeps it, a
+      # close and a page change can't race, a forced teardown captures nothing.
+      # No React, no network.
+      - name: Impression layer pager pins (app)
+        run: npx tsx scripts/tests/impression-pager-units.ts
+      - name: Impression layer active-page contract pins (app)
+        timeout-minutes: 2
+        run: npx tsx scripts/tests/impression-layer-units.ts
+
+      # The server's post-COMMIT steps of a save (tasting-feedback build 1,
+      # lib/afterCommit.ts) are coalesced per key: one run in flight plus one
+      # trailing run with the latest function, keys independent, a failure
+      # logged without stopping the trailing run. No DB, no Redis.
+      - name: After-commit coalescing pins (server)
+        run: npx tsx scripts/tests/after-commit-units.ts
+
       - name: Vintage surface wiring
         run: node scripts/check-vintage-wiring.mjs

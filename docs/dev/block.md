@@ -60,6 +60,10 @@ Click rules unchanged: clickable + blocked-by-me modes open `ProfilePreviewInlin
 
 Named residuals: **R4** `viewerBlocksIn` stays on the wire (the web and the app read it): anyone reading the app's traffic sees who in the moment blocked them, and a guest look on someone known to have an account gives it away. The only wire-clean guest look is a per-viewer fake guest id, which breaks host tools (considered, not chosen). **R6** mutual block keeps the web rule: your own "Blocked" marker turns into a guest look when they block you back, so a blocker learns it ("edge case", ruled).
 
+## Looking into a moment (Moment Visibility)
+
+`GET /api/moments/:publicId` (`lib/momentAudience.ts`, `lib/momentLookIn.ts`): a block pair (either way) between an OUTSIDER and the moment's HOST refuses the look-in, by id and by link, with the same 404 as an unknown id (someone IN the moment still gets `{ member: true }`, as the member-only read answers them: the two never disagree). A block pair with anyone else in the moment: that person is never NAMED to the viewer (no name, photo or ratings; counted in "N more tasters", never subtracted, so the total is the same for every viewer, § Counts above), and never admits the viewer through the guests' circles. Their scores still count in the averages (ruled: averages from everyone). The same rule names people on someone's Moments' open rows and decides a feed post's `hostName`.
+
 ## Follow endpoint scenarios
 
 12a (blocker→blocked) returns explicit 400; 12b (blocked→blocker) returns uniform 200 silent no-op so the blocked side can't infer the block via response code. Both checks run in `Promise.all`.

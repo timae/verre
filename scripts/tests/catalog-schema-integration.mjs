@@ -25,6 +25,7 @@ import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { modelChangeExpandSection } from './model-change-expand-section.mjs'
 
 const prisma = createPrismaClient()
 let pass = 0
@@ -91,7 +92,15 @@ const raw = (sql, params) => params ? prisma.$queryRawUnsafe(sql, ...params) : p
 async function reset() {
   await prisma.$executeRawUnsafe(`
     DO $$ BEGIN
-      DELETE FROM wines WHERE id LIKE 'test_%';
+      -- § 22: a bookmark of a catalogue wine has no source bottle to cascade
+      -- with, and its NO ACTION key would block the product deletes below.
+      DELETE FROM bookmarks WHERE user_id >= 900000;
+      DELETE FROM wines WHERE id LIKE 'test_%' OR id LIKE '90000000000%';
+      BEGIN
+        DELETE FROM catalog_review_items WHERE entity_id LIKE 'test_%';
+      EXCEPTION WHEN undefined_table THEN NULL;
+      END;
+      DROP TABLE IF EXISTS test_fk_pin_probe;
       DELETE FROM product_eans WHERE product_id LIKE 'test_%';
       DELETE FROM wine_vintages WHERE id LIKE 'test_%';
       DELETE FROM product_producers WHERE product_id LIKE 'test_%';
@@ -105,7 +114,7 @@ async function reset() {
         ALTER TABLE sessions DISABLE TRIGGER prevent_session_hard_delete;
       EXCEPTION WHEN undefined_object THEN NULL;
       END;
-      DELETE FROM sessions WHERE code = 'TESTCATA';
+      DELETE FROM sessions WHERE code IN ('TESTCATA', 'TESTCMC1', 'TESTCMC2');
       BEGIN
         ALTER TABLE sessions ENABLE TRIGGER prevent_session_hard_delete;
       EXCEPTION WHEN undefined_object THEN NULL;
@@ -960,6 +969,9 @@ async function main() {
     await accepts(`wines still accepts the old style '${s}'`,
       `INSERT INTO wines (id,name,category,style) VALUES ('test_wKind_${s}','X','wine','${s}')`)
   }
+
+  console.log('\n22. The catalogue model change: the expand migration (build step 2)')
+  await modelChangeExpandSection({ prisma, ok, rejects, accepts, raw, makeProduct })
 
   await reset()
   console.log(`\n${pass} passed, ${failures.length} failed`)

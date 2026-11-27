@@ -83,6 +83,21 @@ export const WINE_STYLES: readonly WineStyle[] = Object.freeze(Object.keys(WINE_
 // unknown-style fallback) carries it. Bubbles → ['spark']. A read that must
 // only match axes a post DRAWS uses it: the wheel draws the wine's CURRENT
 // style's axes, and a host can re-type a session wine after it was rated.
+// What decides the axis set: the bottle's kind, or a legacy style token (the
+// app until build step 7). Only `sparkling` changes the set today; colour and
+// the alcohol-free mark never do.
+export type BottleKind = { sparkling?: boolean | null; colour?: string | null }
+export type AxisKind = BottleKind | string | null | undefined
+export function isSparklingKind(kind: AxisKind): boolean {
+  return typeof kind === 'string' ? kind === 'spark' : !!kind?.sparkling
+}
+
+// The axis keys only a sparkling bottle carries (Bubbles), for a read that must
+// match only the axes a post DRAWS (lib/profileLists.ts: `w.sparkling`).
+export function axisNeedsSparkling(key: string): boolean {
+  return !WINE_BASE.some((a) => a.k === key) && WINE_SPARK.some((a) => a.k === key)
+}
+
 export function stylesWithAxis(key: string): WineStyle[] | null {
   if (WINE_BASE.some((a) => a.k === key)) return null
   return WINE_STYLES.filter((s) => WINE_AXES[s].some((a) => a.k === key))
@@ -95,8 +110,12 @@ export function stylesWithAxis(key: string): WineStyle[] | null {
 // Unknown category → wine (the only category today; defaults until others
 // exist). Unknown/empty style → base wine set (defensive; covers the legacy
 // nonalc style and any not-yet-seeded style without throwing).
-export function resolveAxes(category: string | null | undefined, style: string | null | undefined): StructureAxis[] {
-  const set = (style && (WINE_AXES as Record<string, readonly StructureAxis[]>)[style]) || WINE_BASE
+// 🔒 The bottle's KIND drives the axes (catalogue model change step 4): Bubbles
+// comes from `sparkling`, never from a style token. `kind` is the bottle's
+// `{ sparkling }` (the line-up wire, a check-in, the catalogue entry), or, until
+// the app moves in build step 7, a legacy style token ('spark' = sparkling).
+export function resolveAxes(category: string | null | undefined, kind: AxisKind): StructureAxis[] {
+  const set = isSparklingKind(kind) ? WINE_SPARK : WINE_BASE
   // category is reserved for future non-wine sets; only `wine` exists today.
   void category
   return set.map((a) => ({ ...a }))
@@ -141,9 +160,9 @@ export function perRatingAxes<T extends { k: string }>(
 export function fillFlavourZeros(
   flavors: Record<string, number> | null | undefined,
   category: string | null | undefined,
-  style: string | null | undefined,
+  kind: AxisKind,
 ): Record<string, number> {
-  const axes = resolveAxes(category, style)
+  const axes = resolveAxes(category, kind)
   const src = flavors ?? {}
   let anyRated = false
   for (const a of axes) {

@@ -100,6 +100,18 @@ jobs:
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
 
+      # The FK pin (wine-catalog-model-change.md § 5a): every foreign key INTO the
+      # five catalogue tables is ON DELETE NO ACTION, except the ruled CASCADE on
+      # product_producers.product_id. Found from pg_constraint by target, so a
+      # table that links into the catalogue later is covered the day it lands.
+      # A purge or the catalogue's replace mode then FAILS on a reference it
+      # forgot instead of deleting or clearing user history. Negative control:
+      # catalog-schema-integration.mjs § 22.
+      - name: Catalog inbound foreign keys are NO ACTION
+        run: node scripts/check-catalog-inbound-fks.mjs
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+
       # The session record's CHECK predicates (redis-rehydration § 4.3:
       # `ratings_session_rater_known` — account deletion is structured around
       # it). Same blind spot as above, same remedy: a committed snapshot.
@@ -139,6 +151,17 @@ jobs:
       # predicate builder.
       - name: Catalog add-flow and search
         run: npx tsx scripts/tests/catalog-addflow-integration.mjs
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+
+      # The every-word bottle search (catalogue model change step 7b): the one
+      # field's matching, the tiers under saturation, merges resolved at read
+      # time, the writers keeping the search docs current (paused schedules for
+      # the row rule), the rebuild's drift report, plans on a 30k fixture and
+      # statement counts. Seeds and deletes its own marked rows; runs the rebuild.
+      - name: Catalogue bottle search (catalogue model change step 7b)
+        run: npx tsx scripts/tests/catalog-bottle-search.mts
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
           REDIS_URL: redis://localhost:6379
@@ -216,6 +239,81 @@ jobs:
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-redis-rehydration-suite-secret-0123456789
 
+      # Catalogue model change step 3 (docs/dev/proposals/wine-catalog-model-change.md
+      # § 8a): record-first bottle writes in a Postgres-backed moment, the line-up
+      # revision (bump, stamp, compare on read: behind / ahead / unstamped), NULL
+      # = not reconciled (cache-only bottles copied in, record-only rows
+      # orphaned), client ids + insert-only create + the identity-free answer,
+      # the image call (Redis-only refused, a failed write reclaims its upload),
+      # check-in replay, a failed write / rollback / lost projection / kill
+      # between COMMIT and projection, every writer bumps, the scrubs, the
+      # promotion race, the old-tab 409, the build id, the census gate, and the
+      # PREVIOUS release's mirror (copied from main) over a new-projected line-up.
+      - name: Occurrence persistence (catalogue model change step 3)
+        run: npx tsx scripts/tests/occurrence-persistence.mts
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-occurrence-persistence-secret-0123456789
+
+      # Catalogue model change step 4: every new bottle links (pick, or create
+      # signed in only: one fixed refusal for a guest), the snapshot from the
+      # entry, the line-up's `entry` key and its blind redaction (no entry, no
+      # abv; colour / sparkling stay), merges resolved on every read, the
+      # moment's own search for guests (its budget, a spent wrong-code budget),
+      # the vintage lookup, the review item on every user mint (rolled back with
+      # it), the gate open by default ('false' the kill switch), badges from the
+      # snapshot, and the interleaved concurrent PATCH (release condition 6: two
+      # real overlapping requests through mutationHooks).
+      - name: Catalogue on every write (catalogue model change step 4)
+        run: npx tsx scripts/tests/catalog-every-write.mts
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-catalog-every-write-secret-0123456789
+
+      # Catalogue model change step 5: cravings. One per (user, wine, vintage)
+      # with its first source and stored moment; hidden while that source is
+      # hidden for its owner (lists, counts, badges, the saved flag); a save of
+      # a bottle hidden for you saves that bottle (blind_saves, ruled
+      # 2026-11-20); re-point = a fresh craving; a deleted bottle's visible
+      # craving keeps its moment; a re-link carries the cravings; the feed and
+      # the line-up's per-viewer `saved`; Saved as one wine with its vintages;
+      # merges followed on every match; D8 in one helper; the purge's clearing.
+      - name: Catalogue cravings (catalogue model change step 5)
+        run: npx tsx scripts/tests/catalog-cravings.mts
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-catalog-cravings-secret-0123456789
+
+      # Rating saves (tasting feedback 2026-11-25, docs/dev/rating-saves.md):
+      # the census of every session-rating writer against the version check
+      # (BUMPS / COPIES / EXEMPT, its own self-test first), then the suite
+      # through the REAL routes: merge saves and `unchanged`, the version check
+      # (409 `stale` + `lastOpId`, a held-then-released op refused, every
+      # writer bumping: the post edit incl. a soft-deleted moment, the Reset,
+      # a kick with delete, the bottle DELETE, the re-mint copy), the 503 for
+      # a signed-in save while the promotion fails (guests unchanged), `v` on
+      # the caller's own rows only, the committed answer before the background
+      # refresh, counters and XP ONCE per rating on earned-badge fixtures, the
+      # take-back on the three own-clear paths (never below 0, rolled back with
+      # its attempt, no deadlock against account deletion), the migration's
+      # backfill run verbatim over rows written the old way, and the save limit.
+      - name: Rating writes census (the version check)
+        run: node scripts/check-rating-writes.mjs
+
+      - name: Rating saves (merge, versions, once-per-rating XP, the save limit)
+        run: npx tsx scripts/tests/rating-saves-integration.mts
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-rating-saves-suite-secret-0123456789
+
       # You profile step 2 (.local plan § Verification): bio normalisation +
       # PATCH /api/me/profile, the tile pools and pins (D3 re-hide, D7, the
       # dead-pin clear vs a same-URL re-pick on the locked row), the D8 / D9
@@ -241,9 +339,38 @@ jobs:
       # BEFORE trigger, a missing row lock), honest one-step sign-up (app and
       # web), by-username = the id route, `username` on every person outside a
       # moment and never inside one, search, the limits, the writes census.
-      - name: You profile (tiles, retention, profile images, settings, public ids)
+      #
+      # § 23 Moment Visibility, step 1a (docs/dev/proposals/moment-visibility.md,
+      # scripts/tests/moment-visibility-section.mts): sessions.public_id and the
+      # three triggers migrate diff cannot see, a real create's defaults, a
+      # promotion landing closed, the visibility GET / PATCH and the look-in
+      # link (the flag after the entrance gate, the freeze, the secret failing
+      # closed, the version only going up), the scrub gate on both delete
+      # paths (a tombstone keeps id, deleted_at, public_id), the migration's
+      # two one-off statements run verbatim through psql on fixture rows
+      # (psql is on ubuntu-latest, as the catalog suite relies on), guests'
+      # `shown`, blind rows without a wine id.
+      # § 24 Moment Visibility, step 1b (scripts/tests/moment-lookin-section.mts):
+      # who is named and who may look in against the single-profile gate, the
+      # look-in's one 404 and its limiter before any lookup, the leak matrix,
+      # the guest reader bound to the incarnation, the by-moment read, open
+      # rows on someone's Moments and their filters, the tile, the feed's
+      # momentId and hostName, the code / link-token canary.
+      # § 26 Moment Visibility, step 3b (scripts/tests/private-moment-section.mts):
+      # "Private Moment", a moment's name outside it only to a viewer who
+      # could open it (feed, web profile, someone's Impressions and its q, own
+      # Cravings), decideAdmission against decideMoments, one candidate set
+      # whatever q says, the top-up, the Incognito race, a throwing decision.
+      # § 27 Moment Defaults (scripts/tests/moment-defaults-section.mts): the
+      # copy when participation STARTS (each ENTRY writer, none of the others,
+      # legacy authors / hosts grandfathered), the check-in default, the
+      # routes, the preview by direction, the apply (K6, the scopes, the
+      # races under each moment's locks, the lock timeout, the Redis
+      # deadlines, account deletion's lock order, the budgets, the flags),
+      # the cascade, SYSTEM_DEFAULTS, the membership-write census.
+      - name: You profile (tiles, retention, profile images, settings, public ids, moment visibility)
         run: npx tsx scripts/tests/you-profile-integration.mts
-        timeout-minutes: 8
+        timeout-minutes: 12
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
           REDIS_URL: redis://localhost:6379
@@ -284,6 +411,20 @@ jobs:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-usernames-web-secret-0123456789
+
+      # Moment Visibility step 2: the look-in link's page (`/l/<id>.<token>`)
+      # against the BUILT server: its headers come from next.config.ts (a later
+      # `headers()` entry overriding the site-wide Referrer-Policy), no
+      # route-module test can see them. Flag on: no-referrer, no-store,
+      # noindex, the "Open in Verre" href exactly `io.verre.app://l/<link>`, no
+      # other-origin URL, no Set-Cookie; malformed: no button; flag off: 404.
+      - name: Moment Visibility (the /l/ page against the built server)
+        run: npx tsx scripts/tests/moment-link-web.mts
+        timeout-minutes: 5
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-moment-link-web-secret-0123456789
 
     services:
       # The add-flow suite drives lib/session.ts's real Redis→Postgres wine

@@ -1,5 +1,4 @@
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -22,7 +21,11 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Avatar } from '@/components/ui/Avatar';
+import { Gradient } from '@/components/ui/Gradient';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
 import { FeedCardMenu } from '@/components/feed/FeedCardMenu';
+import { PrivacyByline } from '@/components/feed/PrivacyByline';
+import { usePostPrivacyRow } from '@/lib/postPrivacyActions';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
@@ -33,6 +36,7 @@ import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
 import { registerFeedLanding, setFeedTransitionSource } from '@/lib/feedTransition';
 import { timeAgo } from '@/lib/momentFormat';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
+import { momentPlace } from '@/lib/momentVisibilityCopy';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { space, useTheme } from '@/theme';
 import type { FeedAuthor, SessionFeedPayload, SessionFeedWine } from '@/lib/api/feed';
@@ -78,9 +82,11 @@ export function SessionFeedCard({
   const axisColor = useFlavourColors();
   const { width: screenW } = useWindowDimensions();
   const photoW = screenW; // full-bleed at x=0
-  // The moment name is tappable → open the moment, but ONLY if the viewer was a
-  // member (code resolved from their own sessions; never on the feed wire).
-  const { code: momentCode, enter: enterMoment } = useEnterableMoment(session.sessionId);
+  // The moment name is tappable → open the moment if the viewer was a member
+  // (code resolved from their own sessions; never on the feed wire), else the
+  // look-in when the post carries a momentId (Moment Visibility).
+  const { enterable: momentEnterable, enter: enterMoment } = useEnterableMoment(session.sessionId, session.momentId);
+  const place = momentPlace(session);
 
   const [rawActiveIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
@@ -92,6 +98,11 @@ export function SessionFeedCard({
   // scroll math and later writers start from a real slide.
   const maxIdx = Math.max(0, wines.length - 1);
   const activeIdx = Math.min(rawActiveIdx, maxIdx);
+  // Edit / Delete Rating need the wine id: always there on your own post (the
+  // only place the menu shows), absent on a blind row of someone else's.
+  const activeWineId = wines[activeIdx]?.id;
+  // Your own moment post only: Hide from Feed's ⋯ row and the status line (R3, R12, R13).
+  const privacy = usePostPrivacyRow({ type: 'session', session });
   useEffect(() => {
     setActiveIdx((cur) => Math.min(cur, maxIdx));
   }, [maxIdx]);
@@ -101,6 +112,7 @@ export function SessionFeedCard({
   // points at whichever carousel renders (photo or all-photoless — both page
   // at photoW).
   const carouselRef = useRef<ScrollViewInstance>(null);
+  const screenReader = useScreenReaderEnabled();
   useEffect(
     () =>
       registerFeedLanding(session.id, (i) => {
@@ -156,7 +168,7 @@ export function SessionFeedCard({
   // screen-tall square of empty space (the 22:44 device bug). A blind wine is
   // NOT special here — it draws its real flavors like any wine (identity is
   // masked in the panel), so the plain flavour check covers it.
-  const anyWheel = !anyPhoto && wines.some((w) => hasRatedAxes(w.flavors, w.type));
+  const anyWheel = !anyPhoto && wines.some((w) => hasRatedAxes(w.flavors, w));
   const nonPhotoSlideH = anyWheel ? photoW : undefined;
 
   // Carousel frame rule (Simon): the TALLEST photo wins, clamped to the band;
@@ -263,29 +275,28 @@ export function SessionFeedCard({
               shared a moment
             </VText>
           </VText>
-          <VText variant="caption" color="inkSoft" numberOfLines={1}>
-            {session.deleted ? (
-              '[deleted moment]'
-            ) : session.sessionName ? (
-              // Tappable when the viewer was a member (momentCode resolved).
-              momentCode ? (
-                <VText variant="caption" color="accent" style={styles.bold} onPress={enterMoment}>
-                  {session.sessionName}
-                </VText>
-              ) : (
-                session.sessionName
-              )
-            ) : null}
-            {(session.deleted || session.sessionName) ? ' · ' : ''}
+          <PrivacyByline line={privacy.line}>
+            {/* "[deleted moment]", "Private Moment" (step 3b: plain text, never
+                tappable) or the name, tappable when the viewer was a member, or
+                may look in. */}
+            {place !== null && session.sessionName && !session.deleted && momentEnterable ? (
+              <VText variant="caption" color="accent" style={styles.bold} onPress={enterMoment}>
+                {session.sessionName}
+              </VText>
+            ) : (
+              place
+            )}
+            {place !== null ? ' · ' : ''}
             {timeAgo(createdAt)}
-          </VText>
+          </PrivacyByline>
         </View>
-        {onEdit && wines[activeIdx] ? (
+        {onEdit && activeWineId ? (
           <FeedCardMenu
-            onEdit={() => onEdit(wines[activeIdx].id)}
-            onDelete={onDeleteRating ? () => onDeleteRating(wines[activeIdx].id) : undefined}
+            onEdit={() => onEdit(activeWineId)}
+            onDelete={onDeleteRating ? () => onDeleteRating(activeWineId) : undefined}
             deleteLabel="Delete Rating"
             deleteAccessibilityLabel="Delete Rating"
+            privacy={privacy.rows}
           />
         ) : null}
       </View>
@@ -302,6 +313,7 @@ export function SessionFeedCard({
           <GestureDetector gesture={Gesture.Exclusive(doubleTap, singleTap)}>
             <ScrollView
               ref={carouselRef}
+              removeClippedSubviews={!screenReader}
               horizontal
               pagingEnabled
               showsHorizontalScrollIndicator={false}
@@ -311,7 +323,7 @@ export function SessionFeedCard({
             >
               {wines.map((w, i) => (
                 <WineSlide
-                  key={w.id}
+                  key={w.ratingId}
                   wine={w}
                   index={i}
                   width={photoW}
@@ -347,6 +359,7 @@ export function SessionFeedCard({
            because all-bare slides are naturally the same height. */
         <ScrollView
           ref={carouselRef}
+          removeClippedSubviews={!screenReader}
           horizontal
           pagingEnabled
           showsHorizontalScrollIndicator={false}
@@ -356,7 +369,7 @@ export function SessionFeedCard({
         >
           {wines.map((w, i) => (
             <NonPhotoHero
-              key={w.id}
+              key={w.ratingId}
               wine={w}
               index={i}
               axisColor={axisColor}
@@ -373,7 +386,7 @@ export function SessionFeedCard({
         <View style={styles.dots}>
           {wines.map((w, i) => (
             <View
-              key={w.id}
+              key={w.ratingId}
               style={[
                 styles.dot,
                 { backgroundColor: i === activeIdx ? theme.accent : theme.inkFaint },
@@ -473,7 +486,7 @@ function WineSlide({
         </View>
       )}
       {/* bottom scrim so the glass panel + text keep contrast over any photo */}
-      <LinearGradient
+      <Gradient
         colors={FEED_PANEL_SCRIM}
         style={StyleSheet.absoluteFill}
         pointerEvents="none"

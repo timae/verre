@@ -12,8 +12,8 @@ export const unstable_settings = { anchor: 'index' };
 
 // The Feed tab is a stack: the feed list (03·12) → the full impression
 // detail page (proposal 08 §3) pushes within the tab. The detail is
-// IMMERSIVE — the tabs layout hides the bottom nav on /impression/ routes
-// (Simon, 2026-07-08); the floating back button is the only chrome. In-flow
+// IMMERSIVE — the tabs layout hides the bottom nav on the opened post
+// (`OPENED_POST_PATH`, Simon, 2026-07-08); the floating back button is the only chrome. In-flow
 // screens draw their own chrome (collapsing hero), not the native header.
 export default function FeedStack() {
   const { theme } = useTheme();
@@ -56,14 +56,13 @@ export default function FeedStack() {
           contentStyle: { backgroundColor: 'transparent' },
         }}
       />
-      {/* The edit screens render FULL SCREEN from both entry points (Simon,
-          2026-07-18). With the default card presentation, a push from the
-          impression detail sits above a modal, so UIKit presents it modally —
-          the iOS pageSheet (partial, parent peeking at the top). fullScreenModal
-          keeps the full-page look regardless of what's beneath; both stages
-          need it or the details push would re-inherit the sheet. */}
-      <Stack.Screen name="edit/[id]" options={{ presentation: 'fullScreenModal' }} />
-      <Stack.Screen name="edit/details" options={{ presentation: 'fullScreenModal' }} />
+      {/* The post edit is an ordinary PUSH with swipe-back, like Edit
+          Impression (ruled 2026-11-24; was a fullScreenModal since 2026-07-18,
+          for a push from the old modal detail, which now opens the edit on its
+          own stack). So anything can open on top of it (a look-in link) and
+          Back returns to the edit. */}
+      <Stack.Screen name="edit/[id]" />
+      <Stack.Screen name="edit/details" />
     </Stack>
     </SessionTabProvider>
   );

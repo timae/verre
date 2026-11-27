@@ -3,6 +3,8 @@ import { openLightbox } from '@/components/ui/ImageLightbox'
 import { countryName } from '@/lib/countries'
 import { renderWithLinks } from '@/lib/renderWithLinks'
 import { TYPE_LABEL, tcolAlpha } from '@/lib/wineTypeColors'
+import { wineShown, abvLabel } from '@/lib/wineDisplay'
+import type { CatalogEntry } from '@/lib/catalogEntries'
 import { WineGlass, PinIcon, FlaskIcon, LinkIcon, ArrowRightIcon } from '@/components/ui/icons'
 import { Avatar } from '@/components/profile/Avatar'
 
@@ -14,7 +16,12 @@ export type WineDisplay = {
   producer?: string
   vintage?: string | null
   grape?: string
-  type: string
+  // The bottle's kind and alcohol (catalogue model change step 4), and its
+  // catalogue entry when linked: what is SHOWN prefers the entry.
+  colour?: string | null
+  sparkling?: boolean
+  abv?: number | null
+  entry?: CatalogEntry | null
   imageUrl?: string
   description?: string
   region?: string
@@ -80,9 +87,13 @@ interface Props {
 // /u/<id> check-in card, feed post. Provenance ("brought by") only
 // shows when the caller passes it — feed/profile callers omit it.
 export function WineInfoPane({ wine, onProvenanceClick, provenanceMode = 'plain', provenancePreview, broughtByRef, isSelf = false, addedByImageUrl = null }: Props) {
-  const { name, producer, vintage, grape, type, imageUrl,
-          description, region, country, vinification, purchaseUrl,
-          addedByDisplayName } = wine
+  const shown = wineShown(wine)
+  const { name, producer, vintage, grape, region, country } = shown
+  const type = shown.kind
+  const { imageUrl, description, vinification, purchaseUrl, addedByDisplayName } = wine
+  // The abv is the fact; "non-alcoholic" is derived from it (≤ 0.5 %) and
+  // shown WITH the value (spec § 0.2).
+  const abvText = shown.alcoholFree && type !== 'nonalc' ? `non-alcoholic · ${abvLabel(shown.abv)}` : abvLabel(shown.abv)
   const countryDisplay = country ? (countryName(country) || country) : ''
   const hasOrigin = !!(region || countryDisplay)
   const liquidColor = tcolAlpha(type, 0.7)
@@ -172,6 +183,12 @@ export function WineInfoPane({ wine, onProvenanceClick, provenanceMode = 'plain'
                   }}>{TYPE_LABEL[type] || type}</span>
                 </span>
               </>
+            )}
+            {abvText && (
+              <span style={{
+                fontSize:9,letterSpacing:'0.18em',
+                color:'var(--fg-faint)',textTransform:'uppercase',fontWeight:600,
+              }}>{abvText}</span>
             )}
           </div>
         </div>

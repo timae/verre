@@ -76,7 +76,7 @@ export async function PATCH(req: NextRequest) {
   if (data.name !== undefined) out.name = data.name
   if (data.bio !== undefined) out.bio = data.bio
   if (changedTiles.length > 0) {
-    out.tiles = await resolveTilePhotos(userId, changedTiles)
+    out.tiles = await resolveTilePhotos(userId, changedTiles, userId)
   }
   return NextResponse.json(out, { headers: noStore })
 }

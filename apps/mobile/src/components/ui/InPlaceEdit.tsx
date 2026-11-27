@@ -5,7 +5,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, { Easing as REasing, useAnimatedKeyboard, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VText } from '@/components/ui/VText';
-import { isRegisteredInput, useRegisterInput } from '@/lib/keyboardDismiss';
+import { dockEditBar, isRegisteredInput, setDockedEditBar, useRegisterInput } from '@/lib/keyboardDismiss';
 import { motion, useTheme } from '@/theme';
 import { alpha } from '@/theme/color';
 
@@ -309,6 +309,11 @@ export function EditBar({ busy, onCancel, onDone, onHeight, shake = 0, line, don
     );
   }, [shake, sx]);
   const ride = useAnimatedStyle(() => ({ transform: [{ translateX: sx.value }, { translateY: -(Math.max(kb.height.value, insets.bottom) + KEYBOARD_GAP) }] }));
+  // The measured ROW height, published for the keyboard rule's exception
+  // (lib/keyboardDismiss.ts: a touch in the docked bar keeps the keyboard).
+  const dockToken = useRef(0);
+  if (dockToken.current === 0) dockToken.current = dockEditBar();
+  useEffect(() => () => setDockedEditBar(dockToken.current, null), []);
   return (
     <Reanimated.View
       style={[{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 20, backgroundColor: theme.surfaceSunk, borderRadius: KEYBOARD_RADIUS, borderCurve: 'continuous' }, ride]}
@@ -316,7 +321,10 @@ export function EditBar({ busy, onCancel, onDone, onHeight, shake = 0, line, don
       <View
         // The screen's clearance math adds the keyboard (or the home
         // indicator) itself: report the row + the gap.
-        onLayout={(e) => onHeight(e.nativeEvent.layout.height + KEYBOARD_GAP)}
+        onLayout={(e) => {
+          setDockedEditBar(dockToken.current, { rowH: e.nativeEvent.layout.height, gap: KEYBOARD_GAP });
+          onHeight(e.nativeEvent.layout.height + KEYBOARD_GAP);
+        }}
         onStartShouldSetResponderCapture={markNoShake}
         style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 8 }}
       >

@@ -16,7 +16,7 @@
 // `{}`-gate below, which already excludes pre-structure legacy rows); per-axis
 // counts can be ≤ n when a style grew after some ratings.
 
-import { resolveAxes, fillFlavourZeros } from './structureAxes'
+import { resolveAxes, fillFlavourZeros, type AxisKind } from './structureAxes'
 import { snapScore } from './scoringInput'
 
 export type AxisAggregate = {
@@ -42,7 +42,7 @@ export type FlavourAggregate = {
 export function aggregateFlavourAxes(
   flavorMaps: ReadonlyArray<Record<string, number> | null | undefined>,
   category: string | null | undefined,
-  style: string | null | undefined,
+  style: AxisKind,
 ): FlavourAggregate {
   // Engaged = ratings with ANY structure data. The `{}` gate (fillFlavourZeros
   // returns {} when no resolved axis is positive) already excludes pre-structure
@@ -119,7 +119,7 @@ function typicalGap(values: ReadonlyArray<number>): number {
 export function consensusFromRatings(
   ratings: ReadonlyArray<{ score: number; flavors: Record<string, number> | null | undefined }>,
   category: string | null | undefined,
-  style: string | null | undefined,
+  style: AxisKind,
 ): ConsensusKey | null {
   const rated = ratings.map((r) => r.score).filter((s) => s > 0)
   if (rated.length < 2) return null

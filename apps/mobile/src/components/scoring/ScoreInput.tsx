@@ -1,10 +1,12 @@
 import * as Haptics from 'expo-haptics';
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { TextInput, View, type TextInputInstance } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Svg, { Path } from 'react-native-svg';
-import { STAR_PATH, SCORE_MAX, scoreFromFraction, snapScore, stepScore } from '@verre/core';
+import { STAR_PATH, SCORE_MAX, scoreFromFraction, stepScore } from '@verre/core';
+import { useFieldCapture } from '@/lib/fieldCapture';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
+import { createScoreField, sanitizeScoreDraft } from '@/lib/scoreDraft';
 import { scoreWord } from '@/lib/scoreWords';
 import { usePhoneTokens } from '@/lib/layout';
 import { VText } from '@/components/ui/VText';
@@ -33,40 +35,20 @@ const TRACK_H_COMFORT = 54;
 const RAIL_H = 6;
 const RAIL_H_COMFORT = 7;
 
-// Sanitize a raw keystroke string into a left-anchored decimal the user is
-// typing: keep digits + a single separator, cap the integer part at one digit
-// (scores are 0..5), and cap to two fraction digits. NO reformatting to a fixed
-// X.XX — that fought the caret and made the field flicker on every keystroke.
-// "2" stays "2"; "2.5" stays "2.5"; "25" (no dot) is read as 2.5 by parseScoreDraft.
-function sanitizeScoreDraft(text: string) {
-  let s = text.replace(/[^0-9.,]/g, '').replace(',', '.');
-  const dot = s.indexOf('.');
-  if (dot !== -1) {
-    const intPart = s.slice(0, dot).slice(0, 1);
-    const fracPart = s.slice(dot + 1).replace(/\./g, '').slice(0, 2);
-    s = `${intPart}.${fracPart}`;
-  } else {
-    // No separator yet: a lone "25" means 2.5 — keep first digit as units, the
-    // rest flow into the fraction so the bar can track digit-by-digit.
-    if (s.length > 1) s = `${s.slice(0, 1)}.${s.slice(1, 3)}`;
-  }
-  return s;
-}
-
-// Parse a typed draft to a raw 0..5 number (pre-snap), for the LIVE bar.
-function parseScoreDraft(text: string): number | null {
-  if (!text || text === '.') return null;
-  const n = Number.parseFloat(text);
-  if (!Number.isFinite(n)) return null;
-  return Math.min(SCORE_MAX, Math.max(0, n));
-}
-
 interface Props {
   value: number; // 0..5 in 0.25 steps; 0 = not rated
   onChange: (v: number) => void;
+  // VoiceOver's increment / decrement (relative to the shown value); falls
+  // back to onChange. The impression keeps it inert until its baseline loads.
+  onStep?: (v: number) => void;
+  // The score as it is NOW in the host's store (its setter updates it before
+  // the next render): the number field dedupes its writes against it. The
+  // impression passes its autosave's `scoreNow`; without it, the rendered value
+  // plus this field's own writes.
+  current?: () => number;
 }
 
-export function ScoreInput({ value, onChange }: Props) {
+export function ScoreInput({ value, onChange, onStep, current }: Props) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const scoreSurface = phone.surface('score');
@@ -82,30 +64,49 @@ export function ScoreInput({ value, onChange }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const inputRef = useRef<TextInputInstance>(null);
+  // The impression layer waits for the number's native edit to end before a
+  // departure (lib/fieldCapture.ts; a no-op elsewhere).
+  const fieldCapture = useFieldCapture();
   useRegisterInput(inputRef);
-  const skipCommitRef = useRef(false);
   const valueRef = useRef(value);
   valueRef.current = value;
-  const editingRef = useRef(editing);
-  editingRef.current = editing;
-
+  // The score as it is NOW: the host's live getter when it has one (the
+  // impression's autosave draft, updated synchronously by its setter), else
+  // the rendered value plus this field's own writes since (Codex recheck 4).
+  const latestRef = useRef(value);
+  latestRef.current = value;
+  const liveRef = useRef({ current, onChange });
+  liveRef.current = { current, onChange };
+  // One edit session of the number (lib/scoreDraft.ts, pure + pinned): its
+  // initial text, whether it was changed, the slider's abandon, every write
+  // deduped against the score as it is now.
+  const field = useMemo(
+    () =>
+      createScoreField({
+        current: () => liveRef.current.current?.() ?? latestRef.current,
+        write: (v) => {
+          latestRef.current = v;
+          liveRef.current.onChange(v);
+        },
+      }),
+    [],
+  );
   const setFromX = (x: number) => {
     if (trackW <= thumb) return;
-    if (editingRef.current) {
-      // A slider touch while the number field is open abandons the draft —
-      // otherwise the field's eventual blur would commit the stale draft
-      // over the drag.
-      skipCommitRef.current = true;
+    // Range-input semantics: the thumb travels within [thumb/2, W - thumb/2].
+    const next = scoreFromFraction((x - thumb / 2) / (trackW - thumb));
+    // A slider touch while the number field is open abandons the draft (else
+    // the field's end would commit it over the drag), decided by the session's
+    // OWN state, never the last render's `editing` (Codex recheck 6: focus,
+    // typing and the slider can all land before a render). The write is
+    // deduped against the score NOW (recheck 5).
+    const r = field.slide(next);
+    if (r.tookOver) {
       setEditing(false);
       inputRef.current?.blur();
     }
-    // Range-input semantics: the thumb travels within [thumb/2, W - thumb/2].
-    const next = scoreFromFraction((x - thumb / 2) / (trackW - thumb));
-    if (next !== valueRef.current) {
-      // Selection tick on each 0.25 step while dragging (interaction-spec).
-      Haptics.selectionAsync().catch(() => {});
-      onChange(next);
-    }
+    // Selection tick on each 0.25 step while dragging (interaction-spec).
+    if (r.wrote) Haptics.selectionAsync().catch(() => {});
   };
   const commitHaptic = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -130,31 +131,24 @@ export function ScoreInput({ value, onChange }: Props) {
     });
   const gesture = Gesture.Race(pan, tap);
 
-  const commitDraft = () => {
-    if (skipCommitRef.current) {
-      skipCommitRef.current = false;
-      return;
-    }
-    setEditing(false);
-    const parsed = parseScoreDraft(draft);
-    // Empty/garbage draft leaves the value as last live-tracked (updateDraft
-    // already pushed each keystroke through). Only snap+commit a parseable one.
-    if (parsed == null) return;
-    const next = snapScore(parsed);
-    if (next !== value) {
-      onChange(next);
-      commitHaptic();
-    }
+  // `text` = the field's FINAL native text (`onEndEditing`'s nativeEvent.text),
+  // never the `draft` state, which may not have re-rendered with the last
+  // keystroke yet (Codex recheck 2). The SAME conversion as the live
+  // keystrokes (an erased number is 0, recheck 3), but only for an edit the
+  // person CHANGED (recheck 4: an untouched blank kept over a score that
+  // loaded meanwhile). The slider's abandon still wins.
+  const commitDraft = (text: string) => {
+    const r = field.end(text);
+    if (r !== 'abandoned') setEditing(false);
+    if (r === 'wrote') commitHaptic();
   };
 
   const updateDraft = (text: string) => {
     const clean = sanitizeScoreDraft(text);
     setDraft(clean); // raw as typed — no X.XX reformat, so the field can't flicker
     // Live-track the bar: snap each keystroke's value and push it up. "2" → 2,
-    // "2" then "5" → 2.5; an off-grid "2.6" snaps the bar+value to 2.5.
-    const parsed = parseScoreDraft(clean);
-    const next = parsed == null ? 0 : snapScore(parsed);
-    if (next !== valueRef.current) onChange(next);
+    // "2" then "5" → 2.5; an off-grid "2.6" snaps the bar+value to 2.5; erased → 0.
+    field.change(text);
   };
 
   const rated = value > 0;
@@ -180,14 +174,18 @@ export function ScoreInput({ value, onChange }: Props) {
             ref={inputRef}
             value={editing ? draft : value.toFixed(2)}
             onFocus={() => {
-              skipCommitRef.current = false;
+              fieldCapture.began();
               // Seed left-anchored: a rated value as a trim string ("3.5", not
               // "3.50"); unrated (0) starts EMPTY so typing fills from the left.
-              setDraft(value > 0 ? String(value) : '');
+              const seed = value > 0 ? String(value) : '';
+              field.focus(value);
+              setDraft(seed);
               setEditing(true);
             }}
             onChangeText={updateDraft}
-            onEndEditing={commitDraft}
+            // The edit ends HERE, with the final text, on both platforms
+            // (lib/fieldCapture.ts: Android sends blur first, iOS after).
+            onEndEditing={(e) => fieldCapture.endEditing(() => commitDraft(e.nativeEvent.text))}
             keyboardType="decimal-pad"
             accessibilityLabel="Score out of 5"
             selectTextOnFocus
@@ -246,7 +244,9 @@ export function ScoreInput({ value, onChange }: Props) {
           accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
           onAccessibilityAction={(e) => {
             const dir = e.nativeEvent.actionName === 'increment' ? 1 : -1;
-            onChange(stepScore(valueRef.current, dir));
+            // A RELATIVE edit (one step from the shown value): its own callback
+            // when the host tells the two apart (the impression's auto-save).
+            (onStep ?? onChange)(stepScore(valueRef.current, dir));
           }}
           style={{ height: trackH, justifyContent: 'center' }}
         >

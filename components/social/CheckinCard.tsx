@@ -16,11 +16,12 @@ import { WineIdentity } from '@/components/wine/WineIdentity'
 import { openWheelLightbox } from '@/components/charts/wheelLightbox'
 import { Avatar } from '@/components/profile/Avatar'
 import { ICO } from '@/lib/wineTypeColors'
+import { kindToken } from '@verre/core'
 
 interface Props {
   checkin: {
     id: number; wineName: string; producer?: string|null; vintage?: string|null
-    grape?: string|null; type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
+    grape?: string|null; colour?: string|null; sparkling?: boolean; abv?: number|null; score?: number|null; notes?: string|null; imageUrl?: string|null
     venueName?: string|null; city?: string|null; country?: string|null
     flavors?: Record<string,number>|null; likeCount?: number
     aromas?: {a:string;m:string|null;p?:boolean}[]|null
@@ -37,7 +38,7 @@ interface Props {
 export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onDelete, onEdited, isOwn, onCopy }: Props) {
   // Read surface (§6d): draws only the axes present in the rating (per-present-
   // key, registry order). Only used when hasFlavors is true.
-  const fl = perRatingAxes(checkin.flavors, resolveAxesColoured('wine', checkin.type || 'white'))
+  const fl = perRatingAxes(checkin.flavors, resolveAxesColoured('wine', checkin))
 
   const hasFlavors = checkin.flavors && Object.values(checkin.flavors).some(v => v > 0)
   const wheelRef = useRef<HTMLDivElement>(null)
@@ -107,7 +108,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
               flex:'0 0 42%', borderRadius:12, background:'var(--bg3)',
               display:'flex', alignItems:'center', justifyContent:'center', minHeight:200,
             }}>
-              <span style={{ fontSize:56, opacity:0.25 }}>{ICO[checkin.type||'']||'🍷'}</span>
+              <span style={{ fontSize:56, opacity:0.25 }}>{ICO[kindToken(checkin)]||'🍷'}</span>
             </div>
           ) : null}
 

@@ -1,29 +1,21 @@
-import { BottomSheetModalProvider, BottomSheetView } from '@gorhom/bottom-sheet';
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import * as Haptics from 'expo-haptics';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, View, useWindowDimensions, type ScrollViewInstance } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, View, useWindowDimensions, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button as MenuButton, ContextMenu, Host, RNHostView } from '@expo/ui/swift-ui';
-import { normalizeCode, formatCodeInput } from '@verre/core';
-import { ScanResult, useVerreScanner } from '@/components/people/scan';
+import { JoinCodeForm } from '@/components/moments/JoinCodeForm';
 import { Icon, type IconName } from '@/components/ui/Icon';
-import { Sheet } from '@/components/ui/Sheet';
 import { Thumb } from '@/components/ui/Thumb';
 import { GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
-import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { isPinnedSession, mySessionsQueryOptions, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
-import { joinByCode, joinErrorText } from '@/lib/joinByCode';
-import { authClient } from '@/lib/authClient';
 import { liveMeta } from '@/lib/momentFormat';
-import { type VerreCode } from '@/lib/scanCode';
-import { usePushGuard } from '@/lib/usePushGuard';
 import { elevation, radius, useTheme } from '@/theme';
-import { meIdOf } from '@/lib/meId';
 
 // 02s Moments home, to the vero-screens pixel spec (.vbar-root, .sh-live2,
 // .sh-joinblock, .setnav). Page gutter is 22 (the prototype's .vscreen);
@@ -303,10 +295,23 @@ const LIVE_CARD_PADDING_BOTTOM = 22;
 const LIVE_CARD_GAP = 12;
 // The visual card surface (bg + radius + padding + shadow). Shared by the
 // live card and its lifted context-menu Preview so they match exactly.
-function CardSurface({ width, height, children }: { width: number; height?: number; children: ReactNode }) {
+// `onPress`: the live card is ONE button (the whole card opens the moment);
+// the preview passes none and stays a plain View.
+function CardSurface({ width, height, children, onPress, accessibilityLabel }: { width: number; height?: number; children: ReactNode; onPress?: () => void; accessibilityLabel?: string }) {
   const { theme } = useTheme();
+  const Surface = onPress ? Pressable : View;
   return (
-    <View
+    <Surface
+      {...(onPress
+        ? {
+            onPress,
+            // A long hold is the context menu's (the OS lift): a no-op
+            // onLongPress keeps that hold from also firing onPress.
+            onLongPress: () => {},
+            accessibilityRole: 'button' as const,
+            accessibilityLabel,
+          }
+        : {})}
       style={{
         width,
         height,
@@ -324,7 +329,7 @@ function CardSurface({ width, height, children }: { width: number; height?: numb
       }}
     >
       {children}
-    </View>
+    </Surface>
   );
 }
 
@@ -364,21 +369,33 @@ function LiveCard({
   // Dimming + "Opening…" on press (and a re-entry guard) makes the first tap
   // unmistakable. `navigating` resets on screen blur/refocus via the key remount.
   const [navigating, setNavigating] = useState(false);
-  // Clear the dim when the user comes BACK to the home screen (the card doesn't
-  // unmount on push), so a returned-to "Rejoin" isn't stuck showing "Opening…".
-  useFocusEffect(useCallback(() => { setNavigating(false); }, []));
+  // A SYNCHRONOUS guard against rapid taps (state lands a render later). The
+  // card stays mounted under the pushed moment, so the guard is reset with
+  // `navigating` when the user comes BACK (a guard that is only set would
+  // block every later tap), and a returned-to "Rejoin" isn't stuck showing
+  // "Opening…".
+  const opening = useRef(false);
+  useFocusEffect(useCallback(() => {
+    opening.current = false;
+    setNavigating(false);
+  }, []));
   const open = () => {
-    if (navigating) return;
+    if (opening.current) return;
+    opening.current = true;
     setNavigating(true);
     router.push({ pathname: '/moments/session/[code]', params: { code: m.code } }, { dangerouslySingular: true });
   };
+  // The WHOLE card opens the moment (ruled 2026-11-25); the Rejoin button stays
+  // as its face, inert to touches and accessibility (the card is the button).
   const card = (
-    <CardSurface width={width} height={cardHeight}>
+    <CardSurface width={width} height={cardHeight} onPress={open} accessibilityLabel={`Rejoin ${m.name || m.host_name}`}>
       <LiveCardBody m={m} />
       {/* flexShrink:0 so the fixed-format card can't compress the button if the
           content ever measures a hair over the derived height (the inverse of
           the stretch bug — keep the button at its surface-scaled height). */}
-      <Button title="Rejoin" loadingTitle="Opening…" loading={navigating} block onPress={open} style={{ flexShrink: 0 }} />
+      <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={{ flexShrink: 0 }}>
+        <Button title="Rejoin" loadingTitle="Opening…" loading={navigating} block />
+      </View>
     </CardSurface>
   );
   return (
@@ -541,107 +558,7 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
 
 function JoinBlock() {
   const router = useRouter();
-  const queryClient = useQueryClient();
-  const { data: auth } = authClient.useSession();
-  const [input, setInput] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const code = normalizeCode(input);
-  const insets = useSafeAreaInsets();
-  const guard = usePushGuard();
-  const meId = meIdOf(auth);
-
-  // Scan (ruled 2026-11-12): the button while the field is empty; the
-  // result is the same as Add Friends' (components/people/scan.tsx) in a
-  // sheet. `scanned` is kept through the close animation; `scanSeq` gives
-  // every scan a fresh result view.
-  const [scanned, setScanned] = useState<VerreCode | null>(null);
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const [scanSeq, setScanSeq] = useState(0);
-  const { scan, launching } = useVerreScanner(true, (c) => {
-    setScanned(c);
-    setScanSeq((n) => n + 1);
-    setSheetOpen(true);
-  });
-  const leaveTo = (push: () => void) =>
-    guard(() => {
-      setSheetOpen(false);
-      push();
-    });
-  // Join keeps Scan's width, so the field doesn't jump on the first key.
-  const [scanW, setScanW] = useState(0);
-
-  const join = async () => {
-    if (!code || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      // lib/joinByCode.ts (shared with Add Friends' scan): your name fresh
-      // from the users row, then ['my-sessions'] invalidated.
-      const joined = await joinByCode(queryClient, code, auth?.user.name);
-      setInput('');
-      router.push({ pathname: '/moments/session/[code]', params: { code: joined.code } }, { dangerouslySingular: true });
-    } catch (e) {
-      setError(joinErrorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    // .sh-joinblock: gap 10, margin-top 6
-    <View style={{ paddingHorizontal: GUTTER, gap: 10, marginTop: 6 }}>
-      {/* .sh-sheettitle */}
-      <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-        Join a Moment
-      </VText>
-      <VText variant="small" color="inkSoft" style={{ marginTop: -4 }}>Enter the code your host shared.</VText>
-      {/* .gs-codewrap: row, gap 8, stretch */}
-      <View style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start' }}>
-        <View style={{ flex: 1 }}>
-          {/* .gs-c: 15/600, 0.14em tracking, uppercase via formatCodeInput.
-              Codes are alphanumeric (Crockford), so we want letters AND digits
-              reachable. Android 'visible-password' shows a full QWERTY WITH the
-              number row (and kills autocorrect/suggestions). iOS has no
-              letters-plus-number-row keyboard type — 'ascii-capable' is the
-              closest (letters; digits one tap away via the 123 key). */}
-          <TextField
-            surface="code"
-            value={input}
-            onChangeText={(t) => { setInput(formatCodeInput(t)); setError(null); }}
-            // The example goes through the same formatter as the typed value, so
-            // placeholder and input share separator and spacing (only the colour
-            // differs). The handoff's "8H4K – Q2NP" did not match what typing produces.
-            placeholder={formatCodeInput('8H4KQ2NP')}
-            keyboardType={Platform.OS === 'android' ? 'visible-password' : 'ascii-capable'}
-            autoCapitalize="characters"
-            autoCorrect={false}
-            autoComplete="off"
-            returnKeyType="go"
-            onSubmitEditing={join}
-            style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 18, letterSpacing: 2.1 }}
-          />
-        </View>
-        {input === '' ? (
-          <View onLayout={(e) => setScanW(e.nativeEvent.layout.width)}>
-            {/* Filled, like Add Friends' (ruled 2026-11-12: the outlined
-                secondary read as the old disabled Join). */}
-            <Button title="Scan" icon="qr" iconSize={20} accessibilityLabel="Scan a QR Code" disabled={launching} onPress={() => void scan()} style={{ paddingHorizontal: 20 }} />
-          </View>
-        ) : (
-          // Filled like Scan as soon as the code is complete (ruled 2026-11-15);
-          // outlined and disabled while it isn't.
-          <Button title="Join" loadingTitle="Joining…" variant={code ? 'primary' : 'secondary'} loading={busy} disabled={!code} onPress={join} style={{ paddingHorizontal: 20, minWidth: scanW || undefined }} />
-        )}
-      </View>
-      {error ? <VText variant="caption" color="critical">{error}</VText> : null}
-      <Sheet open={sheetOpen} onClose={() => setSheetOpen(false)}>
-        <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16 }}>
-          {scanned && meId != null ? <ScanResult key={scanSeq} result={scanned} meId={meId} leaveTo={leaveTo} /> : null}
-        </BottomSheetView>
-      </Sheet>
-    </View>
-  );
+  return <JoinCodeForm onJoined={(code) => router.push({ pathname: '/moments/session/[code]', params: { code } }, { dangerouslySingular: true })} />;
 }
 
 // .setgroup — carded group wrapping the moments-sub-list push-rows (Upcoming +

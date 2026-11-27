@@ -51,6 +51,7 @@ export const k = {
   wines:      (c: string) => `s:${c}:wines`,
   // Rating key uses identity id (e.g. "u:42" or "a:<uuid>"), not display
   // name — names can collide between participants, ids cannot.
+  // rating-write: EXEMPT
   rating:     (c: string, identityId: string, wid: string) => `s:${c}:r:${identityId}:${wid}`,
   // Identity model. Identities maps id (e.g. "u:42" or "a:<uuid>") to the
   // current display name; tokens maps an anon token to its identity id.
@@ -79,6 +80,18 @@ export const k = {
   // holding lock:session:{CODE}, and by every scoped invalidation. Lives and
   // dies with the session (re-EXPIREd by touchWithMeta, SCAN-wiped).
   gen:        (c: string) => `s:${c}:gen`,
+  // The line-up revision the cached `s:{C}:wines` was projected from (catalogue
+  // model change § 8a): `sessions.lineup_revision` of a Postgres-backed moment,
+  // written in the SAME fenced step as the line-up and never inside it (the
+  // previous release and the raw readers parse `wines` as WineMeta[]). A
+  // Redis-only moment has none. Lives and dies with the session.
+  wrev:       (c: string) => `s:${c}:wrev`,
+  // Guests WITHOUT an account who are shown to people looking in (Moment
+  // Visibility, moment-visibility § 5): a Set of `a:` identity ids. 🔒 Added
+  // ONLY when a join mints the identity (app/api/session/join/route.ts), so no
+  // later path re-shows a guest who hid; a guest missing from it is counted,
+  // never named, so a lost key hides (fails closed). Expires with the session.
+  shown:      (c: string) => `s:${c}:shown`,
   // USER-scoped (NOT s:{CODE}: — the first user-scoped session-related key):
   // the set of session codes this user dismissed from the Moments-home
   // highlight carousel. Must outlive any single session, so it can't ride a

@@ -11,8 +11,12 @@ import { getProfileFlavor, type FlavorBlock } from '@/lib/profileFlavor'
 import { viewerBlockedAmong } from '@/lib/userBlock'
 import { decimalToNumber } from '@verre/core'
 import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
-import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
+import { entryKey, loadEntriesSoft } from '@/lib/catalogEntries'
+import { entryYear } from '@/lib/wineDisplay'
+import { hiddenSessionIds } from '@/lib/outsideView'
+import { pagePostIds } from '@/lib/postPrivacy'
 import { impressionsCount } from '@/lib/profileLists'
+import { decideMoments, type MomentDecision } from '@/lib/momentAudience'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 
 export type LoadedCheckin = {
@@ -21,7 +25,10 @@ export type LoadedCheckin = {
   producer: string | null
   vintage: string | null
   grape: string | null
-  type: string | null
+  // The bottle's kind (its snapshot; the axes read `sparkling`) and alcohol.
+  colour: string | null
+  sparkling: boolean
+  abv: number | null
   score: number | null
   flavors: unknown
   // Aroma selections, same wire shape as the feed payloads (aroma-layer.md
@@ -45,9 +52,12 @@ export type LoadedCheckin = {
 // for chronological merging with standalone check-ins on the same surface.
 export type LoadedSessionPost = {
   id: number              // feed_items.id
-  sessionId: number | null
-  sessionName: string | null  // null when deleted (scrubbed) or unnamed
-  hostName: string | null     // null when deleted (scrubbed) or anon-host
+  sessionId: number | null    // null on a `privateMoment` post (step 3b, T5)
+  sessionName: string | null  // null when deleted (scrubbed), unnamed, or private to this viewer
+  // A live moment this viewer may not see the name of (step 3b, R16: the
+  // feed's rule; present only when true).
+  privateMoment?: true
+  hostName: string | null     // null when deleted (scrubbed), anon-host, private, or the host is hidden from the viewer
   deleted: boolean
   blind: boolean
   wines: SessionFeedWine[]    // empty when deleted (collapse rule)
@@ -184,13 +194,19 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   //
   // Never ship lat/lng on the public wire. No per-row visibility filter
   // here — the gate's `sees.posts` handled it above.
-  // 🔒 A moment post whose line-up is hidden from this viewer is left out in
-  // the query (lib/outsideView.ts), like the feed.
+  // 🔒 The ids of each list come from the feed's page statement
+  // (lib/postPrivacy.ts, T4): a moment post whose line-up is hidden from this
+  // viewer, an Only Inside post outside its moment and a check-in hidden from
+  // feeds are left out BEFORE the limit. Signed out there is no insider, so
+  // every Only Inside post and every hidden check-in is out.
   const hidden = await hiddenSessionIds(viewerId, [userId])
-  const standaloneFeedItems = await prisma.feedItem.findMany({
-    where: { userId, kind: 'standalone' },
-    orderBy: { createdAt: 'desc' },
-    take: 10,
+  const [standalonePage, sessionPage] = await Promise.all([
+    pagePostIds({ viewerId, authors: [userId], kind: 'standalone', hiddenSessions: hidden, limit: 10 }),
+    pagePostIds({ viewerId, authors: [userId], kind: 'session', hiddenSessions: hidden, limit: 10 }),
+  ])
+  const standaloneFeedItems = standalonePage.length === 0 ? [] : await prisma.feedItem.findMany({
+    where: { id: { in: standalonePage.map(p => p.id) } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     select: {
       id: true,
       venueName: true, city: true, country: true, createdAt: true,
@@ -199,7 +215,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
       rating: {
         select: {
           score: true, flavors: true, aromas: true, notes: true,
-          wine: { select: { name: true, producer: true, vintage: true, grape: true, style: true, imageUrl: true } },
+          wine: { select: { name: true, producer: true, vintage: true, grape: true, style: true, colour: true, sparkling: true, abv: true, imageUrl: true, productId: true, vintageId: true } },
           images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { imageUrl: true } },
         },
       },
@@ -215,10 +231,9 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   // each guarantees the top-10 chronological mix is correctly resolved
   // for users with a strong skew either way; the renderer will slice as
   // appropriate. At Tim+Simon scale this is two cheap queries.
-  const sessionFeedItems = await prisma.feedItem.findMany({
-    where: { userId, kind: 'session', ...notHiddenPosts(hidden) },
-    orderBy: { createdAt: 'desc' },
-    take: 10,
+  const sessionFeedItems = sessionPage.length === 0 ? [] : await prisma.feedItem.findMany({
+    where: { id: { in: sessionPage.map(p => p.id) } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     select: {
       id: true, createdAt: true,
       _count: { select: { likes: true } },
@@ -234,7 +249,24 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   // one SQL rule decides what each bottle shows, lib/outsideView.ts).
   const sessionPairs: SessionFeedPair[] = sessionFeedItems.flatMap(f =>
     f.session ? [{ authorId: userId, sessionId: f.session.id }] : [])
-  const sessionWines = await loadSessionFeedWines(sessionPairs, viewerId)
+  // 🔒 The host's name only to a viewer in the moment or one the host is named
+  // to, and the moment's name (step 3b, R16) only to the owner or a viewer who
+  // could open it (the feed's rule, lib/momentAudience.ts; signed out: never
+  // member, never open, so every moment is private; a failure hides every
+  // host and names only the owner's own view, never the page).
+  const [sessionWines, moments] = await Promise.all([
+    loadSessionFeedWines(sessionPairs, viewerId),
+    decideMoments(viewerId, sessionFeedItems.flatMap(f => (f.session && !f.session.deletedAt ? [f.session.id] : [])))
+      .catch((err: unknown) => { console.error('[profile] moment audience unavailable:', err); return new Map<number, MomentDecision>() }),
+  ])
+  const hostNameFor = (s: { id: number; hostName: string | null }) => {
+    const d = moments.get(s.id)
+    return d && (d.member || d.hostNamed) ? s.hostName : null
+  }
+  const privateFor = (s: { id: number }) => {
+    const d = moments.get(s.id)
+    return !isOwner && !(d && (d.member || d.open))
+  }
 
   // Hydrate viewer's "liked" state across BOTH standalone and session
   // feed_items in one batch lookup.
@@ -284,6 +316,9 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   // (leak-fixes F6): you never see someone you blocked or who blocked you on
   // anyone's list. Absence is no tell (you don't know who was tagged).
   const viewerTagBlocked = viewerId === userId ? blockedTagUserIds : await viewerBlockedAmong(viewerId, tagUserIds)
+  // A check-in's bottle shows its catalogue entry (merges followed), else its
+  // snapshot (catalogue model change step 5).
+  const checkinEntries = await loadEntriesSoft(standaloneFeedItems.flatMap(f => (f.rating ? [{ productId: f.rating.wine.productId, vintageId: f.rating.wine.vintageId }] : [])))
 
   return {
     ...head,
@@ -292,15 +327,18 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
       // violation; drop rather than crash.
       if (!f.rating) return []
       const wine = f.rating.wine
+      const e = wine.productId ? checkinEntries.get(entryKey(wine.productId, wine.vintageId)) : undefined
       const ratingImage = f.rating.images[0]?.imageUrl ?? null
       const place = postPlace(f, showPlace, isOwner)
       return [{
         id: f.id,
-        wineName: wine.name,
-        producer: wine.producer,
-        vintage: wine.vintage,
-        grape: wine.grape,
-        type: wine.style,
+        wineName: e?.name ?? wine.name,
+        producer: e?.producer ?? wine.producer,
+        vintage: e ? (entryYear(e) || null) : wine.vintage,
+        grape: e ? (e.grapes.join(', ') || null) : wine.grape,
+        colour: wine.colour,
+        sparkling: wine.sparkling,
+        abv: wine.abv === null ? null : Number(wine.abv),
         score: decimalToNumber(f.rating.score),
         flavors: f.rating.flavors,
         // Wire parity with the feed's checkin payload — the PR D profile
@@ -328,14 +366,17 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
       // The feed's empty-post drop (app/api/feed/route.ts): a LIVE moment post
       // with nothing left to show is not rendered (a tombstone still is).
       if (!deleted && wines.length === 0) return []
+      // T4: by liveness, never by whether a name is present.
+      const privateMoment = !!f.session && !deleted && privateFor(f.session)
       return [{
         id: f.id,
-        sessionId: f.session?.id ?? null,
+        sessionId: privateMoment ? null : (f.session?.id ?? null),
         // §8 contract: when soft-deleted, the session's name + hostName
         // are scrubbed (NULL). Renderer collapses to "[deleted session]"
         // without a link or per-wine enumeration.
-        sessionName: deleted ? null : (f.session?.name ?? null),
-        hostName: deleted ? null : (f.session?.hostName ?? null),
+        sessionName: deleted || privateMoment ? null : (f.session?.name ?? null),
+        hostName: f.session && !deleted && !privateMoment ? hostNameFor(f.session) : null,
+        ...(privateMoment ? { privateMoment: true as const } : {}),
         deleted,
         blind: !!f.session?.blind,
         wines,

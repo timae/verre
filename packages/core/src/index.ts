@@ -102,10 +102,21 @@ export {
   perRatingAxes,
   fillFlavourZeros,
   stylesWithAxis,
+  axisNeedsSparkling,
+  isSparklingKind,
   WINE_STYLES,
   type StructureAxis,
   type WineStyle,
+  type BottleKind,
+  type AxisKind,
 } from './structureAxes'
+export {
+  NON_ALCOHOLIC_MAX_ABV,
+  isNonAlcoholic,
+  kindOfStyle,
+  kindToken,
+  type KindToken,
+} from './bottle'
 export {
   aggregateFlavourAxes,
   consensusFromRatings,

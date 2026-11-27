@@ -9,7 +9,8 @@ import { CHART_SIZE } from '@/components/charts/sizes'
 import { perRatingAxes, resolveAxesColoured } from '@/lib/flavours'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { formatScore } from '@verre/core'
-import { TCOL, ICO } from '@/lib/wineTypeColors'
+import { TCOL, ICO, TCOL_UNKNOWN } from '@/lib/wineTypeColors'
+import { wineShown } from '@/lib/wineDisplay'
 
 const COLORS = ['rgba(200,150,60,.85)','rgba(122,175,200,.85)','rgba(184,64,64,.85)','rgba(106,170,130,.85)','rgba(200,104,128,.85)','rgba(160,110,200,.85)']
 
@@ -214,7 +215,7 @@ export default function ComparePage() {
             : null
           // Single-taster read (§6d): per-present-key array (registry order),
           // present-and-0 drawn at centre.
-          const fl = perRatingAxes(singleRating?.flavors as Record<string, number> | undefined, resolveAxesColoured('wine', wine.type))
+          const fl = perRatingAxes(singleRating?.flavors as Record<string, number> | undefined, resolveAxesColoured('wine', wine))
 
           // Multi-taster overlay frame (§10 #1): the UNION of structure axes
           // present across the shown tasters, in registry order (so the frame is
@@ -229,12 +230,13 @@ export default function ComparePage() {
           }))
           const presentKeys = new Set<string>()
           for (const s of overlaySeries) for (const key of Object.keys(s.flavors)) presentKeys.add(key)
-          const overlayFL = resolveAxesColoured('wine', wine.type).filter(f => presentKeys.has(f.k))
+          const overlayFL = resolveAxesColoured('wine', wine).filter(f => presentKeys.has(f.k))
 
           const chartShown = !isNarrow || expandedCards.has(wine.id)
           const raterEntries: RaterEntry[] = allWineRatings.map(r => ({ user: r.user, score: r.rating.score || 0 }))
 
-          const accentColor = TCOL[wine.type] || TCOL.red
+          const shown = wineShown(wine)
+          const accentColor = TCOL[shown.kind] || TCOL_UNKNOWN
           const isRaterOpen = openRaterCard === wine.id
           return (
             <div key={wine.id} className="panel" style={{marginBottom:0,position:'relative',zIndex: isRaterOpen ? 30 : undefined}}>
@@ -249,9 +251,9 @@ export default function ComparePage() {
                     <>
                       {wasRevealed && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',display:'block',marginBottom:2}}>✓ revealed</span>}
                       <WineIdentity
-                        wine={wine}
+                        wine={shown}
                         size="compact"
-                        titlePrefix={<span style={{marginRight:6}}>{ICO[wine.type] || '🍷'}</span>}
+                        titlePrefix={<span style={{marginRight:6}}>{ICO[shown.kind] || '🍷'}</span>}
                       />
                     </>
                   )}

@@ -326,6 +326,9 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
       cancelEdit();
       return;
     }
+    // The keyboard closes when the save STARTS (the checks passed): a touch in
+    // the edit bar keeps it up (lib/keyboardDismiss.ts), so Done closes it here.
+    Keyboard.dismiss();
     savingRef.current = true;
     setSaving(true);
     const epoch = viewerCacheEpoch();

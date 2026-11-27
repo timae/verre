@@ -13,50 +13,104 @@ import { throwApiError } from './sessions';
 
 export type ImpressionRow = {
   id: number; // the rating
-  postId: number | null; // the post it belongs to (null: none, inert)
-  wineId: string;
+  postId: number | null; // the post you may open (null: none, or hidden from you: the row opens its impression page)
+  wineId?: string; // absent on a blind row of someone else's list
   name: string;
   vintage: string | null;
   producer: string | null;
-  type: string | null;
+  type: string | null; // the legacy style token
+  colour: string | null;
+  sparkling: boolean;
   category: string;
   imageUrl: string | null;
   score: number | null;
   hadAt: string; // the post's time (a moment's ratings group together)
   blind?: true;
   momentName?: string;
+  privateMoment?: true; // a live moment whose name you may not see (step 3b, R16): the line reads "Private Moment"
   yourScore?: number | null; // someone else's list only: your score of the same bottle
 };
 export type ImpressionsPage = { items: ImpressionRow[]; nextCursor: string | null; commonCount?: number };
 
-export type CravingRow = {
-  key?: string; // your own rows: the remove key (the wine id today)
-  wineId: string;
-  postId: number | null; // the list owner's post of it, when they rated it
+// ONE impression for its page (Moment Visibility step 3, R4, T13): GET
+// /api/users/:id/impressions/:ratingId, the row the list shows you plus the
+// rating. Mirrors lib/profileLists.ts `ImpressionPage`. No post, no moment, no
+// wine id on a blind or stripped row; 404 for every miss.
+export type ImpressionPage = {
+  id: number; // the rating
+  author: { id: string; name: string; username: string | null; xp: number; imageUrl: string | null };
+  wineId?: string;
   name: string;
   vintage: string | null;
   producer: string | null;
   type: string | null;
+  colour: string | null;
+  sparkling: boolean;
+  category: string;
+  abv: number | null;
+  grape: string | null;
+  region: string | null;
+  country: string | null;
+  imageUrl: string | null;
+  score: number | null;
+  flavors: Record<string, number>;
+  aromas: AromaSelection[];
+  notes: string | null;
+  description: string | null;
+  vinification: string | null;
+  purchaseUrl: string | null;
+  hadAt: string;
+  blind?: true;
+};
+// 🔒 OUTSIDE ['feed', …] (T13): the feed cache patch maps every ['feed'] entry.
+export const impressionKey = (owner: string, ratingId: number) => ['impression', owner, ratingId] as const;
+export function getImpression(owner: string, ratingId: number): Promise<ImpressionPage> {
+  return get(`/api/users/${encodeURIComponent(owner)}/impressions/${ratingId}`);
+}
+
+export type CravingRow = {
+  // Your own rows: the remove handle (`DELETE /api/me/bookmarks/:key`: the
+  // craving's id, or `m` + a blind save's id). 🔒 Absent on someone else's
+  // list (a bookmark id is a coarse save time): key those rows on their place
+  // in the page (catalogue model change step 5).
+  key?: string;
+  // The row's bottle, while there is one (the post link pairs it with postId).
+  wineId?: string;
+  postId: number | null; // the list owner's post of it, when they rated it
+  // The rating that post and the score come from: the post's row to open, or
+  // the impression's page when there is no post you may open (Moment
+  // Visibility step 3, T14). Since step 5 it can be another bottle of the same wine.
+  ratingId?: number;
+  name: string;
+  vintage: string | null;
+  producer: string | null;
+  colour: string | null;
+  sparkling: boolean;
   imageUrl: string | null;
   score: number | null; // the list owner's score (theirs only through their post visibility)
-  blind?: true;
   momentName?: string;
 };
 export type CravingsPage = { items: CravingRow[]; nextCursor: string | null };
 export type CravingsSort = 'recent' | 'score';
 
-// Someone's moment you share (D5): the moment's own fields + THEIR role.
-export type SharedMomentRow = {
-  code: string;
+// Someone's Moments (D5; Moment Visibility step 1b + step-2 plan § 4.3): a
+// moment you SHARE (you were there: its code, you open the moment itself), or,
+// with the feature on, one you may only LOOK INTO (its public id, no code: you
+// open the look-in). Both: the moment's own fields + THEIR role. An open row's
+// `name` is null for a nameless moment whose host is hidden from you, and it
+// carries `address` only when the host shows the place.
+type MomentRowFields = {
   name: string | null;
   dateFrom: string | null;
   dateTo: string | null;
   createdAt: string | null;
-  address: string | null;
   coverPhotoUrl: string | null;
   category: string | null;
   role: 'host' | 'cohost' | 'provider' | null;
 };
+export type SharedMomentRow =
+  | (MomentRowFields & { code: string; momentId?: never; address: string | null })
+  | (MomentRowFields & { momentId: string; code?: never; address?: string | null });
 export type SharedMomentsPage = { items: SharedMomentRow[]; nextCursor: string | null; otherCount?: number };
 
 // A 404 = the list is no longer yours to see (gone, private, a block): the

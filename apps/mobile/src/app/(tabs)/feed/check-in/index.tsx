@@ -1,27 +1,32 @@
-import { useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
-import { countryName, filterVintageInput } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
+import { WhereYouHadIt } from '@/components/feed/WhereYouHadIt';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { CountrySheet, Disclosure, FieldGroup, MAX_COVER_BYTES, NotesField, OptionSheet, pickPhoto, SelectField } from '@/components/moments/momentForm';
-import { type WineTypeCode } from '@/lib/api/sessions';
-import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
-import { checkinHref, useSessionTab } from '@/lib/sessionStack';
+import { Disclosure, MAX_COVER_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
+import { BottlePicker, type PickerState } from '@/components/catalog/BottlePicker';
+import { AddSearchScreen } from '@/components/catalog/BottleSearch';
+import { Gone } from '@/components/catalog/pickerParts';
+import { getFlow } from '@/lib/pickerFlow';
+import type { ProductHit } from '@/lib/api/catalog';
+import { newClientId } from '@/lib/clientId';
+import type { BottleLabel } from '@/lib/catalogChoice';
+import { clearCheckinDraft, getCheckinDraft, nextCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
+import { checkinHref, useSessionTab, type FlowDest } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
-import { WINE_TYPES } from '@/lib/momentFormat';
 import { radius, useTheme } from '@/theme';
 
 // Standalone check-in create, STAGE 1 of 2: the details (Simon's two-stage
 // ruling, 2026-07-08 — "first you add the details, then you rate it and check
-// it in"). This screen is the full 02b·add field set (identity + the
-// Add-More-Details metadata fold) plus the venue fold; "Rate It" hands off to
+// it in"). The bottle first, picked from the catalogue inline (ADR-0009), then
+// the photo, where you had it and the bottle's own fields; "Rate It" hands off to
 // stage 2 (`./rate`), which owns score/structure/notes and the final POST.
 // The hand-off travels through lib/checkinDraft.ts (the photo data URL is far
 // too big for route params). A pushed screen per the 02b·add ruling; the
@@ -32,58 +37,76 @@ import { radius, useTheme } from '@/theme';
 // prefilled variant, reserved for "Had it too") — the layout mirrors 02b·add's
 // field language, all shared primitives.
 //
-// Photo cap: MAX_COVER_BYTES, NOT the session wine cap — /api/checkins uploads
-// through the s3 pipeline (~2MB decoded), not session.ts sanitizeImage (1.5MB).
-// Anything larger is silently dropped server-side, so the client must fit
-// under the real cap (see CreateCheckinBody's note in lib/api/feed.ts).
+// Photo cap: MAX_COVER_BYTES, NOT the session wine cap — the check-in's photo
+// (a PATCH after the post) uploads through the s3 pipeline (~2MB decoded), not
+// session.ts sanitizeImage (1.5MB).
 
 type PhotoState = { dataUrl: string; previewUri: string } | null;
 
-export default function CheckinDetails() {
+const CHECKIN_DEST: FlowDest = { kind: 'checkin' };
+
+// Check In's FIRST screen: the one field (ruled 2026-11-22: a pick opens its
+// details on a screen of their own, `./wine`, so back returns here).
+export default function CheckinSearch() {
+  const mount = useSessionTab();
+  // A mount of the search IS a new check-in (the details and the rate stage
+  // sit above it). Clear a draft left by an ABANDONED earlier one: backing out
+  // at the rate stage leaves the old rating in the store, and the details'
+  // preserve-prev read would inherit it into the next check-in (codex P1).
+  useEffect(() => {
+    clearCheckinDraft(mount.tab);
+  }, [mount.tab]);
+  return <AddSearchScreen title="Check In" scope={null} dest={CHECKIN_DEST} />;
+}
+
+// Check In's details (`./wine`): the pick the search (or the catalogue pages)
+// put on the flow, then the photo, where you had it and the bottle's own
+// fields; "Rate It" hands off to the rate stage. A cold link without its flow
+// reads "This isn't available any more".
+export function CheckinDetails() {
+  const { key: rawKey } = useLocalSearchParams<{ key?: string }>();
+  const key = typeof rawKey === 'string' ? rawKey : '';
+  const [initial] = useState(() => getFlow<unknown, unknown, ProductHit>(key)?.choice ?? null);
+  if (!initial) return <Gone />;
+  return <CheckinForm initial={initial} />;
+}
+
+function CheckinForm({ initial }: { initial: NonNullable<ReturnType<typeof getFlow<unknown, unknown, ProductHit>>>['choice'] }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   // The flow's own stack (Feed, or You from your Impressions: lists plan D8).
   const mount = useSessionTab();
 
-  const [photo, setPhoto] = useState<PhotoState>(null);
+  // One client id per flow (this screen stays mounted under the rate stage).
+  const [occurrenceId] = useState(() => newClientId());
+  const [picker, setPicker] = useState<PickerState>({ status: 'none' });
+  const [frozen, setFrozen] = useState<{ label: BottleLabel; isNew: boolean } | null>(null);
+  const [showErrors, setShowErrors] = useState(false);
+  // These details opened AGAIN (back to the search, a pick): the check-in's
+  // draft (the search cleared any older one) seeds every field, so a retry
+  // after a post that may have landed never sends them empty (Codex
+  // 2026-11-22: "Rate It" overwrote the draft with blank fields and no photo).
+  const [seed] = useState(() => getCheckinDraft(mount.tab));
+  const [photo, setPhoto] = useState<PhotoState>(seed?.photo ?? null);
   const [photoError, setPhotoError] = useState<string | null>(null);
-  const [name, setName] = useState('');
-  const [vintage, setVintage] = useState('');
-  const [producer, setProducer] = useState('');
-  const [type, setType] = useState<WineTypeCode | null>(null);
-  const [grape, setGrape] = useState('');
-  const [region, setRegion] = useState('');
-  const [country, setCountry] = useState(''); // WINE origin, ISO-2, '' = unset
-  const [process, setProcess] = useState('');
-  const [description, setDescription] = useState('');
-  const [purchaseUrl, setPurchaseUrl] = useState('');
-  const [venue, setVenue] = useState('');
-  const [city, setCity] = useState('');
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [typeOpen, setTypeOpen] = useState(false);
-  const [countryOpen, setCountryOpen] = useState(false);
+  const [process, setProcess] = useState(seed?.vinification ?? '');
+  const [description, setDescription] = useState(seed?.description ?? '');
+  const [purchaseUrl, setPurchaseUrl] = useState(seed?.purchaseUrl ?? '');
+  const [venue, setVenue] = useState(seed?.venue ?? '');
+  const [city, setCity] = useState(seed?.city ?? '');
+  const [moreOpen, setMoreOpen] = useState(!!(seed?.vinification || seed?.description || seed?.purchaseUrl));
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<ScrollViewInstance>(null);
-  // Return-key chaining like 02b·add, per sub-chain (never across a fold):
-  // Name→Vintage (a focus target only — number-pad has no return key),
-  // Producer→Variety→Venue→City, Region→Process→Purchase link. Type/Country
-  // (dropdowns) and Description (multiline) are skipped.
-  const vintageRef = useRef<TextInputInstance>(null);
-  const varietyRef = useRef<TextInputInstance>(null);
-  const venueRef = useRef<TextInputInstance>(null);
-  const cityRef = useRef<TextInputInstance>(null);
-  const processRef = useRef<TextInputInstance>(null);
   const purchaseRef = useRef<TextInputInstance>(null);
 
-  // A mount of this screen IS a new flow (it stays mounted beneath stage 2,
-  // so a back-swipe from the rate stage does NOT re-run this). Clear any
-  // leftover draft from an ABANDONED earlier flow — without this, backing out
-  // at stage 2 leaves the old rating in the store and onRate's preserve-prev
-  // read would silently inherit it into the next check-in (codex P1).
-  useEffect(() => {
-    clearCheckinDraft(mount.tab);
-  }, [mount.tab]);
+  // Back from the rate stage after a post that MAY have landed: the choice is
+  // frozen (ADR-0009), so the retry sends the same wine, also when these
+  // details were opened again from the search (the draft outlives them).
+  useFocusEffect(useCallback(() => {
+    const d = getCheckinDraft(mount.tab);
+    if (d?.frozen) setFrozen({ label: d.choice.label, isNew: d.choice.kind === 'create' });
+  }, [mount.tab]));
 
   const onPickPhoto = async () => {
     setPhotoError(null);
@@ -98,30 +121,24 @@ export default function CheckinDetails() {
 
   const onRate = () => {
     setError(null);
-    if (!name.trim()) { setError('Give it a name.'); return; }
+    setShowErrors(true);
+    const prev = getCheckinDraft(mount.tab);
+    const choice = prev?.frozen ? prev.choice : picker.status === 'ok' ? picker.choice : null;
+    if (!choice) {
+      setError(picker.status === 'error' ? picker.error : picker.status === 'pending' ? 'One moment, the years are still loading.' : 'Choose the bottle first.');
+      return;
+    }
     // Preserve an in-progress rating from a prior visit to stage 2 (the rate
     // screen wrote it back on unmount) — a back-swipe to tweak a detail must
     // not wipe the score already set.
-    const prev = getCheckinDraft(mount.tab);
-    setCheckinDraft(mount.tab, {
-      photo,
-      name, vintage, producer, type, grape,
-      wineRegion: region, wineCountry: country,
-      vinification: process, description, purchaseUrl,
-      venue, city,
-      score: prev?.score ?? 0,
-      flavors: prev?.flavors ?? {},
-      aromas: prev?.aromas ?? [],
-      notes: prev?.notes ?? '',
-    });
+    // (and the rate stage's Hide from Feed once shown: Moment Defaults).
+    setCheckinDraft(mount.tab, nextCheckinDraft(prev, { choice, photo, vinification: process, description, purchaseUrl, venue, city }, occurrenceId));
     router.push(checkinHref(mount, 'rate'));
   };
 
-  const typeLabel = type ? WINE_TYPES.find((t) => t.code === type)?.label ?? '' : '';
-
   return (
-    // BottomSheetModalProvider in-screen so the Type/Country brand sheets get
-    // a sized host across the Stack boundary (same as add.tsx / create.tsx).
+    // BottomSheetModalProvider in-screen so the picker's Country sheet gets a
+    // sized host across the Stack boundary (same as add.tsx / create.tsx).
     <BottomSheetModalProvider>
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
@@ -137,99 +154,27 @@ export default function CheckinDetails() {
         automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
+        {/* The bottle first (ADR-0009): the pick these details opened with. */}
+        <BottlePicker scope={null} initial={initial} frozen={frozen} showErrors={showErrors} onChange={setPicker} />
+
         <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} />
         {photoError ? (
           <VText variant="small" style={{ marginTop: -8, marginBottom: 8, color: theme.critical }}>{photoError}</VText>
         ) : null}
 
-        {/* .trow2-name — Name (wide) + Vintage (narrow 76), the 02b·add row. */}
-        <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
-          <View style={{ flex: 1 }}>
-            <TextField label="Name" placeholder="What did you have?" value={name} onChangeText={setName} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => vintageRef.current?.focus()} />
-          </View>
-          <View style={{ width: 76 }}>
-            {/* Year OR "NV" — see the add-impression screen's note: a
-                number-pad keyboard made NV untypeable. */}
-            <TextField
-              ref={vintageRef}
-              label="Vintage"
-              // "Year" is the handoff spec: "Year / NV" overflowed the 76-wide field.
-              // NV stays typeable; the hint carries it for VoiceOver.
-              placeholder="Year"
-              accessibilityHint="A year, or NV for non-vintage."
-              value={vintage}
-              onChangeText={(t) => setVintage(filterVintageInput(t))}
-              autoCapitalize="characters"
-              autoCorrect={false}
-            />
-          </View>
-        </View>
+        {/* Where: the venue, always visible (components/feed/WhereYouHadIt). */}
+        <WhereYouHadIt venue={venue} city={city} onVenue={setVenue} onCity={setCity} />
 
-        <View style={{ marginBottom: 14 }}>
-          <TextField label="Producer" placeholder="Maker or winery" value={producer} onChangeText={setProducer} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => varietyRef.current?.focus()} />
-        </View>
-
-        {/* Type — optional here (unlike 02b·add): the server coerces unknown/
-            absent to null and a typeless check-in renders fine. It drives the
-            structure axes on the rate stage when set. */}
-        <FieldGroup label="Type">
-          <SelectField
-            value={typeLabel}
-            placeholder="Choose a type"
-            onPress={() => setTypeOpen(true)}
-            accessibilityLabel={`Type${typeLabel ? `: ${typeLabel}` : ''}`}
-          />
-        </FieldGroup>
-
-        <View style={{ marginBottom: 14 }}>
-          <TextField ref={varietyRef} label="Variety" placeholder="Grape, bean, hops…" value={grape} onChangeText={setGrape} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => venueRef.current?.focus()} />
-        </View>
-
-        {/* Where — the VENUE (where you had it), always visible, not folded
-            (Simon: "more prominent" — the place is half the memory of a
-            check-in). Distinct from the wine's ORIGIN in the fold below. Feed
-            renders it as "venue · city". */}
-        <View style={{ flexDirection: 'row', gap: 12, marginBottom: 4 }}>
-          <View style={{ flex: 1.4 }}>
-            <TextField ref={venueRef} label="Where You Had It" placeholder="Bar, restaurant, home…" value={venue} onChangeText={setVenue} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => cityRef.current?.focus()} />
-          </View>
-          <View style={{ flex: 1 }}>
-            {/* Last always-visible field — Region lives behind the disclosure
-                fold, so we stop here ("done") rather than focus an unmounted
-                field. */}
-            <TextField ref={cityRef} label="City" placeholder="City" value={city} onChangeText={setCity} returnKeyType="done" />
-          </View>
-        </View>
-
-        {/* .disclosure Add More Details — the 02b·add metadata fold (region ·
-            country · process · description · purchase link), now accepted by
-            POST /api/checkins onto the minted wine row (the reason this flow
-            went two-stage: the single screen couldn't carry these). */}
+        {/* .disclosure Add More Details: the bottle's own fields (process ·
+            description · purchase link); its origin and grapes are the
+            catalogue wine's (ADR-0009). The fold is back (ruled 2026-11-22). */}
         <Disclosure
           label="Add More Details"
           open={moreOpen}
           onToggle={() => setMoreOpen((o) => !o)}
           onExpanded={() => scrollRef.current?.scrollToEnd({ animated: true })}
         >
-          {/* .trow2-even — Region + Country (the WINE's origin, distinct from
-              the venue below). */}
-          <View style={{ flexDirection: 'row', gap: 12 }}>
-            <View style={{ flex: 1 }}>
-              <TextField label="Region" placeholder="Where it is from" value={region} onChangeText={setRegion} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => processRef.current?.focus()} />
-            </View>
-            <View style={{ flex: 1, gap: 7 }}>
-              <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Country</VText>
-              <SelectField
-                value={countryName(country) || ''}
-                placeholder="Country"
-                onPress={() => setCountryOpen(true)}
-                accessibilityLabel={`Country${country ? `: ${countryName(country)}` : ''}`}
-              />
-            </View>
-          </View>
-          {/* Process → Purchase link skips the multiline Description (return =
-              newline there, not a chain link). */}
-          <TextField ref={processRef} label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} growLines={3} />
+          <TextField label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} growLines={3} />
           <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} />
           <TextField
             ref={purchaseRef}
@@ -260,9 +205,6 @@ export default function CheckinDetails() {
         ) : null}
         <Button title="Rate It" onPress={onRate} bar block />
       </View>
-
-      <OptionSheet open={typeOpen} title="Type" options={WINE_TYPES} selected={type} onSelect={(t) => { setType(t); setTypeOpen(false); }} onClose={() => setTypeOpen(false)} />
-      <CountrySheet open={countryOpen} selected={country} onSelect={(c) => { setCountry(c); setCountryOpen(false); }} onClose={() => setCountryOpen(false)} />
     </View>
     </BottomSheetModalProvider>
   );
@@ -315,9 +257,8 @@ function PhotoPicker({
     >
       <Icon name="cam" size={24} color={theme.inkSoft} />
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add Photo</VText>
-      {/* Warmer than add.tsx's "a label or pour" — Simon: the caption should
-          feel connected to the moment, not like a spec of accepted subjects. */}
-      <VText variant="caption" color="inkSoft">Optional. Capture the moment.</VText>
+      {/* No line under it (ruled 2026-11-22: not "Optional.", nothing wine-only,
+          and not "moment": a check-in is an impression, not a moment). */}
     </Pressable>
   );
 }

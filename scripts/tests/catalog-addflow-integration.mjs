@@ -36,6 +36,7 @@
 import { createPrismaClient } from '../lib/prismaClient.mjs'
 import {
   searchProducers,
+  similarProducers,
   searchProducts,
   WORD_SIMILARITY_THRESHOLD,
   trgmOrderWith,
@@ -46,12 +47,12 @@ import {
   createProduct as _createProduct,
   createVintage as _createVintage,
   resolveCatalogLink,
-  applyIdentityEditRule,
   validateYear,
   catalogLinkRateKey,
   CatalogValidationError,
 } from '../../lib/catalogWrite.ts'
 import { redactWine } from '../../lib/wineRedaction.ts'
+import { rebuildCatalogSearch } from '../lib/catalogSearchRebuild.mjs'
 import { scrub } from '../../lib/textSafe.ts'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -157,6 +158,11 @@ const createVintage = (productId, year, addedBy, abv = null, tx, opts) =>
 
 const TEST_USER = 970001
 
+// Raw seeds and raw merges bypass lib/catalogWrite.ts, like a catalogue load:
+// the search docs follow by the rebuild (step 7b; the every-word search reads
+// them, the trigram one does not).
+const reindex = () => prisma.$transaction(tx => rebuildCatalogSearch(tx), { timeout: 120_000 })
+
 // Prisma's $executeRawUnsafe rejects multiple commands in one call (42601), so
 // each statement runs separately. Order matters: children before parents, since
 // eight of the nine forward catalog FKs are NoAction/Restrict by design.
@@ -235,6 +241,7 @@ async function main() {
   // autovacuum. ANALYZE alone does NOT do this — it refreshes statistics, not
   // the pending list.
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
+  await reindex()
 
   // No transaction and no GUC: a KNN order reads no setting, which is precisely
   // why the interactive transaction (and the pool connection it pinned for the
@@ -303,14 +310,16 @@ async function main() {
     VALUES ('p2thresh000000000000', 'P2TEST Chateau Margaux', 'confirmed', '{}', now(), now())
   `)
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
-  const exact = await searchProducers('Chateau Margaux')
+  // These pins are the TRIGRAM matcher's (similarity, kept as similarProducers
+  // for duplicate finding since step 7b); the every-word twins follow each.
+  const exact = await similarProducers('Chateau Margaux')
   ok(exact.some(r => r.id === 'p2thresh000000000000'), 'exact-ish query finds the producer')
   // 🔒 TYPO TOLERANCE IS THE PROPERTY THE WHOLE FUZZY DESIGN EXISTS FOR, and it
   // survives the GIN→GiST swap because `<->>` is exactly `1 - word_similarity`
   // — the identical metric. Verified numerically: 'chateu margux' vs 'Château
   // Margaux' gives word_similarity 0.5294 and distance 0.4706, and the real
   // producer ranks FIRST (0.529) ahead of the noise (0.357).
-  const typo = await searchProducers('Chateu Margeaux')
+  const typo = await similarProducers('Chateu Margeaux')
   ok(typo.some(r => r.id === 'p2thresh000000000000'),
     'typo tolerance still works after the KNN swap')
 
@@ -318,7 +327,7 @@ async function main() {
   // without the post-filter a query matching NOTHING would still return its 20
   // least-bad rows. This is the "no bad matches" guarantee the old `<%`
   // threshold provided as a WHERE clause.
-  const nonsense = await searchProducers('zzzqqqxxvvwwjj')
+  const nonsense = await similarProducers('zzzqqqxxvvwwjj')
   eq(nonsense, [], 'a query matching nothing returns NOTHING, not the 20 least-bad rows')
 
   // Accent folding: the generated column is lower(f_unaccent(name)), and the
@@ -328,9 +337,16 @@ async function main() {
     INSERT INTO producers (id, name, status, curator_locked, created_at, updated_at)
     VALUES ('p2accent000000000000', 'P2TEST Châteauneuf Réserve', 'confirmed', '{}', now(), now())
   `)
-  const unaccented = await searchProducers('Chateauneuf Reserve')
+  const unaccented = await similarProducers('Chateauneuf Reserve')
   ok(unaccented.some(r => r.id === 'p2accent000000000000'),
     'an unaccented query matches an accented name (one fold path, no drift)')
+  // The every-word twins (step 7b), over the docs the rebuild wrote for the two
+  // raw inserts: the same fold, so the same answers.
+  await reindex()
+  ok((await searchProducers('Chateau Margaux')).results.some(r => r.id === 'p2thresh000000000000'), 'every-word: the exact-ish query finds it')
+  ok((await searchProducers('Chateu Margeaux')).results.some(r => r.id === 'p2thresh000000000000'), 'every-word: a typo in each word still finds it (chateu → the filler chateau, margeaux → margaux)')
+  eq((await searchProducers('zzzqqqxxvvwwjj')).results, [], 'every-word: nonsense finds nothing')
+  ok((await searchProducers('Chateauneuf Reserve')).results.some(r => r.id === 'p2accent000000000000'), 'every-word: an unaccented query matches the accented name')
 
   // 🔒 THE FOLD LOWERCASES LAST, NOT FIRST. `f_unaccent` is `unaccent` with no
   // `lower()`, and some unaccent expansions PRODUCE CAPITALS — so
@@ -654,6 +670,7 @@ async function main() {
   }, { timeout: 60_000 })
   await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
   await prisma.$executeRawUnsafe('VACUUM ANALYZE product_producers')
+  await reindex()
 
   const pTerm = (await prisma.$queryRawUnsafe(
     `SELECT name FROM wine_products WHERE name LIKE 'P2TEST Cuvee %' ORDER BY id LIMIT 1`))[0]
@@ -817,7 +834,8 @@ async function main() {
     VALUES ('p2rej000000000000000', 'P2TEST Survivor Estate Junk', 'rejected', '{}', now(), now())
   `)
   await prisma.$executeRawUnsafe('ANALYZE producers')
-  const surv = await searchProducers('Survivor Estate')
+  await reindex()
+  const surv = (await searchProducers('Survivor Estate')).results
   ok(surv.some(r => r.id === survivor.id), 'a live producer IS offered (the paired accept)')
   ok(!surv.some(r => r.id === 'p2tomb00000000000000'), 'a merge tombstone (linked) is NOT offered')
   ok(!surv.some(r => r.id === 'p2rej000000000000000'), 'a rejected producer is NOT offered')
@@ -842,8 +860,11 @@ async function main() {
     VALUES ('${archivedId}', 'P2TEST Survivor Estate Archived', 'archived', '{}', now(), now())
   `)
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
-  const addScope = await searchProducers('Survivor Estate')
-  const reviewScope = await searchProducers('Survivor Estate', { scope: 'review' })
+  await reindex()
+  // The review scope is the trigram matcher's (phase 3's curator surfaces).
+  const addScope = await similarProducers('Survivor Estate')
+  const reviewScope = await similarProducers('Survivor Estate', { scope: 'review' })
+  ok(!(await searchProducers('Survivor Estate')).results.some(r => r.id === archivedId), 'every-word: an archived producer is excluded too')
   ok(!addScope.some(r => r.id === archivedId),
     'an archived producer is EXCLUDED from add-time suggestions')
   ok(reviewScope.some(r => r.id === archivedId),
@@ -868,7 +889,8 @@ async function main() {
   await prisma.$executeRawUnsafe(
     `UPDATE producers SET status = 'linked', links_to = '${mSurv.id}' WHERE id = '${mLoser.id}'`)
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
-  const aliasHits = await searchProducers('Distinctive Alias Spelling')
+  await reindex()
+  const aliasHits = (await searchProducers('Distinctive Alias Spelling')).results
   // Asserts the survivor is present and the TOMBSTONE is not — rather than a
   // total count, which would break the moment an unrelated fixture happens to
   // fuzzy-match the query.
@@ -921,13 +943,150 @@ async function main() {
   await prisma.$executeRawUnsafe(
     `UPDATE producers SET status = 'linked', links_to = '${mFinal.id}' WHERE id = '${mSurv.id}'`)
   await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
-  const chained = await searchProducers('Distinctive Alias Spelling')
+  await reindex()
+  const chained = (await searchProducers('Distinctive Alias Spelling')).results
   ok(chained.some(r => r.id === mFinal.id)
      && !chained.some(r => r.id === mSurv.id || r.id === mLoser.id),
     `a merge CHAIN (A→B→C) resolves transitively to the END, skipping both intermediates (got ${JSON.stringify(chained.map(r => r.name))})`)
   // Unwind so later sections see a clean fixture set.
   await prisma.$executeRawUnsafe(
     `UPDATE producers SET status = 'provisional', links_to = NULL WHERE id IN ('${mLoser.id}','${mSurv.id}')`)
+  await reindex()
+
+  // ══════════════════════════════════════════════════════════════════════
+  console.log('\n§ 2c — ranking among ties, and statements per search')
+  // 🔒 `<->>` is 1 - word_similarity, which scores every name that CONTAINS the
+  // query as a full match: "Robert Weil" ties at distance 0 with "Robert Weil
+  // Junior", and the order among ties was the index's (measured on the real
+  // catalogue, step 1 of the model change: the full producer name came first in
+  // 138 of 150 flows). The KNN ORDER BY must stay a bare distance (that is the
+  // index scan, § 1), so the rows it returns are re-ranked: exact folded match,
+  // then the score, then two-way similarity. A fixed list, so a cheaper or
+  // reshaped query cannot silently rank worse. The exact row is created LAST so
+  // index order does not hand it first place by accident.
+  const weilVariants = ['Junior', 'Estate Kiedrich', 'Kiedricher Grafenberg Erste Lage', 'Tradition',
+    'Rheingau Selection', 'Weingut Kellerei', 'Family Reserve', 'Klosterberg', 'Turmberg', 'Hallgarten']
+  for (const v of weilVariants) await createProducer({ name: `P2TEST Robert Weil ${v}` }, TEST_USER)
+  const weilExact = await createProducer({ name: 'P2TEST Robert Weil' }, TEST_USER)
+  const tieHouse = await createProducer({ name: 'P2TEST Ranking House' }, TEST_USER)
+  for (const n of ['Ancienne Cuvee', 'Belle Cuvee', 'Cuvee Prestige du Domaine', 'Cuvee'])
+    await createProduct({ name: `P2TEST ${n}`, producerId: tieHouse.id }, TEST_USER)
+  await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
+  await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
+  // Re-expressed on the every-word cascade (step 7b): every typed word matches
+  // in all eleven names, so FEWER UNTYPED WORDS decides (the exact name has
+  // none, "Junior" one, the long one five); the exact arm keeps it first.
+  const weil = (await searchProducers('P2TEST Robert Weil')).results
+  eq(weil[0]?.id, weilExact.id, 'an EXACT name ranks first among the names that contain it')
+  ok(weil.every(r => !('exact' in r) && !('sim' in r)), 'the ranking columns never reach the result shape')
+  const weilNoExact = (await searchProducers('Robert Weil')).results
+  eq(weilNoExact[0]?.id, weilExact.id, 'with no exact match, the closest of the containing names ranks first')
+  const iJunior = weilNoExact.findIndex(r => r.name === 'P2TEST Robert Weil Junior')
+  const iLong = weilNoExact.findIndex(r => r.name === 'P2TEST Robert Weil Kiedricher Grafenberg Erste Lage')
+  ok(iJunior >= 0 && iLong > iJunior, `a short containing name ranks above a long one (Junior ${iJunior}, long ${iLong})`)
+  const cuvee = await searchProducts('Cuvee', { producerId: tieHouse.id })
+  eq(cuvee[0]?.name, 'P2TEST Cuvee', 'scoped: the closest containing name ranks first, not the alphabetically first')
+
+  // 🔒 STATEMENTS PER SEARCH. Each statement is a round trip and ~0.3 ms of app
+  // CPU (more on a fractional-core instance), and the scoped search sent five
+  // for a result one statement already holds (step 1 of the model change). The
+  // merge machinery still runs, but only when a row or its producer is `linked`
+  // (§ 2b covers those results). Counted on the app's own client.
+  const { prisma: appPrisma } = await import('../../lib/prisma.ts')
+  const statements = async fn => {
+    let n = 0
+    const unsafe = appPrisma.$queryRawUnsafe, tagged = appPrisma.$queryRaw
+    appPrisma.$queryRawUnsafe = (...a) => { n++; return unsafe.apply(appPrisma, a) }
+    appPrisma.$queryRaw = (...a) => { n++; return tagged.apply(appPrisma, a) }
+    try { await fn() } finally { appPrisma.$queryRawUnsafe = unsafe; appPrisma.$queryRaw = tagged }
+    return n
+  }
+  const nProducer = await statements(() => searchProducers('Robert Weil'))
+  const nScoped = await statements(() => searchProducts('Cuvee', { producerId: tieHouse.id }))
+  const nUnscoped = await statements(() => searchProducts('P2TEST Cuvee'))
+  ok(nProducer >= 1, `the statement counter sees the search (producer sent ${nProducer})`)
+  eq(nProducer, 2, 'a producer search with no merged row is TWO statements (step 7b: words, then candidates; it was one before, deliberate)')
+  eq(await statements(() => similarProducers('Robert Weil')), 1, 'the trigram producer search (similarProducers) stays ONE statement')
+  ok(nScoped <= 2, `a scoped product search with no merged row is at most TWO statements (sent ${nScoped})`)
+  eq(nUnscoped, 1, 'an unscoped product search with no merged row is ONE statement')
+
+  // 🔒 THE EXACT ROW IS OFFERED EVEN OUTSIDE THE KNN WINDOW. More names can tie
+  // at distance 0 than the scan returns (limit × 3 = 60), in index order: on the
+  // real catalogue the producer named exactly "Tenuta" was never offered (184
+  // names contain it). 200 names here contain the query; one IS it.
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO producers (id, name, status, curator_locked, created_at, updated_at)
+    SELECT 'p2tie' || lpad(g::text, 6, '0'), 'P2TEST Tenutaq Cellar ' || g, 'confirmed', '{}', now(), now()
+      FROM generate_series(1, 200) g`)
+  const tenutaExact = await createProducer({ name: 'P2TEST Tenutaq' }, TEST_USER)
+  await reindex()
+  // 🔒 A MERGED ALIAS LENDS ITS RANK TO ITS SURVIVOR, whichever of the two the
+  // index returns first. Per pair: the alias is the CLOSEST name (not exact), a
+  // competitor comes next, the survivor is far longer; all three contain the
+  // query (a tie at score 1). Only a de-dup that keeps the better-RANKED match
+  // (`byRank`) puts the survivor above the competitor: a score-only de-dup
+  // keeps whichever came first. Six pairs so index order cannot hide that, for
+  // producers and (scoped) for products.
+  const mergePairs = []
+  for (const k of ['a', 'b', 'c', 'd', 'e', 'f']) {
+    const surv = await createProducer({ name: `P2TEST Quillard${k} Domaine Wines and Spirits Estate` }, TEST_USER)
+    const alias = await createProducer({ name: `P2TEST Quillard${k} Domaine` }, TEST_USER)
+    await createProducer({ name: `P2TEST Quillard${k} Domaine X` }, TEST_USER)
+    await prisma.$executeRawUnsafe(`UPDATE producers SET status = 'linked', links_to = '${surv.id}' WHERE id = '${alias.id}'`)
+    mergePairs.push({ k, surv, alias })
+  }
+  const prodHouse = await createProducer({ name: 'P2TEST Brunell House' }, TEST_USER)
+  const prodPairs = []
+  for (const k of ['a', 'b', 'c', 'd', 'e', 'f']) {
+    const surv = await createProduct({ name: `P2TEST Brunell${k} Riserva Speciale del Fondatore`, producerId: prodHouse.id }, TEST_USER)
+    const alias = await createProduct({ name: `P2TEST Brunell${k} Riserva`, producerId: prodHouse.id }, TEST_USER)
+    await createProduct({ name: `P2TEST Brunell${k} Riserva X`, producerId: prodHouse.id }, TEST_USER)
+    await prisma.$executeRawUnsafe(`UPDATE wine_products SET status = 'linked', links_to = '${surv.id}' WHERE id = '${alias.id}'`)
+    prodPairs.push({ k, surv, alias })
+  }
+  await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
+  await prisma.$executeRawUnsafe('VACUUM ANALYZE producers')
+  const tenuta = (await searchProducers('P2TEST Tenutaq')).results
+  eq(tenuta[0]?.id, tenutaExact.id, 'an exact name is offered first even when more than 60 names contain it')
+  eq((await similarProducers('P2TEST Tenutaq'))[0]?.id, tenutaExact.id, '… by the trigram search too (its exact arm)')
+  const pairTops = []
+  for (const { k, surv } of mergePairs) pairTops.push((await searchProducers(`P2TEST Quillard${k}`)).results[0]?.id === surv.id)
+  ok(pairTops.every(Boolean), `producers: a merged alias's rank carries to its survivor, above a closer competitor (${pairTops.filter(Boolean).length}/6)`)
+  const prodTops = []
+  for (const { k, surv } of prodPairs) prodTops.push((await searchProducts(`P2TEST Brunell${k}`, { producerId: prodHouse.id }))[0]?.id === surv.id)
+  ok(prodTops.every(Boolean), `products: a merged alias's rank carries to its survivor, above a closer competitor (${prodTops.filter(Boolean).length}/6)`)
+  const quill = (await searchProducers('P2TEST Quillarda')).results
+  const keys = o => (o ? Object.keys(o).sort().join(',') : '(no result)')
+  eq(keys(weil[0]), 'country,id,name,region,score', 'a producer result carries exactly its public fields')
+  eq(keys(quill[0]), 'country,id,name,region,score', 'so does a producer resolved through a merge')
+  eq(keys(cuvee[0]), 'colour,id,name,producerId,producerName,region,score,sparkling,style',
+    'a product result carries exactly its public fields (no rank, link or producer-status columns)')
+  for (const { alias } of mergePairs)
+    await prisma.$executeRawUnsafe(`UPDATE producers SET status = 'provisional', links_to = NULL WHERE id = '${alias.id}'`)
+  for (const { alias } of prodPairs)
+    await prisma.$executeRawUnsafe(`UPDATE wine_products SET status = 'provisional', links_to = NULL WHERE id = '${alias.id}'`)
+
+  // The REAL trigram producer statement, EXPLAINed (§ 1 explains a literal of
+  // the form): the exact arm on the covering B-tree, the KNN arm on GiST, no seq scan.
+  let captured = null
+  const unsafe0 = appPrisma.$queryRawUnsafe
+  appPrisma.$queryRawUnsafe = (sql, ...args) => { captured ??= { sql, args }; return unsafe0.call(appPrisma, sql, ...args) }
+  try { await similarProducers('P2TEST Robert Weil') } finally { appPrisma.$queryRawUnsafe = unsafe0 }
+  const realPlan = captured
+    ? JSON.stringify((await appPrisma.$queryRawUnsafe(`EXPLAIN (FORMAT JSON) ${captured.sql}`, ...captured.args))[0]['QUERY PLAN'])
+    : ''
+  ok(realPlan.includes('producers_name_folded_gist_idx'), 'the real producer statement orders through the GiST KNN index')
+  ok(realPlan.includes('"producers_name_folded_idx"'), 'its exact arm uses the covering B-tree (the range spelling)')
+  ok(realPlan !== '' && !seqScansTable(realPlan, 'producers'), 'and it does not sequentially scan producers')
+  // The every-word producer search's candidates statement (its SECOND): the
+  // exact-name arm on the same covering B-tree (step 7b keeps it, plan § 2).
+  const sent = []
+  appPrisma.$queryRawUnsafe = (sql, ...args) => { sent.push({ sql, args }); return unsafe0.call(appPrisma, sql, ...args) }
+  try { await searchProducers('P2TEST Robert Weil') } finally { appPrisma.$queryRawUnsafe = unsafe0 }
+  const candPlan = sent[1]
+    ? JSON.stringify((await appPrisma.$queryRawUnsafe(`EXPLAIN (FORMAT JSON) ${sent[1].sql}`, ...sent[1].args))[0]['QUERY PLAN'])
+    : ''
+  ok(candPlan.includes('"producers_name_folded_idx"'), 'the every-word producer search\'s exact arm uses the covering B-tree (the range spelling)')
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 3 — a product cannot be created without its lead producer')
@@ -1044,8 +1203,11 @@ async function main() {
     country: 'FR', productId: prod.id, vintageId: 'someVintageId',
   }
   const redacted = redactWine(wine, { revealed: false, isHost: false, ownsWine: false, index: 0 })
-  eq(redacted.productId, null, 'redactWine nulls productId')
-  eq(redacted.vintageId, null, 'redactWine nulls vintageId')
+  // Since the catalogue model change (step 4) the wire has no flat ids at all:
+  // they live in `entry`, which a blind row replaces wholesale.
+  ok(!('productId' in redacted) && !('vintageId' in redacted), 'redactWine carries no flat productId / vintageId')
+  eq(redacted.entry, null, 'redactWine replaces the catalogue entry wholesale (null)')
+  ok(!JSON.stringify(redacted).includes(wine.productId), 'the product id appears nowhere in the blind row')
   eq(redacted.name, 'Wine 1', 'redactWine still masks the name (the field it always masked)')
   // 🔒 THE PAIRED POSITIVE: the ids must survive when the wine is NOT redacted,
   // or the "strip" could be an unconditional drop that breaks the feature.
@@ -1200,9 +1362,9 @@ async function main() {
   ok(nv !== null, 'the NV row was the one that was kept')
 
   // The plausible-year fence (route-level, tighter than the DB CHECK).
-  const nextYear = new Date().getUTCFullYear() + 1
-  ok(validateYear(nextYear) === nextYear, `current year + 1 (${nextYear}) is accepted`)
-  await rejects('a far-future year is rejected', async () => validateYear(nextYear + 1), 'year must be between')
+  const thisYear = new Date().getUTCFullYear()
+  ok(validateYear(thisYear) === thisYear, `the current year (${thisYear}) is accepted`)
+  await rejects('next year is rejected (a vintage is the harvest year)', async () => validateYear(thisYear + 1), 'year must be between')
   await rejects('a pre-1900 year is rejected', async () => validateYear(1899), 'year must be between')
   ok(validateYear(1900) === 1900, '1900 is accepted (the paired boundary accept)')
   ok(validateYear(null) === null, 'null (the NV row) passes through validateYear')
@@ -1259,10 +1421,13 @@ async function main() {
     `a bare domain gets https:// prepended rather than silently dropped (got ${JSON.stringify(site[sites.bare.id])})`)
   // Query guards on the trigram scan: sub-trigram queries return nothing rather
   // than an arbitrary slice of the catalog, and the limit is hard-capped.
-  eq(await searchProducers('ab'), [], 'a query shorter than one trigram returns nothing')
-  eq(await searchProducers('   '), [], 'a blank query returns nothing')
-  ok((await searchProducers('P2TEST', { limit: 9999 })).length <= 20,
+  eq(await similarProducers('ab'), [], 'a query shorter than one trigram returns nothing')
+  eq(await similarProducers('   '), [], 'a blank query returns nothing')
+  ok((await similarProducers('P2TEST', { limit: 9999 })).length <= 20,
     'the result limit is hard-capped regardless of the requested value')
+  eq((await searchProducers('ab')).results, [], 'every-word: under 3 characters returns nothing')
+  eq((await searchProducers('   ')).results, [], 'every-word: a blank query returns nothing')
+  ok((await searchProducers('P2TEST', { limit: 9999 })).results.length <= 20, 'every-word: the limit is hard-capped too')
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 8 — the blank-name / empty-string trap')
@@ -1293,101 +1458,11 @@ async function main() {
     `SELECT region, region_folded FROM producers WHERE id = '${blankRegion.id}'`)
   eq(rr[0].region, null, 'a blank region normalizes to NULL, not the empty string')
 
-  // ══════════════════════════════════════════════════════════════════════
-  console.log('\n§ 9 — the identity-changing-edit rule')
-  // 🔒 An edit that changes the instance's IDENTITY must clear the link;
-  // a cosmetic edit must KEEP it. Both directions, because a rule that always
-  // cleared, or never cleared, would pass a one-sided test.
-  const linked = { name: 'Grand Vin', producer: 'Survivor', vintage: '2019',
-                   productId: prod.id, vintageId: vintage.id }
-  eq(applyIdentityEditRule(linked, { description: 'lovely' }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a cosmetic edit (description only) KEEPS the link')
-  eq(applyIdentityEditRule(linked, { name: 'Different Wine' }, null),
-    { productId: null, vintageId: null },
-    'changing the NAME clears the link')
-  eq(applyIdentityEditRule(linked, { producer: 'Someone Else' }, null),
-    { productId: null, vintageId: null },
-    'changing the PRODUCER clears the link')
-  eq(applyIdentityEditRule(linked, { vintage: '2020' }, null),
-    { productId: null, vintageId: null },
-    'changing the VINTAGE clears the link')
-  eq(applyIdentityEditRule(linked, { name: 'grand  vin' }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a whitespace/case-only name change is NOT an identity change')
-  eq(applyIdentityEditRule(linked, { name: 'Different Wine' },
-      { productId: otherProduct.id, vintageId: null }),
-    { productId: otherProduct.id, vintageId: null },
-    'an explicit re-link WINS over the identity-change clear')
-  eq(applyIdentityEditRule(linked, {}, { productId: null, vintageId: null }),
-    { productId: null, vintageId: null },
-    'an explicit clear is honoured')
-  // 🔒 THE REAL CLIENT'S ACTUAL SHAPE. The mobile app's UpdateWineBody
-  // (apps/mobile/src/lib/api/sessions.ts) resends name + producer + vintage on
-  // EVERY edit, including a pure photo change — so the rule sees all three
-  // identity fields present, unchanged, on an edit that changes nothing about
-  // identity. If the comparison were "field present ⇒ treat as changed", every
-  // photo edit from the app would silently drop a correct catalog link. Pinned
-  // here because the failure would be invisible: the edit succeeds, the link
-  // just quietly disappears.
-  eq(applyIdentityEditRule(linked,
-      { name: 'Grand Vin', producer: 'Survivor', vintage: '2019' }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a client that resends all identity fields UNCHANGED keeps the link')
-  // The mirror case: the same client clearing the vintage IS an identity change.
-  eq(applyIdentityEditRule(linked,
-      { name: 'Grand Vin', producer: 'Survivor', vintage: '' }, null),
-    { productId: null, vintageId: null },
-    'clearing the vintage to empty IS an identity change and clears the link')
-
-  // 🔒 THE COMPARISON MUST MATCH THE WRITE'S OWN NORMALIZATION. The write path
-  // scrubs control/zero-width characters and canonicalizes `vintage` through
-  // the shared normalizer, so comparing the RAW body value reported a change
-  // where the STORED value would not actually move — silently dropping a
-  // correct link on an edit that changes nothing.
-  //
-  // ⚠️ UPDATED: the vintage rule is no longer "truncate to 4 chars". It is
-  // EXACTLY four digits or the NV token, else empty — a partial or overlong
-  // value is dropped rather than sliced, because slicing invents a year the
-  // user never typed. So '2019-2020' normalizes to EMPTY (not to '2019'), the
-  // stored value really does move, and the link MUST clear. The earlier
-  // expectation here encoded the truncating write and became wrong when the
-  // contract tightened.
-  eq(applyIdentityEditRule(linked, { vintage: '2019-2020' }, null),
-    { productId: null, vintageId: null },
-    'an overlong vintage normalizes to EMPTY, so the stored value moves and the link clears')
-  // The canonicalization case that must NOT clear: 'N.V.' and 'NV' store the
-  // same value, so an edit between them changes nothing.
-  eq(applyIdentityEditRule({ ...linked, vintage: 'N.V.' }, { vintage: 'NV' }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'canonicalizing N.V. to NV stores the same value and keeps the link')
-  // 🔒 `name` is REQUIRED, so the write does `scrub(name) || existing` (the
-  // check-in PATCH) or rejects outright (the session path). An invalid or blank
-  // name is therefore IGNORED and the stored name retained — nothing moves, so
-  // the link must survive. `vintage` is optional and stores its empty value, so
-  // it is deliberately NOT symmetric with this.
-  eq(applyIdentityEditRule(linked, { name: '' }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a blank name is ignored by the write (falls back), so the link survives')
-  eq(applyIdentityEditRule(linked, { name: 123 }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a non-string name is ignored by the write, so the link survives')
-  // But a NON-STRING VINTAGE does clear: scrub() rejects it, so the write
-  // stores empty. A String(v)-coercing comparator kept the link here while the
-  // write blanked the vintage — blank vintage, retained vintage-grain link.
-  eq(applyIdentityEditRule(linked, { vintage: 2019 }, null),
-    { productId: null, vintageId: null },
-    'a numeric vintage is rejected by scrub, so the write stores empty and the link clears')
-  // ​ is a zero-width space: invisible in the name, removed by scrub(), so
-  // the stored value is byte-identical to what's already there.
-  eq(applyIdentityEditRule(linked, { name: `Grand​ Vin` }, null),
-    { productId: prod.id, vintageId: vintage.id },
-    'a zero-width character the write SCRUBS out is not an identity change')
-  // Paired negative: a vintage change that genuinely survives canonicalization DOES
-  // clear — proving the rule still bites where it should.
-  eq(applyIdentityEditRule(linked, { vintage: '2021' }, null),
-    { productId: null, vintageId: null },
-    'a real vintage change still clears the link')
+  // § 9 — the identity-changing-edit rule: RETIRED (catalogue model change
+  // step 4). A bottle's identity is its catalogue link; typed identity text
+  // never becomes the snapshot, an identity edit is a re-link. Pinned by
+  // scripts/tests/catalog-every-write.mts § 9 (the snapshot follows a re-link,
+  // a cosmetic edit never rewrites it) and § 10 (the interleaved PATCH).
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 10 — grapes: {} is unrecorded, and it is never NULL')
@@ -1503,10 +1578,11 @@ async function main() {
   // would violate the composite FK at runtime) passed green. The right fix was
   // to give CI a Redis service — it is one workflow block — rather than accept
   // a weaker assertion. Both writers are now driven for real.
-  const { reassignProvenance, mirrorLineup } = await import('../../lib/session.ts')
-  // Release B: both writers run INSIDE the session mutation contract's
-  // transaction and project the lineup the contract read under its locks
-  // (passed in), so the fixture drives them in a transaction directly.
+  const { reassignProvenance } = await import('../../lib/session.ts')
+  const { copyLineup, insertOccurrence, relinkOccurrence } = await import('../../lib/occurrences.ts')
+  // The record-first writers (catalogue model change step 3) run INSIDE the
+  // session mutation contract's transaction, so the fixture drives them in a
+  // transaction directly.
   const [{ id: p2sid }] = await prisma.$queryRawUnsafe(`
     INSERT INTO sessions (code, host_name, created_at)
     VALUES ('P2TESTSS', 'P2 Host', now())
@@ -1521,66 +1597,51 @@ async function main() {
     addedByIdentityId: 'a:00000000-0000-4000-8000-000000000002', addedByDisplayName: 'Someone',
     productId: prod.id, vintageId: vintage.id,
   }
-  // The CREATE arm — no wines row exists yet, which is the exact case this
-  // upsert exists for, and the arm that was found omitting the link.
+  // The create (INSERT-only) must store the link, and a brought-by reassign
+  // must leave it alone.
   await prisma.$executeRawUnsafe(`DELETE FROM wines WHERE id = '${linkedWine.id}'`)
-  await prisma.$transaction(tx => reassignProvenance(tx, p2sid, [linkedWine], linkedWine))
+  const ins = await prisma.$transaction(tx => insertOccurrence(tx, p2sid, linkedWine, null))
+  eq(ins, 'inserted', 'insertOccurrence creates the row')
+  await prisma.$transaction(tx => reassignProvenance(tx, p2sid, linkedWine.id, 'a:00000000-0000-4000-8000-000000000003', 'Someone else'))
   const reassigned = await prisma.$queryRawUnsafe(
-    `SELECT product_id, vintage_id FROM wines WHERE id = '${linkedWine.id}'`)
+    `SELECT product_id, vintage_id, added_by_identity_id FROM wines WHERE id = '${linkedWine.id}'`)
   // 🔒 Asserts the VALUES, not merely that the columns are non-null — that is
   // what catches a transposition (vintageId written from wine.productId).
-  eq(reassigned[0]?.product_id, prod.id, 'a reassign that CREATES the row stores the right productId')
-  eq(reassigned[0]?.vintage_id, vintage.id, 'a reassign that CREATES the row stores the right vintageId')
+  eq(reassigned[0]?.product_id, prod.id, 'the create stores the right productId, a reassign keeps it')
+  eq(reassigned[0]?.vintage_id, vintage.id, 'the create stores the right vintageId, a reassign keeps it')
+  eq(reassigned[0]?.added_by_identity_id, 'a:00000000-0000-4000-8000-000000000003', 'the reassign moved the owner')
 
-  // The lineup mirror (every list write projects the whole array), both arms.
+  // The strict whole-array copy (reconciliation, promotion), both arms.
   const archiveId = 'p2test_wine_archive'
   await prisma.$executeRawUnsafe(`DELETE FROM wines WHERE id = '${archiveId}'`)
-  await prisma.$transaction(tx => mirrorLineup(tx, p2sid, [linkedWine, { ...linkedWine, id: archiveId }]))
+  await prisma.$transaction(tx => copyLineup(tx, p2sid, [linkedWine, { ...linkedWine, id: archiveId }]))
   const created = await prisma.$queryRawUnsafe(
     `SELECT product_id, vintage_id FROM wines WHERE id = '${archiveId}'`)
-  eq(created[0]?.product_id, prod.id, 'mirrorLineup CREATE stores the right productId')
-  eq(created[0]?.vintage_id, vintage.id, 'mirrorLineup CREATE stores the right vintageId')
+  eq(created[0]?.product_id, prod.id, 'copyLineup CREATE stores the right productId')
+  eq(created[0]?.vintage_id, vintage.id, 'copyLineup CREATE stores the right vintageId')
   // The UPDATE arm must carry it too — unlike provenance (frozen on purpose),
   // the link is deliberately MUTABLE, so a re-link or an identity-edit CLEAR
   // has to reach Postgres.
-  await prisma.$transaction(tx => mirrorLineup(tx, p2sid, [linkedWine, { ...linkedWine, id: archiveId, productId: null, vintageId: null }]))
+  await prisma.$transaction(tx => copyLineup(tx, p2sid, [linkedWine, { ...linkedWine, id: archiveId, productId: null, vintageId: null }]))
   const clearedRow = await prisma.$queryRawUnsafe(
     `SELECT product_id, vintage_id FROM wines WHERE id = '${archiveId}'`)
   eq(clearedRow[0]?.product_id, null,
-    'mirrorLineup UPDATE propagates a CLEARED link (the link is mutable, unlike provenance)')
+    'copyLineup UPDATE propagates a CLEARED link (the link is mutable, unlike provenance)')
+  // …and so must a re-link (catalogue model change step 4: the link and the
+  // WHOLE snapshot in one statement). 🔒 VALUES, not presence: a transposition
+  // (vintage_id written from the product id) violates the composite FK.
+  await prisma.$transaction(tx => relinkOccurrence(tx, p2sid, archiveId, { productId: prod.id, vintageId: vintage.id },
+    { name: 'P2 Relinked', producer: 'P2 Producer', vintage: '2019', type: 'red', colour: 'red', sparkling: false, abv: 13.5, grape: '', region: '', country: '' }))
+  const relinkedRow = (await prisma.$queryRawUnsafe(
+    `SELECT product_id, vintage_id, name, style, colour, abv::text AS abv FROM wines WHERE id = '${archiveId}'`))[0]
+  eq([relinkedRow?.product_id, relinkedRow?.vintage_id], [prod.id, vintage.id], 'relinkOccurrence writes the right productId AND vintageId')
+  eq([relinkedRow?.name, relinkedRow?.style, relinkedRow?.colour, relinkedRow?.abv], ['P2 Relinked', 'red', 'red', '13.50'], '…and the snapshot with them')
 
-  // ── D1: addWineToSession's round-trip, the trap its own comment names ─────
-  //
-  // 🔒 THIS FUNCTION IS THE ONLY SOURCE OF THE LINK THAT REACHES REDIS. The
-  // PATCH route replaces the wine object wholesale and re-asserts only
-  // provenance from the current list, so whatever this returns IS the stored
-  // link. It had NO coverage: a reviewer mutated it to return `productId: null`
-  // unconditionally — dropping every session-wine link on every create and
-  // edit, i.e. the feature silently not working — and the suite stayed green.
-  const { addWineToSession } = await import('../../lib/session.ts')
-  const base = { name: 'RT Wine', type: 'red', producer: 'RT Producer', vintage: '2019' }
-  const createdWine = await addWineToSession('P2TESTSS', { ...base, productId: prod.id, vintageId: vintage.id })
-  eq(createdWine.productId, prod.id, 'create: the supplied productId round-trips')
-  eq(createdWine.vintageId, vintage.id, 'create: the supplied vintageId round-trips')
-  // A create with no link must store null, not undefined — the value is
-  // mirrored straight into Postgres.
-  const bare = await addWineToSession('P2TESTSS', base)
-  eq(bare.productId, null, 'create without a link stores null')
-  // 🔒 OMITTED means KEEP. This is the spelling the function's comment warns
-  // about: `body.productId ?? existing?.productId` would behave identically
-  // HERE but swallow a deliberate null below — so both cases are needed to pin
-  // the semantics, and testing only one leaves the trap open.
-  const kept = await addWineToSession('P2TESTSS', { ...base, description: 'x' }, createdWine)
-  eq(kept.productId, prod.id, 'edit omitting the link KEEPS the stored productId')
-  eq(kept.vintageId, vintage.id, 'edit omitting the link KEEPS the stored vintageId')
-  // 🔒 EXPLICIT NULL means CLEAR — the case `??` would silently swallow.
-  const clearedEdit = await addWineToSession(
-    'P2TESTSS', { ...base, productId: null, vintageId: null }, createdWine)
-  eq(clearedEdit.productId, null, 'edit with an explicit null CLEARS the link')
-  // Re-link to a different product.
-  const relinked = await addWineToSession(
-    'P2TESTSS', { ...base, productId: otherProduct.id, vintageId: null }, createdWine)
-  eq(relinked.productId, otherProduct.id, 'edit can RE-LINK to a different product')
+  // (D1, normalizeWine's link round-trip: RETIRED with normalizeWine in step 4.
+  // A write's link now comes only from lib/catalogLink.ts prepareLink /
+  // applyLink: a pick validated by resolveCatalogLink, whose omitted-keeps /
+  // null-clears semantics are pinned in § 4 above; a body cannot clear a
+  // link at all, catalog-every-write.mts § 9d.)
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 13c — the catalog-link rate key is not rotatable by anon callers')
@@ -1621,14 +1682,14 @@ async function main() {
 
   // Branch 4 — nothing matched: mints producer + product, both distinct.
   const b4 = await mintEntries(
-    { producer: { name: 'P2TEST B4 Maker' }, product: { name: 'P2TEST B4 Wine' } }, TEST_USER)
+    { producer: { name: 'P2TEST B4 Maker' }, product: { name: 'P2TEST B4 Wine', colour: 'red' } }, TEST_USER)
   ok(!!b4.producerId && !!b4.productId && b4.vintageId === null,
     'branch 4 mints producer + product and links at PRODUCT grain when year is absent')
   // 🔒 vintageGrapes THROUGH THE REAL DISPATCHER. § 1d drives `createVintage`
   // directly, which cannot see whether `mintEntries` actually FORWARDS the
   // field — removing both forwarding arguments left all 200 tests green.
   const vgDisp = await mintEntries(
-    { producer: { name: 'P2TEST VGD Maker' }, product: { name: 'P2TEST VGD Wine', grapes: ['Merlot'] },
+    { producer: { name: 'P2TEST VGD Maker' }, product: { name: 'P2TEST VGD Wine', colour: 'red', grapes: ['Merlot'] },
       year: 2019, vintageGrapes: ['Syrah', 'Grenache'] }, TEST_USER)
   const vgRow = await prisma.wineVintage.findUnique({
     where: { id: vgDisp.vintageId }, select: { grapes: true, grapesOverride: true } })
@@ -1663,7 +1724,7 @@ async function main() {
 
   // Branch 3 — existing producer, new product.
   const b3 = await mintEntries(
-    { producerId: dispatchProducer.id, product: { name: 'P2TEST B3 Wine' }, year: 2020 }, TEST_USER)
+    { producerId: dispatchProducer.id, product: { name: 'P2TEST B3 Wine', colour: 'white' }, year: 2020 }, TEST_USER)
   ok(b3.producerId === dispatchProducer.id && !!b3.vintageId,
     'branch 3 reuses the chosen producer and mints the vintage')
   // Branch 2 — existing product, missing vintage.
@@ -1679,7 +1740,7 @@ async function main() {
   eq(nvYear[0].year, null, 'and that row really has year NULL (the NV instance)')
   // Branch 5 — collaboration, set at creation.
   const b5 = await mintEntries(
-    { producerId: dispatchProducer.id, product: { name: 'P2TEST B5 Joint' },
+    { producerId: dispatchProducer.id, product: { name: 'P2TEST B5 Joint', sparkling: true },
       collaboratorIds: [b4.producerId] }, TEST_USER)
   const b5Roles = await prisma.$queryRawUnsafe(
     `SELECT role FROM product_producers WHERE product_id = '${b5.productId}' ORDER BY role`)
@@ -1725,8 +1786,10 @@ async function main() {
   const kindCount = () => prisma.$queryRawUnsafe(
     `SELECT (SELECT count(*)::int FROM producers WHERE name LIKE 'P2TEST Kind%') AS p,
             (SELECT count(*)::int FROM wine_products WHERE name LIKE 'P2TEST Kind%') AS w`)
+  // A type is required on a mint since step 4 (spec § 2): red by default here,
+  // so each case below tests the field it names.
   const kindMint = product => mintEntries(
-    { producer: { name: 'P2TEST Kind Maker' }, product: { name: 'P2TEST Kind Wine', ...product } }, TEST_USER)
+    { producer: { name: 'P2TEST Kind Maker' }, product: { name: 'P2TEST Kind Wine', colour: 'red', ...product } }, TEST_USER)
   const kindRow = id => prisma.$queryRawUnsafe(
     `SELECT colour, sparkling, style FROM wine_products WHERE id = $1`, id).then(r => r[0])
   const beforeKind = await kindCount()
@@ -1747,6 +1810,12 @@ async function main() {
     ['colour orange (ruled: orange wine is white)', { colour: 'orange' }, 'colour must be red, white, rose or null'],
     ['a non-boolean sparkling', { sparkling: 'true' }, 'sparkling must be true or false'],
     ['sparkling null (it has no unknown state)', { sparkling: null }, 'sparkling must be true or false'],
+    // 🔒 A new wine needs a TYPE (producer + name + type, spec § 2): a colour
+    // or sparkling: true.
+    ['no type (no colour, not sparkling)', { colour: undefined }, 'type is required'],
+    ['no type (colour null, sparkling false)', { colour: null, sparkling: false }, 'type is required'],
+    // 🔒 One place for a typed abv: the top level, beside the year.
+    ['an abv inside product', { abv: 13 }, 'abv goes at the top level'],
   ]) await rejects(`mintEntries rejects ${label}`, () => kindMint(product), expect)
   const kindErr = await kindMint({ style: 42 }).catch(e => e)
   ok(kindErr instanceof CatalogValidationError,
@@ -1754,11 +1823,16 @@ async function main() {
   eq(await kindCount(), beforeKind, 'and NOTHING was committed by any rejected mint, producer included')
   // The paired accepts.
   const kDef = await kindMint({})
-  eq(await kindRow(kDef.productId), { colour: null, sparkling: false, style: null },
-    'omitted colour / sparkling / style take their defaults (null, false, null)')
-  const kNull = await kindMint({ name: 'P2TEST Kind Nulls', colour: null, style: null, sparkling: false })
-  eq(await kindRow(kNull.productId), { colour: null, sparkling: false, style: null },
-    'explicit null colour / style and sparkling false are accepted')
+  eq(await kindRow(kDef.productId), { colour: 'red', sparkling: false, style: null },
+    'omitted sparkling / style take their defaults (false, null)')
+  const kNull = await kindMint({ name: 'P2TEST Kind Nulls', colour: null, style: null, sparkling: true })
+  eq(await kindRow(kNull.productId), { colour: null, sparkling: true, style: null },
+    'sparkling alone is a type (colour null = unknown), explicit null style accepted')
+  // The helper below the dispatcher keeps its defaults (imports, the catalogue
+  // side: colour NULL, sparkling false, style NULL stay valid entries).
+  const kHelper = await createProduct({ name: 'P2TEST Kind Helper Default', producerId: kDef.producerId }, TEST_USER)
+  eq(await kindRow(kHelper.id), { colour: null, sparkling: false, style: null },
+    'createProduct itself still takes the defaults (null, false, null): the type rule is the user add flow\'s')
   const kSweet = await kindMint({ name: 'P2TEST Kind Sweet Rose', colour: 'rose', sparkling: true, style: 'dessert' })
   eq(await kindRow(kSweet.productId), { colour: 'rose', sparkling: true, style: 'dessert' },
     'a sweet sparkling rosé persists (the shape the old single token could not express)')
@@ -1781,37 +1855,34 @@ async function main() {
   if (kOther) eq((await kindRow(kOther.productId)).style, '__test_style__', 'and the style is stored as given')
 
   // ══════════════════════════════════════════════════════════════════════
-  console.log('\n§ 13d — the release fence (lib/catalogGate.ts)')
-  // 🔒 THE PHASE-2/PHASE-3 RELEASE BOUNDARY, and it was entirely untested.
-  // Phase 2 lets users mint catalog entries; phase 3 builds the review queue
-  // that confirms/merges/rejects them. An unreviewed provisional is a valid
-  // steady state; publicly-writable content with no moderation path is not. So
-  // the switch must default CLOSED, and a regression flipping that default open
-  // would silently ship exactly the state the boundary exists to prevent.
+  console.log('\n§ 13d — the kill switch (lib/catalogGate.ts)')
+  // 🔒 OPEN BY DEFAULT since the catalogue model change (step 4, spec § 7 "The
+  // fence opens WITH the code"): every new bottle links, so a closed default
+  // would leave only staff able to add a bottle. Only the exact string 'false'
+  // closes it; staff bypass it always. (Rewritten from the phase-2 pin that
+  // asserted unset = CLOSED.)
   const { catalogPublicEnabled, canUseCatalog } = await import('../../lib/catalogGate.ts')
   const prevFlag = process.env.CATALOG_PUBLIC_ENABLED
   try {
     delete process.env.CATALOG_PUBLIC_ENABLED
-    ok(catalogPublicEnabled() === false, 'UNSET defaults to CLOSED')
-    ok((await canUseCatalog(null)) === false, 'an anonymous caller is refused while closed')
-    ok((await canUseCatalog(TEST_USER)) === false,
-      'an ordinary logged-in user is refused while closed')
-    // 🔒 Only the exact string 'true' opens it — a truthy-ish value must not.
-    for (const v of ['1', 'yes', 'TRUE', 'True', '']) {
+    ok(catalogPublicEnabled() === true, 'UNSET defaults to OPEN')
+    ok((await canUseCatalog(null)) === true, 'an anonymous caller passes while open (guests search inside their moment)')
+    ok((await canUseCatalog(TEST_USER)) === true, 'an ordinary logged-in user passes while open')
+    // 🔒 Only the exact string 'false' closes it — anything else stays open.
+    for (const v of ['1', 'yes', 'TRUE', 'True', 'true', 'FALSE', 'False', '0', '']) {
       process.env.CATALOG_PUBLIC_ENABLED = v
-      ok(catalogPublicEnabled() === false, `CATALOG_PUBLIC_ENABLED=${JSON.stringify(v)} stays CLOSED`)
+      ok(catalogPublicEnabled() === true, `CATALOG_PUBLIC_ENABLED=${JSON.stringify(v)} stays OPEN`)
     }
-    process.env.CATALOG_PUBLIC_ENABLED = 'true'
-    ok(catalogPublicEnabled() === true, "CATALOG_PUBLIC_ENABLED='true' opens it (the paired accept)")
-    ok((await canUseCatalog(null)) === true, 'and an anonymous caller then passes')
-    // The staff bypass: a curator reaches the flow while the fence is closed,
-    // which is what makes dogfooding and matcher tuning possible pre-release.
-    delete process.env.CATALOG_PUBLIC_ENABLED
+    process.env.CATALOG_PUBLIC_ENABLED = 'false'
+    ok(catalogPublicEnabled() === false, "CATALOG_PUBLIC_ENABLED='false' closes it (the kill switch)")
+    ok((await canUseCatalog(null)) === false, 'an anonymous caller is refused while closed')
+    ok((await canUseCatalog(TEST_USER)) === false, 'an ordinary logged-in user is refused while closed')
+    // The staff bypass: a curator keeps working with the switch on.
     await prisma.$executeRawUnsafe(
       `INSERT INTO staff_roles (user_id, role) VALUES (${TEST_USER}, 'curator')
        ON CONFLICT (user_id) DO UPDATE SET role = 'curator'`)
     ok((await canUseCatalog(TEST_USER)) === true,
-      'a CURATOR bypasses the closed fence (dogfooding path)')
+      'a CURATOR bypasses the kill switch')
     await prisma.$executeRawUnsafe(`DELETE FROM staff_roles WHERE user_id = ${TEST_USER}`)
     ok((await canUseCatalog(TEST_USER)) === false,
       'and loses access the moment the grant is revoked (no caching)')
@@ -1847,8 +1918,15 @@ async function main() {
   // NextRequest + session plumbing; reading its source for the guard is the
   // proportionate check, and it fails loudly if the guard is deleted or if the
   // handler is renamed.
+  // Since step 4 the query kinds live in ONE module shared by the global route
+  // and the moment's own search (lib/catalogSearchAnswer.ts); both routes must
+  // answer through it.
+  for (const route of ['app/api/catalog/search/route.ts', 'app/api/session/[code]/catalog/search/route.ts']) {
+    ok(/return answerCatalogSearch\(req\.nextUrl\.searchParams\)/.test(readFileSync(join(REPO_ROOT, route), 'utf8')),
+      `${route} answers through the shared answerCatalogSearch (the producerId guard included)`)
+  }
   const searchRouteSrc = readFileSync(
-    join(REPO_ROOT, 'app/api/catalog/search/route.ts'), 'utf8')
+    join(REPO_ROOT, 'lib/catalogSearchAnswer.ts'), 'utf8')
   const productBranch = searchRouteSrc.slice(searchRouteSrc.indexOf("kind === 'product'"))
   ok(/if \(!producerId\)/.test(productBranch)
      && /status:\s*400/.test(productBranch.slice(0, productBranch.indexOf('searchProducts('))),

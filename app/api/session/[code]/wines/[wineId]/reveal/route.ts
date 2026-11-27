@@ -23,16 +23,21 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'only the host can reveal wines' }, { status: 403 })
   }
 
-  // Mirrored to Postgres through the wine-list mirror (the feed-read path
-  // queries wines.revealed_at when the cache has no copy) — every session with
-  // a live row, anon-hosted included once promoted.
+  // Record-first in a Postgres-backed moment (the feed-read path queries
+  // wines.revealed_at); a JS Date, millisecond precision like the cache's.
   const revealedAt = new Date()
-  const out = await hostLineupWrite(c, identity, { label: 'reveal', forbidden: 'only the host can reveal wines' }, (wines) => {
-    const idx = wines.findIndex(w => w.id === wineId)
-    if (idx === -1) return { reject: 'wine not found' }
-    const next = wines.slice()
-    next[idx] = { ...next[idx], revealedAt: revealedAt.toISOString() }
-    return next
+  const out = await hostLineupWrite(c, identity, { label: 'reveal', forbidden: 'only the host can reveal wines' }, {
+    redisOnly: (wines) => {
+      const idx = wines.findIndex(w => w.id === wineId)
+      if (idx === -1) return { reject: 'wine not found' }
+      const next = wines.slice()
+      next[idx] = { ...next[idx], revealedAt: revealedAt.toISOString() }
+      return next
+    },
+    record: async (tx, sessionId) => {
+      const n = await tx.$executeRaw`UPDATE wines SET revealed_at = ${revealedAt} WHERE id = ${wineId} AND session_id = ${sessionId}`
+      if (n === 0) return { reject: 'wine not found' }
+    },
   })
   if (out instanceof NextResponse) return out
   await touchWithMeta(c)
@@ -59,14 +64,20 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'only the host can hide wines' }, { status: 403 })
   }
 
-  const out = await hostLineupWrite(c, identity, { label: 'hide', forbidden: 'only the host can hide wines' }, (wines) => {
-    const idx = wines.findIndex(w => w.id === wineId)
-    if (idx === -1) return { reject: 'wine not found' }
-    const next = wines.slice()
-    const updated = { ...next[idx] }
-    delete (updated as Partial<typeof updated>).revealedAt
-    next[idx] = updated
-    return next
+  const out = await hostLineupWrite(c, identity, { label: 'hide', forbidden: 'only the host can hide wines' }, {
+    redisOnly: (wines) => {
+      const idx = wines.findIndex(w => w.id === wineId)
+      if (idx === -1) return { reject: 'wine not found' }
+      const next = wines.slice()
+      const updated = { ...next[idx] }
+      delete (updated as Partial<typeof updated>).revealedAt
+      next[idx] = updated
+      return next
+    },
+    record: async (tx, sessionId) => {
+      const n = await tx.$executeRaw`UPDATE wines SET revealed_at = NULL WHERE id = ${wineId} AND session_id = ${sessionId}`
+      if (n === 0) return { reject: 'wine not found' }
+    },
   })
   if (out instanceof NextResponse) return out
   await touchWithMeta(c)

@@ -355,7 +355,7 @@ The single-producer case is simply lead-with-no-collaborators. A collaboration i
   | Layer | Rule | Where |
   |---|---|---|
   | Encounter text | structural grammar only; no range | `@verre/core` `normalizeVintageText` |
-  | Route boundary | `1900..current+1` | `validateYear`, `lib/catalogWrite.ts` |
+  | Route boundary | `1900..current year` (was `current+1` until 2026-11-22: a vintage is the harvest year) | `validateYear`, `lib/catalogWrite.ts` |
   | DB constraint | `1800..2200` | `wine_vintages_year_range_check` |
 
   The DB bound is a **garbage fence** — deliberately wide, catching a typo'd `20255`. The plausibility rule is a **route-boundary rule**, tighter and clock-relative, because "plausible" moves with the calendar and a CHECK cannot. 🔒 **And the import path has no route boundary** — imports do not call `validateYear`, so imported vintages are governed by `1800..2200` alone.
@@ -461,7 +461,7 @@ The fuzzy signal is deliberately conservative — **false splits are acceptable;
 
 ### Vintage curation is lightweight
 
-The review queue's merge unit is the **producer/product** grain. Vintages don't need the heavyweight duplicate queue: under an explicitly chosen product, a missing vintage is accepted directly when the year is plausible (≈1900..current year + 1) or null for the NV instance. The `(product_id, year)` uniqueness constraint is what prevents duplicates at this grain; vintage dedup (rare) is a lighter merge with the same `linksTo` semantics, gated by the vintage-merge eligibility rule above (matching year/NV + same *effective* product).
+The review queue's merge unit is the **producer/product** grain. Vintages don't need the heavyweight duplicate queue: under an explicitly chosen product, a missing vintage is accepted directly when the year is plausible (1900..the current year) or null for the NV instance. The `(product_id, year)` uniqueness constraint is what prevents duplicates at this grain; vintage dedup (rare) is a lighter merge with the same `linksTo` semantics, gated by the vintage-merge eligibility rule above (matching year/NV + same *effective* product).
 
 ## Add-a-wine flow
 

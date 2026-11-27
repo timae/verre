@@ -108,6 +108,12 @@ to run its cleanup*:
   mirrored*. Turning a content-mirror failure into a request failure with Redis
   compensation is the authoritative-write matrix of the model change (§ 8a "Error
   handling"), not this project.
+  **✅ Superseded for wines by the catalogue model change, step 3** (`wine-catalog-model-change.md`
+  § 8a; `lib/occurrences.ts`): the authoritative matrix is now built. A Postgres-backed
+  moment's bottles are record-first (a failed write fails the request; no best-effort
+  mirror), the line-up carries a revision (`sessions.lineup_revision`, stamped in
+  `s:{C}:wrev`) that every read compares, and NULL = not reconciled. Settings stay as
+  described here.
 
 **Three mechanisms, each with one job** (§ 5.4 has the detail):
 

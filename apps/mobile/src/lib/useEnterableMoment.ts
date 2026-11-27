@@ -2,7 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useCallback } from 'react';
 import { mySessionsQueryOptions } from '@/lib/api/sessions';
-import { sessionHref, useSessionTab } from '@/lib/sessionStack';
+import { momentEntry } from '@/lib/momentEntry';
+import { lookHref, sessionHref, useSessionTab } from '@/lib/sessionStack';
 
 // "Tap a moment in the feed → open it, but ONLY if you were a member" (Simon).
 //
@@ -24,11 +25,15 @@ import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 // on the Moments tab having mounted first. Same query the Moments tab warms
 // (shared mySessionsQueryOptions), so no extra fetch in the common path.
 //
-// Returns { code, enter } where code is null when the moment isn't in the
-// viewer's sessions (not a member, tombstoned, or beyond the recent page — all
-// correctly "not tappable"). `enter()` navigates into the live session screen.
-export function useEnterableMoment(sessionId: number | null | undefined): {
+// Returns { code, enterable, enter }: `code` is null when the moment isn't in
+// the viewer's sessions (not a member, tombstoned, or beyond the recent page).
+// Moment Visibility (step-2 plan § 4.3, T7): with a `momentId` (the feed sends
+// one only while the viewer may look in, or is in it) the tap opens the
+// LOOK-IN instead, whose first read hands a member back to the moment itself.
+// `enterable` = the tap does something (lib/momentEntry.ts decides).
+export function useEnterableMoment(sessionId: number | null | undefined, momentId?: string | null): {
   code: string | null;
+  enterable: boolean;
   enter: () => void;
 } {
   const router = useRouter();
@@ -40,7 +45,9 @@ export function useEnterableMoment(sessionId: number | null | undefined): {
   const match = sessionId != null ? rows?.find((r) => r.id === sessionId) : undefined;
   const code = match?.code ?? null;
   const enter = useCallback(() => {
-    if (code) router.push(sessionHref(sessionTab, '', { code }));
-  }, [code, router, sessionTab]);
-  return { code, enter };
+    const to = momentEntry({ code, momentId });
+    if (to.kind === 'moment') router.push(sessionHref(sessionTab, '', { code: to.code }));
+    else if (to.kind === 'look') router.push(lookHref(sessionTab, '', { momentId: to.momentId }));
+  }, [code, momentId, router, sessionTab]);
+  return { code, enterable: momentEntry({ code, momentId }).kind !== 'inert', enter };
 }

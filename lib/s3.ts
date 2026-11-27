@@ -115,6 +115,18 @@ function stripJpegMetadata(body: Buffer): Buffer {
   return out.subarray(0, w)
 }
 
+// The checks uploadImage makes, without uploading: a strict base64 data URL of
+// an allowed MIME, decoded size within the cap, magic bytes matching. A route
+// that must answer 400 BEFORE any upload (the occurrence image call) asks
+// this; uploadImage still checks again itself.
+export function imageDataUrlValid(dataUrl: unknown): boolean {
+  if (typeof dataUrl !== 'string' || dataUrl.length > MAX_IMAGE_DATA_URL_BYTES) return false
+  const match = dataUrl.match(/^data:(image\/[a-z]+);base64,(.+)$/)
+  if (!match || !IMAGE_SIGS[match[1]]) return false
+  const body = Buffer.from(match[2], 'base64')
+  return body.length > 0 && body.length <= MAX_IMAGE_BYTES && magicMatches(match[1], body)
+}
+
 // `keyBase` is the bucket-relative key without extension. Caller picks
 // the prefix and uniqueness scheme — wines keyed by id (stable),
 // avatars and check-ins keyed by id + timestamp (so replacement leaves

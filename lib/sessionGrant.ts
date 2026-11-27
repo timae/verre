@@ -29,37 +29,81 @@ export type Grant = {
   banned: boolean
   // Has a committed rating in this session (a historical rater with no member row).
   author: boolean
+  // sessions.lineup_revision, read in the same statement (model change § 8a,
+  // step 1 ruling: the poll's line-up check costs a signed-in caller nothing).
+  // Not an authorization input.
+  lineupRevision: number | null
 }
 
 export type GrantStatus = 'ok' | 'banned' | 'kicked' | 'invalid'
 
 type Db = Prisma.TransactionClient | typeof prisma
 
-// One statement. null = no live sessions row (a Redis-only session).
-export async function readGrant(db: Db, code: string, userId: number): Promise<Grant | null> {
-  const rows = await db.$queryRaw<{
-    id: number; created_at: Date | null; host_user_id: number | null; role: string | null
-    member: boolean; removed_state: string | null; banned: boolean; author: boolean
-  }[]>`
-    SELECT s.id, s.created_at, s.host_user_id, m.role, (m.user_id IS NOT NULL) AS member, m.removed_state,
-           EXISTS (SELECT 1 FROM session_bans b WHERE b.session_code = s.code AND b.identity_id = ${`u:${userId}`}) AS banned,
-           EXISTS (SELECT 1 FROM ratings r WHERE r.user_id = ${userId} AND r.session_id = s.id) AS author
-      FROM sessions s
-      LEFT JOIN session_members m ON m.session_code = s.code AND m.user_id = ${userId}
-     WHERE s.code = ${code} AND s.deleted_at IS NULL`
-  const r = rows[0]
-  if (!r) return null
+// The grant read's columns and member join (alias `s` = sessions), ONE
+// definition for readGrant and its twins keyed by public id and by session ids
+// (Moment Visibility: the look-in's `member: true`, the by-moment read and the
+// feed's `momentId`), so none of them can disagree with the moment's own rule.
+// A NULL user (a signed-out reader) matches nothing: never a member.
+export type GrantRow = {
+  id: number; created_at: Date | null; host_user_id: number | null; role: string | null
+  member: boolean; removed_state: string | null; banned: boolean; author: boolean; lineup_revision: number | null
+}
+export function grantColumnsSql(userId: number | null): Prisma.Sql {
+  return Prisma.sql`s.id, s.created_at, s.host_user_id, m.role, (m.user_id IS NOT NULL) AS member, m.removed_state, s.lineup_revision,
+    EXISTS (SELECT 1 FROM session_bans b WHERE b.session_code = s.code AND b.identity_id = ${userId === null ? null : `u:${userId}`}::text) AS banned,
+    EXISTS (SELECT 1 FROM ratings r WHERE r.user_id = ${userId}::int AND r.session_id = s.id) AS author`
+}
+export const grantMemberJoinSql = (userId: number | null): Prisma.Sql =>
+  Prisma.sql`LEFT JOIN session_members m ON m.session_code = s.code AND m.user_id = ${userId}::int`
+export function grantFromRow(r: GrantRow, userId: number | null): Grant {
   return {
     sessionId: r.id,
     createdAt: r.created_at ? r.created_at.getTime() : null,
-    strictHost: r.host_user_id !== null && Number(r.host_user_id) === userId,
+    strictHost: userId !== null && r.host_user_id !== null && Number(r.host_user_id) === userId,
     hostless: r.host_user_id === null,
     role: (r.role as MemberRole | null) ?? null,
     member: r.member,
     kicked: r.removed_state === 'kicked',
     banned: r.banned,
     author: r.author,
+    lineupRevision: r.lineup_revision,
   }
+}
+
+// 🔒 "People in the moment" in SQL (Moment Visibility step 3, T2): the twin of
+// `grantStatus(grant) === 'ok'` for the viewer in the moment `sid` (a column or
+// a value): a LIVE row, no ban of `u:<viewer>`, and the strict host, or a
+// member row not kicked, or no member row and a rating of the viewer's there.
+// The SAME answer as the look-in's `member: true`, the feed's `momentId` and
+// by-moment (pinned against grantStatus over every grant state, the suite's
+// § 25 a). A deleted moment has no insiders; a NULL viewer is never one.
+// Aliases are private (`gi*`) so a caller's `s` can't be shadowed.
+export function insiderSql(viewerId: number | null, sid: Prisma.Sql): Prisma.Sql {
+  if (viewerId === null) return Prisma.sql`FALSE`
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM sessions gis
+     WHERE gis.id = ${sid} AND gis.deleted_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM session_bans gib WHERE gib.session_code = gis.code AND gib.identity_id = ${`u:${viewerId}`}::text)
+       AND (COALESCE(gis.host_user_id = ${viewerId}::integer, false)
+         OR EXISTS (SELECT 1 FROM session_members gim WHERE gim.session_code = gis.code AND gim.user_id = ${viewerId}::integer AND gim.removed_state IS DISTINCT FROM 'kicked')
+         OR (NOT EXISTS (SELECT 1 FROM session_members gin WHERE gin.session_code = gis.code AND gin.user_id = ${viewerId}::integer)
+             AND EXISTS (SELECT 1 FROM ratings gir WHERE gir.session_id = gis.id AND gir.user_id = ${viewerId}::integer))))`
+}
+
+// One statement. null = no live sessions row (a Redis-only session).
+export async function readGrant(db: Db, code: string, userId: number): Promise<Grant | null> {
+  const rows = await db.$queryRaw<GrantRow[]>`
+    SELECT ${grantColumnsSql(userId)} FROM sessions s ${grantMemberJoinSql(userId)}
+     WHERE s.code = ${code} AND s.deleted_at IS NULL`
+  return rows[0] ? grantFromRow(rows[0], userId) : null
+}
+
+// The twin keyed by the moment's PUBLIC id (`GET /api/me/sessions/by-moment/:id`).
+export async function readGrantByPublicId(db: Db, publicId: string, userId: number): Promise<{ grant: Grant; code: string } | null> {
+  const rows = await db.$queryRaw<(GrantRow & { code: string })[]>`
+    SELECT ${grantColumnsSql(userId)}, s.code FROM sessions s ${grantMemberJoinSql(userId)}
+     WHERE s.public_id = ${publicId} AND s.deleted_at IS NULL`
+  return rows[0] ? { grant: grantFromRow(rows[0], userId), code: rows[0].code } : null
 }
 
 // The entrance gate's record read (leak-fixes F2, lib/sessionRoute.ts): the
@@ -71,7 +115,7 @@ export async function readGrant(db: Db, code: string, userId: number): Promise<G
 // caller) runs the same statement and matches nothing. null = no live row.
 export function gateGrantSql(code: string, userId: number | null): Prisma.Sql {
   return Prisma.sql`
-    SELECT s.id, s.created_at, s.host_user_id, m.role, (m.user_id IS NOT NULL) AS member, m.removed_state,
+    SELECT s.id, s.created_at, s.host_user_id, m.role, (m.user_id IS NOT NULL) AS member, m.removed_state, s.lineup_revision,
            EXISTS (SELECT 1 FROM session_bans b WHERE b.session_code = s.code AND b.identity_id = q.ident) AS banned,
            EXISTS (SELECT 1 FROM ratings r WHERE r.user_id = q.uid AND r.session_id = s.id) AS author
       FROM (VALUES (${code}::text, ${userId}::int, ${userId === null ? null : `u:${userId}`}::text)) AS q(code, uid, ident)
@@ -82,7 +126,7 @@ export function gateGrantSql(code: string, userId: number | null): Prisma.Sql {
 export async function readGateGrant(db: Db, code: string, userId: number | null): Promise<Grant | null> {
   const rows = await db.$queryRaw<{
     id: number | null; created_at: Date | null; host_user_id: number | null; role: string | null
-    member: boolean; removed_state: string | null; banned: boolean; author: boolean
+    member: boolean; removed_state: string | null; banned: boolean; author: boolean; lineup_revision: number | null
   }[]>(gateGrantSql(code, userId))
   const r = rows[0]
   if (!r || r.id === null) return null
@@ -96,6 +140,7 @@ export async function readGateGrant(db: Db, code: string, userId: number | null)
     kicked: r.removed_state === 'kicked',
     banned: r.banned,
     author: r.author,
+    lineupRevision: r.lineup_revision,
   }
 }
 

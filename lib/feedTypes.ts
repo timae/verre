@@ -7,16 +7,30 @@
 // placeholder. Use `_blind: true` on the redacted variant so the UI
 // can render the mystery slot the same way the live session view does.
 export type SessionFeedWine = {
-  // Postgres `wines.id` (string nanoid). Stable across renders.
-  id: string
+  // The author's rating row (`ratings.id`): on EVERY row, and the key clients
+  // use for lists and for finding a row. It only links one person's own rows
+  // to each other.
+  ratingId: number
+  // Postgres `wines.id` (string nanoid). 🔒 ABSENT on a blind row unless the
+  // viewer wrote that rating (their Edit / Delete Rating need it): a blind
+  // bottle's id is label identity for anyone else (an old photo key fetches
+  // the label, and the id joins the row to other surfaces).
+  id?: string
   // Identity fields, blanked out when blind & not yet revealed.
   name: string
   producer: string | null
   vintage: string | null
   grape: string | null
-  // Maps from `wines.style` ('red' | 'white' | 'spark' | 'rose' | 'nonalc' …).
-  // Kept as `type` to match the existing CheckinCard / WineIdentity vocabulary.
-  type: string | null
+  // Name / producer / vintage / grape / region / country come from the
+  // catalogue entry when the bottle is linked (merges followed), else its
+  // snapshot (step 5). The legacy `type` (the style token) left the wire with
+  // the app's build (step 7): nothing read it.
+  // The bottle's kind (its snapshot): the axes read `sparkling` (catalogue
+  // model change step 4). Stay on a blind row, like the style always did; the
+  // abv does not (null on a blind row, ruled 2026-11-20).
+  colour: string | null
+  sparkling: boolean
+  abv: number | null
   // Image priority: rating photo first, falling back to the wine's
   // canonical bottle shot. Null when neither is set OR when blind-redacted.
   imageUrl: string | null
@@ -44,6 +58,10 @@ export type SessionFeedWine = {
   // Set when the wine is blind-redacted. UI renders the mystery card
   // and skips identity-bearing fields.
   _blind?: boolean
+  // The signed-in viewer's save state (lib/cravings.ts savedFlags): on a
+  // redacted row only their save of THAT bottle, never whether they crave the
+  // wine (catalogue model change § 5). Absent for a signed-out viewer.
+  saved?: boolean
 }
 
 // The session-feed payload, replacing the phase-2 `'session_stub'` shape.
@@ -56,12 +74,34 @@ export type SessionFeedWine = {
 // has authorised the reveal; participants engaged with the wine).
 export type SessionFeedPayload = {
   id: number              // feed_items.id
+  // null on a `privateMoment` post (T5)
   sessionId: number | null
+  // The moment's PUBLIC id (Moment Visibility, flag on): only to a member or a
+  // viewer who may look in. Never the code.
+  momentId?: string
+  // 🔒 Your own post, or a viewer who could open the moment (step 3b, R16:
+  // `member || open`, lib/momentAudience.ts); null otherwise (then
+  // `privateMoment`), and for a deleted moment.
   sessionName: string | null
+  // A live moment's post whose name this viewer may not see (R16; present
+  // only when true, T4): the client shows "Private Moment", not tappable.
+  // `sessionName`, `hostName` and `sessionId` are null on it (T5). Never on a
+  // deleted moment's post (that one is `deleted`).
+  privateMoment?: true
+  // 🔒 Only to a viewer in the moment, or to one who could open it (step 3b,
+  // T5) AND to whom the host is NAMED (lib/momentAudience.ts); null
+  // otherwise (so never to a non-member with the flag off), for a deleted
+  // moment, and on a `privateMoment` post.
   hostName: string | null
   deleted: boolean
   blind: boolean
   wines: SessionFeedWine[]
   likeCount: number
   liked: boolean
+  // Your OWN moment post only, with Moment Visibility on (step 3): whether you
+  // chose Incognito there (R11). Absent on everyone else's.
+  onlyInside?: boolean
+  // Your OWN moment post only, with HIDE_FROM_FEED_ENABLED on (R12): whether
+  // your post of this moment is hidden from feeds.
+  hiddenFromFeed?: boolean
 }

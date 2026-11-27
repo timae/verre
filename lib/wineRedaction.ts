@@ -27,6 +27,7 @@
 // the wine via known preferences).
 
 import type { WineMeta, WireWine } from '@/lib/session'
+import { kindOfStyle } from '@verre/core'
 
 export type RedactWineOpts = {
   revealed: boolean
@@ -38,25 +39,41 @@ export type RedactWineOpts = {
   // un-redacts. Composes with meta.blind (callers gate this whole
   // helper on meta.blind first).
   blindForEveryone?: boolean
+  // The record's snapshot kind (lib/occurrences.ts readSnapshots): a sparkling
+  // rosé keeps its colour on a blind row too. Absent → the cached token.
+  snapshot?: { colour: string | null; sparkling: boolean }
 }
 
 export function redactWine(wine: WineMeta, opts: RedactWineOpts): WireWine | null {
   if (opts.revealed) return null
   if (!opts.blindForEveryone && (opts.isHost || opts.ownsWine)) return null
-  const { addedByIdentityId: _provenance, addedByDisplayName: _snapshot, ...rest } = wine
+  // 🔒 AN ALLOW-LIST, not a spread (security review r1, catalogue model change
+  // step 4): the blind row is built field by field from the few things a taster
+  // may know (the id to rate it by, its reveal state, its kind), so a field
+  // added to WineMeta later stays OFF a blind row until someone decides it may
+  // be on it. The old `...rest` spread leaked every new field by default.
+  const kind = opts.snapshot ?? kindOfStyle(wine.type)
   return {
-    ...rest,
+    id: wine.id,
+    revealedAt: wine.revealedAt ?? null,
+    // 🔒 The catalogue ENTRY is replaced WHOLESALE (catalogue model change § 0.3):
+    // its ids, name, producer, grapes, region and any catalogue photo are all
+    // label identity, and so are the flat ids (a productId is a lookup oracle:
+    // the catalogue is deliberately public, RFC ruling 3). None on a blind row.
+    entry: null,
+    // 🔒 `colour` and `sparkling` STAY, as the style always did: the structure
+    // wheel needs them (Bubbles on a blind sparkling wine), and they are what a
+    // pour shows anyway. The abv does NOT (ruled 2026-11-20, Simon): no number
+    // and no alcohol-free mark before the reveal (a legacy `nonalc` token reads
+    // as "neither", like an entry with no colour).
+    colour: kind.colour,
+    sparkling: kind.sparkling,
+    abv: null,
     name: `Wine ${opts.index + 1}`,
     producer: '',
     vintage: '',
     grape: '',
-    // `type` (the STYLE: red/white/spark/rose) is NOT masked. Style is not
-    // identity — a taster holding the glass already sees/tastes that it's
-    // sparkling vs still; name/producer/vintage/grape/region (above + below)
-    // are what identify the wine, and those stay blank. Passing the real style
-    // through lets the structure wheel offer the right axes (e.g. Bubbles on a
-    // blind sparkling wine) — the UI mystery slot keys on `_blind`, not `type`.
-    // (Was forced to 'red' for the old descriptor detectFL; no longer needed.)
+    // The UI mystery slot keys on `_blind`, never on the kind.
     image: '',
     imageUrl: '',
     description: '',
@@ -64,20 +81,6 @@ export function redactWine(wine: WineMeta, opts: RedactWineOpts): WireWine | nul
     country: '',
     vinification: '',
     purchaseUrl: '',
-    // 🔒 CATALOG IDS ARE LABEL IDENTITY — stripping them is not optional.
-    // A productId in a blind payload is a lookup oracle: the catalog is
-    // deliberately public (RFC ruling 3), so one GET against it turns the
-    // id straight back into the producer, name, and vintage that every
-    // other field here is blanking. It identifies the wine as precisely as
-    // `name` does, and must be treated exactly like it.
-    //
-    // ⚠️ These two lines are load-bearing BECAUSE of the `...rest` spread
-    // above: WineMeta fields flow through by default, so a redaction that
-    // simply forgot them would leak silently — the payload would still
-    // look correctly masked in every visible field. Any future identifying
-    // field added to WineMeta needs the same treatment.
-    productId: null,
-    vintageId: null,
     isMine: false,
     addedByDisplayName: null,
     addedByUserId: null,

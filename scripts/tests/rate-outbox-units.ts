@@ -1,0 +1,2580 @@
+// Behavioural pins for the rating auto-save (tasting-feedback build 1 § 1):
+// the PRODUCTION outbox owner + runner (apps/mobile/src/lib/rateOutboxCore.ts)
+// and the impression draft controller (impressionAutosaveCore.ts), driven with
+// injected storage, clock, network, auth and fetch, against a fake /rate that
+// implements the version check, the merge, `unchanged` and the reap the way
+// § 1b specifies them (an emptied merge over a stored row reaps it: `cleared`,
+// Simon 2026-11-26). No React Native, no network.
+//
+//   npx tsx scripts/tests/rate-outbox-units.ts
+
+import { resolveAxes, scrub } from '@verre/core';
+import type { RateBody, RateResult, RatingMeta, RatingsView } from '../../apps/mobile/src/lib/api/rateTypes';
+import {
+  ALERT_TITLE, CLEANUP_MS, SAVE_ERROR_TEXT, STORAGE_PREFIX, backoffMs, createRateOutbox, isEmptyRating, storageKey,
+  type OutboxDeps, type ReadOutcome, type SessionCheck,
+} from '../../apps/mobile/src/lib/rateOutboxCore';
+import { createAutosaveController, createTransitionGuard } from '../../apps/mobile/src/lib/impressionAutosaveCore';
+import { createLayerTransitions, createPullClose } from '../../apps/mobile/src/lib/impressionLayerCore';
+
+let failures = 0;
+const check = (name: string, ok: boolean, detail: unknown = '') => {
+  if (!ok) failures++;
+  console.log(`${ok ? '✓' : '✗'} ${name}${ok || detail === '' ? '' : ` — ${JSON.stringify(detail)}`}`);
+};
+
+const AXES = resolveAxes('wine', null).map((a) => a.k);
+const A0 = AXES[0];
+const ME = 'pubMe0000001';
+const CODE = 'ABCD2345';
+const ID = `u:${ME}`;
+let opSeq = 0; // one sequence across relaunches (real op ids are UUIDs)
+
+// ── a fake server: one rating per wine for ME ─────────────────────────────
+type ServerRow = { rating: RatingMeta | null; version: number; lastOpId: string | null };
+type Mode = 'auto' | 'hang' | 'network' | 'commit-network' | 'update' | { status: number; retryAfterMs?: number; auth?: 'removed' | 'invalid'; message?: string };
+
+function fakeServer(now: () => number) {
+  const rows = new Map<string, ServerRow>();
+  const row = (w: string) => rows.get(w) ?? { rating: null, version: 0, lastOpId: null };
+  const empty = (r: { score: number; flavors: Record<string, number>; aromas?: unknown[]; notes: string }) => isEmptyRating(r);
+  let beforeCommit: ((b: RateBody) => void) | null = null;
+  const commit = (b: RateBody): RateResult => {
+    beforeCommit?.(b);
+    const cur = row(b.wineId);
+    if (b.baseVersion !== undefined && b.baseVersion !== cur.version) {
+      return { kind: 'stale', status: 409, rating: cur.rating ? { ...cur.rating, v: cur.version } : null, version: cur.version, lastOpId: cur.lastOpId };
+    }
+    const prev = cur.rating;
+    if (b.merge) {
+      const merged = {
+        score: b.score ?? prev?.score ?? 0,
+        flavors: b.flavors ?? prev?.flavors ?? {},
+        aromas: b.aromas ?? prev?.aromas ?? [],
+        notes: b.notes !== undefined ? scrub(b.notes) ?? '' : prev?.notes ?? '',
+      };
+      if (empty(merged)) {
+        // No row: nothing written. A stored row: REAPED, the version bumped.
+        if (!prev) return { kind: 'unchanged', status: 200 };
+        const version = cur.version + 1;
+        rows.set(b.wineId, { rating: null, version, lastOpId: b.opId ?? null });
+        return { kind: 'cleared', status: 200, version };
+      }
+      const version = cur.version + 1;
+      const rating = { ...merged, at: now(), v: version };
+      rows.set(b.wineId, { rating, version, lastOpId: b.opId ?? null });
+      return { kind: 'rating', status: 200, rating };
+    }
+    const full = { score: b.score ?? 0, flavors: b.flavors ?? {}, aromas: b.aromas ?? [], notes: scrub(b.notes ?? '') ?? '' };
+    const version = cur.version + 1;
+    rows.set(b.wineId, { rating: empty(full) ? null : { ...full, at: now(), v: version }, version, lastOpId: b.opId ?? null });
+    return { kind: 'ok', status: 200 };
+  };
+  return {
+    rows,
+    row,
+    commit,
+    // A write from elsewhere that lands right before each of ours.
+    set beforeCommit(f: ((b: RateBody) => void) | null) { beforeCommit = f; },
+    // Another device (the web): no base, still bumps.
+    webSave(w: string, r: Partial<RatingMeta>) {
+      const cur = row(w);
+      const version = cur.version + 1;
+      rows.set(w, { rating: { score: 0, flavors: {}, notes: '', aromas: [], at: now(), ...r, v: version }, version, lastOpId: null });
+    },
+    webReset(w: string) {
+      const cur = row(w);
+      rows.set(w, { rating: null, version: cur.version + 1, lastOpId: null });
+    },
+    // A rating from before the release: a row, no version.
+    legacy(w: string, r: Partial<RatingMeta>) {
+      rows.set(w, { rating: { score: 0, flavors: {}, notes: '', aromas: [], at: now(), ...r }, version: 0, lastOpId: null });
+    },
+    section(): RatingsView {
+      const ratings: Record<string, RatingMeta> = {};
+      for (const [w, r] of rows) if (r.rating) ratings[w] = { ...r.rating, ...(r.version ? { v: r.version } : {}) };
+      return { [ID]: { displayName: 'Me', ratings } };
+    },
+  };
+}
+
+// ── the environment ────────────────────────────────────────────────────────
+function env(opts: { disk?: Map<string, string>; t0?: number; online?: boolean } = {}) {
+  let t = opts.t0 ?? 1_000_000;
+  const timers: { at: number; fn: () => void; id: number }[] = [];
+  let tid = 0;
+  const disk = opts.disk ?? new Map<string, string>();
+  let failWrites = false;
+  let holdWrites = false;
+  const heldWrites: (() => void)[] = [];
+  let cookieOf = `u:${ME}`; // whose cookie the fake server sees
+  let holdReads = false;
+  const heldReads: (() => void)[] = [];
+  let holdCookie = false; // the binding's async cookie read, before its beforeSend
+  const heldCookies: (() => void)[] = [];
+  let sendCalls = 0;
+  let confirms = 0;
+  let failKeys = false;
+  let failGet = 0; // the next N multiGet calls fail
+  const logs: { m: string; d: unknown }[] = [];
+  const sessionQueue: SessionCheck[] = [];
+  let online = opts.online ?? true;
+  let active = true;
+  let epoch = 0;
+  let gen = 0;
+  let signedIn = true;
+  const server = fakeServer(() => t);
+  const sent: { body: RateBody; at: number }[] = [];
+  const reads: number[] = [];
+  const alerts: string[] = [];
+  let mode: Mode = 'auto';
+  const modeQueue: Mode[] = [];
+  // A hung request: released by committing, or failed with `res` (releaseOne).
+  const hung: ((res?: RateResult) => void)[] = [];
+  let bumpOnConfirm = 0; // get-session answers that each move the auth generation
+  let holdConfirms = false;
+  let holdGets = false; // per-key and launch reads wait (`releaseGets`)
+  const heldGets: (() => void)[] = [];
+  const heldConfirms: (() => void)[] = [];
+  // `gen`: the auth generation the section's fetch started under (the binding's stamp).
+  const cache = new Map<string, { ratings: RatingsView | null; gen?: number; wines?: { id: string; name: string; _blind?: boolean }[] }>();
+  let readAnswer: (() => ReadOutcome) | null = null;
+  let session: SessionCheck = 'same';
+
+  const transport = (code: string, body: RateBody, stillEligible: () => boolean): Promise<RateResult> => {
+    if (!signedIn) return Promise.resolve({ kind: 'cancelled', reason: 'signed-out' } as RateResult);
+    // The binding's beforeSend: the gate checked again right before sending.
+    if (!stillEligible()) return Promise.resolve({ kind: 'cancelled', reason: 'ineligible' } as RateResult);
+    sent.push({ body: JSON.parse(JSON.stringify(body)), at: t });
+    if (body.viewer !== cookieOf) return Promise.resolve({ kind: 'wrong-viewer', status: 409 } as RateResult);
+    const m = modeQueue.length ? modeQueue.shift()! : mode;
+    if (m === 'hang') {
+      return new Promise<RateResult>((resolve) => hung.push((res?: RateResult) => resolve(res ?? server.commit(body))));
+    }
+    if (m === 'network') return Promise.resolve({ kind: 'network', error: new Error('offline') } as RateResult);
+    if (m === 'update') return Promise.resolve({ kind: 'update-required' } as RateResult);
+    if (m === 'commit-network') {
+      server.commit(body);
+      return Promise.resolve({ kind: 'network', error: new Error('lost') } as RateResult);
+    }
+    if (typeof m === 'object') return Promise.resolve({ kind: 'error', status: m.status, retryAfterMs: m.retryAfterMs ?? null, auth: m.auth ?? null, message: m.message ?? null } as RateResult);
+    return Promise.resolve(server.commit(body));
+  };
+  const deps: OutboxDeps = {
+    storage: {
+      getAllKeys: async () => {
+        if (failKeys) throw new Error('storage unreadable');
+        return [...disk.keys()];
+      },
+      multiGet: async (keys) => {
+        if (holdGets) await new Promise<void>((r) => heldGets.push(r));
+        if (failGet > 0) {
+          failGet--;
+          throw new Error('storage unreadable');
+        }
+        return keys.map((k) => [k, disk.get(k) ?? null] as const);
+      },
+      setItem: async (k, v) => {
+        if (failWrites) throw new Error('disk full');
+        if (holdWrites) await new Promise<void>((r) => heldWrites.push(r));
+        disk.set(k, v);
+      },
+      removeItem: async (k) => {
+        if (failWrites) throw new Error('disk full');
+        disk.delete(k);
+      },
+    },
+    now: () => t,
+    setTimer: (fn, ms) => {
+      const id = ++tid;
+      timers.push({ at: t + ms, fn, id });
+      return id;
+    },
+    clearTimer: (h) => {
+      const i = timers.findIndex((x) => x.id === h);
+      if (i >= 0) timers.splice(i, 1);
+    },
+    isOnline: () => online,
+    appActive: () => active,
+    newOpId: () => `00000000-0000-4000-8000-${String(++opSeq).padStart(12, '0')}`,
+    stamp: () => ({ epoch, gen }),
+    stampCurrent: (s) => s.epoch === epoch && s.gen === gen,
+    send: (code, body, _stamp, stillEligible) => {
+      sendCalls++;
+      // Synchronous unless the cookie read is held (the old pins' timing).
+      if (holdCookie) return new Promise<void>((r) => heldCookies.push(r)).then(() => transport(code, body, stillEligible));
+      return transport(code, body, stillEligible);
+    },
+    readState: async () => {
+      reads.push(t);
+      if (holdReads) await new Promise<void>((r) => heldReads.push(r));
+      const out = readAnswer ? readAnswer() : { kind: 'ok' as const, ratings: server.section() };
+      return out;
+    },
+    confirmSession: async () => {
+      confirms++;
+      // The answer is SAMPLED when the call starts (a held one answers what it saw then).
+      const answer = sessionQueue.length ? sessionQueue.shift()! : session;
+      if (holdConfirms) await new Promise<void>((r) => heldConfirms.push(r));
+      if (bumpOnConfirm > 0) {
+        bumpOnConfirm--;
+        gen++;
+      }
+      return answer;
+    },
+    readRatings: (_v, code) => {
+      const c = cache.get(code);
+      return c && 'ratings' in c ? { ratings: c.ratings, gen: c.gen ?? -1 } : undefined;
+    },
+    patchCache: (_v, code, wineId, rating) => {
+      const c = cache.get(code);
+      const g = c?.ratings?.[ID];
+      if (!c || !c.ratings || !g) return;
+      const r = { ...g.ratings };
+      if (rating) r[wineId] = rating;
+      else delete r[wineId];
+      c.ratings = { ...c.ratings, [ID]: { ...g, ratings: r } };
+    },
+    afterFirstAck: () => {},
+    alert: (title, message, done) => {
+      alerts.push(`${title}: ${message}`);
+      done();
+    },
+    label: (_v, code, wineId) => cache.get(code)?.wines?.find((w) => w.id === wineId)?.name ?? null,
+    log: (m, d) => logs.push({ m, d }),
+  };
+  const owner = createRateOutbox(deps);
+  const flush = async () => {
+    for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r));
+  };
+  const advance = async (ms: number) => {
+    const target = t + ms;
+    await flush();
+    // A runaway (a timer re-arming at the same instant) fails, never hangs CI.
+    for (let fired = 0; ; fired++) {
+      if (fired > 100_000) throw new Error('runaway timers in advance()');
+      timers.sort((a, b) => a.at - b.at || a.id - b.id);
+      const next = timers[0];
+      if (!next || next.at > target) break;
+      timers.shift();
+      t = next.at;
+      next.fn();
+      await flush();
+    }
+    t = target;
+    await flush();
+  };
+  const ctl = (wineId: string, kind: null | { sparkling: boolean } = null) =>
+    createAutosaveController(owner, { viewer: ME, code: CODE, wineId, kind, timers: { set: deps.setTimer, clear: deps.clearTimer } });
+  // The line-up poll / a fresh /state read: a RAW section into the cache.
+  // `fetchedGen`: the generation its fetch started under (default: now).
+  const poll = (ratings: RatingsView | null = server.section(), fetchedGen = gen) => {
+    cache.set(CODE, { ...(cache.get(CODE) ?? {}), ratings, gen: fetchedGen });
+    if (ratings) owner.onRawSection(ME, CODE, ratings, fetchedGen);
+  };
+  return {
+    owner, server, disk, sent, reads, alerts, cache, ctl, poll, flush, advance, logs,
+    bumpGen: () => { gen++; },
+    genNow: () => gen,
+    bumpOnConfirm: (n: number) => { bumpOnConfirm = n; },
+    holdConfirms: (on: boolean) => { holdConfirms = on; },
+    holdGets: (on: boolean) => { holdGets = on; },
+    releaseGets: async () => { holdGets = false; while (heldGets.length) heldGets.shift()!(); await flush(); },
+    releaseConfirms: async () => { holdConfirms = false; while (heldConfirms.length) heldConfirms.shift()!(); await flush(); },
+    // The OLDEST hung request answers `res` (a network error, …) without committing.
+    releaseOne: async (res: RateResult) => { hung.shift()!(res); await flush(); },
+    get confirms() { return confirms; },
+    cookieAs: (who: string) => { cookieOf = who; },
+    holdWrites: (on: boolean) => { holdWrites = on; },
+    get sendCalls() { return sendCalls; },
+    holdReads: (on: boolean) => { holdReads = on; },
+    releaseReads: async () => { holdReads = false; while (heldReads.length) heldReads.shift()!(); await flush(); },
+    holdCookie: (on: boolean) => { holdCookie = on; },
+    releaseCookie: async () => { holdCookie = false; while (heldCookies.length) heldCookies.shift()!(); await flush(); },
+    releaseWrites: async () => { holdWrites = false; while (heldWrites.length) heldWrites.shift()!(); await flush(); },
+    failReads: (keys: boolean, gets = 0) => { failKeys = keys; failGet = gets; },
+    sessions: (...q: SessionCheck[]) => sessionQueue.push(...q),
+    get t() { return t; },
+    set mode(m: Mode) { mode = m; },
+    queue: (...m: Mode[]) => modeQueue.push(...m),
+    release: async () => { while (hung.length) hung.shift()!(); await flush(); },
+    setOnline: async (on: boolean) => { online = on; owner.setOnline(on); await flush(); },
+    setActive: (on: boolean) => { active = on; owner.setAppActive(on); },
+    failWrites: (on: boolean) => { failWrites = on; },
+    signOut: () => { signedIn = false; epoch++; gen++; owner.setViewer(null); },
+    signIn: async () => { signedIn = true; gen++; owner.setViewer(ME); await flush(); },
+    setSession: (s: SessionCheck) => { session = s; },
+    setRead: (f: (() => ReadOutcome) | null) => { readAnswer = f; },
+    start: async () => { owner.setViewer(ME); await flush(); },
+  };
+}
+type Env = ReturnType<typeof env>;
+const relaunch = async (e: Env, o: { online?: boolean; before?: (n: Env) => void } = {}) => {
+  const n = env({ disk: e.disk, t0: e.t, online: o.online ?? true });
+  for (const [w, r] of e.server.rows) n.server.rows.set(w, r);
+  o.before?.(n);
+  await n.start();
+  return n;
+};
+const lastBody = (e: Env) => e.sent[e.sent.length - 1]?.body;
+
+async function main() {
+  // ── only changed fields are sent ─────────────────────────────────────────
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 3, notes: 'fresh', flavors: { [A0]: 2 } });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    check('seeded from the snapshot: score, note, structure', c.draft().score === 3 && c.draft().notes === 'fresh' && c.draft().flavors[A0] === 2);
+    c.setNotes('fresher');
+    await e.advance(999);
+    check('nothing staged before the input settles (~1 s)', e.sent.length === 0);
+    await e.advance(1);
+    const b = lastBody(e);
+    check('one MERGE with only the note, on the version seen', e.sent.length === 1 && b?.merge === true && b.notes === 'fresher' && b.score === undefined && b.flavors === undefined && b.aromas === undefined && b.baseVersion === 1, b);
+    check('answered → "Saved", the entry gone, nothing waiting on disk', c.savedState() === 'saved' && e.owner.entry(ME, CODE, 'w1') === null && e.disk.size === 0);
+  }
+
+  // ── an edit before the seed keeps the edit; relative edits wait ──────────
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 2, notes: 'stored', flavors: { [A0]: 3 } });
+    await e.start();
+    const c = e.ctl('w1');
+    check('no snapshot yet: baselineReady false', !c.baselineReady());
+    c.setFlavors({ [A0]: 5 });
+    c.stepScore(0.25);
+    c.setAromas([{ a: 'fruity', m: null }]);
+    check('relative edits (structure, VoiceOver step, aroma add) are inert before the baseline', c.draft().flavors[A0] === undefined && c.draft().score === 0 && c.draft().aromas.length === 0);
+    c.setScore(4);
+    e.poll();
+    check('an absolute edit before the seed keeps the edit; clean fields seed from the late snapshot', c.draft().score === 4 && c.draft().notes === 'stored' && c.draft().flavors[A0] === 3);
+    c.setFlavors({ [A0]: 4 });
+    check('after the baseline a relative edit lands', c.draft().flavors[A0] === 4);
+  }
+
+  // ── the note keeps its raw text while focused ────────────────────────────
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setNoteFocused(true);
+    c.setNotes('dry ');
+    await e.advance(1000);
+    check('"dry " saved, answered with the canonical "dry"', e.server.row('w1').rating?.notes === 'dry' && c.savedState() === 'saved');
+    check('focused: the field keeps "dry " (no reseed under the cursor)', c.draft().notes === 'dry ');
+    c.setNotes('dry oak');
+    await e.advance(1000);
+    check('"oak" typed after Saved → "dry oak", never "dryoak"', e.server.row('w1').rating?.notes === 'dry oak', e.server.row('w1').rating?.notes);
+    c.setNoteFocused(false);
+    check('blur: the canonical text takes over', c.draft().notes === 'dry oak');
+  }
+
+  // ── the base is fixed at creation and persisted ──────────────────────────
+  {
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 3 });
+    e.server.webSave('w1', { score: 3 });
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4.5);
+    await e.advance(1000);
+    check('offline: nothing sent, "Saved on this phone"', e.sent.length === 0 && c.savedState() === 'local');
+    const stored = JSON.parse(e.disk.get(storageKey(ME, CODE, 'w1'))!);
+    check('the entry on disk carries base 3 (the version the edit was based on)', stored.baseVersion === 3 && stored.baseHadRating === true);
+    const n = await relaunch(e); // killed; relaunched online with an EMPTY cache
+    await n.advance(10);
+    check('relaunch: the stored base goes out and commits', n.sent.length === 1 && n.sent[0].body.baseVersion === 3 && n.server.row('w1').rating?.score === 4.5);
+  }
+  {
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    e.ctl('w1').setScore(1);
+    await e.advance(1000);
+    e.server.webSave('w1', { score: 5 }); // a web save meanwhile
+    const n = await relaunch(e);
+    await n.advance(10);
+    check('a web save in between → 409 → the WAITED entry is dropped (newer rating wins), no alert', n.sent.length === 1 && n.server.row('w1').rating?.score === 5 && n.owner.entry(ME, CODE, 'w1') === null && n.alerts.length === 0);
+  }
+
+  // ── a live edit meets a newer write: one rebase ──────────────────────────
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 3, notes: 'a' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.server.webSave('w1', { score: 3, notes: 'from the web' });
+    c.setScore(4);
+    await e.advance(1000);
+    await e.advance(10);
+    check('live: 409 → ONE rebase → saved, the clean note re-seeded from the newer rating', e.sent.length === 2 && e.server.row('w1').rating?.score === 4 && e.server.row('w1').rating?.notes === 'from the web' && c.draft().notes === 'from the web');
+    const sentBefore = e.sent.length;
+    e.server.beforeCommit = (b) => { if (b.wineId === 'w1') e.server.webSave('w1', { score: 1 }); };
+    c.setScore(4.25);
+    await e.advance(1000);
+    await e.advance(10);
+    e.server.beforeCommit = null;
+    check('a second 409 in a row for the same edits → dropped with the footer error (page visible: no alert)', e.sent.length === sentBefore + 2 && e.owner.entry(ME, CODE, 'w1') === null && c.savedState() === 'error' && e.alerts.length === 0, { sent: e.sent.length - sentBefore, s: c.savedState() });
+  }
+  {
+    const e = env();
+    e.server.webSave('w2', { score: 3 });
+    e.poll();
+    e.cache.get(CODE)!.wines = [{ id: 'w2', name: 'Riesling' }];
+    await e.start();
+    const c = e.ctl('w2');
+    e.owner.setVisible(ME, CODE, 'w2', 7, false); // a hidden neighbour (mounted, not visible)
+    e.server.beforeCommit = (b) => { if (b.wineId === 'w2') e.server.webSave('w2', { score: 1 }); };
+    c.setScore(4);
+    await e.advance(1000);
+    await e.advance(10);
+    check('a drop while the page is a hidden neighbour → the after-leave alert, once', e.alerts.length === 1 && e.alerts[0] === `${ALERT_TITLE}: Your last changes to Riesling couldn’t be saved.`, e.alerts);
+  }
+
+  // ── an ambiguous answer whose op had committed ───────────────────────────
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('commit-network');
+    c.setScore(4);
+    await e.advance(1000);
+    check('ambiguous (committed, answer lost) → "Saved on this phone" while it retries', c.savedState() === 'local');
+    await e.advance(5000);
+    const [a, b] = e.sent;
+    check('re-sent with the SAME op id → 409 with its own lastOpId → adopted', e.sent.length === 2 && a.body.opId === b.body.opId && c.savedState() === 'saved' && e.server.row('w1').version === 1);
+  }
+
+  // ── an unknown base: no request until a raw section arrives ──────────────
+  {
+    const e = env();
+    await e.start();
+    e.setRead(() => ({ kind: 'ok', ratings: null }));
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    check('unknown base: no /rate, ONE /state read', e.sent.length === 0 && e.reads.length === 1);
+    await e.advance(4000);
+    check('a null section retries with the runner backoff (not before 5 s)', e.reads.length === 1);
+    await e.advance(1000);
+    check('… then reads again', e.reads.length === 2);
+    e.setRead(null);
+    await e.advance(10_000);
+    check('a present section without a row → a LIVE entry goes out on 0', e.sent.length === 1 && e.sent[0].body.baseVersion === 0 && e.server.row('w1').rating?.score === 4);
+  }
+  {
+    const e = env({ online: false });
+    await e.start();
+    e.ctl('w1').setScore(4);
+    e.ctl('w2').setScore(2);
+    await e.advance(1000);
+    e.server.webSave('w1', { score: 5 }); // w1 was rated elsewhere; w2 never
+    const n = await relaunch(e);
+    await n.advance(10);
+    check('relaunch, unknown bases: the waited entry WITH a row is dropped, the one without is sent on 0', n.owner.entry(ME, CODE, 'w1') === null && n.server.row('w1').rating?.score === 5 && n.sent.length === 1 && n.sent[0].body.wineId === 'w2' && n.sent[0].body.baseVersion === 0);
+  }
+
+  // ── a Home launch: ratings null first, then a present section ────────────
+  {
+    const e = env({ online: false });
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.ctl('w1').setScore(3);
+    await e.advance(1000);
+    const n = await relaunch(e);
+    // The base was known (0) at creation and is persisted: sent at once.
+    await n.advance(10);
+    check('a Home launch with no session screen: the persisted entry goes out by itself', n.sent.length === 1 && n.server.row('w1').rating?.score === 3);
+  }
+  {
+    const e = env({ online: false });
+    await e.start();
+    e.ctl('w1').setScore(3);
+    await e.advance(1000);
+    const n = await relaunch(e, { before: (x) => x.setRead(() => ({ kind: 'ok', ratings: null })) });
+    await n.advance(10);
+    check('a Home launch, unknown base, ratings null → nothing sent yet', n.sent.length === 0 && n.reads.length === 1);
+    n.setRead(null);
+    await n.advance(5000);
+    check('… a present section arrives → the entry is sent', n.sent.length === 1 && n.server.row('w1').rating?.score === 3);
+  }
+
+  // ── Clear, then re-rate ──────────────────────────────────────────────────
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'x' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    await c.clearRating();
+    await e.flush();
+    check('Clear online: a FULL empty save (no merge) on the version seen, the rating gone', lastBody(e)?.merge === undefined && lastBody(e)?.notes === '' && lastBody(e)?.baseVersion === 1 && e.server.row('w1').rating === null && c.draft().score === 0);
+    await e.setOnline(false);
+    c.setScore(3);
+    await e.advance(1000);
+    const n = await relaunch(e);
+    await n.advance(10);
+    check('offline re-rate after the Clear → relaunch → ONE 409 rating:null → rebased, saved', n.sent.length === 2 && n.sent[0].body.baseVersion === 0 && n.sent[1].body.baseVersion === 2 && n.server.row('w1').rating?.score === 3, { sent: n.sent.map((x) => x.body.baseVersion), row: n.server.row('w1') });
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    await c.clearRating();
+    await e.flush();
+    c.setScore(2);
+    await e.advance(1000);
+    check('Clear then re-rate online → saved after one 409', e.sent.length === 3 && e.server.row('w1').rating?.score === 2 && c.savedState() === 'saved');
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.mode = 'hang';
+    c.setScore(5);
+    await e.advance(1000);
+    const pClear = c.clearRating();
+    check('Clear while that edit is in flight: input blocked, "nothing new" while the first attempt flies', c.clearPending() && c.savedState() === null);
+    e.mode = 'auto';
+    await e.release();
+    await pClear;
+    await e.flush();
+    check('the edit commits, the Clear goes out on the NEW version, no second confirm', e.sent.length === 2 && e.sent[1].body.baseVersion === 2 && e.server.row('w1').rating === null && !e.owner.takeClearAsk(ME, CODE, 'w1'));
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.mode = 'hang';
+    c.setScore(5);
+    await e.advance(1000);
+    void c.clearRating();
+    e.server.webSave('w1', { score: 1, notes: 'web' }); // lands before our merge
+    e.mode = 'auto';
+    await e.release();
+    check('a Clear staged behind a merge that meets a FOREIGN 409 → not rebased: the newer rating shown, asked again', e.sent.length === 1 && e.server.row('w1').rating?.score === 1 && c.draft().score === 1 && !c.clearPending() && e.owner.takeClearAsk(ME, CODE, 'w1'));
+  }
+  {
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    await e.ctl('w1').clearRating();
+    const n = await relaunch(e, { online: false });
+    const c = n.ctl('w1');
+    check('an offline Clear survives a restart: cleared display + blocked input', c.clearPending() && c.draft().score === 0);
+    await n.setOnline(true);
+    await n.advance(10);
+    check('… and is sent once online', n.server.row('w1').rating === null && n.sent.length === 1);
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    c.setNotes('kept');
+    await e.setOnline(false);
+    await e.advance(1000);
+    e.queue({ status: 400 }, 'hang');
+    await c.clearRating();
+    await e.setOnline(true);
+    await e.advance(10);
+    check('a definitive Clear rejection (400) → the edits restored, the error shown', !c.clearPending() && c.draft().notes === 'kept' && c.savedState() === 'error');
+    await e.release();
+    check('… the restored edits go out, and the next good save clears the error', e.server.row('w1').rating?.notes === 'kept' && c.savedState() === 'saved');
+  }
+
+  // ── another page of the same wine after a Clear ──────────────────────────
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const a = e.ctl('w1');
+    const b = e.ctl('w1'); // a retained page on another tab stack
+    b.setNotes('half-typed');
+    await a.clearRating();
+    await e.flush();
+    check('a dirty page after a Clear elsewhere resets before taking input', b.draft().notes === '' && b.draft().score === 0);
+    await e.advance(2000);
+    check('… and its old edit is never sent', e.sent.length === 1 && e.server.row('w1').rating === null);
+  }
+
+  // ── Next with the request hanging; departures; storage ───────────────────
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    e.mode = 'hang';
+    c.setScore(4);
+    const ok = await c.drain();
+    check('Next with the request hanging moves on at once (stored on the phone)', ok && e.sent.length === 1 && e.disk.size === 1);
+    e.mode = 'auto';
+    await e.release();
+    check('… the entry is sent later and the disk cleared', e.server.row('w1').rating?.score === 4 && e.disk.size === 0);
+  }
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    const guard = createTransitionGuard();
+    c.setSuspended(() => guard.held);
+    let moves = 0;
+    const depart = () => {
+      if (!guard.acquire()) return;
+      void c.drain().then((ok) => (ok ? moves++ : guard.release()));
+    };
+    c.setScore(3);
+    depart();
+    depart();
+    c.setScore(4);
+    await e.flush();
+    check('two navigation requests during one waiter → one transition; edits wait while it is held', moves === 1 && c.draft().score === 3);
+  }
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    e.failWrites(true);
+    c.setScore(4);
+    const p = c.drain();
+    await e.advance(2100);
+    check('a controlled close with storage failing → false (the editor stays), the error shown, nothing sent', (await p) === false && c.savedState() === 'error' && e.sent.length === 0);
+    e.failWrites(false);
+    await e.advance(3000);
+    check('… the owner keeps retrying: once the write lands the edit goes out', e.server.row('w1').rating?.score === 4);
+  }
+  {
+    const e = env({ online: false });
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await c.drain();
+    check('stored before discard', e.disk.size === 1);
+    c.discardPending({ confirmed: true }); // Delete Impression's success
+    await e.flush();
+    await e.setOnline(true);
+    await e.advance(10);
+    check('discardPending({ confirmed }) → the stored entry is gone at once, nothing sent', e.disk.size === 0 && e.sent.length === 0);
+  }
+
+  // ── the line-up overlay ──────────────────────────────────────────────────
+  {
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 2 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w2');
+    c.setScore(4);
+    await c.drain();
+    const raw = e.cache.get(CODE)!.ratings;
+    const over = e.owner.overlay(ME, CODE, raw);
+    check('an offline Finish: the line-up rows show the stored ratings, Compare (raw) does not', over?.[ID].ratings.w2?.score === 4 && over?.[ID].ratings.w1?.score === 2 && raw?.[ID].ratings.w2 === undefined);
+  }
+  // ── 🔒 emptied = deleted, decided by the SERVER (Simon, 2026-11-26) ─────
+  // The app holds an emptied draft while the page is open and stages it as an
+  // ordinary MERGE at the final departure; the server reaps it when the merged
+  // result over the stored row is empty. No Clear body from the app.
+  const fullSaves = (e: Env) => e.sent.filter((x) => x.body.merge !== true);
+  {
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    await e.advance(1000);
+    check('emptied: nothing staged while the page is open (a pause deletes nothing)', !e.owner.entry(ME, CODE, 'w1') && c.draft().score === 0);
+    await c.drain();
+    const entry = e.owner.entry(ME, CODE, 'w1');
+    check('… the final departure stages a MERGE (no Clear): the line-up row reads unrated', !!entry && !entry.clear && entry.fields.score?.value === 0 && !e.owner.overlay(ME, CODE, e.cache.get(CODE)!.ratings)?.[ID].ratings.w1);
+    await e.setOnline(true);
+    await e.advance(10);
+    check('… online: ONE merge of the score on the version seen, the server reaps it', e.sent.length === 1 && e.sent[0].body.merge === true && e.sent[0].body.score === 0 && e.sent[0].body.baseVersion === 1 && e.server.row('w1').rating === null, { sent: e.sent.map((x) => x.body) });
+    check('… the answer (`cleared`): the entry gone, "no rating" at version 2, the row unrated', !e.owner.entry(ME, CODE, 'w1') && e.owner.snapshot(ME, CODE, 'w1')?.rating === null && e.server.row('w1').version === 2 && !e.owner.overlay(ME, CODE, e.cache.get(CODE)!.ratings)?.[ID].ratings.w1);
+    c.setNotes('now with a note');
+    await e.advance(5000);
+    check('… a later note is a new rating (the 4 is not resurrected)', e.server.row('w1').rating?.notes === 'now with a note' && e.server.row('w1').rating?.score === 0, { row: e.server.row('w1') });
+  }
+  {
+    // The reaping merge committed but its answer was lost: the SAME op again →
+    // 409 with its own lastOpId and no rating, which is that op's success.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('commit-network');
+    c.setScore(0);
+    await c.drain();
+    await e.advance(30_000);
+    check('a reaped merge whose answer was lost: re-sent once (same op), taken as "no rating" at the new version', e.sent.length === 2 && e.sent[0].body.opId === e.sent[1].body.opId && !e.owner.entry(ME, CODE, 'w1') && e.owner.snapshot(ME, CODE, 'w1')?.rating === null && e.server.row('w1').version === 2, { sent: e.sent.map((x) => x.body), entry: e.owner.entry(ME, CODE, 'w1') });
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'x' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    c.setNotes('   ');
+    await c.drain();
+    await e.advance(10);
+    check('online Next with every field emptied (a blank note too): one merge, the server reaps, no full save', e.sent.length === 1 && e.sent[0].body.merge === true && fullSaves(e).length === 0 && e.server.row('w1').rating === null, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // 🔒 The draft goes out as ONE merge: score 0 + an aroma over a score-only
+    // rating, staged field by field, would send {score: 0} first, which the
+    // server reaps (the post and its likes with it) before the aroma lands.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    c.setAromas([{ a: 'fruity', m: null }]);
+    await c.drain();
+    await e.advance(10);
+    check('🔒 a draft with several fields is ONE merge (never an intermediate empty one the server would reap)', e.sent.length === 1 && e.sent[0].body.score === 0 && e.sent[0].body.aromas?.length === 1 && e.server.row('w1').version === 2 && e.server.row('w1').rating?.aromas?.length === 1, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'x' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    c.setNotes('');
+    await e.advance(1000);
+    check('online: an emptied page sends nothing while it stays open', e.sent.length === 0 && e.server.row('w1').rating?.score === 4);
+    c.setScore(3);
+    await e.advance(1000);
+    check('… a new score typed before leaving: merges only, the rating kept (3, the note emptied)', e.sent.length > 0 && e.sent.every((x) => x.body.merge === true) && e.server.row('w1').rating?.score === 3 && e.server.row('w1').rating?.notes === '', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    await c.drain();
+    e.server.webSave('w1', { score: 5 }); // the web, while the phone waited
+    await e.setOnline(true);
+    await e.advance(10_000);
+    check('a WAITED emptied merge meets a newer web save: dropped (newer rating wins), the 5 stays', e.server.row('w1').rating?.score === 5 && !e.owner.entry(ME, CODE, 'w1'), { row: e.server.row('w1'), sent: e.sent.map((x) => x.body) });
+  }
+  {
+    // 🔒 (a) The newer save wins (two devices, ruled 2026-11-26): a LIVE op
+    // whose fields over the newer rating would EMPTY it is not rebased.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    e.server.webSave('w1', { score: 5 }); // the web, after the page's first edit
+    await c.drain();
+    await e.advance(10_000);
+    const back = e.ctl('w1');
+    check('🔒 (a) a live emptied merge meets a newer 5: dropped, not rebased (ONE send), the server keeps the 5', e.sent.length === 1 && e.server.row('w1').rating?.score === 5 && e.server.row('w1').version === 2, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+    check('… the snapshot, the page and the line-up show the newer 5; the entry is gone', !e.owner.entry(ME, CODE, 'w1') && e.owner.snapshot(ME, CODE, 'w1')?.rating?.score === 5 && back.draft().score === 5
+      && e.owner.overlay(ME, CODE, e.cache.get(CODE)!.ratings)?.[ID].ratings.w1?.score === 5 && c.savedState() !== 'error');
+  }
+  {
+    // (b) …a rebase that would NOT empty the newer rating is rebased and saved as before.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    e.server.webSave('w1', { score: 5, notes: 'from the web' });
+    await c.drain();
+    await e.advance(10_000);
+    check('(b) a live emptied merge meets a newer rating with a note: rebased once, the score 0 saved, the note kept', e.sent.length === 2 && e.sent[1].body.baseVersion === 2 && e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'from the web', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // 🔒 (c) Our reap committed, its answer was lost, the web re-rated, then the
+    // still-live op is re-sent: the 409 names the web's save (not our op), and
+    // the op over that 5 would empty it: dropped, the 5 stays.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('commit-network');
+    c.setScore(0);
+    await c.drain();
+    await e.flush();
+    check('(c) the reap committed, its answer lost', e.server.row('w1').rating === null && e.sent.length === 1);
+    e.server.webSave('w1', { score: 5 });
+    await e.advance(30_000);
+    check('🔒 (c) the re-sent op meets the re-rate: dropped, never rebased, the 5 stays', e.sent.length === 2 && e.sent[0].body.opId === e.sent[1].body.opId && e.server.row('w1').rating?.score === 5 && !e.owner.entry(ME, CODE, 'w1')
+      && e.owner.snapshot(ME, CODE, 'w1')?.rating?.score === 5, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // 🔒 Fable recheck: decided on what the REBASE would send (the latest
+    // unsent values), not the answered op's body. An unanswered {score 3},
+    // then 0 staged behind it, then a newer 5 from the web.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('network');
+    c.setScore(3);
+    await e.advance(1000);
+    c.setScore(0);
+    await c.drain({ final: true });
+    e.server.webSave('w1', { score: 5 });
+    await e.advance(30_000);
+    check('🔒 an unanswered {score 3}, 0 staged behind it, a newer 5: the 409 is decided on what the rebase sends ({score 0}): dropped, the 5 stays', e.server.row('w1').rating?.score === 5 && !e.owner.entry(ME, CODE, 'w1'), { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // …and the other way: an unanswered {score 0} with a note staged behind
+    // it rebases as {score 0, notes} (not empty), nothing dropped.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('network');
+    c.setScore(0);
+    await c.drain({ final: true });
+    c.setNotes('mine');
+    await c.drain({ final: true });
+    e.server.webSave('w1', { score: 5 });
+    await e.advance(30_000);
+    check('an unanswered {score 0} + a note staged behind it meet a newer 5: rebased together, score 0 and the note saved', e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'mine', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // A second 409 after the one rebase, now emptying: dropped silently (the
+    // newer save wins), no error.
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'a' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    let n = 0;
+    e.server.beforeCommit = () => {
+      n++;
+      if (n === 1) e.server.webSave('w1', { score: 5, notes: 'b' });
+      if (n === 2) e.server.webSave('w1', { notes: 'c' });
+    };
+    c.setNotes('');
+    await e.advance(1000);
+    await e.advance(10_000);
+    e.server.beforeCommit = null;
+    check('a second, emptying 409 after the rebase: dropped silently, the newer note-only rating stays, no error', e.server.row('w1').rating?.notes === 'c' && e.server.row('w1').rating?.score === 0 && !e.owner.entry(ME, CODE, 'w1') && c.savedState() !== 'error', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // A non-emptying live op still rebases (a note over a newer score).
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setNotes('mine');
+    e.server.webSave('w1', { score: 5 });
+    await c.drain();
+    await e.advance(10_000);
+    check('(b) a note meets a newer 5: rebased, both kept (5 and the note)', e.server.row('w1').rating?.score === 5 && e.server.row('w1').rating?.notes === 'mine', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // Codex P1 #2 (moot by construction): a fallback display value never
+    // reaches the server. The section went null (a degraded poll): the page
+    // shows an empty note, but only the touched score is sent.
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'keep me' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    e.poll(null);
+    await c.drain();
+    await e.advance(10_000);
+    check('🔒 an untouched note is never sent: only the score (0), the server keeps the note', e.sent.every((x) => x.body.merge === true && x.body.notes === undefined) && e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'keep me', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 4, notes: 'keep me' });
+    await e.start(); // no section yet: an unknown baseline
+    const c = e.ctl('w1');
+    c.setScore(0); // an absolute edit: allowed before the baseline
+    await c.drain();
+    e.setRead(() => ({ kind: 'ok', ratings: e.server.section() }));
+    await e.advance(10_000);
+    check('an unknown baseline: the merge carries only the touched score, the stored note stays', fullSaves(e).length === 0 && e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'keep me', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    // Release gate (2026-11-27): an emptying draft made on an UNKNOWN baseline
+    // never reaps the rating the page didn't show.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    await c.drain();
+    e.setRead(() => ({ kind: 'ok', ratings: e.server.section() }));
+    await e.advance(10_000);
+    check('🔒 an unknown baseline: a score put back to 0 over a score-only rating is dropped, nothing sent, the rating stays', e.sent.length === 0 && e.server.row('w1').rating?.score === 4, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { notes: 'keep me' });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setNotes('x');
+    c.setNotes('');
+    await c.drain();
+    e.setRead(() => ({ kind: 'ok', ratings: e.server.section() }));
+    await e.advance(10_000);
+    check('🔒 an unknown baseline: a note typed and deleted over a note-only rating is dropped, the note stays', e.sent.length === 0 && e.server.row('w1').rating?.notes === 'keep me', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    const e = env();
+    e.poll();
+    await e.start();
+    const c = e.ctl('w2');
+    c.setScore(0);
+    await c.drain();
+    await e.advance(10);
+    check('no rating and a score left at 0: nothing sent, nothing deleted', e.sent.length === 0 && !e.owner.entry(ME, CODE, 'w2'));
+  }
+  {
+    // 🔒 Codex P1 #1: a CANCELLED gesture over an emptied page deletes nothing
+    // (the layer's real transitions over the real controller).
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    const guard = createTransitionGuard();
+    c.setSuspended(() => guard.held);
+    const tx = createLayerTransitions({ guard, activeId: () => 'w1', drain: (_id, final) => c.drain({ final }), live: () => true, destValid: () => true });
+    c.setScore(0);
+    tx.begin({ kind: 'page', wineId: 'w2', dir: 1 }); // an edge swipe granted
+    await e.advance(10);
+    check('a swipe\'s grant over an emptied page stages nothing (held)', !e.owner.entry(ME, CODE, 'w1') && e.sent.length === 0);
+    await tx.end(false); // released short of the line
+    tx.abandon();
+    await e.advance(5000);
+    check('🔒 the swipe cancelled: nothing sent, the rating kept, the page still shows 0', e.sent.length === 0 && e.server.row('w1').rating?.score === 4 && c.draft().score === 0);
+    let closing = false;
+    const pull = createPullClose({ tx, capture: () => Promise.resolve(), closing: () => closing });
+    pull.activate();
+    await e.advance(10);
+    pull.cancel();
+    pull.settled();
+    await e.advance(5000);
+    check('🔒 a pull-down cancelled short of the line: nothing sent, the rating kept', e.sent.length === 0 && e.server.row('w1').rating?.score === 4);
+    pull.activate();
+    await e.advance(10);
+    const out = pull.release();
+    await e.advance(10);
+    closing = (await out) === 'close';
+    await e.advance(10);
+    check('a pull-down released past the line: the final drain sends the merge, the server reaps', closing && e.sent.length === 1 && e.sent[0].body.merge === true && e.server.row('w1').rating === null, { sent: e.sent.map((x) => x.body) });
+  }
+  {
+    // A button's departure (Next): the grant holds, the committed end drains final.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    const guard = createTransitionGuard();
+    c.setSuspended(() => guard.held);
+    const tx = createLayerTransitions({ guard, activeId: () => 'w1', drain: (_id, final) => c.drain({ final }), live: () => true, destValid: () => true });
+    c.setScore(0);
+    tx.begin({ kind: 'page', wineId: 'w2', dir: 1 });
+    const outcome = await tx.end(true);
+    await e.advance(10);
+    check('Next over an emptied page: go once the merge is stored, the server reaps', outcome === 'go' && e.server.row('w1').rating === null && fullSaves(e).length === 0);
+  }
+  {
+    // (b) Codex P3: a held draft that turns non-empty settles again. A
+    // note-only rating emptied; the timer holds it; a poll brings a score.
+    const e = env();
+    e.server.webSave('w1', { notes: 'x' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.subscribe(() => c.resumeSettle()); // what the hook does on every owner change
+    c.setNotes('');
+    await e.advance(1000);
+    check('a note-only rating emptied: held after the settle', !e.owner.entry(ME, CODE, 'w1') && e.sent.length === 0);
+    e.server.webSave('w1', { score: 3, notes: 'x' });
+    e.poll();
+    await e.advance(1000);
+    await e.advance(5000);
+    check('🔒 a poll made the draft non-empty: it settles again (the note cleared over the new 3)', e.server.row('w1').rating?.score === 3 && e.server.row('w1').rating?.notes === '' && c.savedState() === 'saved', { row: e.server.row('w1'), sent: e.sent.map((x) => x.body), saved: c.savedState() });
+  }
+  {
+    // (b) …and a focus change: the note's raw text (empty) masked a newer note.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.subscribe(() => c.resumeSettle());
+    c.setNoteFocused(true);
+    c.setScore(0);
+    await e.advance(1000);
+    e.server.webSave('w1', { score: 4, notes: 'new' });
+    e.poll();
+    await e.advance(2000);
+    check('held while the focused note still shows its raw (empty) text', e.sent.length === 0 && c.draft().notes === '');
+    c.setNoteFocused(false);
+    await e.advance(1000);
+    await e.advance(5000);
+    check('🔒 the focus ended (the newer note shows): it settles again, score 0 over the new note', e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'new', { row: e.server.row('w1'), sent: e.sent.map((x) => x.body) });
+  }
+  {
+    // (d) Codex P2: a refused edit says so (an aroma picker resets only on a landed add).
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    await e.start(); // no section: no baseline
+    const c = e.ctl('w1');
+    check('🔒 a relative edit before the baseline is refused: setAromas → false, nothing pending', c.setAromas([{ a: 'fruity', m: null }]) === false && c.draft().aromas.length === 0);
+    e.poll();
+    check('with the baseline it lands: true', c.setAromas([{ a: 'fruity', m: null }]) === true && c.draft().aromas.length === 1);
+    const guard = createTransitionGuard();
+    c.setSuspended(() => guard.held);
+    guard.acquire();
+    check('while a transition holds the guard: refused (false)', c.setAromas([]) === false && c.setScore(2) === false && c.draft().aromas.length === 1);
+  }
+  {
+    // (e) Codex P2: a close that could not store the edit on the phone alerts
+    // once the page stops being visible (the footer says it while visible).
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.failWrites(true);
+    c.setScore(4);
+    const p = c.drain();
+    await e.advance(2100);
+    check('a close with storage failing: false, the footer error, no alert while visible', (await p) === false && c.savedState() === 'error' && e.alerts.length === 0);
+    e.owner.setVisible(ME, CODE, 'w1', 1, false); // the layer closed
+    check('🔒 the page is gone with the write still outstanding: ONE alert', e.alerts.length === 1 && e.alerts[0].startsWith(ALERT_TITLE), e.alerts);
+    e.owner.setVisible(ME, CODE, 'w1', 2, true);
+    e.owner.setVisible(ME, CODE, 'w1', 2, false);
+    check('…and only once', e.alerts.length === 1, e.alerts);
+  }
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    e.owner.setVisible(ME, CODE, 'w1', 1, false); // hidden while it moves (a page change, a pull)
+    e.failWrites(true);
+    c.setScore(4);
+    const p = c.drain();
+    await e.advance(2100);
+    await p;
+    check('a failure while the page is hidden mid-move: no alert yet (it may come back to its footer)', e.alerts.length === 0);
+    e.owner.setVisible(ME, CODE, 'w1', 2, true); // the page change stayed: back at rest
+    e.failWrites(false);
+    await e.advance(3000);
+    e.owner.setVisible(ME, CODE, 'w1', 2, false);
+    check('the retry landed before the page left: no alert', e.alerts.length === 0 && e.server.row('w1').rating?.score === 4, e.alerts);
+  }
+
+  // ── set 4, Next, the answer lands with ratings: null, Previous ───────────
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const a = e.ctl('w1');
+    a.setScore(4);
+    await a.drain();
+    a.dispose();
+    e.poll(null); // the next /state answered `ratings: null`
+    const back = e.ctl('w1');
+    check('set 4, Next, ratings: null, Previous → shows 4 (the remembered answer)', back.draft().score === 4 && back.baselineReady());
+  }
+
+  // ── save 4 while ratings: null, reopen, edit to 4.5, restart ─────────────
+  {
+    const e = env();
+    await e.start();
+    e.setRead(() => ({ kind: 'ok', ratings: e.server.section() }));
+    const a = e.ctl('w1');
+    a.setScore(4);
+    await e.advance(1000);
+    await e.advance(10);
+    check('saved on 0 once a section came', e.server.row('w1').version === 1);
+    e.cache.set(CODE, { ratings: null }); // the screen's poll keeps answering null
+    const b = e.ctl('w1');
+    await e.setOnline(false);
+    b.setScore(4.5);
+    await b.drain();
+    const n = await relaunch(e);
+    await n.advance(10);
+    check('edit to 4.5, restart → sent on the ACKNOWLEDGED version (1), no drop', n.sent.length === 1 && n.sent[0].body.baseVersion === 1 && n.server.row('w1').rating?.score === 4.5);
+  }
+
+  // ── a pre-release rating, an offline note, a web Reset ───────────────────
+  {
+    const e = env({ online: false });
+    e.server.legacy('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    e.ctl('w1').setNotes('later');
+    await e.advance(1000);
+    check('a pre-release rating: base 0 WITH a rating', JSON.parse(e.disk.get(storageKey(ME, CODE, 'w1'))!).baseHadRating === true);
+    e.server.webReset('w1');
+    const n = await relaunch(e);
+    await n.advance(10);
+    check('… a web Reset meanwhile → the note is dropped (never brings the cleared rating back)', n.server.row('w1').rating === null && n.owner.entry(ME, CODE, 'w1') === null);
+  }
+
+  // ── 3 → 4 → 3 inside the timer ───────────────────────────────────────────
+  {
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(500);
+    c.setScore(3);
+    await e.advance(1000);
+    check('3 → 4 → 3 inside the timer → no score sent', e.sent.length === 0 && e.owner.entry(ME, CODE, 'w1') === null);
+  }
+
+  // ── a kill mid-send ──────────────────────────────────────────────────────
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.mode = 'hang';
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    const first = e.sent[0].body.opId;
+    const n = await relaunch(e); // the app was killed with the request out
+    await n.advance(10);
+    check('a kill mid-send → the same op id re-sent', n.sent.length === 1 && n.sent[0].body.opId === first && n.server.row('w1').rating?.score === 4);
+  }
+
+  // ── auth: 401 invalid, sign-out, a revoked session ───────────────────────
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.setSession('none');
+    e.queue({ status: 401, auth: 'invalid' });
+    e.ctl('w1').setScore(4);
+    e.ctl('w2').setScore(3);
+    e.ctl('w3').setScore(2);
+    await e.advance(1000);
+    await e.advance(60_000);
+    check('a revoked session: 401 invalid → get-session says signed out → all three kept, the runner stopped', e.disk.size === 3 && e.sent.length <= 3 && e.owner._debug().stopped, { sent: e.sent.length, disk: e.disk.size });
+    const before = e.sent.length;
+    e.signOut();
+    e.setSession('same');
+    await e.signIn();
+    await e.advance(10);
+    check('… sent after the next sign-in', e.server.row('w1').rating?.score === 4 && e.server.row('w2').rating?.score === 3 && e.server.row('w3').rating?.score === 2 && e.sent.length > before && e.disk.size === 0);
+  }
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.setSession('same');
+    e.queue({ status: 401, auth: 'invalid' });
+    e.ctl('w1').setScore(4);
+    e.ctl('w2').setScore(3);
+    await e.advance(1000);
+    await e.advance(10);
+    check('401 invalid, still this viewer → that entry dropped (no longer a member), the others go on', e.owner.entry(ME, CODE, 'w1') === null || e.owner.entry(ME, CODE, 'w2') === null);
+  }
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.mode = 'hang';
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    e.signOut(); // the viewer epoch + auth generation move
+    await e.release();
+    const stored = JSON.parse(e.disk.get(storageKey(ME, CODE, 'w1'))!);
+    check('sign-out after dispatch → the late answer has no effect on the stored entry', !!stored.unresolvedOp && e.disk.size === 1);
+  }
+
+  // ── 404 / 429 / 503 / update_required ────────────────────────────────────
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue({ status: 404 });
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    check('404 → dropped, silent', e.owner.entry(ME, CODE, 'w1') === null && e.disk.size === 0 && e.alerts.length === 0);
+  }
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue({ status: 429, retryAfterMs: 30_000 });
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    e.ctl('w2').setScore(3);
+    await e.advance(1000);
+    check('429 → EVERY entry of the viewer waits (one request so far)', e.sent.length === 1);
+    await e.advance(29_000);
+    check('… after Retry-After both go out (a 429 fatal view never drops an entry)', e.server.row('w1').rating?.score === 4 && e.server.row('w2').rating?.score === 3);
+  }
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.mode = { status: 503, retryAfterMs: 5000 };
+    for (let i = 1; i <= 6; i++) e.ctl(`w${i}`).setScore(4);
+    await e.advance(1000);
+    await e.advance(10 * 60_000);
+    check('six entries answering 503 for 10 min → under 20 requests', e.sent.length < 20, e.sent.length);
+    e.mode = 'auto';
+    await e.advance(6 * 60_000);
+    check('… and all six land once the moment answers', [1, 2, 3, 4, 5, 6].every((i) => e.server.row(`w${i}`).rating?.score === 4));
+  }
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    e.queue({ status: 400 });
+    c.setScore(4);
+    await e.advance(1000);
+    check('400 → dropped with the footer error (a client bug, logged)', e.owner.entry(ME, CODE, 'w1') === null && c.savedState() === 'error');
+  }
+  {
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.mode = 'update';
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    await e.advance(30 * 60_000);
+    check('update_required → the runner stops until the next launch (one request, no backoff loop)', e.sent.length === 1 && e.owner._debug().updateStopped && e.disk.size === 1);
+  }
+
+
+  // ── review fixes (Fable r1) ──────────────────────────────────────────────
+  {
+    // 1. An error stays until the next GOOD save, not until the next keystroke.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    e.queue({ status: 400 });
+    c.setScore(4);
+    await e.advance(1000);
+    c.setNotes('typing again');
+    check('r1-1: the footer error survives a keystroke', c.savedState() === 'error');
+    await e.advance(1000);
+    check('r1-1: … and clears with the next GOOD save', c.savedState() === 'saved' && c.error() === null);
+  }
+  {
+    // 4 + 11. A 400 shows the shared copy, never the server's developer
+    // string; the log carries the op id, field names and message, no values.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    e.queue({ status: 400, message: 'aroma modifier must be a string or null' });
+    c.setNotes('a private thought');
+    await e.advance(1000);
+    const logged = JSON.stringify(e.logs);
+    check('r1-4: a 400 shows the shared error copy, not the server message', c.error() === SAVE_ERROR_TEXT);
+    check('r1-11: the 400 log has the op id, the field names and the message, never the note', logged.includes('aroma modifier') && logged.includes('"fields":["notes"]') && logged.includes('"opId"') && !logged.includes('a private thought'), e.logs);
+  }
+  {
+    // 2. An answer dropped because the auth generation moved (a cookie
+    // refresh) keeps the entry moving: the SAME op goes out again soon.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.mode = 'hang';
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    e.bumpGen();
+    e.mode = 'auto';
+    await e.release();
+    const first = e.sent[0].body.opId;
+    await e.advance(1500);
+    check('r1-2: a stale-stamp answer is discarded and the SAME op re-sent shortly', e.sent.length === 2 && e.sent[1].body.opId === first && e.server.row('w1').rating?.score === 4 && e.owner.entry(ME, CODE, 'w1') === null);
+  }
+  {
+    // 2. A discarded 503 PROBE frees its moment: the siblings go on.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.mode = { status: 503, retryAfterMs: 5000 };
+    e.ctl('w1').setScore(4);
+    e.ctl('w2').setScore(3);
+    await e.advance(1000);
+    e.mode = 'hang';
+    await e.advance(5000); // one probe goes out and hangs
+    const probes = e.sent.length;
+    e.bumpGen();
+    e.mode = 'auto';
+    await e.release();
+    await e.advance(2000);
+    check('r1-2: a discarded 503 probe does not strand the moment', e.sent.length > probes && e.server.row('w1').rating?.score === 4 && e.server.row('w2').rating?.score === 3, { probes, sent: e.sent.length });
+  }
+  {
+    // 3. The line-up overlay keeps ONE object while nothing it shows changed.
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 2 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w2');
+    c.setScore(4);
+    await c.drain();
+    const raw = e.cache.get(CODE)!.ratings;
+    const a = e.owner.overlay(ME, CODE, raw);
+    e.owner.touch(); // an unrelated owner change
+    const b = e.owner.overlay(ME, CODE, raw);
+    c.setScore(4.5);
+    await c.drain();
+    const d = e.owner.overlay(ME, CODE, raw);
+    check('r1-3: same ratings + value-equal own rows → the same object; a real change → a new one', a === b && d !== b && d?.[ID].ratings.w2?.score === 4.5);
+  }
+  {
+    // 5. Hydration's read failed: a stage reads (and merges) that key before
+    // its first write, so the stored unsent edit is never replaced unread.
+    const disk = new Map<string, string>();
+    const t0 = 5_000_000_000;
+    const stored = { viewer: ME, code: CODE, wineId: 'w1', fields: { notes: { value: 'from yesterday', rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 3, baseHadRating: true, waited: true, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 };
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify(stored));
+    const e = env({ disk, t0, online: false });
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    e.failReads(true, 2); // getAllKeys fails twice (hydration gives up), then the first per-key read too
+    await e.start();
+    await e.advance(1500);
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    const mid = JSON.parse(disk.get(storageKey(ME, CODE, 'w1'))!);
+    check('r1-5: the key read failing too → nothing written over the stored entry', mid.fields.notes?.value === 'from yesterday' && mid.fields.score === undefined);
+    await e.advance(3000);
+    const merged = JSON.parse(disk.get(storageKey(ME, CODE, 'w1'))!);
+    check('r1-5: once the key reads, the page edit is MERGED onto the stored entry (its base kept)', merged.fields.notes?.value === 'from yesterday' && merged.fields.score?.value === 4 && merged.baseVersion === 3, merged.fields);
+  }
+  {
+    // 6. The 90 days count from the last EDIT, not from a backoff or a
+    // hydration write; an entry without `editedAt` counts from `updatedAt`.
+    const disk = new Map<string, string>();
+    const t0 = 20_000_000_000;
+    const base = { viewer: ME, code: CODE, fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: true, rebased: false, acked: false, nextAt: 0, attempts: 3, createdAt: 0 };
+    const stuck = { ...base, wineId: 'w1', updatedAt: t0 - 1000, editedAt: t0 - CLEANUP_MS - 1 };
+    const legacy = { ...base, wineId: 'w2', updatedAt: t0 - CLEANUP_MS - 1 };
+    const recent = { ...base, wineId: 'w3', updatedAt: t0 - 1000, editedAt: t0 - 1000 };
+    for (const x of [stuck, legacy, recent]) disk.set(storageKey(ME, CODE, x.wineId), JSON.stringify(x));
+    const e = env({ disk, t0, online: false });
+    await e.start();
+    check('r1-6: the viewer\'s own stuck entry (backoff writes, last edit > 90 days) is removed', !disk.has(storageKey(ME, CODE, 'w1')) && !disk.has(storageKey(ME, CODE, 'w2')) && disk.has(storageKey(ME, CODE, 'w3')));
+    e.ctl('w3').setScore(5);
+    await e.advance(1000);
+    const w3 = JSON.parse(disk.get(storageKey(ME, CODE, 'w3'))!);
+    check('r1-6: an edit stamps `editedAt`', w3.editedAt >= t0);
+  }
+  {
+    // 10. An unanswered get-session after a 401 is asked again with the
+    // backoff while the same viewer is signed in.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.sessions('unknown', 'unknown', 'same');
+    e.queue({ status: 401, auth: 'invalid' });
+    e.ctl('w1').setScore(4);
+    e.ctl('w2').setScore(3);
+    await e.advance(1000);
+    check('r1-10: no answer → still stopped, entries kept', e.owner._debug().stopped && e.disk.size >= 1);
+    await e.advance(20_000);
+    check('r1-10: … asked again with the backoff; "same" → that entry dropped, the runner resumes', !e.owner._debug().stopped && e.server.row('w2').rating?.score === 3 && e.owner.entry(ME, CODE, 'w1') === null);
+  }
+  {
+    // 10. A sign-out ends the retries (nothing asked for the old viewer).
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.sessions('unknown');
+    e.setSession('unknown');
+    e.queue({ status: 401, auth: 'invalid' });
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    e.signOut();
+    e.setSession('same');
+    await e.advance(10 * 60_000);
+    check('r1-10: after a sign-out the retries stop, the entry stays stored', e.disk.size === 1 && e.owner.viewer() === null);
+  }
+
+
+  // ── Codex xhigh + Fable recheck ──────────────────────────────────────────
+  {
+    // Codex P1 (b)(i): every merge and Clear body carries the entry's viewer.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    await c.clearRating();
+    await e.flush();
+    check('cx-viewer: the merge and the Clear carry viewer u:<publicId>', e.sent.length === 2 && e.sent.every((x) => x.body.viewer === ID), e.sent.map((x) => x.body.viewer));
+  }
+  {
+    // Codex P1 (b)(i): 409 wrongViewer → stop, keep, get-session; another
+    // account's session → held; the right account signed in → sent, never dropped.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.cookieAs('u:someoneElse0');
+    e.setSession('other');
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    await e.advance(60_000);
+    check('cx-wrong-viewer: refused → runner stopped, the entry kept, nothing written', e.sent.length === 1 && e.owner._debug().stopped && e.disk.size === 1 && e.server.row('w1').rating === null);
+    e.signOut();
+    e.cookieAs(ID);
+    e.setSession('same');
+    await e.signIn();
+    await e.advance(10);
+    check('cx-wrong-viewer: … sent once the right account is signed in', e.server.row('w1').rating?.score === 4 && e.disk.size === 0);
+  }
+  {
+    // Codex P1 (b)(i): wrongViewer then get-session "same" → not dropped, it backs off and goes again.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.cookieAs('u:someoneElse0');
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    e.cookieAs(ID);
+    await e.advance(10_000);
+    check('cx-wrong-viewer: "same" → resumed, the entry kept and saved', e.server.row('w1').rating?.score === 4 && !e.owner._debug().stopped);
+  }
+  {
+    // Codex P1 (b)(ii): a launch under ANOTHER account's credential holds the
+    // queue: no send, no /state read trusted as a base.
+    const e = env({ online: false });
+    await e.start();
+    e.ctl('w1').setScore(4); // no snapshot: an unknown base
+    await e.advance(1000);
+    const n = await relaunch(e, { before: (x) => { x.setSession('other'); } });
+    n.poll({ [ID]: { displayName: 'Me', ratings: {} } }); // the line-up's poll under that credential
+    await n.advance(60_000);
+    const stored = JSON.parse(n.disk.get(storageKey(ME, CODE, 'w1'))!);
+    check('cx-owner: another account\'s session at launch → nothing sent, no read, the base stays unknown', n.sent.length === 0 && n.reads.length === 0 && stored.baseVersion === 'unknown' && n.confirms >= 1);
+    n.setSession('same');
+    n.bumpGen(); // the right account signs in: the generation moves
+    const asked = n.confirms;
+    n.owner.touch(); // any query activity
+    await n.flush();
+    check('cx-owner: … the next query activity re-asks get-session for the new generation', n.confirms === asked + 1);
+    n.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await n.advance(10_000);
+    check('cx-owner: … confirmed for the new generation → read, sent on 0', n.sent.length === 1 && n.sent[0].body.baseVersion === 0 && n.server.row('w1').rating?.score === 4);
+  }
+  {
+    // Codex P1 (b)(ii): an auth-generation change → get-session again before the next send.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    const before = e.confirms;
+    e.bumpGen();
+    e.ctl('w2').setScore(3);
+    await e.advance(1000);
+    check('cx-owner: a generation change re-confirms the owner before sending', e.confirms === before + 1 && e.server.row('w2').rating?.score === 3);
+  }
+  {
+    // Codex P1 (a): the base is latched at the first edit, not at the stage.
+    // Edit offline on v1, reconnect, a poll brings v2, then the stage.
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 3, notes: 'old' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setNotes('mine'); // the timer is still running
+    await e.setOnline(true);
+    e.server.webSave('w1', { score: 3, notes: 'newer from the web' });
+    e.poll();
+    await e.advance(1000);
+    await e.advance(10);
+    check('cx-latch: the merge goes out on v1 (what the page showed), never v2', e.sent.length === 1 && e.sent[0].body.baseVersion === 1, e.sent.map((x) => x.body.baseVersion));
+    check('cx-latch: … offline provenance → waited → dropped by the 409; the newer note stays', e.server.row('w1').rating?.notes === 'newer from the web' && e.owner.entry(ME, CODE, 'w1') === null);
+  }
+  {
+    // Codex P1 (b): the snapshot moves while the confirm is open → the Clear
+    // goes out on the DISPLAYED version → 409 → the stale-Clear path.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    const token = c.clearBaseline(); // the alert opens
+    e.server.webSave('w1', { score: 2, notes: 'web' });
+    e.poll(); // a poll while the alert is up
+    await c.clearRating(token);
+    await e.flush();
+    check('cx-clear: the Clear goes out on the displayed version, meets a 409, the newer rating stays, asked again', e.sent.length === 1 && e.sent[0].body.baseVersion === 1 && e.server.row('w1').rating?.score === 2 && e.owner.takeClearAsk(ME, CODE, 'w1') && c.draft().score === 2);
+  }
+  {
+    // Codex P1 (b): a 400 restores the UNSETTLED note (taken atomically into the restore).
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    c.setNotes('unsettled');
+    e.queue({ status: 400 }, 'hang');
+    await c.clearRating();
+    await e.flush();
+    check('cx-clear: the unsettled note was never sent as a merge of its own', e.sent.length >= 1 && e.sent[0].body.merge === undefined);
+    check('cx-clear: a 400 restores the unsettled note, the error shown', c.draft().notes === 'unsettled' && c.savedState() === 'error');
+    await e.release();
+  }
+  {
+    // Codex P2 (a): the gate closes during the write-ahead wait → nothing sent,
+    // the persisted op kept, the same op once the gate opens.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.holdWrites(true);
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    await e.setOnline(false);
+    await e.releaseWrites();
+    check('cx-gate: offline by the time the write lands → nothing sent, not even handed to the transport', e.sendCalls === 0 && e.sent.length === 0 && JSON.parse(e.disk.get(storageKey(ME, CODE, 'w1'))!).unresolvedOp);
+    const op = JSON.parse(e.disk.get(storageKey(ME, CODE, 'w1'))!).unresolvedOp.opId;
+    await e.setOnline(true);
+    await e.advance(10);
+    check('cx-gate: … back online → that persisted op goes out', e.sent.length === 1 && e.sent[0].body.opId === op && e.server.row('w1').rating?.score === 4);
+  }
+  {
+    // Fable P3 1: a Clear doesn't erase the footer error; only a good save does.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    e.queue({ status: 400 });
+    c.setScore(4);
+    await e.advance(1000);
+    e.queue('hang');
+    void c.clearRating();
+    await e.flush();
+    check('fx-1: the error stays while the Clear is pending', c.savedState() === 'error');
+    await e.release();
+  }
+  {
+    // Fable P3 2: the get-session retry ends with the viewer; online again → asked at once.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.setSession('unknown');
+    e.queue({ status: 401, auth: 'invalid' });
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    const a = e.confirms;
+    await e.setOnline(false);
+    await e.setOnline(true);
+    check('fx-2: back online → the pending get-session is asked again at once', e.confirms === a + 1);
+    e.signOut();
+    const b = e.confirms;
+    await e.advance(30 * 60_000);
+    check('fx-2: after a sign-out the retry timer asks nothing more', e.confirms === b);
+  }
+  {
+    // Fable P3 4 + 5: after a failed launch read, a discard isn't undone by the
+    // key read, and a page Clear merged over a stored entry keeps its own restore.
+    const t0 = 5_000_000_000;
+    const stored = (wineId: string) => ({ viewer: ME, code: CODE, wineId, fields: { notes: { value: 'from yesterday', rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 3, baseHadRating: true, waited: true, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 });
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify(stored('w1')));
+    disk.set(storageKey(ME, CODE, 'w2'), JSON.stringify(stored('w2')));
+    const e = env({ disk, t0, online: false });
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    e.failReads(true, 0); // the launch read fails, the per-key reads work
+    await e.start();
+    await e.advance(1500);
+    const d = e.ctl('w1');
+    d.discardPending({ confirmed: true });
+    await e.advance(10);
+    check('fx-4: a discard after a failed launch read is written, not undone by the key read', !disk.has(storageKey(ME, CODE, 'w1')));
+    const c = e.ctl('w2');
+    c.setScore(4); // unsettled
+    await c.clearRating();
+    await e.advance(10);
+    const w2 = JSON.parse(disk.get(storageKey(ME, CODE, 'w2'))!);
+    check('fx-5: the page Clear over the stored entry keeps its own restore with the stored edits', w2.clear && w2.clear.restore.notes === 'from yesterday' && w2.clear.restore.score === 4, w2.clear);
+  }
+
+
+  {
+    // Codex P2 (a), the second place: the gate closes during the binding's
+    // cookie read → beforeSend cancels ('ineligible'), the op stays, then goes.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.holdCookie(true);
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    await e.flush();
+    const handed = e.sendCalls;
+    await e.setOnline(false);
+    await e.releaseCookie();
+    const raw = e.disk.get(storageKey(ME, CODE, 'w1'));
+    const stored = raw ? JSON.parse(raw) : null;
+    check('cx-gate: offline during the cookie read → cancelled locally, the op kept', handed === 1 && e.sent.length === 0 && !!stored?.unresolvedOp && !e.owner._debug().stopped);
+    await e.setOnline(true);
+    await e.advance(10);
+    check('cx-gate: … back online → that same op goes out', e.sent.length === 1 && e.sent[0].body.opId === stored?.unresolvedOp?.opId && e.server.row('w1').rating?.score === 4);
+  }
+  {
+    // Codex P1 (b)(ii), the read side: a /state read in flight when the auth
+    // generation moves to ANOTHER account's credential is not taken as a base.
+    const e = env({ online: false });
+    await e.start();
+    e.ctl('w1').setScore(4); // no snapshot: an unknown base
+    await e.advance(1000);
+    e.holdReads(true);
+    await e.setOnline(true); // owner confirmed, the read leaves
+    await e.flush();
+    const left = e.reads.length;
+    e.bumpGen();
+    e.setSession('other');
+    e.setRead(() => ({ kind: 'removed' })); // that account was removed from the moment
+    await e.releaseReads();
+    await e.advance(60_000);
+    const raw = e.disk.get(storageKey(ME, CODE, 'w1'));
+    const stored = raw ? JSON.parse(raw) : null;
+    check('cx-owner: a read answered under another account\'s credential drops nothing and is no base; nothing sent', left === 1 && stored?.baseVersion === 'unknown' && e.sent.length === 0);
+    e.setRead(null);
+  }
+  {
+    // Codex P1 (a), the seed: a net-zero edit (4 and back to 3 inside the
+    // settle) while a poll brings a newer web rating is NOT staged: it would
+    // overwrite the web's 5 with 3 through the live rebase.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    c.setScore(3);
+    e.server.webSave('w1', { score: 5 });
+    e.poll();
+    await e.advance(1000);
+    await e.advance(10_000);
+    check('cx-latch: a net-zero edit against what the page showed sends nothing; the web\'s 5 stays', e.sent.length === 0 && e.server.row('w1').rating?.score === 5 && e.owner.entry(ME, CODE, 'w1') === null);
+  }
+  {
+    // r1-1 / Fable P3 1, staged: the error also survives the next STAGE while its save is out.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    e.queue({ status: 400 }, 'hang');
+    c.setScore(4);
+    await e.advance(1000);
+    c.setNotes('again');
+    await e.advance(1000);
+    check('r1-1: the footer error survives the next staged save while it is on the wire', e.sent.length === 2 && c.savedState() === 'error');
+    await e.release();
+  }
+
+
+  // ── Codex recheck 1 + Fable P3s ──────────────────────────────────────────
+  {
+    // r2-1a: a Clear confirm opened before the rating loaded deletes nothing.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    await e.start(); // no section yet
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    const ready0 = c.baselineReady();
+    const token = c.clearBaseline(); // the alert would be open here
+    e.poll(); // v1 found afterwards
+    const ok = await c.clearRating(token);
+    await e.flush();
+    check('r2-1a: unknown baseline → Clear unavailable; a token taken then deletes nothing', !ready0 && ok === false && e.sent.length === 0 && e.server.row('w1').rating?.score === 4);
+  }
+  {
+    // r2-1b: the entry rebased onto a web save while the confirm was open →
+    // Delete deletes nothing and asks again on the newer rating.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    e.queue('hang');
+    c.setScore(4);
+    await e.advance(1000); // the merge is out on v1
+    const token = c.clearBaseline();
+    e.server.webSave('w1', { score: 3, notes: 'from the web' }); // v2
+    await e.release(); // 409 → the live rebase onto v2
+    const ok = await c.clearRating(token);
+    await e.advance(10);
+    check('r2-1b: rebased since the token → no Clear, asked again, the web\'s note kept', ok === false && !e.sent.some((x) => x.body.merge === undefined) && e.server.row('w1').rating?.notes === 'from the web' && e.owner.takeClearAsk(ME, CODE, 'w1'));
+  }
+  {
+    // r2-2: a note started online, continued OFFLINE, reconnected before the
+    // settle; a web save meanwhile → the waited merge is dropped, never rebased.
+    const e = env();
+    e.server.webSave('w1', { score: 3, notes: 'old' });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setNotes('a');
+    await e.setOnline(false);
+    c.setNotes('ab');
+    e.server.webSave('w1', { score: 3, notes: 'newer' });
+    await e.setOnline(true);
+    await e.advance(1000);
+    await e.advance(10_000);
+    check('r2-2: an offline edit anywhere in the draft → the newer web note stays', e.server.row('w1').rating?.notes === 'newer' && e.owner.entry(ME, CODE, 'w1') === null);
+  }
+  {
+    // r2-2 + r2-7: an earlier entry finishes during the debounce of an offline
+    // edit; reconnected before the settle → the new entry is waited and based
+    // on the OWN acknowledged save (never the older latch).
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('hang');
+    c.setScore(4);
+    await e.advance(1000); // out on v1
+    await e.setOnline(false);
+    c.setNotes('offline'); // latched while the entry still exists
+    await e.release(); // acknowledged: v2, the entry done
+    await e.setOnline(true);
+    e.server.webSave('w1', { score: 4, notes: 'web' }); // v3
+    await e.advance(1000);
+    await e.advance(10_000);
+    const merge = e.sent.find((x) => x.body.notes === 'offline');
+    check('r2-2/7: the later merge goes out on the own ack (v2), waited → dropped by v3', merge?.body.baseVersion === 2 && e.server.row('w1').rating?.notes === 'web');
+  }
+  {
+    // r2-3: a /state read sent before an auth change answers `removed` after
+    // the new generation is confirmed → dropped whole; read again, then sent.
+    const e = env({ online: false });
+    await e.start();
+    e.ctl('w1').setScore(4); // no snapshot: an unknown base
+    await e.advance(1000);
+    e.holdReads(true);
+    let first = true;
+    e.setRead(() => (first ? ((first = false), { kind: 'removed' as const }) : { kind: 'ok' as const, ratings: e.server.section() }));
+    await e.setOnline(true);
+    await e.flush();
+    e.bumpGen(); // a cookie refresh, same account
+    e.owner.touch(); // confirmed again for the new generation
+    await e.flush();
+    await e.releaseReads();
+    await e.advance(10);
+    check('r2-3: an old read\'s `removed` drops nothing; the entry is read again and saved', e.reads.length === 2 && e.server.row('w1').rating?.score === 4);
+    e.setRead(null);
+  }
+  {
+    // r2-3: a cached section fetched under an older generation is no snapshot and no base.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    await e.start();
+    const old = e.genNow();
+    e.bumpGen();
+    e.owner.touch();
+    await e.flush();
+    e.poll(e.server.section(), old);
+    const c = e.ctl('w1');
+    const stale = c.baselineReady();
+    e.poll();
+    check('r2-3: a section of an older generation → no baseline; one of the current → ready', !stale && c.baselineReady());
+  }
+  {
+    // r2-3: an older generation's section gives a base-less entry no base.
+    const e = env({ online: false });
+    await e.start();
+    const old = e.genNow();
+    e.bumpGen();
+    e.owner.touch();
+    await e.flush();
+    e.ctl('w1').setScore(4);
+    await e.advance(1000);
+    e.server.webSave('w1', { score: 2 });
+    e.poll(e.server.section(), old);
+    await e.advance(10);
+    const raw = e.disk.get(storageKey(ME, CODE, 'w1'));
+    check('r2-3: … and no base for an entry without one', !!raw && JSON.parse(raw).baseVersion === 'unknown');
+  }
+  {
+    // r2-4: the note started at score 3, a poll brings 4, the score set back
+    // to 3 → the score IS sent (its seed is the 4 the person saw).
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setNotes('n');
+    e.server.webSave('w1', { score: 4 });
+    e.poll();
+    c.setScore(3);
+    await e.advance(1000);
+    await e.advance(10_000);
+    check('r2-4: a field first touched after a poll compares with what was then shown', e.sent.some((x) => x.body.score === 3) && e.server.row('w1').rating?.score === 3);
+  }
+  {
+    // r2-5: A probes a 503'd moment; B's OLDER request fails → the probe stays
+    // A's, C waits for it.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue('hang', { status: 503 }, 'hang');
+    e.ctl('w2').setScore(2); // B
+    await e.advance(1000);
+    e.ctl('w1').setScore(1); // A → 503
+    await e.advance(1000);
+    e.ctl('w3').setScore(3); // C waits for the pause
+    await e.advance(1000);
+    await e.advance(5000); // the pause ends: A probes (hang)
+    const before = e.sent.length;
+    await e.releaseOne({ kind: 'network', error: new Error('lost') }); // B's older request
+    await e.flush();
+    check('r2-5: another request\'s answer never frees the probe', before === 3 && e.sent.length === 3 && !e.sent.some((x) => x.body.wineId === 'w3'));
+    await e.release();
+  }
+  {
+    // r2-6: get-session answers that keep coming back under a moved
+    // generation are asked again at once ONCE, then with the backoff.
+    const e = env();
+    e.bumpOnConfirm(3);
+    await e.start();
+    const a = e.confirms;
+    await e.advance(backoffMs(1) - 1);
+    const b = e.confirms;
+    await e.advance(1);
+    check('r2-6: the second moved answer backs off', a === 2 && b === 2 && e.confirms === 3, { a, b, c: e.confirms });
+  }
+  {
+    // r2-7: the token was taken before the OWN merge was acknowledged → the
+    // Clear goes out on that ack, no second confirm.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    e.queue('hang');
+    c.setScore(4);
+    await e.advance(1000);
+    const token = c.clearBaseline(); // base v1 on screen
+    await e.release(); // own ack → v2, the entry done
+    await c.clearRating(token);
+    await e.advance(10);
+    const clr = e.sent.find((x) => x.body.merge === undefined);
+    check('r2-7: the Clear goes out on the own ack (v2) and deletes, no re-ask', clr?.body.baseVersion === 2 && e.server.row('w1').rating === null && !e.owner.takeClearAsk(ME, CODE, 'w1'));
+  }
+
+
+  // ── Codex recheck 2 ──────────────────────────────────────────────────────
+  {
+    // r3-1: saved on the phone, Reset on the web, the phone sees it empty,
+    // rated offline, reconnected → saved on `0, false` (never the old ack).
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // own ack v1
+    e.server.webReset('w1'); // v2, no rating
+    e.poll();
+    await e.setOnline(false);
+    c.setScore(3);
+    await e.advance(1000);
+    await e.setOnline(true);
+    await e.advance(10);
+    const merge = e.sent.find((x) => x.body.score === 3);
+    check('r3-1: a re-rate after an observed web Reset goes out on 0 and is saved', merge?.body.baseVersion === 0 && e.server.row('w1').rating?.score === 3);
+  }
+  {
+    // r3-2: a save 3 → 4 held, the shown 4 set back to 3, the first save
+    // acknowledged during the debounce → the 3 IS sent and stays shown.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('hang');
+    c.setScore(4);
+    await e.advance(1000);
+    c.setScore(3);
+    await e.release(); // v2 = 4
+    await e.advance(1000);
+    await e.advance(10);
+    const back = e.sent.find((x) => x.body.score === 3);
+    check('r3-2: a reversal made while the 4 was unacknowledged is sent (on v2) and stays shown', back?.body.baseVersion === 2 && e.server.row('w1').rating?.score === 3 && c.draft().score === 3);
+  }
+  {
+    // r4-3: a reversal of a value that never went out is staged anyway (the
+    // entry holds a revision): re-sending the server's own value is harmless.
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // staged, not sent (offline)
+    c.setScore(3);
+    await e.advance(1000);
+    await e.setOnline(true);
+    await e.advance(10);
+    check('r4-3: back to the server\'s value before it went out → the 3 goes out, the server keeps 3', e.sent.length === 1 && e.sent[0].body.score === 3 && e.server.row('w1').rating?.score === 3 && e.owner.entry(ME, CODE, 'w1') === null);
+  }
+
+  // ── Codex recheck 3: mechanisms removed ──────────────────────────────────
+  {
+    // r4-1: a bare discard keeps a typed note: it is staged, sent, and the
+    // server's 404 drops it (silently).
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    e.queue({ status: 404 });
+    c.setNotes('typed');
+    c.discardPending(); // the page saw the bottle gone
+    const staged = e.owner.entry(ME, CODE, 'w1')?.fields.notes?.value === 'typed';
+    await e.advance(10);
+    check('r4-1: a bare discard stages the note; it is sent, the 404 drops it, no alert', staged && e.sent.length === 1 && e.sent[0].body.notes === 'typed' && e.disk.size === 0 && e.alerts.length === 0 && c.savedState() !== 'error');
+  }
+  {
+    // r4-1: … and when the bottle was there after all, the server saves it.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setNotes('typed');
+    c.discardPending();
+    await e.advance(10);
+    check('r4-1: … an ordinary answer saves it', e.server.row('w1').rating?.notes === 'typed');
+  }
+  {
+    // r4-2: the dedicated read gives an unknown base its base and nothing else.
+    // Named residual: with the screen cache empty the editor is not
+    // baseline-ready until the screen's poll arrives.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    await e.start(); // no screen poll
+    const c = e.ctl('w1');
+    e.queue('hang');
+    c.setNotes('n');
+    await e.advance(1000);
+    const residual = !c.baselineReady();
+    e.poll();
+    check('r4-2: the read supplies the base (sent on v1), not the snapshot; the poll does', e.sent.length === 1 && e.sent[0].body.baseVersion === 1 && residual && c.baselineReady() && c.draft().score === 3);
+    await e.release();
+  }
+  {
+    // r4-3: another mount staged the field after this page's first touch →
+    // this page's latest value goes out (the entry holds a revision now).
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const a = e.ctl('w1');
+    const b = e.ctl('w1');
+    a.setScore(4);
+    await e.advance(500);
+    b.setScore(4);
+    b.setScore(3); // first touched with no entry: its seed is the 3
+    await e.advance(500); // a stages its 4
+    await e.advance(500); // b settles on 3
+    await e.setOnline(true);
+    await e.advance(10_000);
+    check('r4-3: a value back to the seed still goes out when the entry holds a revision', e.server.row('w1').rating?.score === 3);
+  }
+  {
+    // r4-3: Codex's sequence: a save of 4 held, 5 staged behind it, the 5
+    // changed back to 3 (offline) → the 3 is sent.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    e.queue('hang');
+    c.setScore(4);
+    await e.advance(1000); // 4 out, held
+    c.setScore(5);
+    await e.advance(1000); // 5 staged behind it
+    await e.setOnline(false);
+    c.setScore(3);
+    await e.release(); // 4 acknowledged
+    await e.advance(1000);
+    await e.setOnline(true);
+    await e.advance(10_000);
+    check('r4-3: the reversal behind two revisions is sent', e.sent.some((x) => x.body.score === 3) && e.server.row('w1').rating?.score === 3);
+  }
+
+  // ── Codex recheck 4: the dedicated read ──────────────────────────────────
+  {
+    // r5-1: a first rating; the lookup held, the screen poll (no group of
+    // mine yet) supplies the base, 4 is saved, the OLDER lookup returns →
+    // the editor keeps 4, the next (offline) edit goes out on the ack.
+    const e = env();
+    await e.start(); // no screen section yet
+    const c = e.ctl('w1');
+    e.holdReads(true);
+    const old = e.server.section(); // before the save: nothing of mine
+    e.setRead(() => ({ kind: 'ok', ratings: old }));
+    c.setScore(4);
+    await e.advance(1000); // unknown base → the lookup leaves, held
+    e.poll({}); // the screen's poll: the base (no rating), no group of mine
+    await e.advance(10); // 4 saved: v1
+    await e.releaseReads(); // the older lookup lands
+    const kept = c.draft().score === 4;
+    await e.setOnline(false);
+    c.setNotes('next');
+    await e.advance(1000);
+    await e.setOnline(true);
+    await e.advance(10_000);
+    const next = e.sent.find((x) => x.body.notes === 'next');
+    check('r5-1: a slow lookup never moves the snapshot: 4 stays, the next edit goes out on v1 and is saved', kept && next?.body.baseVersion === 1 && e.server.row('w1').rating?.notes === 'next');
+    e.setRead(null);
+  }
+  {
+    // r5-2: a `removed` reply held; a second entry staged meanwhile (the
+    // viewer rejoined) → only the entry the lookup covered is dropped.
+    const e = env();
+    await e.start();
+    e.holdReads(true);
+    let first = true;
+    e.setRead(() => (first ? ((first = false), { kind: 'removed' as const }) : { kind: 'ok' as const, ratings: e.server.section() }));
+    e.ctl('w1').setScore(4);
+    await e.advance(1000); // the lookup for w1 leaves, held
+    e.ctl('w2').setScore(3);
+    await e.advance(1000); // w2 staged after it
+    await e.releaseReads();
+    await e.advance(10);
+    check('r5-2: only the covered entry is dropped; the later one is read again and saved', e.owner.entry(ME, CODE, 'w1') === null && e.server.row('w1').rating === null && e.server.row('w2').rating?.score === 3);
+    e.setRead(null);
+  }
+
+  {
+    // r5-2: an OK lookup gives a base only to the entries it covered; one
+    // staged after it left (the web rated that bottle meanwhile) is read again.
+    const e = env();
+    await e.start();
+    e.holdReads(true);
+    const old = e.server.section();
+    let first = true;
+    e.setRead(() => (first ? ((first = false), { kind: 'ok' as const, ratings: old }) : { kind: 'ok' as const, ratings: e.server.section() }));
+    e.ctl('w1').setScore(4);
+    await e.advance(1000); // the lookup for w1 leaves, held
+    e.server.webSave('w2', { notes: 'web' }); // v1 on w2
+    e.ctl('w2').setScore(3);
+    await e.advance(1000);
+    await e.releaseReads();
+    await e.advance(10);
+    const w2 = e.sent.find((x) => x.body.wineId === 'w2');
+    check('r5-2: … an entry staged after the lookup left takes its base from a fresh read (v1)', w2?.body.baseVersion === 1 && e.server.row('w2').rating?.notes === 'web' && e.server.row('w2').rating?.score === 3);
+    e.setRead(null);
+  }
+
+  // ── Codex recheck 5: the dedicated read's `invalid` ─────────────────────
+  {
+    // r6-1: the lookup answers 401 `invalid`; get-session held; a screen poll
+    // gives the base and a newer edit is staged; "same" → the entry survives
+    // and is sent.
+    const e = env();
+    await e.start();
+    let first = true;
+    e.setRead(() => (first ? ((first = false), { kind: 'invalid' as const }) : { kind: 'ok' as const, ratings: e.server.section() }));
+    e.holdConfirms(true);
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // unknown base → lookup → invalid → get-session (held)
+    e.poll({}); // the screen's poll: the base
+    c.setNotes('newer');
+    await e.advance(1000);
+    await e.releaseConfirms(); // "same"
+    await e.advance(10);
+    check('r6-1: changed since the lookup → never deleted by its refusal; resumed and sent', e.server.row('w1').rating?.score === 4 && e.server.row('w1').rating?.notes === 'newer');
+    e.setRead(null);
+  }
+  {
+    // r6-2: a newer edit staged while the lookup is pending; the lookup's
+    // `invalid` covers nothing left → a second lookup, then the send.
+    const e = env();
+    await e.start();
+    e.holdReads(true);
+    let first = true;
+    e.setRead(() => (first ? ((first = false), { kind: 'invalid' as const }) : { kind: 'ok' as const, ratings: e.server.section() }));
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // the lookup leaves, held
+    c.setNotes('more');
+    await e.advance(1000); // the entry changed under it
+    await e.releaseReads();
+    await e.advance(10);
+    check('r6-2: an `invalid` covering nothing left wakes a fresh lookup; the edit is sent', e.reads.length === 2 && e.server.row('w1').rating?.notes === 'more' && e.server.row('w1').rating?.score === 4);
+    e.setRead(null);
+  }
+
+  {
+    // r6-3: a /rate 401 `invalid`; get-session held; a newer edit staged;
+    // "same" → only the refused op retires: the newer note survives and is sent.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.holdConfirms(true);
+    e.queue({ status: 401, auth: 'invalid' });
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // 401 → get-session (held)
+    c.setNotes('newer');
+    await e.advance(1000);
+    await e.releaseConfirms(); // "same"
+    await e.advance(10);
+    check('r6-3: edited while the /rate 401 was being confirmed → the refused score retires, the newer note is sent', e.server.row('w1').rating?.notes === 'newer' && e.server.row('w1').rating?.score !== 4);
+  }
+
+  // ── Codex recheck 6: a terminal answer acts only on what its op submitted ──
+  const errRes = (status: number, auth: 'invalid' | 'removed' | null = null): RateResult => ({ kind: 'error', status, retryAfterMs: null, auth, message: null });
+  for (const [label, res] of [['removed', errRes(401, 'removed')], ['invalid → same', errRes(401, 'invalid')], ['404', errRes(404)], ['403', errRes(403)]] as const) {
+    // r7-1: a score save held, a later note staged, then the refusal → the
+    // note survives and goes out as its own op.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue('hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // X = the score, held
+    c.setNotes('later');
+    await e.advance(1000);
+    await e.releaseOne(res);
+    await e.advance(10);
+    const second = e.sent[1];
+    check(`r7-1: ${label} for the score retires only it; the later note is sent on its own and saved`, second?.body.notes === 'later' && second.body.score === undefined && e.server.row('w1').rating?.notes === 'later' && e.server.row('w1').rating?.score !== 4);
+  }
+  {
+    // r7-2: a request held, a newer note staged, then 400 → the note survives
+    // and is sent; the error shows until that good save.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.queue('hang', 'hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    c.setNotes('later');
+    await e.advance(1000);
+    await e.releaseOne(errRes(400)); // X refused; the note goes out (held)
+    await e.flush();
+    const shown = c.savedState() === 'error' && e.sent[1]?.body.notes === 'later' && e.sent[1].body.score === undefined;
+    await e.release();
+    await e.advance(10);
+    check('r7-2: a 400 retires only its op: the error shows, the newer note is sent and saved, the good save clears the error', shown && e.server.row('w1').rating?.notes === 'later' && c.savedState() !== 'error');
+  }
+  {
+    // r7-1: a newer revision of the SAME field survives: 4 held, 5 staged, 404 → 5 goes out.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue('hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    c.setScore(5);
+    await e.advance(1000);
+    await e.releaseOne(errRes(404));
+    await e.advance(10);
+    check('r7-1: … a newer revision of the same field is sent as its own op', e.sent[1]?.body.score === 5 && e.server.row('w1').rating?.score === 5);
+  }
+  {
+    // r7-1: a Clear staged after X survives X's 404 and goes out as its own op.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.queue('hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    await c.clearRating(c.clearBaseline());
+    await e.releaseOne(errRes(404));
+    await e.advance(10);
+    check('r7-1: … a Clear staged after the refused op is sent for itself', e.sent.length === 2 && e.sent[1].body.merge === undefined && e.server.row('w1').rating === null);
+  }
+  for (const [label, res] of [['removed', errRes(401, 'removed')], ['invalid → same', errRes(401, 'invalid')], ['404', errRes(404)], ['403', errRes(403)], ['400', errRes(400)]] as const) {
+    // r7-3: an entry with nothing newer is still dropped by each.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.queue('hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    await e.releaseOne(res);
+    await e.advance(60_000);
+    check(`r7-3: ${label} drops an unchanged entry${label === '400' ? ' (with the error)' : ''}`, e.disk.size === 0 && e.owner.entry(ME, CODE, 'w1') === null && e.sent.length === 1 && (label !== '400' || c.savedState() === 'error'));
+  }
+
+  // ── Codex recheck 7 ──────────────────────────────────────────────────────
+  {
+    // r8-1: two `invalid` replies → ONE shared account check; nothing reopens
+    // or retries while it is pending; "same" retires both before dispatch
+    // reopens; the later note on w2 goes out and the ack doesn't throw.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue('hang', 'hang');
+    e.ctl('w1').setScore(1);
+    e.ctl('w2').setScore(2);
+    await e.advance(1000); // X1 and X2 out, held
+    const c2 = e.ctl('w2');
+    c2.setNotes('later');
+    await e.advance(1000);
+    e.holdConfirms(true);
+    const asked = e.confirms;
+    await e.releaseOne(errRes(401, 'invalid'));
+    await e.releaseOne(errRes(401, 'invalid'));
+    const sentWhilePending = e.sent.length;
+    await e.releaseConfirms();
+    await e.advance(10);
+    check('r8-1: no reopen while a check is pending (a 401 arriving during it gets a fresh one), both retired before reopening, the later note saved', e.confirms === asked + 2 && sentWhilePending === 2 && e.server.row('w2').rating?.notes === 'later' && e.server.row('w2').rating?.score !== 2 && e.server.row('w1').rating === null);
+  }
+  {
+    // r8-2: a merge refused (404) with a Clear staged behind it; the Clear
+    // gets a 400 → its restore no longer holds the retired score; the
+    // unsettled note it kept goes out alone.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    e.queue('hang', errRes(400) as never);
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000); // X = score 4, held
+    c.setNotes('kept'); // unsettled
+    await c.clearRating(c.clearBaseline()); // the Clear behind X, restore = { score 4 (X's), notes 'kept' }
+    await e.releaseOne(errRes(404)); // X retires → prunes its score from the restore
+    await e.advance(10);
+    const m = e.sent.find((x) => x.body.merge === true && x.body.notes === 'kept');
+    check('r8-2: a Clear\'s 400 restores only what survived: the retired score is never resent', !!m && m.body.score === undefined && !e.sent.slice(2).some((x) => x.body.score === 4));
+  }
+  {
+    // r8-3: 4 held, 5 staged, a 400 for the 4 in the background, the 5 saves,
+    // back to the foreground → no alert (nothing the person wants was lost);
+    // the 400 is still logged.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    e.cache.get(CODE)!.wines = [{ id: 'w1', name: 'Riesling' }]; // a name for the alert
+    await e.start();
+    e.queue('hang');
+    const c = e.ctl('w1');
+    c.setScore(4);
+    await e.advance(1000);
+    c.setScore(5);
+    await e.advance(1000);
+    e.setActive(false);
+    await e.releaseOne(errRes(400));
+    await e.advance(10); // the 5 saves
+    e.setActive(true);
+    await e.advance(10);
+    check('r8-3: a 400 whose revisions were all superseded raises no alert; logged', e.server.row('w1').rating?.score === 5 && e.alerts.length === 0 && e.logs.some((l) => /400/.test(l.m)));
+  }
+
+  // ── Codex recheck 8 ──────────────────────────────────────────────────────
+  {
+    // r9-1: get-session held, it already sampled "valid"; a second 401 arrives;
+    // "same" → only the first entry retires; the second gets its OWN check
+    // (here: signed out by then → kept, still stopped).
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    e.queue('hang', 'hang');
+    e.ctl('w1').setScore(1);
+    e.ctl('w2').setScore(2);
+    await e.advance(1000);
+    e.holdConfirms(true);
+    const asked = e.confirms;
+    await e.releaseOne(errRes(401, 'invalid')); // w1's 401 → the check starts (samples "same")
+    e.sessions('none'); // revoked after that sample
+    await e.releaseOne(errRes(401, 'invalid')); // w2's 401: after the check started
+    await e.releaseConfirms();
+    await e.advance(10);
+    check('r9-1: an earlier "same" retires only what it covered; the later 401 gets a fresh check', e.confirms === asked + 2 && e.owner.entry(ME, CODE, 'w1') === null && e.disk.has(storageKey(ME, CODE, 'w2')) && e.owner._debug().stopped);
+  }
+  {
+    // r9-2: launch recovery: a stored score op, a failed launch read, a page
+    // Clear (its unsettled note in the restore); the stored op 404s, the
+    // Clear 400s → the retired score is not resent, the later note is.
+    const t0 = 6_000_000_000;
+    const op = { opId: 'op-stored-score', body: { wineId: 'w1', merge: true, opId: 'op-stored-score', baseVersion: 3, viewer: ID, score: 4, notes: 'stored note' }, baseVersion: 3, revs: { score: 1, notes: 2 } };
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 }, notes: { value: 'stored note', rev: 2 } }, ackRev: {}, parked: {}, nextRev: 2, baseVersion: 3, baseHadRating: true, unresolvedOp: op, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 }));
+    const e = env({ disk, t0, online: false });
+    for (let i = 0; i < 3; i++) e.server.webSave('w1', { score: 3 });
+    e.poll();
+    e.failReads(true, 0); // the launch read fails, the per-key reads work
+    await e.start();
+    await e.advance(1500);
+    e.owner.setVisible(ME, CODE, 'w1', 1, true);
+    const c = e.ctl('w1');
+    c.setNotes('later'); // unsettled, over the stored note: the page's newer value
+    const ready = c.baselineReady(); // the owner check ran after the failed launch read
+    await c.clearRating(c.clearBaseline());
+    await e.advance(10); // the per-key read merges the stored entry under the Clear
+    e.queue(errRes(404) as never, errRes(400) as never);
+    await e.setOnline(true);
+    await e.advance(10);
+    const m = e.sent.find((x) => x.body.merge === true && x.body.notes === 'later');
+    check('r9-2: after launch recovery the retired stored score is pruned from the Clear\'s restore; the page\'s newer note (over the stored one) goes out', ready && e.sent[0]?.body.opId === 'op-stored-score' && !!m && m.body.score === undefined && !e.sent.slice(1).some((x) => x.body.score === 4 || x.body.notes === 'stored note'));
+  }
+
+  // ── Codex recheck 9 ──────────────────────────────────────────────────────
+  {
+    // r10-1: a Home launch, one saved edit on disk, two failed launch reads,
+    // storage recovers → the background discovery finds the entry and it is
+    // sent, with no user action (no page, no poll).
+    const t0 = 7_000_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 }));
+    const e = env({ disk, t0 });
+    e.failReads(true, 0);
+    await e.start();
+    await e.advance(1500); // both launch reads fail: ready, nothing found yet
+    const before = e.sent.length;
+    e.failReads(false, 0); // storage recovers
+    await e.advance(backoffMs(1));
+    await e.advance(10);
+    check('r10-1: after two failed launch reads the stored edit is discovered and sent by itself', before === 0 && e.sent.length === 1 && e.sent[0].body.score === 4 && e.server.row('w1').rating?.score === 4 && !e.disk.has(storageKey(ME, CODE, 'w1')));
+  }
+  {
+    // r10-1: discovery keeps retrying with the backoff while storage stays unreadable.
+    const t0 = 7_100_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 }));
+    const e = env({ disk, t0 });
+    e.failReads(true, 0);
+    await e.start();
+    await e.advance(1500);
+    await e.advance(backoffMs(1) + backoffMs(2)); // two more failed discoveries
+    const fails = e.logs.filter((l) => /key discovery failed/.test(l.m)).length;
+    e.failReads(false, 0);
+    await e.advance(backoffMs(3));
+    await e.advance(10);
+    check('r10-1: … retried with the backoff until it succeeds', fails === 2 && e.server.row('w1').rating?.score === 4);
+  }
+
+  {
+    // r10-1: a confirmed discard made while storage is still unreadable keeps
+    // precedence: the recovered stored entry is never adopted back or sent.
+    const t0 = 7_200_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 }));
+    const e = env({ disk, t0 });
+    e.failReads(true, 1000); // nothing readable
+    await e.start();
+    await e.advance(1500);
+    e.ctl('w1').discardPending({ confirmed: true });
+    await e.advance(2000);
+    e.failReads(false, 0);
+    await e.advance(backoffMs(1) + backoffMs(2));
+    await e.advance(10);
+    check('r10-1: … a confirmed discard still wins over the recovered entry', !e.disk.has(storageKey(ME, CODE, 'w1')) && e.sent.length === 0);
+  }
+
+  // ── Codex build 2 #7 / #8 + recheck 10 ──────────────────────────────────
+  const storedEntry = (t0: number, extra: Record<string, unknown> = {}) => JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0, updatedAt: t0, editedAt: t0, ...extra });
+  {
+    // r11-1: recovery after a failed launch read obeys the 90-day cutoff: the
+    // expired stored score is removed unsent, the page's fresh note becomes
+    // a new entry and goes out alone.
+    const t0 = 8_000_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), storedEntry(t0 - CLEANUP_MS - 1000));
+    const e = env({ disk, t0, online: false });
+    e.failReads(true, 0); // the launch read fails, the per-key read works
+    await e.start();
+    await e.advance(1500);
+    const c = e.ctl('w1');
+    c.setNotes('fresh');
+    await e.advance(1000); // the write reads the key first: expired → not adopted
+    await e.setOnline(true);
+    await e.advance(10);
+    check('r11-1: an expired recovered entry is removed unsent; the page\'s fresh edit goes out as a new entry', e.sent.length === 1 && e.sent[0].body.notes === 'fresh' && e.sent[0].body.score === undefined && e.logs.some((l) => /older than 90 days/.test(l.m)));
+  }
+  for (const kind of ['merge', 'clear'] as const) {
+    // r11-1: … and with nothing on the page, discovery removes it unsent (an expired Clear too).
+    const t0 = 8_100_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), storedEntry(t0 - CLEANUP_MS - 1000, kind === 'clear' ? { fields: {}, clear: { opId: 'op-old-clear', restore: { score: 4 }, baseVersion: 1 } } : {}));
+    const e = env({ disk, t0 });
+    e.failReads(true, 0);
+    await e.start();
+    await e.advance(1500);
+    e.failReads(false, 0);
+    await e.advance(backoffMs(1));
+    await e.advance(10);
+    check(`r11-1: an expired recovered ${kind === 'clear' ? 'Clear' : 'entry'} is removed unsent by discovery`, e.sent.length === 0 && !e.disk.has(storageKey(ME, CODE, 'w1')));
+  }
+  {
+    // r11-2: a discovered key's read held open, a confirmed discard, the
+    // release → the tombstone wins: no /rate POST, the key removed.
+    const t0 = 8_200_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), storedEntry(t0 - 1000));
+    const e = env({ disk, t0 });
+    e.failReads(true, 0);
+    await e.start();
+    await e.advance(1500);
+    e.failReads(false, 0);
+    e.holdGets(true);
+    await e.advance(backoffMs(1)); // discovery: the key's read is open
+    e.ctl('w1').discardPending({ confirmed: true });
+    await e.releaseGets();
+    await e.advance(10);
+    check('r11-2: a confirmed discard while a discovered read is open is never posted', e.sent.length === 0 && !e.disk.has(storageKey(ME, CODE, 'w1')));
+  }
+  {
+    // r11-3: a page's selection is identity-stable: a poll that moves another
+    // bottle keeps it; one that moves this bottle changes it.
+    const e = env();
+    e.server.webSave('w1', { score: 3 });
+    e.server.webSave('w2', { score: 2 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    const s1 = c.selection();
+    e.server.webSave('w2', { score: 5 });
+    e.poll();
+    const s2 = c.selection();
+    e.server.webSave('w1', { score: 5 });
+    e.poll();
+    const s3 = c.selection();
+    check('r11-3: another bottle\'s poll keeps this page\'s selection; its own changes it', s2 === s1 && s3 !== s1 && s3.draft.score === 5 && s1.draft.score === 3);
+  }
+
+  // ── Codex recheck 11: durable writes are published ───────────────────────
+  const watch = (e: { owner: { subscribe(fn: () => void): () => void } }, c: { selection(): { savedState: unknown } }) => {
+    const seen: unknown[] = [];
+    e.owner.subscribe(() => seen.push(c.selection().savedState));
+    return seen;
+  };
+  {
+    // r12-1: an offline edit → once on disk the page is notified: "Saved on this phone".
+    const e = env({ online: false });
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    const seen = watch(e, c);
+    c.setScore(4);
+    await e.advance(1000);
+    check('r12-1: an offline edit publishes `local` once durable', seen[seen.length - 1] === 'local' && c.selection().savedState === 'local');
+  }
+  {
+    // r12-1: an offline Clear → "Cleared on this phone", notified.
+    const e = env({ online: false });
+    e.server.webSave('w1', { score: 3 });
+    e.poll();
+    await e.start();
+    const c = e.ctl('w1');
+    const seen = watch(e, c);
+    await c.clearRating(c.clearBaseline());
+    await e.advance(10);
+    check('r12-1: an offline Clear publishes `cleared-local` once durable', seen[seen.length - 1] === 'cleared-local' && c.selection().savedState === 'cleared-local');
+  }
+  {
+    // r12-1: online, the first attempt on the wire → never a local flash.
+    const e = env();
+    e.poll({ [ID]: { displayName: 'Me', ratings: {} } });
+    await e.start();
+    const c = e.ctl('w1');
+    const seen = watch(e, c);
+    e.queue('hang');
+    c.setScore(4);
+    await e.advance(1000);
+    const during = [...seen];
+    await e.release();
+    await e.advance(10);
+    check('r12-1: an online first attempt shows no "Saved on this phone" while it is out, then "Saved"', during.length > 0 && !seen.includes('local') && c.selection().savedState === 'saved');
+  }
+
+  // ── Simon's ruling, 2026-11-26: the alert without a known name ────────────
+  {
+    // r13-1: an entry from an earlier launch, its moment not loaded (no name
+    // for the bottle), gets a 400 → exactly one alert with the ruled sentence.
+    const t0 = 9_000_000_000;
+    const disk = new Map<string, string>();
+    disk.set(storageKey(ME, CODE, 'w1'), JSON.stringify({ viewer: ME, code: CODE, wineId: 'w1', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: false, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - 1000, updatedAt: t0 - 1000, editedAt: t0 - 1000 }));
+    const e = env({ disk, t0 });
+    e.queue(errRes(400) as never);
+    await e.start(); // Home: no moment loaded, no page
+    await e.advance(10);
+    check('r13-1: no known name → the one-shot alert says "this impression"', e.alerts.length === 1 && e.alerts[0] === `${ALERT_TITLE}: Your last changes to this impression couldn’t be saved.` && e.disk.size === 0);
+  }
+
+  // ── the 90-day clean-up ──────────────────────────────────────────────────
+  {
+    const disk = new Map<string, string>();
+    const t0 = 10_000_000_000;
+    const old = { viewer: 'other0000001', code: CODE, wineId: 'w9', fields: { score: { value: 4, rev: 1 } }, ackRev: {}, parked: {}, nextRev: 1, baseVersion: 0, baseHadRating: false, waited: true, rebased: false, acked: false, nextAt: 0, attempts: 0, createdAt: t0 - CLEANUP_MS - 1, updatedAt: t0 - CLEANUP_MS - 1 };
+    const fresh = { ...old, wineId: 'w8', createdAt: t0 - 1000, updatedAt: t0 - 1000 };
+    disk.set(storageKey(old.viewer, CODE, 'w9'), JSON.stringify(old));
+    disk.set(storageKey(old.viewer, CODE, 'w8'), JSON.stringify(fresh));
+    disk.set(`${STORAGE_PREFIX}garbage`, '{not json');
+    const e = env({ disk, t0 });
+    await e.start();
+    check('90-day clean-up: another account\'s entry older than 90 days is removed unsent; a newer one stays for its viewer', !disk.has(storageKey(old.viewer, CODE, 'w9')) && disk.has(storageKey(old.viewer, CODE, 'w8')) && !disk.has(`${STORAGE_PREFIX}garbage`) && e.sent.length === 0);
+  }
+
+  console.log(failures === 0 ? '\nall rate-outbox pins pass' : `\n${failures} FAILED`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
+void main();

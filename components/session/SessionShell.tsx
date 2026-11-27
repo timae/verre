@@ -294,12 +294,10 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
 
   const refresh = useCallback(() => { refetchState() }, [refetchState])
 
-  const { data: bookmarksData = [] } = useQuery<{wine_id: string}[]>({
-    queryKey: ['bookmarks'],
-    queryFn: () => fetch('/api/me/bookmarks').then(r => r.ok ? r.json() : []),
-    staleTime: 30_000,
-  })
-  const bookmarkedIds = new Set(bookmarksData.map(b => b.wine_id))
+  // The viewer's save state rides the line-up itself (`saved`, server-side,
+  // catalogue model change § 5): never derived here from /api/me/bookmarks,
+  // which on "Wine N" would tell that it is a wine you crave.
+  const bookmarkedIds = new Set(winesData.filter(w => w.saved).map(w => w.id))
 
   useEffect(() => {
     // Safety timeout: if visit doesn't return within 1.5s (unlikely but

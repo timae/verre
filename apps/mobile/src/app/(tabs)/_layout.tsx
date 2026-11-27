@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Keyboard, Platform } from 'react-native';
 import { PillTabBar } from '@/components/PillTabBar';
 import { useTabBarOverlayHidden } from '@/lib/sheetVisibility';
+import { PendingLookInOpener } from '@/lib/usePendingLookIn';
 import { useTheme } from '@/theme';
 
 // The brand floating-pill bottom nav (ADR-0006, supersedes the bottom-nav
@@ -25,6 +26,8 @@ import { useTheme } from '@/theme';
 // About / Attributions mirrored there too: they are designed without the pill
 // (no TAB_BAR_CLEARANCE), as at the app root.
 const OPENED_POST_PATH = /^\/(feed|you|moments)\/\d+(\/(post|edit)\/[^/]+|\/about|\/attributions)?\/?$/;
+// …and their mirrors on the You stack (opened from Settings): no pill either.
+const YOU_LEGAL_PATH = /^\/you\/(about|attributions)\/?$/;
 
 export default function TabsLayout() {
   const { theme } = useTheme();
@@ -68,25 +71,33 @@ export default function TabsLayout() {
   }, []);
 
   // The design ruling "in-flow footer actions replace the nav while
-  // rating/creating": 02e (Previous / Save & next), 02a (Create), 02b·add
-  // (Add to line-up), and the 02f settings sub-screens (Moment details /
-  // Moment Setup, Discard / Save) carry their own action bars — hide the
-  // pill there. The settings HUB keeps the bar (it's a nav list, no footer).
+  // rating/creating": 02e (Previous / Next or Finish, with the rating's save
+  // status above them: the rating saves itself; a layer, through the sheet
+  // count), 02a (Create), 02b·add
+  // (Add to line-up), and Moment Details (Discard / Save) carry their own
+  // action bars — hide the pill there. The settings HUB keeps the bar (it's a
+  // nav list, no footer), and so do Moment Setup and Moment Privacy since they
+  // save on change (ruled 2026-11-24).
   const hidden =
     overlayHidesBar ||
     keyboardShown ||
-    // 02e, the moment impression (/…/impression/<wineId>, its footer bar
-    // replaces the nav), on every mount.
-    pathname.includes('/impression/') ||
+    // (02e, the moment impression, is a LAYER inside the line-up since build
+    // 2, ADR-0011, no route: it holds the sheet count while open and its
+    // line-up focused, `overlayHidesBar` above.)
     // The opened post (/feed/<id>, a card /feed/<id>/post/<postId>): immersive,
     // no bottom nav (Simon, 2026-07-08). A moment or profile pushed on the
     // post's stack shows it like anywhere else (Simon, 2026-11-10).
     OPENED_POST_PATH.test(pathname) ||
+    YOU_LEGAL_PATH.test(pathname) ||
     pathname.includes('/edit-impression/') ||
     pathname.endsWith('/moments/create') ||
+    pathname.endsWith('/moments/create-privacy') || // Create Moment's Privacy page, every mount
     // both check-in create stages (sticky Rate It / Check In bars), on Feed
     // and on You (your Impressions' "+ Check In", lists plan D8): suffix-based.
-    /\/check-in(\/rate)?\/?$/.test(pathname) ||
+    /\/check-in(\/rate|\/wine)?\/?$/.test(pathname) ||
+    // Had It Too (its sticky Post bar), on every tab stack and every opened
+    // post's stack: suffix-based.
+    /\/had-it-too\/[^/]+\/?$/.test(pathname) ||
     pathname.includes('/feed/edit') || // feed-post edit screens (sticky Save/Done bars)
     pathname.includes('/you/edit') || // the same edit screens mounted on the You stack
     pathname.includes('/moments/edit/') || // … and on the Moments stack (never /moments/edit-…)
@@ -95,8 +106,11 @@ export default function TabsLayout() {
     // match neither OPENED_POST_PATH nor the two prefixes above.
     pathname.endsWith('/edit-profile') ||
     pathname.endsWith('/add') ||
+    pathname.endsWith('/add-wine') ||
+    // the "Add Wine to Catalogue" pages, beside every host and inside the
+    // check-in edit details' boundary (lib/sessionStack.ts catalogHref)
+    /\/catalog\/(search|producer|wines|new)\/?$/.test(pathname) ||
     pathname.endsWith('/settings/details') ||
-    pathname.endsWith('/settings/reveal') ||
     // You → Settings: Change Email + Change Password (sticky Discard / Save) and Appearance
     // (its own buttons over a full-screen theme preview), incl. their mirrors
     // on an opened post's stack. The hub and its list pages keep the pill.
@@ -105,6 +119,11 @@ export default function TabsLayout() {
     pathname.endsWith('/settings/appearance');
 
   return (
+    <>
+    {/* A look-in that arrived by link (Moment Visibility step-2 plan § 4.3):
+        here, so it only runs signed in and past the username screen; its own
+        component, so its re-renders stay out of this layout. */}
+    <PendingLookInOpener />
     <Tabs
       // The pill floats over content (absolute) — hiding it is just not
       // rendering it; scenes never resize (no layout jump on hide/show).
@@ -120,5 +139,6 @@ export default function TabsLayout() {
       <Tabs.Screen name="soon" options={{ title: 'Soon' }} />
       <Tabs.Screen name="you" options={{ title: 'You' }} />
     </Tabs>
+    </>
   );
 }

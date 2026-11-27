@@ -8,7 +8,7 @@
     "something got through the previous set:",
     "  constraints      -- CHECKs on the five contract tables, with the function",
     "                      bodies they call and the column types they constrain",
-    "  foreignKeys      -- FKs incl. `wines` (a removed FK can reopen a hole",
+    "  foreignKeys      -- FKs incl. `wines` and `bookmarks` (a removed FK can reopen a hole",
     "                      another constraint appears to cover)",
     "  generatedColumns -- expressions AND fold body hashes",
     "  styleVocabulary  -- category_styles pairs; a cross-side precondition",
@@ -63,8 +63,17 @@
     "If you add a behaviour here, stage its failure first -- that method is what found",
     "the foldDependent bug, which review and reasoning had both passed over."
   ],
-  "contractVersion": 2,
+  "contractVersion": 3,
   "constraints": [
+    {
+      "table": "producers",
+      "name": "producers_country_check",
+      "scope": "contract",
+      "definition": "CHECK (((country IS NULL) OR ((country)::text = ANY ((ARRAY['AD'::character varying, 'AE'::character varying, 'AF'::character varying, 'AG'::character varying, 'AI'::character varying, 'AL'::character varying, 'AM'::character varying, 'AO'::character varying, 'AQ'::character varying, 'AR'::character varying, 'AS'::character varying, 'AT'::character varying, 'AU'::character varying, 'AW'::character varying, 'AX'::character varying, 'AZ'::character varying, 'BA'::character varying, 'BB'::character varying, 'BD'::character varying, 'BE'::character varying, 'BF'::character varying, 'BG'::character varying, 'BH'::character varying, 'BI'::character varying, 'BJ'::character varying, 'BL'::character varying, 'BM'::character varying, 'BN'::character varying, 'BO'::character varying, 'BQ'::character varying, 'BR'::character varying, 'BS'::character varying, 'BT'::character varying, 'BV'::character varying, 'BW'::character varying, 'BY'::character varying, 'BZ'::character varying, 'CA'::character varying, 'CC'::character varying, 'CD'::character varying, 'CF'::character varying, 'CG'::character varying, 'CH'::character varying, 'CI'::character varying, 'CK'::character varying, 'CL'::character varying, 'CM'::character varying, 'CN'::character varying, 'CO'::character varying, 'CR'::character varying, 'CU'::character varying, 'CV'::character varying, 'CW'::character varying, 'CX'::character varying, 'CY'::character varying, 'CZ'::character varying, 'DE'::character varying, 'DJ'::character varying, 'DK'::character varying, 'DM'::character varying, 'DO'::character varying, 'DZ'::character varying, 'EC'::character varying, 'EE'::character varying, 'EG'::character varying, 'EH'::character varying, 'ER'::character varying, 'ES'::character varying, 'ET'::character varying, 'FI'::character varying, 'FJ'::character varying, 'FK'::character varying, 'FM'::character varying, 'FO'::character varying, 'FR'::character varying, 'GA'::character varying, 'GB'::character varying, 'GD'::character varying, 'GE'::character varying, 'GF'::character varying, 'GG'::character varying, 'GH'::character varying, 'GI'::character varying, 'GL'::character varying, 'GM'::character varying, 'GN'::character varying, 'GP'::character varying, 'GQ'::character varying, 'GR'::character varying, 'GS'::character varying, 'GT'::character varying, 'GU'::character varying, 'GW'::character varying, 'GY'::character varying, 'HK'::character varying, 'HM'::character varying, 'HN'::character varying, 'HR'::character varying, 'HT'::character varying, 'HU'::character varying, 'ID'::character varying, 'IE'::character varying, 'IL'::character varying, 'IM'::character varying, 'IN'::character varying, 'IO'::character varying, 'IQ'::character varying, 'IR'::character varying, 'IS'::character varying, 'IT'::character varying, 'JE'::character varying, 'JM'::character varying, 'JO'::character varying, 'JP'::character varying, 'KE'::character varying, 'KG'::character varying, 'KH'::character varying, 'KI'::character varying, 'KM'::character varying, 'KN'::character varying, 'KP'::character varying, 'KR'::character varying, 'KW'::character varying, 'KY'::character varying, 'KZ'::character varying, 'LA'::character varying, 'LB'::character varying, 'LC'::character varying, 'LI'::character varying, 'LK'::character varying, 'LR'::character varying, 'LS'::character varying, 'LT'::character varying, 'LU'::character varying, 'LV'::character varying, 'LY'::character varying, 'MA'::character varying, 'MC'::character varying, 'MD'::character varying, 'ME'::character varying, 'MF'::character varying, 'MG'::character varying, 'MH'::character varying, 'MK'::character varying, 'ML'::character varying, 'MM'::character varying, 'MN'::character varying, 'MO'::character varying, 'MP'::character varying, 'MQ'::character varying, 'MR'::character varying, 'MS'::character varying, 'MT'::character varying, 'MU'::character varying, 'MV'::character varying, 'MW'::character varying, 'MX'::character varying, 'MY'::character varying, 'MZ'::character varying, 'NA'::character varying, 'NC'::character varying, 'NE'::character varying, 'NF'::character varying, 'NG'::character varying, 'NI'::character varying, 'NL'::character varying, 'NO'::character varying, 'NP'::character varying, 'NR'::character varying, 'NU'::character varying, 'NZ'::character varying, 'OM'::character varying, 'PA'::character varying, 'PE'::character varying, 'PF'::character varying, 'PG'::character varying, 'PH'::character varying, 'PK'::character varying, 'PL'::character varying, 'PM'::character varying, 'PN'::character varying, 'PR'::character varying, 'PS'::character varying, 'PT'::character varying, 'PW'::character varying, 'PY'::character varying, 'QA'::character varying, 'RE'::character varying, 'RO'::character varying, 'RS'::character varying, 'RU'::character varying, 'RW'::character varying, 'SA'::character varying, 'SB'::character varying, 'SC'::character varying, 'SD'::character varying, 'SE'::character varying, 'SG'::character varying, 'SH'::character varying, 'SI'::character varying, 'SJ'::character varying, 'SK'::character varying, 'SL'::character varying, 'SM'::character varying, 'SN'::character varying, 'SO'::character varying, 'SR'::character varying, 'SS'::character varying, 'ST'::character varying, 'SV'::character varying, 'SX'::character varying, 'SY'::character varying, 'SZ'::character varying, 'TC'::character varying, 'TD'::character varying, 'TF'::character varying, 'TG'::character varying, 'TH'::character varying, 'TJ'::character varying, 'TK'::character varying, 'TL'::character varying, 'TM'::character varying, 'TN'::character varying, 'TO'::character varying, 'TR'::character varying, 'TT'::character varying, 'TV'::character varying, 'TW'::character varying, 'TZ'::character varying, 'UA'::character varying, 'UG'::character varying, 'UM'::character varying, 'US'::character varying, 'UY'::character varying, 'UZ'::character varying, 'VA'::character varying, 'VC'::character varying, 'VE'::character varying, 'VG'::character varying, 'VI'::character varying, 'VN'::character varying, 'VU'::character varying, 'WF'::character varying, 'WS'::character varying, 'YE'::character varying, 'YT'::character varying, 'ZA'::character varying, 'ZM'::character varying, 'ZW'::character varying])::text[]))))",
+      "columnTypes": [
+        "country:character varying(2)"
+      ]
+    },
     {
       "table": "producers",
       "name": "producers_linked_pointer_check",
@@ -180,6 +189,28 @@
     },
     {
       "table": "wine_products",
+      "name": "wine_products_country_check",
+      "scope": "contract",
+      "definition": "CHECK (((country IS NULL) OR ((country)::text = ANY ((ARRAY['AD'::character varying, 'AE'::character varying, 'AF'::character varying, 'AG'::character varying, 'AI'::character varying, 'AL'::character varying, 'AM'::character varying, 'AO'::character varying, 'AQ'::character varying, 'AR'::character varying, 'AS'::character varying, 'AT'::character varying, 'AU'::character varying, 'AW'::character varying, 'AX'::character varying, 'AZ'::character varying, 'BA'::character varying, 'BB'::character varying, 'BD'::character varying, 'BE'::character varying, 'BF'::character varying, 'BG'::character varying, 'BH'::character varying, 'BI'::character varying, 'BJ'::character varying, 'BL'::character varying, 'BM'::character varying, 'BN'::character varying, 'BO'::character varying, 'BQ'::character varying, 'BR'::character varying, 'BS'::character varying, 'BT'::character varying, 'BV'::character varying, 'BW'::character varying, 'BY'::character varying, 'BZ'::character varying, 'CA'::character varying, 'CC'::character varying, 'CD'::character varying, 'CF'::character varying, 'CG'::character varying, 'CH'::character varying, 'CI'::character varying, 'CK'::character varying, 'CL'::character varying, 'CM'::character varying, 'CN'::character varying, 'CO'::character varying, 'CR'::character varying, 'CU'::character varying, 'CV'::character varying, 'CW'::character varying, 'CX'::character varying, 'CY'::character varying, 'CZ'::character varying, 'DE'::character varying, 'DJ'::character varying, 'DK'::character varying, 'DM'::character varying, 'DO'::character varying, 'DZ'::character varying, 'EC'::character varying, 'EE'::character varying, 'EG'::character varying, 'EH'::character varying, 'ER'::character varying, 'ES'::character varying, 'ET'::character varying, 'FI'::character varying, 'FJ'::character varying, 'FK'::character varying, 'FM'::character varying, 'FO'::character varying, 'FR'::character varying, 'GA'::character varying, 'GB'::character varying, 'GD'::character varying, 'GE'::character varying, 'GF'::character varying, 'GG'::character varying, 'GH'::character varying, 'GI'::character varying, 'GL'::character varying, 'GM'::character varying, 'GN'::character varying, 'GP'::character varying, 'GQ'::character varying, 'GR'::character varying, 'GS'::character varying, 'GT'::character varying, 'GU'::character varying, 'GW'::character varying, 'GY'::character varying, 'HK'::character varying, 'HM'::character varying, 'HN'::character varying, 'HR'::character varying, 'HT'::character varying, 'HU'::character varying, 'ID'::character varying, 'IE'::character varying, 'IL'::character varying, 'IM'::character varying, 'IN'::character varying, 'IO'::character varying, 'IQ'::character varying, 'IR'::character varying, 'IS'::character varying, 'IT'::character varying, 'JE'::character varying, 'JM'::character varying, 'JO'::character varying, 'JP'::character varying, 'KE'::character varying, 'KG'::character varying, 'KH'::character varying, 'KI'::character varying, 'KM'::character varying, 'KN'::character varying, 'KP'::character varying, 'KR'::character varying, 'KW'::character varying, 'KY'::character varying, 'KZ'::character varying, 'LA'::character varying, 'LB'::character varying, 'LC'::character varying, 'LI'::character varying, 'LK'::character varying, 'LR'::character varying, 'LS'::character varying, 'LT'::character varying, 'LU'::character varying, 'LV'::character varying, 'LY'::character varying, 'MA'::character varying, 'MC'::character varying, 'MD'::character varying, 'ME'::character varying, 'MF'::character varying, 'MG'::character varying, 'MH'::character varying, 'MK'::character varying, 'ML'::character varying, 'MM'::character varying, 'MN'::character varying, 'MO'::character varying, 'MP'::character varying, 'MQ'::character varying, 'MR'::character varying, 'MS'::character varying, 'MT'::character varying, 'MU'::character varying, 'MV'::character varying, 'MW'::character varying, 'MX'::character varying, 'MY'::character varying, 'MZ'::character varying, 'NA'::character varying, 'NC'::character varying, 'NE'::character varying, 'NF'::character varying, 'NG'::character varying, 'NI'::character varying, 'NL'::character varying, 'NO'::character varying, 'NP'::character varying, 'NR'::character varying, 'NU'::character varying, 'NZ'::character varying, 'OM'::character varying, 'PA'::character varying, 'PE'::character varying, 'PF'::character varying, 'PG'::character varying, 'PH'::character varying, 'PK'::character varying, 'PL'::character varying, 'PM'::character varying, 'PN'::character varying, 'PR'::character varying, 'PS'::character varying, 'PT'::character varying, 'PW'::character varying, 'PY'::character varying, 'QA'::character varying, 'RE'::character varying, 'RO'::character varying, 'RS'::character varying, 'RU'::character varying, 'RW'::character varying, 'SA'::character varying, 'SB'::character varying, 'SC'::character varying, 'SD'::character varying, 'SE'::character varying, 'SG'::character varying, 'SH'::character varying, 'SI'::character varying, 'SJ'::character varying, 'SK'::character varying, 'SL'::character varying, 'SM'::character varying, 'SN'::character varying, 'SO'::character varying, 'SR'::character varying, 'SS'::character varying, 'ST'::character varying, 'SV'::character varying, 'SX'::character varying, 'SY'::character varying, 'SZ'::character varying, 'TC'::character varying, 'TD'::character varying, 'TF'::character varying, 'TG'::character varying, 'TH'::character varying, 'TJ'::character varying, 'TK'::character varying, 'TL'::character varying, 'TM'::character varying, 'TN'::character varying, 'TO'::character varying, 'TR'::character varying, 'TT'::character varying, 'TV'::character varying, 'TW'::character varying, 'TZ'::character varying, 'UA'::character varying, 'UG'::character varying, 'UM'::character varying, 'US'::character varying, 'UY'::character varying, 'UZ'::character varying, 'VA'::character varying, 'VC'::character varying, 'VE'::character varying, 'VG'::character varying, 'VI'::character varying, 'VN'::character varying, 'VU'::character varying, 'WF'::character varying, 'WS'::character varying, 'YE'::character varying, 'YT'::character varying, 'ZA'::character varying, 'ZM'::character varying, 'ZW'::character varying])::text[]))))",
+      "columnTypes": [
+        "country:character varying(2)"
+      ]
+    },
+    {
+      "table": "wine_products",
+      "name": "wine_products_description_not_blank_check",
+      "scope": "contract",
+      "foldDependent": true,
+      "definition": "CHECK (((description IS NULL) OR (catalog_fold_v1((description)::text) <> ''::text)))",
+      "columnTypes": [
+        "description:character varying(1000)"
+      ],
+      "predicateDeps": [
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
+      ]
+    },
+    {
+      "table": "wine_products",
       "name": "wine_products_linked_pointer_check",
       "scope": "structural",
       "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))",
@@ -250,6 +281,19 @@
       "columnTypes": [
         "category:character varying(32)",
         "style:character varying(64)"
+      ]
+    },
+    {
+      "table": "wine_products",
+      "name": "wine_products_vinification_not_blank_check",
+      "scope": "contract",
+      "foldDependent": true,
+      "definition": "CHECK (((vinification IS NULL) OR (catalog_fold_v1((vinification)::text) <> ''::text)))",
+      "columnTypes": [
+        "vinification:character varying(1000)"
+      ],
+      "predicateDeps": [
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
       ]
     },
     {
@@ -357,6 +401,12 @@
     "wine/white"
   ],
   "foreignKeys": [
+    "bookmarks.bookmarks_product_id_fkey=FOREIGN KEY (product_id) REFERENCES wine_products(id)",
+    "bookmarks.bookmarks_source_item_id_fkey=FOREIGN KEY (source_item_id) REFERENCES feed_items(id) ON DELETE SET NULL",
+    "bookmarks.bookmarks_source_session_id_fkey=FOREIGN KEY (source_session_id) REFERENCES sessions(id)",
+    "bookmarks.bookmarks_user_id_fkey=FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+    "bookmarks.bookmarks_vintage_id_product_id_fkey=FOREIGN KEY (vintage_id, product_id) REFERENCES wine_vintages(id, product_id)",
+    "bookmarks.bookmarks_wine_id_fkey=FOREIGN KEY (wine_id) REFERENCES wines(id) ON DELETE CASCADE",
     "producers.producers_added_by_fkey=FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE SET NULL",
     "producers.producers_curated_by_fkey=FOREIGN KEY (curated_by) REFERENCES users(id) ON DELETE SET NULL",
     "producers.producers_links_to_fkey=FOREIGN KEY (links_to) REFERENCES producers(id)",

@@ -10,13 +10,16 @@ import { ListGoneError, getImpressionsPage, profileListKey, type ImpressionParam
 import { profileQueryOptions } from '@/lib/api/users';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { useMeId } from '@/lib/meId';
-import { wineTypeLabel } from '@/lib/momentFormat';
+import { kindLabel } from '@/lib/momentFormat';
 import { useTheme } from '@/theme';
 import { ImpressionFilterSheet, NO_IMP_FILTERS, impFilterCount, type ImpFilterUpdate, type ImpFilters } from './ImpressionFilters';
 import { ListNote, ListRow, MonthHeader, ScoreColumn, ToolRow, groupByMonth, type RowHandle } from './ListParts';
 import { ToolButton, type ToolAnchor } from '@/components/ui/ToolButton';
 import { useListRefresh } from './useListRefresh';
-import { useOpenListPost } from './useOpenListPost';
+import { useListTapGuard, useOpenListImpression, useOpenListPost } from './useOpenListPost';
+import { listRowTarget } from '@/lib/impressionRoute';
+import { blindRowLine } from '@/lib/momentVisibilityCopy';
+import { useScreenReaderEnabled } from '@/lib/screenReader';
 
 // Someone's (or your) Impressions (lists plan D3 / D8 / D9, design 04·6a /
 // herImps): every rating, through their post visibility, newest post first,
@@ -34,6 +37,7 @@ import { useOpenListPost } from './useOpenListPost';
 const SORTS: [ImpressionSort, string][] = [['newest', 'Newest First'], ['oldest', 'Oldest First'], ['highest', 'Highest Rated'], ['lowest', 'Lowest Rated']];
 
 export function ImpressionsPane({ userId, active: shown }: { userId: string; active: boolean }) {
+  const screenReader = useScreenReaderEnabled();
   const { theme } = useTheme();
   const { width: windowW } = useWindowDimensions();
   const meId = useMeId();
@@ -121,7 +125,18 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
   }, [firstCommon]);
 
   const { pulling, onPullRefresh, refetchInPlace } = useListRefresh(listQ.refetch, headerQ.refetch);
-  const openPost = useOpenListPost(userId, refetchInPlace, shown);
+  const tapGuard = useListTapGuard(shown);
+  const openPost = useOpenListPost(userId, refetchInPlace, tapGuard);
+  const openImpression = useOpenListImpression(userId, refetchInPlace, tapGuard);
+  // Its post while you may open one, else its impression page (Moment
+  // Visibility step 3, T14: an Only Inside moment's, a hidden check-in, a
+  // rating without a post).
+  const rowPress = (row: ImpressionRow) => {
+    const to = listRowTarget(row.postId, row.id);
+    if (to.kind === 'post') return (handle?: RowHandle) => void openPost(to.postId, { ratingId: row.id }, handle);
+    if (to.kind === 'impression') return (handle?: RowHandle) => void openImpression(to.ratingId, handle);
+    return undefined;
+  };
   const active = impFilterCount(filters);
   const narrowed = search !== '' || active > 0 || both;
 
@@ -135,6 +150,7 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
   } else {
     body = (
       <FlatList
+        removeClippedSubviews={!screenReader}
         data={grouped}
         keyExtractor={(g) => g.key}
         keyboardDismissMode="on-drag"
@@ -149,7 +165,7 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
         ListFooterComponent={listQ.isFetchingNextPage ? <View style={{ paddingVertical: 16, alignItems: 'center' }}><ActivityIndicator color={theme.inkSoft} /></View> : undefined}
         renderItem={({ item: g }) => g.kind === 'month'
           ? <MonthHeader label={g.label} first={g.first} />
-          : <ImpressionListRow row={g.row} showYours={!own} onPress={g.row.postId != null ? (handle) => void openPost(g.row.postId, g.row.wineId, handle) : undefined} />}
+          : <ImpressionListRow row={g.row} showYours={!own} onPress={rowPress(g.row)} />}
       />
     );
   }
@@ -193,8 +209,9 @@ export function ImpressionsPane({ userId, active: shown }: { userId: string; act
 
 function ImpressionListRow({ row, showYours, onPress }: { row: ImpressionRow; showYours: boolean; onPress?: (row: RowHandle) => void }) {
   const title = row.blind ? 'Blind Impression' : row.name;
-  // A blind row's line is its moment (what the post shows); else producer · type.
-  const meta = row.blind ? row.momentName ?? null : [row.producer, wineTypeLabel(row.type)].filter(Boolean).join(' · ') || null;
+  // A blind row's line is its moment (what the post shows: "Private Moment"
+  // where its name isn't yours to see, step 3b); else producer · type.
+  const meta = row.blind ? blindRowLine(row) : [row.producer, kindLabel(row)].filter(Boolean).join(' · ') || null;
   return (
     <ListRow
       uri={row.imageUrl}

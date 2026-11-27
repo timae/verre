@@ -8,6 +8,7 @@ import { deleteAllNativeSessions } from '@/lib/identityStore'
 import { withSessionLocks, scopedInvalidate, type LockedSession } from '@/lib/sessionMutation'
 import { acquireSessionLock, releaseSessionLock, renewSessionLock, sessionLockHeld, sessionLockKey, fencedDel, lockTiming } from '@/lib/sessionLock'
 import type { SessionMeta, WineMeta } from '@/lib/session'
+import { bumpLineupRevision, reclaimablePhotos } from '@/lib/occurrences'
 import { isOwnTile } from '@/lib/profileTiles'
 
 export const TOMBSTONE_NAME = '[deleted]'
@@ -386,8 +387,10 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
               SELECT ri.image_url FROM rating_images ri JOIN ratings r ON r.id = ri.rating_id
                WHERE r.user_id = ${userId} AND r.session_id = ${row.id} AND ri.image_url IS NOT NULL`
             reclaimUrls.push(...imgs.map(i => i.image_url))
+            // rating-write: EXEMPT
             await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id = ${row.id}`
           } else {
+            // rating-write: EXEMPT
             const n = await tx.$executeRaw`
               UPDATE ratings SET user_id = NULL, rater_name = ${TOMBSTONE_NAME}, tombstone_key = ${key}
                WHERE user_id = ${userId} AND session_id = ${row.id}`
@@ -395,11 +398,25 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
           }
           // Provenance moves with the identity (R3-5): wineToWire falls back to
           // the stored snapshot, so the real name must not survive here.
-          await tx.$executeRaw`
+          const moved = await tx.$executeRaw`
             UPDATE wines SET added_by_identity_id = ${key}, added_by_display_name = ${TOMBSTONE_NAME}
              WHERE session_id = ${row.id} AND added_by_identity_id = ${uid}`
+          // A line-up writer bumps (model change § 8a); a NULL revision stays
+          // NULL (this path cannot reconcile; the moment's first contract does).
+          // The cached copy is rewritten by the d: migration after COMMIT and
+          // re-projected from the record by the next read.
+          if (moved > 0) await bumpLineupRevision(tx, row.id)
           if (hosted) {
-            await tx.$executeRaw`UPDATE sessions SET host_user_id = NULL, host_name = ${TOMBSTONE_NAME} WHERE id = ${row.id}`
+            // 🔒 The look-in link ends with its host (Moment Visibility): a
+            // hostless moment never has a link, and nobody could turn this
+            // one off any more (lib/momentSettings.ts refuses every link
+            // action without a signed-in host). Off AND a new version, so the
+            // tokens people hold are dead in the record itself, not only
+            // behind the reader's hostless check. The visibility stays (ruled).
+            await tx.$executeRaw`
+              UPDATE sessions SET host_user_id = NULL, host_name = ${TOMBSTONE_NAME},
+                     link_active = false, link_version = COALESCE(link_version, 0) + 1
+               WHERE id = ${row.id}`
           }
           await tx.$executeRaw`DELETE FROM session_bans WHERE session_code = ${code} AND identity_id = ${uid}`
           sessions.push({ code, createdAt: row.createdAt, key, hosted, kicked, hadRatings })
@@ -415,6 +432,7 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
         SELECT DISTINCT r.session_id FROM ratings r JOIN sessions s ON s.id = r.session_id
          WHERE r.user_id = ${userId} AND s.deleted_at IS NOT NULL`
       for (const { session_id } of dead) {
+        // rating-write: EXEMPT
         await tx.$executeRaw`
           UPDATE ratings SET user_id = NULL, rater_name = ${TOMBSTONE_NAME}, tombstone_key = ${`d:${randomUUID()}`}
            WHERE user_id = ${userId} AND session_id = ${session_id}`
@@ -422,6 +440,7 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
 
       // Account-level work. Standalone ratings hard-cascade (their feed_items and
       // rating_images go with them — images captured before the transaction).
+      // rating-write: EXEMPT
       await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id IS NULL`
       // Session-less (orphaned) wines the user added: no session, no key — the
       // snapshot is the only place the name would survive.
@@ -445,12 +464,7 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
       // bookmarks): keep a wiped moment's wine photo while any rating or
       // bookmark still references the wine.
       if (wineCandidates.length > 0) {
-        const unused = await tx.$queryRaw<{ image_url: string }[]>`
-          SELECT w.image_url FROM wines w
-           WHERE w.id = ANY(${wineCandidates.map(c => c.id)}::text[]) AND w.image_url IS NOT NULL
-             AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = w.id)
-             AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = w.id)`
-        reclaimUrls.push(...unused.map(u => u.image_url))
+        reclaimUrls.push(...(await reclaimablePhotos(tx, wineCandidates.map(c => c.id))).map(u => u.imageUrl))
       }
       return { plan, sessions, liveCodes, reclaimUrls, leases }
     }, { timeout: opts.txTimeoutMs ?? 60_000, maxWait: 10_000 })
@@ -498,7 +512,9 @@ async function engagedInPostgres(tx: Prisma.TransactionClient, row: LockedSessio
 }
 
 async function engagedInRedis(row: LockedSession, userId: number, durable: DurableRedis): Promise<boolean> {
+  // rating-write: EXEMPT
   const mine = `s:${row.code}:r:${userIdentityId(userId)}:`
+  // rating-write: EXEMPT
   const keys = await durable.step(`engagement ${row.code}`, (c) => scanAll(c, `s:${row.code}:r:*`))
   return keys.some(key => !key.startsWith(mine))
 }
@@ -516,6 +532,7 @@ async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession
      WHERE r.session_id = ${row.id} AND r.user_id = ${userId} AND ri.image_url IS NOT NULL`
   const wines = await tx.$queryRaw<{ id: string; image_url: string }[]>`
     SELECT id, image_url FROM wines WHERE session_id = ${row.id} AND image_url IS NOT NULL`
+  // rating-write: EXEMPT
   await tx.$executeRaw`DELETE FROM ratings WHERE session_id = ${row.id} AND user_id = ${userId}`
   await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${row.id}`
   await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${row.code}`
@@ -547,7 +564,15 @@ async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession
           lifespan = NULL,
           hide_lineup = NULL,
           hide_lineup_minutes_before = NULL,
-          show_provenance = NULL
+          show_provenance = NULL,
+          lineup_revision = NULL,
+          visibility = NULL,
+          include_guest_circles = NULL,
+          show_place = NULL,
+          show_details = NULL,
+          link_version = NULL,
+          link_active = NULL,
+          link_since = NULL
      WHERE id = ${row.id}`
   await durable.step(`wipe ${row.code}`, async (c) => {
     const keys = await scanAll(c, `s:${row.code}:*`)
@@ -735,6 +760,7 @@ export async function migrateTombstonedSession(userId: number, s: SessionOutcome
           : w))
       }
     }
+    // rating-write: EXEMPT
     const src = await scanKeys(`s:${s.code}:r:${uid}:*`)
     const keys = [sessionLockKey(s.code), k.gen(s.code), k.meta(s.code), k.wines(s.code), k.identities(s.code), k.lastSeen(s.code), k.kicked(s.code), k.kickv(s.code)]
     for (const key of src) keys.push(key, key.replace(`:r:${uid}:`, `:r:${s.key}:`))
@@ -770,6 +796,7 @@ async function scrubRedisOnlyRegistrations(userId: number, known: Set<string>, d
         for (let attempt = 0; attempt < 5; attempt++) {
           // Decided under the lease (r2 N7): a wine delete committed while the
           // scrub waited may have taken the user's last rating key.
+          // rating-write: EXEMPT
           const relabel = (await scanKeys(`s:${code}:r:${uid}:*`)).length > 0
           const metaRaw = await redis.get(metaKey)
           if (!metaRaw) break

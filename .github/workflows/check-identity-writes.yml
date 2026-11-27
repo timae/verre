@@ -38,3 +38,31 @@ jobs:
       # write idiom must be caught, each read idiom must pass).
       - name: Check username writes go through lib/username.ts
         run: node scripts/check-username-writes.mjs
+
+      # Every writer of a moment's bottles (the `wines` table, the cached
+      # line-up) is reviewed and listed: in a Postgres-backed moment it must bump
+      # sessions.lineup_revision in the same transaction (catalogue model change
+      # § 8a, lib/occurrences.ts). A census with its own negative control, like
+      # the username one.
+      - name: Check bottle writes bump the line-up revision
+        run: node scripts/check-wine-writes.mjs
+
+      # Every READ of the catalogue (wine_products, wine_vintages, producers,
+      # product_producers, product_eans) goes through the one merge resolver
+      # (lib/catalogEntries.ts) or the one matcher (lib/catalogSearch.ts):
+      # merges never rewrite, so a read that skips the resolver shows a name
+      # already merged away (catalogue model change § 8b). A census of the raw
+      # reads elsewhere, each listed with its reason, with its own negative
+      # control.
+      - name: Check catalogue reads go through the merge resolver
+        run: node scripts/check-catalog-reads.mjs
+
+      # Every WRITE of the rows the bottle search indexes (producers,
+      # wine_products, product_producers) and of the search tables themselves
+      # goes through lib/catalogWrite.ts, which keeps the search docs current in
+      # the same transaction (catalogue model change step 7b). Outside writers
+      # (a catalogue load, psql) are what the rebuild's drift report is for
+      # (scripts/rebuild-catalog-search.mts). A census with its own negative
+      # control, like the reads one.
+      - name: Check catalogue writes keep the search docs current
+        run: node scripts/check-catalog-writes.mjs

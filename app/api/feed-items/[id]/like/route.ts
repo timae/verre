@@ -4,7 +4,8 @@ import { prisma } from '@/lib/prisma'
 import { checkRate } from '@/lib/rateLimit'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
-import { resolveProfileViewer, viewerCanSeePosts } from '@/lib/profileVisibility'
+import { resolveProfileViewer, viewerCanSeePost } from '@/lib/profileVisibility'
+import { postShownTo } from '@/lib/postPrivacy'
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -37,7 +38,8 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
   // Visibility gate runs BEFORE rate-limit increment so an attacker
   // hammering hidden ids can't drain the legitimate user's 120/h budget.
-  // The POST gate (profile tier + Check-Ins Visible To); 404 for
+  // The single-post gate (profile tier + Check-Ins Visible To, and the post
+  // itself: Only Inside, Hide from Feed, a hidden line-up); 404 for
   // non-permitted access so the like endpoint doesn't leak existence of a
   // feed_item the viewer is excluded from seeing.
   const target = await prisma.feedItem.findUnique({
@@ -45,7 +47,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     select: { userId: true },
   })
   if (!target) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  if (!(await viewerCanSeePosts(userId, target.userId))) {
+  if (!(await viewerCanSeePost(userId, { id: feedItemId, userId: target.userId }))) {
     return NextResponse.json({ error: 'not found' }, { status: 404 })
   }
 
@@ -77,16 +79,19 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   // 🔒 'gone' (the author blocks you, or a mutual block) stays 404 even when
   // your like existed: a 200 there would tell "blocked" from "deleted"
   // (docs/dev/block.md). The like still comes off, silently, so an unblock
-  // later doesn't bring back a like you removed.
+  // later doesn't bring back a like you removed. The post itself hidden from
+  // you (Only Inside, Hide from Feed, a hidden line-up: lib/postPrivacy.ts) is
+  // the "hidden from you" branch too: your like comes off, no count.
   const target = await prisma.feedItem.findUnique({
     where: { id: feedItemId },
     select: { userId: true },
   })
   if (!target) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const gate = await resolveProfileViewer(target.userId, userId)
+  const shown = gate.status === 'ok' && gate.sees.posts && (await postShownTo(userId, feedItemId))
   const { count: removed } = await prisma.feedItemLike.deleteMany({ where: { userId, feedItemId } })
   if (gate.status === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 })
-  if (gate.status !== 'ok' || !gate.sees.posts) {
+  if (!shown) {
     if (removed === 0) return NextResponse.json({ error: 'not found' }, { status: 404 })
     return NextResponse.json({ liked: false })
   }

@@ -34,20 +34,32 @@ export type SessionRow = {
   hideLineup: boolean | null
   hideLineupMinutesBefore: number | null
   showProvenance: boolean | null
+  // The line-up revision (catalogue model change § 8a): NULL = not reconciled
+  // (lib/occurrences.ts reconcileLineup), else bumped by every line-up write.
+  lineupRevision: number | null
 }
 
 const COLUMNS = Prisma.sql`id, code, host_user_id AS "hostUserId", host_name AS "hostName", name, blind,
   blind_for_everyone AS "blindForEveryone", created_at AS "createdAt", archived_at AS "archivedAt", address,
   date_from AS "dateFrom", date_to AS "dateTo", timezone, description, link, cover_photo_url AS "coverPhotoUrl",
   category, lifespan, hide_lineup AS "hideLineup", hide_lineup_minutes_before AS "hideLineupMinutesBefore",
-  show_provenance AS "showProvenance"`
+  show_provenance AS "showProvenance", lineup_revision AS "lineupRevision"`
 
 // The live (not soft-deleted) row for a code, or null. `lock` adds the row lock
-// a writer needs for a decision that depends on the row existing.
-export async function readLiveRow(db: Db, code: string, lock: 'update' | 'key share' | null = null): Promise<SessionRow | null> {
-  const clause = lock === 'update' ? Prisma.sql`FOR UPDATE` : lock === 'key share' ? Prisma.sql`FOR KEY SHARE` : Prisma.empty
-  const rows = await db.$queryRaw<SessionRow[]>`
-    SELECT ${COLUMNS} FROM sessions WHERE code = ${code} AND deleted_at IS NULL ${clause}`
+// a writer needs for a decision that depends on the row existing. 'bump' is
+// 'update' plus the line-up revision bumped in the SAME statement (a line-up
+// writer's row lock, spec § 8a "the bump is the contract's row-lock
+// statement"): the sub-select takes the FOR UPDATE row lock, the UPDATE bumps,
+// RETURNING reads the row. A NULL revision stays NULL (NULL + 1): the writer
+// reconciles first (lib/occurrences.ts reconcileLineup), which stamps 1.
+export async function readLiveRow(db: Db, code: string, lock: 'update' | 'key share' | 'bump' | null = null): Promise<SessionRow | null> {
+  const rows = lock === 'bump'
+    ? await db.$queryRaw<SessionRow[]>`
+        UPDATE sessions SET lineup_revision = lineup_revision + 1
+         WHERE id = (SELECT id FROM sessions WHERE code = ${code} AND deleted_at IS NULL FOR UPDATE)
+        RETURNING ${COLUMNS}`
+    : await db.$queryRaw<SessionRow[]>`
+        SELECT ${COLUMNS} FROM sessions WHERE code = ${code} AND deleted_at IS NULL ${lock === 'update' ? Prisma.sql`FOR UPDATE` : lock === 'key share' ? Prisma.sql`FOR KEY SHARE` : Prisma.empty}`
   const r = rows[0]
   return r ? { ...r, id: Number(r.id), hostUserId: r.hostUserId === null ? null : Number(r.hostUserId) } : null
 }

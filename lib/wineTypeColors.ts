@@ -46,8 +46,11 @@ export const TYPE_LABEL: Record<string, string> = {
 // inherited Object.prototype which has no `.replace` and would throw.
 // Today `wine.type` is server-validated to a closed set, but defending
 // here means the helper is safe even if validation ever loosens.
+// An unknown kind (an imported entry with no colour, catalogue model change
+// step 4) is a neutral grey, never a guessed red.
+export const TCOL_UNKNOWN = '#8C8A84'
 export function tcolAlpha(type: string, alpha: number): string {
-  const hex = Object.hasOwn(TCOL, type) ? TCOL[type] : TCOL.red
+  const hex = Object.hasOwn(TCOL, type) ? TCOL[type] : TCOL_UNKNOWN
   const h = hex.replace('#', '')
   const r = parseInt(h.slice(0, 2), 16)
   const g = parseInt(h.slice(2, 4), 16)

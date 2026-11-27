@@ -1,3 +1,4 @@
+import type { AxisKind } from '@verre/core';
 import { View } from 'react-native';
 import type { AromaSelection } from '@verre/core';
 import { AromaInput } from '@/components/scoring/aroma/AromaInput';
@@ -9,6 +10,11 @@ import { VText } from '@/components/ui/VText';
 import { usePhoneTokens } from '@/lib/layout';
 import { useTheme } from '@/theme';
 
+// The note's cap, in UTF-16 units like the servers' own check (the rate POST,
+// the check-in create and edit all answer 400 above 4,000): a longer note
+// would otherwise be refused whole, the score and structure with it.
+const NOTE_MAX = 4000;
+
 // THE rating block — score · note · structure · aromas — shared verbatim by
 // the moment impression screen (02e) and the standalone check-in rate stage
 // (Simon's ruling, 2026-07-12: one component so a future ordering/copy/
@@ -16,13 +22,14 @@ import { useTheme } from '@/theme';
 // spec — its order was the explicit 2026-07-10 "note between score and
 // structure" ruling, and the standalone flow has no mock of its own).
 //
-// Controlled throughout: the screen owns every value (local-until-commit on
-// the impression, draft-backed on the check-in). Structure is ALWAYS OPEN
+// Controlled throughout: the screen owns every value (auto-saved on the
+// impression through lib/useImpressionAutosave.ts, draft-backed on the
+// check-in). Structure is ALWAYS OPEN
 // (Simon 2026-07-17 — supersedes the adaptive fold + its engagement-seeded
 // open state). The ⓘ intensity scale is `IntensityScaleInfo` (shared with
 // Filter for Structure).
 export function RatingSection({
-  style,
+  kind,
   score,
   onScore,
   notes,
@@ -32,11 +39,14 @@ export function RatingSection({
   aromas,
   onAromas,
   onRequestAromaScroll,
+  onScoreStep,
+  onNotesFocus,
+  scoreNow,
 }: {
-  // Structure-axes style for this drink (wines: red/white/spark/rose/nonalc;
-  // null = the base wine set). NOT masked on blind — a taster perceives
-  // fizz/tannin/body blind, so structure stays rateable while identity hides.
-  style: string | null;
+  // The bottle's kind for the structure axes (`{ sparkling }`: Bubbles; null =
+  // the base wine set). NOT masked on blind (colour and sparkling stay on a
+  // blind row): a taster perceives fizz / tannin / body blind.
+  kind: AxisKind;
   score: number;
   onScore: (v: number) => void;
   notes: string;
@@ -44,15 +54,22 @@ export function RatingSection({
   flavors: Record<string, number>;
   onFlavors: (v: Record<string, number>) => void;
   aromas: AromaSelection[];
-  onAromas: (v: AromaSelection[]) => void;
+  // false = refused (the impression's autosave): the aroma pickers don't reset.
+  onAromas: (v: AromaSelection[]) => void | boolean;
   // Forwarded to AromaInput — see useAromaSearchScroll for the screen half.
   onRequestAromaScroll?: (rowTopInWindow: number, blockBelow: number) => void;
+  // The impression's auto-save (lib/useImpressionAutosave.ts): VoiceOver's
+  // relative score step, and the note's focus (its raw text while typing).
+  onScoreStep?: (v: number) => void;
+  onNotesFocus?: (focused: boolean) => void;
+  // The draft's score NOW (the autosave's `scoreNow`): the number field's dedupe.
+  scoreNow?: () => number;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   return (
     <View>
-      <ScoreInput value={score} onChange={onScore} />
+      <ScoreInput value={score} onChange={onScore} onStep={onScoreStep} current={scoreNow} />
       {/* note — tucked right under the score, NO title (Simon, 2026-07-12 —
           the placeholder carries the affordance), and the .ir-rate separator
           rule moved from ScoreInput to BELOW the note so score + note read as
@@ -64,7 +81,7 @@ export function RatingSection({
           2026-07-12). The placeholder invites a comment, never a tasting
           vocabulary. */}
       <View style={{ marginTop: 6, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
-        <NotesField placeholder="Say what the stars can’t." value={notes} onChange={onNotes} />
+        <NotesField placeholder="Say what the stars can’t." value={notes} onChange={onNotes} onFocusChange={onNotesFocus} maxLength={NOTE_MAX} />
       </View>
       {/* "Structure profile" — ALWAYS OPEN (Simon 2026-07-17; the adaptive
           fold + chevron are gone). paddingTop 24 (not the symmetric 16):
@@ -87,7 +104,7 @@ export function RatingSection({
         </View>
         {/* .filltrack per-attribute intensity grid — structure axes for this
             drink's style, colour from the active theme. */}
-        <StructureInput style={style} value={flavors} onChange={onFlavors} />
+        <StructureInput kind={kind} value={flavors} onChange={onFlavors} />
       </View>
       {/* Aromas — the descriptor layer (02e·11 search-first block). Always
           visible, blind included: like structure, aromas are the taster's own

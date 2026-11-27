@@ -21,7 +21,8 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
-import { TCOL, ICO } from '@/lib/wineTypeColors'
+import { TCOL, ICO, TCOL_UNKNOWN } from '@/lib/wineTypeColors'
+import { wineShown } from '@/lib/wineDisplay'
 
 function formatDate(dt: string) {
   if (!dt) return ''
@@ -369,7 +370,9 @@ function WineRow({
 
   const isRevealed = !!wine.revealedAt
   const isRedacted = isBlind && wine._blind
-  const accentColor = TCOL[wine.type] || TCOL.red
+  // What the row shows: the catalogue entry when linked, else the snapshot.
+  const shown = wineShown(wine)
+  const accentColor = TCOL[shown.kind] || TCOL_UNKNOWN
 
   return (
     <div ref={setNodeRef} style={style} className="wine-card" onClick={() => onOpen('info')}>
@@ -380,7 +383,7 @@ function WineRow({
         <img src={wine.imageUrl} alt={wine.name} onClick={e=>{e.stopPropagation();openLightbox(wine.imageUrl!,wine.name)}} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
       ) : (
         <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize: isRedacted ? 22 : 18}}>
-          {isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}
+          {isRedacted ? '🙈' : (ICO[shown.kind] || '🍷')}
         </div>
       )}
 
@@ -391,7 +394,7 @@ function WineRow({
             <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:2,letterSpacing:'0.06em'}}>hidden until revealed</div>
           </>
         ) : (
-          <WineIdentity wine={wine} size="compact" />
+          <WineIdentity wine={shown} size="compact" />
         )}
       </div>
 

@@ -49,3 +49,22 @@ jobs:
       # script header.
       - name: Post-read census
         run: node scripts/check-post-reads.mjs
+
+      # Moment-name census (Moment Visibility step 3b, T9): every read of a
+      # moment's name on the server (app/, lib/, root files, components/ that
+      # import lib/prisma; the patterns in the script header: SQL s.name /
+      # sessions.name / host_name, Prisma hostName: true, session find /
+      # update, the relations to Session) sits in a listed file with a pinned
+      # count and its reason, so a new read (a possible leak of a name past
+      # "only to a viewer who could open it") needs a reviewed pin change. Own
+      # negative control first; blind spots in the script header.
+      - name: Moment-name census
+        run: node scripts/check-moment-names.mjs
+
+      # Membership-write census (Moment Defaults K1 / K2): every write of a
+      # session_members row in app/ + lib/ is listed as ENTRY (participation
+      # may start there: seedParticipation follows it in the same function) or
+      # NOT ENTRY with its reason (set-role, kick-keep: must not seed). Own
+      # negative control first; blind spots in the script header.
+      - name: Membership-write census
+        run: node scripts/check-member-writes.mjs

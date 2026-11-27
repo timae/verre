@@ -12,6 +12,9 @@ import {
 } from '@/lib/session'
 import { ensureSessionLive, ratingsLost } from '@/lib/sessionRehydrate'
 import { redactWine } from '@/lib/wineRedaction'
+import { loadEntries, entryKey, type CatalogEntry } from '@/lib/catalogEntries'
+import { savedFlags } from '@/lib/cravings'
+import { readSnapshots, snapshotFor, type BottleSnapshot } from '@/lib/occurrences'
 import { blockPairIds } from '@/lib/userBlock'
 import { wireIdentityMap, mapIdentityList } from '@/lib/publicIds'
 import { viewableAvatars } from '@/lib/avatarGate'
@@ -208,6 +211,48 @@ export function lineupHiddenFor(meta: SessionMeta, identity: AuthorizedIdentity,
   return now < revealAt
 }
 
+// The LIVE blind rule for one bottle, the line-up's own (buildWinesView below,
+// lib/wineRedaction.ts): is it "Wine N" for this caller? The crave routes
+// decide a save on it with this, under their locks (catalogue model change
+// § 5: a save of a bottle hidden for you is a save of that bottle). `ownsWine`
+// comes from the RECORD for a caller with a grant, as in the line-up view.
+export function bottleHiddenFor(meta: SessionMeta, identity: AuthorizedIdentity, w: WineMeta, ownsWine: boolean): boolean {
+  if (!meta.blind) return false
+  const isUserHost = isHostByIdentity(meta, identity)
+  if (isUserHost && !meta.blindForEveryone) return false
+  return redactWine(w, { revealed: !!w.revealedAt, isHost: isUserHost, ownsWine, index: 0, blindForEveryone: !!meta.blindForEveryone }) !== null
+}
+
+// The signed-in viewer's `saved` flag on each row (one statement, fail-soft:
+// a failure leaves the flag off the rows, the line-up still serves).
+async function withSaved(rows: WireWine[], wines: WineMeta[], entries: Map<string, CatalogEntry>, identity: AuthorizedIdentity): Promise<WireWine[]> {
+  if (!identity.id.startsWith('u:') || !rows.length) return rows
+  const byId = new Map(wines.map(w => [w.id, w]))
+  try {
+    const flags = await savedFlags(Number(identity.id.slice(2)), rows.map(r => {
+      const w = byId.get(r.id)
+      const e = w?.productId ? entries.get(entryKey(w.productId, w.vintageId)) : undefined
+      return { id: r.id, hidden: !!r._blind, effective: e ? { productId: e.productId, vintageId: e.vintageId } : null }
+    }))
+    return rows.map(r => ({ ...r, saved: flags.get(r.id) ?? false }))
+  } catch (err) {
+    console.error('[wines] saved flags unavailable:', err)
+    return rows
+  }
+}
+
+// The line-up poll keeps working through a catalogue read failure: the
+// bottles then show their snapshot (entry null), like a purged link.
+async function loadEntriesFailSoft(wines: WineMeta[]): Promise<Map<string, CatalogEntry>> {
+  try { return await loadEntries(wines) }
+  catch (err) { console.error('[wines] catalogue entries unavailable, serving snapshots:', err); return new Map() }
+}
+// The record's kind / abv per bottle; a failure falls back to the cached token.
+async function readSnapshotsFailSoft(c: string, wines: WineMeta[]): Promise<Map<string, BottleSnapshot>> {
+  try { return await readSnapshots(c, wines.map(w => w.id)) }
+  catch (err) { console.error('[wines] bottle snapshots unavailable, serving the cached kind:', err); return new Map() }
+}
+
 // `wines` is the lineup the route loaded absent-aware (openSession /
 // loadLiveWines) — never a `[]` standing in for an evicted key.
 export async function buildWinesView(
@@ -227,7 +272,10 @@ export async function buildWinesView(
   // Hybrid resolution for `addedByDisplayName`: live identities map →
   // users.name fallback for kicked logged-in adders → snapshot on the wine
   // itself → null.
-  const adderLookup = await buildAdderLookup(wines, identities)
+  // The catalogue entries of the linked bottles, merges followed (ONE read,
+  // lib/catalogEntries.ts). A blind row never uses them (redactWine replaces
+  // `entry` whole), but they are read once for the line-up either way.
+  const [adderLookup, entries, snapshots] = await Promise.all([buildAdderLookup(wines, identities), loadEntriesFailSoft(wines), readSnapshotsFailSoft(c, wines)])
 
   // Provenance strip (Moment Setup → "Show Who Brought Each Impression").
   // When the host turned attribution OFF, wineToWire nulls the adder name +
@@ -258,19 +306,25 @@ export async function buildWinesView(
     // Pre-feature wines have NULL `addedByIdentityId` and never match the
     // provider exception — they redact like any other wine the caller
     // didn't add.
-    return wines.map((w, i) => {
+    return withSaved(wines.map((w, i) => {
       const redacted = redactWine(w, {
         revealed: !!w.revealedAt,
         isHost: isUserHost,
-        ownsWine: owned ? owned.has(w.id) : !!w.addedByIdentityId && w.addedByIdentityId === identity.id,
+        // 🔒 BOTH the record (a former owner's stale cache must not keep the
+        // bypass, r1-5) AND the served row (Codex r4, step 4: a re-link then a
+        // reassign between the line-up read and this ownership read would hand
+        // the new owner the OLD bottle's payload) must name the caller. Fails
+        // closed for the moment a fresh reassign's projection is in flight.
+        ownsWine: (owned ? owned.has(w.id) : true) && !!w.addedByIdentityId && w.addedByIdentityId === identity.id,
         index: i,
         blindForEveryone: !!meta.blindForEveryone,
+        snapshot: snapshotFor(w, snapshots),
       })
-      return redacted ?? wineToWire(w, identity.id, identities, adderLookup, showProvenance)
-    })
+      return redacted ?? wineToWire(w, identity.id, identities, adderLookup, showProvenance, entries, snapshots)
+    }), wines, entries, identity)
   }
 
-  return wines.map(w => wineToWire(w, identity.id, identities, adderLookup, showProvenance))
+  return withSaved(wines.map(w => wineToWire(w, identity.id, identities, adderLookup, showProvenance, entries, snapshots)), wines, entries, identity)
 }
 
 // The reply of a line-up write (reorder, reveal / hide, a wine edit, the
@@ -308,10 +362,16 @@ export async function buildWineEcho(c: string, meta: SessionMeta, identity: Auth
 // eviction): an empty SCAN for a Postgres-backed session that has committed
 // ratings means the rating keys were lost — a reconciling `force` rebuild, then
 // one rescan (with the identities map it reconciled).
+//
+// 🔒 `v` (the rating's version, docs/dev/rating-saves.md) stays only on the
+// CALLER's own rows (`callerId`, the internal identity id): with auto-save it is
+// an edit count per person and bottle, which the rest of the moment must not see.
 export async function buildRatingsView(
   c: string,
   identities: Record<string, string>,
+  callerId: string,
 ): Promise<RatingsView> {
+  // rating-write: EXEMPT
   const prefix = `s:${c}:r:`
   let keys = await scanKeys(`${prefix}*`)
   const result: RatingsView = {}
@@ -350,7 +410,9 @@ export async function buildRatingsView(
         ratings: {},
       }
     }
-    result[identityId].ratings[wineId] = JSON.parse(val)
+    const rating = JSON.parse(val)
+    if (identityId !== callerId && rating && typeof rating === 'object') delete rating.v
+    result[identityId].ratings[wineId] = rating
   })
 
   // 🔒 Keyed by WIRE identity; a rater whose `u:<int>` has no users row is dropped.

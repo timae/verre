@@ -115,6 +115,7 @@ model User {
   showMoments               Boolean                @default(true) @map("show_moments")
   showLocations             Boolean                @default(true) @map("show_locations")
   bookmarks                 Bookmark[]
+  blindSaves                BlindSave[]
   ratings                   Rating[]
   members                   SessionMember[]
   hostedSessions            Session[]
@@ -134,6 +135,9 @@ model User {
   authSessions              AuthSession[]
   usernameHolds             UsernameHold[]
   usernameChanges           UsernameChange[]
+  momentPrivacy             MomentPrivacy[]
+  momentDefaults            MomentDefaults?
+  ratingVersions            RatingVersion[]
   staffRoles                StaffRole[]            @relation("StaffRoleHolder")
   staffRolesGranted         StaffRole[]            @relation("StaffRoleGranter")
   // Catalog attribution. All SetNull — community catalog rows are never
@@ -145,6 +149,7 @@ model User {
   productsCurated           WineProduct[]          @relation("ProductCurator")
   vintagesAdded             WineVintage[]          @relation("VintageAdder")
   vintagesCurated           WineVintage[]          @relation("VintageCurator")
+  reviewItemsResolved       CatalogReviewItem[]
 
   // pg_trgm GIN index for fast substring search in /api/users/search.
   // The `raw("gin_trgm_ops")` operator class is what makes ILIKE queries
@@ -424,12 +429,93 @@ model Session {
   // Partial index `sessions_live_idx` (added in migration SQL) makes the
   // dominant `WHERE deleted_at IS NULL` filter selective.
   deletedAt   DateTime?  @map("deleted_at") @db.Timestamptz(6)
+  // The line-up record's revision (catalogue model change § 8a): the Redis
+  // line-up carries the revision it was projected from, and a read compares the
+  // two. NULL = not reconciled yet (never a revision), and the soft-delete scrub
+  // leaves it NULL. Int, not BigInt, so no BigInt reaches JSON.
+  lineupRevision Int?    @map("lineup_revision")
+  // Moment Visibility (docs/dev/proposals/moment-visibility.md § 4 / § 5).
+  // The moment's in-app address, never its code: same shape and generator as
+  // users.public_id. 🔒 Minted by the BEFORE INSERT trigger
+  // `sessions_public_id_mint` whatever an insert supplies (the DEFAULT is for
+  // the backfill and this declaration; never write it), immutable by
+  // `sessions_public_id_immutable`, format CHECK
+  // `sessions_public_id_format_chk`. The ONE column besides `id` and
+  // `deletedAt` a tombstone keeps (it answers the same 404 as an unknown id).
+  publicId    String     @unique @default(dbgenerated("gen_public_user_id()")) @map("public_id") @db.VarChar(12)
+  // Who may look in without the code: 'members' | 'friends' | 'followers' |
+  // 'verre' (CHECK `sessions_visibility_chk`). 🔒 NULL (a tombstone) reads as
+  // closed, like every column below reads as off. Read and written from the
+  // record only (lib/momentSettings.ts), never mirrored into the cached meta.
+  // 🔒 A row inserted without a host lands as 'members' by the trigger
+  // `sessions_guest_hosted_closed`, whatever the insert says.
+  visibility          String?   @default("friends") @db.VarChar(16)
+  includeGuestCircles Boolean?  @default(true) @map("include_guest_circles")
+  showPlace           Boolean?  @default(false) @map("show_place")
+  showDetails         Boolean?  @default(false) @map("show_details")
+  // The look-in link's state (lib/momentLink.ts): nothing secret is stored.
+  // 🔒 The version only ever goes up (Reset, and Share on a link that is off).
+  linkVersion         Int?      @default(0) @map("link_version")
+  linkActive          Boolean?  @default(false) @map("link_active")
+  linkSince           DateTime? @map("link_since") @db.Timestamptz(6)
   host        User?      @relation(fields: [hostUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   wines       Wine[]
   ratings     Rating[]
   feedItems   FeedItem[]
+  // Cravings first made in this moment (bookmarks.source_session_id).
+  sourcedBookmarks Bookmark[]
+  blindSaves       BlindSave[]
+  momentPrivacy MomentPrivacy[]
 
   @@map("sessions")
+}
+
+// A person's Moment Defaults (docs/dev/proposals/moment-defaults.md): COPIED
+// into a moment at create / join (lib/momentDefaults.ts seedParticipation) and
+// into a check-in at its POST; never read live by a reader of a moment or a
+// post. NULL = the system default (SYSTEM_DEFAULTS, pinned against the column
+// defaults by the suite). CHECK `moment_defaults_visibility_chk` (hand-written,
+// prisma/session-record-checks.json). Cascades with the user (their own data).
+model MomentDefaults {
+  userId                Int      @id @map("user_id")
+  // Host: applied to a moment you create.
+  visibility            String?  @db.VarChar(16)
+  includeGuestCircles   Boolean? @map("include_guest_circles")
+  showPlace             Boolean? @map("show_place")
+  showDetails           Boolean? @map("show_details")
+  // You in a moment: copied when you create or join it.
+  onlyInside            Boolean? @map("only_inside")
+  momentHiddenFromFeed  Boolean? @map("moment_hidden_from_feed")
+  // A check-in's Hide from Feed (its own switch).
+  checkinHiddenFromFeed Boolean? @map("checkin_hidden_from_feed")
+  updatedAt             DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@map("moment_defaults")
+}
+
+// One person's per-moment choice, "Only Inside This Moment" (moment-visibility
+// § 5 / § 9). Keyed by the session's ID, not its code: member rows are keyed
+// by a recyclable code and are deleted with the moment, and this choice must
+// outlive both (RESTRICT, like feed_items: rows survive the soft delete; the
+// hard-delete runbook clears them first). Written by lib/postPrivacy.ts only
+// (step 3); every reader treats a missing row or `only_inside = false` alike.
+model MomentPrivacy {
+  sessionId  Int     @map("session_id")
+  userId     Int     @map("user_id")
+  // "Incognito" in the app (R11): outsiders don't see you took part.
+  onlyInside Boolean @default(false) @map("only_inside")
+  // "Hide from Feed" for your post of this moment (R12): no feed or profile
+  // post list shows it to anyone but you, people in the moment included. Per
+  // moment, so it holds before the post exists.
+  hiddenFromFeed Boolean @default(false) @map("hidden_from_feed")
+  session    Session @relation(fields: [sessionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([sessionId, userId])
+  // The account-deletion cascade and the owner's own reads go by user.
+  @@index([userId])
+  @@map("moment_privacy")
 }
 
 model Wine {
@@ -487,7 +573,23 @@ model Wine {
   // (logged-in users fall through to users.name first; anon adders rely on this
   // snapshot since there's no users row).
   addedByDisplayName String?        @map("added_by_display_name") @db.VarChar(64)
+  // 'session' | 'standalone' (CHECK wines_origin_check). `sessionId` NULL does
+  // NOT mean standalone: three paths orphan session bottles (catalogue model
+  // change § 1). Nullable until the contract step: the previous release writes
+  // rows without it, so the BEFORE INSERT trigger wines_origin_default fills it
+  // from session_id when a writer leaves it NULL (raw SQL, invisible to Prisma).
+  origin             String?        @db.VarChar(16)
+  // The bottle's SNAPSHOT of the catalogue kind, so an unlinked or purged
+  // occurrence keeps its axes and marks: copied from the entry at link time,
+  // derived from `style` for legacy rows (the migration's backfill). Same CHECKs
+  // as wine_products: colour red | white | rose, NULL = unknown; abv 0..25,
+  // NULL = unknown, non-alcoholic READ as abv ≤ 0.5 (§ 0.2). ⚠️ abv is a
+  // Prisma Decimal: Number() it before it reaches a response.
+  colour             String?        @db.VarChar(16)
+  sparkling          Boolean        @default(false)
+  abv                Decimal?       @db.Decimal(4, 2)
   bookmarks          Bookmark[]
+  blindSaves         BlindSave[]
   ratings            Rating[]
   session            Session?       @relation(fields: [sessionId], references: [id], onUpdate: NoAction)
   // Composite FK to category_styles guarantees (category, style) is a valid
@@ -580,6 +682,20 @@ model Rating {
   // set. Release B adds CHECK (session_id IS NULL OR user_id IS NOT NULL OR
   // tombstone_key IS NOT NULL) once every writer honours it.
   tombstoneKey String?    @map("tombstone_key") @db.VarChar(40)
+  // Count ONCE per rating (tasting feedback 2026-11-25, docs/dev/rating-saves.md):
+  // set by the session rate POST the first time this rating reached 5, 1, or a
+  // note of more than 5 characters (`char_length`, the SQL rule); the lifetime
+  // counters and the action XP fire only on a flag's flip. Backfilled from the
+  // stored values by `20261125234900_rating_flags_backfill` (its own migration
+  // after `20261125234816_rating_saves` adds the columns).
+  fiveStarCounted Boolean @default(false) @map("five_star_counted")
+  oneStarCounted  Boolean @default(false) @map("one_star_counted")
+  noteCounted     Boolean @default(false) @map("note_counted")
+  // The rating-action XP actually credited to `users.xp` for this rating (+10
+  // first save, +5 first five-star, +5 first note), refunded by the owner's own
+  // clear (engagementCascadeIn's own-clear option). Legacy rows 0: their
+  // historical XP stays on the user.
+  ratingActionXp  Int     @default(0) @map("rating_action_xp")
   // Restrict matches the §2 design: hard-deleting a referenced session
   // should fail loudly. Soft-delete (sessions.deletedAt) is the contract;
   // any future GDPR purge must null this FK explicitly first.
@@ -593,14 +709,37 @@ model Rating {
   // partial unique on (user_id, wine_id, session_id) WHERE session_id
   // IS NOT NULL AND user_id IS NOT NULL — declared in the migration
   // because Prisma can't express partial uniques in schema.prisma.
-  // Standalone ratings (session_id IS NULL) are intentionally
-  // unconstrained: a user can have multiple standalone tastings of
-  // the same wine over time (rewire.md §2).
+  // Standalone ratings (session_id IS NULL) carry a second raw partial
+  // unique, (wine_id) WHERE session_id IS NULL (catalogue model change
+  // § 8a): ONE rating per standalone occurrence. Drinking a wine again is
+  // a new check-in, i.e. a new occurrence (wine row) with its own rating.
+  // Neither partial unique is in the datamodel (an @@unique cannot carry a
+  // WHERE); catalog-schema-integration.mjs § 22 pins them from pg_indexes.
   @@index([userId])
   @@index([sessionId])
   @@index([userId, wineId])
   @@index([userId, sessionId])
   @@map("ratings")
+}
+
+// The version of one person's session rating of one bottle (docs/dev/rating-saves.md):
+// bumped in the SAME transaction by every write of a signed-in session rating of
+// a Postgres-backed moment (scripts/check-rating-writes.mjs, CI census). A save
+// that says which version it was based on (`baseVersion`) is refused with 409
+// when it differs. Its own table so it survives a Clear (a version on the rating
+// row would die with it). `wine_id` has NO foreign key: bottles are deleted and
+// re-minted, and the row must outlive them (the fence for late requests).
+model RatingVersion {
+  userId   Int     @map("user_id")
+  wineId   String  @map("wine_id") @db.VarChar(21)
+  version  Int
+  lastOpId String? @map("last_op_id") @db.Uuid
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([userId, wineId])
+  // A bottle delete bumps, and a line-up re-key copies, by wine_id.
+  @@index([wineId])
+  @@map("rating_versions")
 }
 
 model SessionMember {
@@ -658,16 +797,86 @@ model SessionTombstone {
   @@map("session_tombstones")
 }
 
+// A craving: "I want this wine" (catalogue model change § 5). It points at the
+// catalogue (product + optional vintage, the two grains of an occurrence) and
+// REMEMBERS where it was first craved: `wineId`, the source occurrence ("you
+// craved it here"), and `sourceSessionId`, its moment.
 model Bookmark {
-  id      Int      @id @default(autoincrement())
-  userId  Int      @map("user_id")
-  wineId  String   @map("wine_id") @db.VarChar(21)
-  savedAt DateTime @default(now()) @map("saved_at") @db.Timestamptz(6)
-  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  wine    Wine     @relation(fields: [wineId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  id              Int       @id @default(autoincrement())
+  userId          Int       @map("user_id")
+  // The source occurrence, nullable since the model change: from step 5 a
+  // craving whose bottle is deleted keeps its wine, and a later save from a
+  // product page has no source. 🔒 onDelete stays Cascade (§ 5): the step-5
+  // wine DELETE detaches the visible cravings first and the hidden ones go
+  // with the bottle; until then every craving still goes with its bottle.
+  wineId          String?   @map("wine_id") @db.VarChar(21)
+  savedAt         DateTime  @default(now()) @map("saved_at") @db.Timestamptz(6)
+  // The catalogue link. NoAction into the catalogue, like wines' (§ 5a: a purge
+  // clears these itself; the FK is the backstop). (null, set) is refused by
+  // bookmarks_catalog_link_check (the composite key is MATCH SIMPLE).
+  productId       String?   @map("product_id") @db.VarChar(21)
+  vintageId       String?   @map("vintage_id") @db.VarChar(21)
+  // Display snapshot taken at save time, so a purged or never-linked craving
+  // still renders (§ 5a). Copied from the source bottle for legacy rows.
+  name            String?   @db.VarChar(255)
+  producer        String?   @db.VarChar(255)
+  vintage         String?   @db.Char(4)
+  // The moment the craving was first made in, kept on the craving itself so an
+  // orphaned or unrated source bottle changes nothing (§ 5). NoAction: sessions
+  // are never hard-deleted.
+  sourceSessionId Int?      @map("source_session_id")
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  wine            Wine?     @relation(fields: [wineId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  product         WineProduct? @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  catalogVintage  WineVintage? @relation(fields: [vintageId, productId], references: [id, productId], onDelete: NoAction, onUpdate: NoAction)
+  sourceSession   Session?  @relation(fields: [sourceSessionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // The post this craving was made from (NULL in a moment): decides who may see
+  // its photo on the craver's lists (ruled 2026-11-20). SET NULL with the post.
+  sourceItemId    Int?      @map("source_item_id")
+  sourceItem      FeedItem? @relation(fields: [sourceItemId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  // Made from a post (true) or in a moment (false); kept when the post goes.
+  fromPost        Boolean   @default(false) @map("from_post")
+
+  // One save per person per source bottle (implied by one craving per wine).
+  // 🔒 A CONSTRAINT on prod, an INDEX in the chain: dropped in the contract step
+  // with DROP CONSTRAINT IF EXISTS + DROP INDEX IF EXISTS, never touched before.
+  @@unique([userId, wineId])
+  // 🔒 NOT declared: the raw partial unique bookmarks_user_product_vintage_key,
+  // (user_id, product_id, vintage_id) NULLS NOT DISTINCT WHERE product_id IS NOT
+  // NULL (one craving per wine; a purged bookmark is exempt). An @@unique cannot
+  // carry a WHERE; catalog-schema-integration.mjs § 22 pins it from pg_indexes.
+  @@index([productId])
+  @@index([vintageId])
+  @@index([sourceSessionId])
+  @@index([sourceItemId])
+  @@map("bookmarks")
+}
+
+// A save of a bottle hidden from its saver ("Wine N"; catalogue model change
+// § 5, ruled 2026-11-20 R2): the bottle's own button state while it is hidden,
+// and ALL that is stored while it is (no craving, no bookmarks id: review r1).
+// It counts as a craving once its bottle is no longer hidden for the saver.
+// `itemId` = the post it was saved from (NULL in the moment). Written only by
+// lib/cravings.ts.
+model BlindSave {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  wineId    String    @map("wine_id") @db.VarChar(21)
+  // The bottle's moment, kept like a craving's `source_session_id`.
+  sessionId Int?      @map("session_id")
+  itemId    Int?      @map("item_id")
+  // Saved from a post (true) or in the moment (false: its saver was a participant).
+  fromPost  Boolean   @default(false) @map("from_post")
+  savedAt   DateTime  @default(now()) @map("saved_at") @db.Timestamptz(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  wine      Wine      @relation(fields: [wineId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  session   Session?  @relation(fields: [sessionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  item      FeedItem? @relation(fields: [itemId], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@unique([userId, wineId])
-  @@map("bookmarks")
+  @@index([wineId])
+  @@index([itemId])
+  @@map("blind_saves")
 }
 
 // Badge catalog. Seeded from lib/badges.ts via ensureBadgesSeedOnce().
@@ -845,6 +1054,11 @@ model FeedItem {
   // false = render no location at all; true = render venue/city. Boolean,
   // not enum — the "private tasting" signal is UX copy, not data (§2).
   locationPublic Boolean        @default(false) @map("location_public")
+  // Hide from Feed (Moment Visibility step 3, R5): a CHECK-IN its author took
+  // out of every feed and profile post list for everyone but themselves (it
+  // stays on their Impressions). CHECK `feed_items_hidden_from_feed_standalone`
+  // (migration SQL, Prisma can't express it): only kind = 'standalone'.
+  hiddenFromFeed Boolean        @default(false) @map("hidden_from_feed")
   createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   user           User           @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   // Restrict: hard-deleting a session must fail loudly. Soft-delete
@@ -855,6 +1069,8 @@ model FeedItem {
   // social wrapper of the rating).
   rating         Rating?        @relation(fields: [ratingId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   likes          FeedItemLike[]
+  cravings       Bookmark[]
+  blindSaves     BlindSave[]
   tags           FeedItemTag[]
 
   // One feed_item per (user, session) — prevents double-creation under
@@ -1096,10 +1312,12 @@ model Producer {
   updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
   // NoAction: purge resolves inbound pointers explicitly in its own transaction
   // (re-point or clear), and the FK is the backstop against a purge that forgets
-  // one. ⚠️ NOT "like every catalog-referencing FK" — eight of the nine forward
-  // FKs into catalog tables are NoAction; `product_producers.product_id` is the
-  // SOLE intentional Cascade (see its own comment), so a product referenced only
-  // by its join rows deletes successfully and cascades them.
+  // one. ⚠️ NOT "like every catalog-referencing FK" — ten of the eleven FKs into
+  // catalog tables are NoAction (the nine forward ones plus bookmarks' two since
+  // the model change); `product_producers.product_id` is the SOLE intentional
+  // Cascade (see its own comment), so a product referenced only by its join rows
+  // deletes successfully and cascades them. Pinned by
+  // scripts/check-catalog-inbound-fks.mjs.
   target        Producer? @relation("ProducerMerge", fields: [linksTo], references: [id], onDelete: NoAction, onUpdate: NoAction)
   tombstones    Producer[] @relation("ProducerMerge")
   adder         User?     @relation("ProducerAdder", fields: [addedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
@@ -1175,6 +1393,16 @@ model WineProduct {
   // structured identifiers are persisted to build from (provenance rule); the
   // trees are built later against Verre identity.
   region        String?   @db.VarChar(255)
+  // Contract v3 (catalogue model change § 1, ruled 2026-11-19). 🔒 `country` is
+  // where the WINE is from (ISO 3166-1 alpha-2, CHECK against the full 249-code
+  // list): never filled from producers.country and never a read-time fallback to
+  // it (that is the company's home). A blend across countries is NULL.
+  // description / vinification: plain English, NULL or not blank through the
+  // fold. All three are label identity on a blind row, enrichable (fill NULL
+  // only) and may be named in curatorLocked.
+  country       String?   @db.VarChar(2)
+  description   String?   @db.VarChar(1000)
+  vinification  String?   @db.VarChar(1000)
   // 🔒 READ-ONLY generated columns — see the Producer note above. grapesFolded
   // folds element-wise through catalog_fold_arr_v1, which is STRICT + COALESCEs
   // array_agg so {} folds to {} rather than NULL (array_agg over zero rows
@@ -1209,6 +1437,7 @@ model WineProduct {
   vintages      WineVintage[]
   eans          ProductEan[]
   wines         Wine[]
+  bookmarks     Bookmark[]
 
   @@index([status])
   @@index([linksTo])
@@ -1336,6 +1565,7 @@ model WineVintage {
   adder         User?     @relation("VintageAdder", fields: [addedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
   curator       User?     @relation("VintageCurator", fields: [curatedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
   wines         Wine[]
+  bookmarks     Bookmark[]
 
   // Redundant with the PK, but it is what makes the composite FK from
   // wines (vintage_id, product_id) legal — that FK is the structural
@@ -1432,3 +1662,75 @@ model CatalogAudit {
   @@map("catalog_audit")
 }
 
+// Every user-minted catalogue entry, recorded as unreviewed in the mint's own
+// transaction (catalogue model change § 7). `status = 'provisional'` alone is
+// not that record: a delivery may move a user entry to confirmed, and then
+// nothing would say no curator ever looked at it. resolvedAt / resolvedBy stay
+// empty until the review queue (phase 3).
+//
+// 🔒 entityId has NO FK: the entity is polymorphic, and a purge deletes the
+// entity and its item in one transaction. A table holding catalogue ids without
+// a key is one the catalog-maintenance side's replace mode must LOCK for its
+// whole load (told 2026-11-19); a new such table is told to them too.
+// CHECKs in the migration: entityType producer | product | vintage, reason
+// user-mint, resolvedBy only with resolvedAt.
+model CatalogReviewItem {
+  id         Int       @id @default(autoincrement())
+  entityType String    @map("entity_type") @db.VarChar(16)
+  entityId   String    @map("entity_id") @db.VarChar(21)
+  reason     String    @db.VarChar(32)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  resolvedAt DateTime? @map("resolved_at") @db.Timestamptz(6)
+  resolvedBy Int?      @map("resolved_by")
+  resolver   User?     @relation(fields: [resolvedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([entityType, entityId])
+  @@map("catalog_review_items")
+}
+
+
+// ── Catalogue search (catalogue model change step 7b) ─────────────────────
+//
+// 🔒 VERRE-OWNED, not catalogue tables: the every-word search's documents
+// (`20261121180000_catalog_search`, lib/catalogSearch.ts). One doc per product
+// and per producer, their words from `catalog_search_words_v1` (folded text →
+// words, the ONE tokeniser for docs and queries), and the word list the typo
+// lookup reads. 🔒 NO foreign keys: a stale doc is never served (the read joins
+// the catalogue live), and a key would join the catalogue's FK contract. Written
+// only by lib/catalogWrite.ts (the mints, the purge) and the rebuild
+// (`rebuildCatalogSearch`, the migration's @recipe); CI census
+// scripts/check-catalog-writes.mjs. A table holding catalogue ids without a key
+// is one the catalogue-maintenance side is told about (prisma/CLAUDE.md).
+model CatalogSearchDoc {
+  productId     String                  @id @map("product_id") @db.VarChar(21)
+  producerWords String[]                @map("producer_words")
+  // The lead's effective survivor's words when the lead is a merge tombstone.
+  survivorWords String[]                @default([]) @map("survivor_words")
+  nameWords     String[]                @map("name_words")
+  regionWords   String[]                @map("region_words")
+  tsvName       Unsupported("tsvector") @map("tsv_name")
+  tsv           Unsupported("tsvector")
+
+  @@index([tsvName], type: Gin, map: "catalog_search_docs_tsv_name_idx")
+  @@index([tsv], type: Gin, map: "catalog_search_docs_tsv_idx")
+  @@map("catalog_search_docs")
+}
+
+model CatalogSearchProducerDoc {
+  producerId String                  @id @map("producer_id") @db.VarChar(21)
+  tsv        Unsupported("tsvector")
+
+  @@index([tsv], type: Gin, map: "catalog_search_producer_docs_tsv_idx")
+  @@map("catalog_search_producer_docs")
+}
+
+// ⚠️ `word` is `COLLATE "C"` in the migration (the prefix range on the primary
+// key needs byte order); Prisma has no collation attribute and its differ does
+// not compare collations (verified 2026-11-21: `migrate diff` is clean).
+model CatalogSearchWord {
+  word String @id
+  ndoc Int
+
+  @@index([word(ops: raw("gist_trgm_ops"))], type: Gist, map: "catalog_search_words_word_gist_idx")
+  @@map("catalog_search_words")
+}

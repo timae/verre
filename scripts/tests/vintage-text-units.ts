@@ -20,7 +20,7 @@ import {
   normalizeVintageText,
   filterVintageInput,
 } from '@verre/core';
-import { applyIdentityEditRule, validateYear } from '../../lib/catalogWrite';
+import { validateYear } from '../../lib/catalogWrite';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -121,11 +121,11 @@ check('matrix: "vintage 2019" → empty', normalizeVintageText('vintage 2019') =
 //
 // Any four-digit value therefore ROUND-TRIPS. Range plausibility is enforced only
 // at catalog promotion (`validateYear`), where a value becomes shared identity.
-const nextYear = new Date().getUTCFullYear() + 1;
-for (const legacy of ['1780', '3000', '1799', '0001', '9999', String(nextYear + 1)]) {
+const thisYear = new Date().getUTCFullYear();
+for (const legacy of ['1780', '3000', '1799', '0001', '9999', String(thisYear + 1)]) {
   check(`matrix: out-of-range ${legacy} is PRESERVED, not blanked`, normalizeVintageText(legacy) === legacy);
 }
-check('matrix: current+1 preserved', normalizeVintageText(String(nextYear)) === String(nextYear));
+check('matrix: the current year preserved', normalizeVintageText(String(thisYear)) === String(thisYear));
 check('matrix: 1800 preserved', normalizeVintageText('1800') === '1800');
 // The circa form, now EXPLICIT rather than an extraction accident.
 for (const c of ['c. 2019', 'c.2019', 'ca 2019', 'ca. 2019', 'circa 2019', 'C. 2019']) {
@@ -180,50 +180,11 @@ check('filter: length capped (no unbounded growth)', filterVintageInput('n'.repe
   check('round-trip: filter→normalize is always NV, digits, or empty', ok, bad);
 }
 
-// ── applyIdentityEditRule: canonicalizing must NOT clear a catalog link ──
-// 🔒 The write path canonicalizes 'N.V.' → 'NV'. applyIdentityEditRule compares
-// "what will actually be stored", so it must use the SAME normalizer — with a
-// raw/sliced compare, an edit that only canonicalized reported a change and
-// silently returned {productId: null, vintageId: null}, dropping a correct link.
-{
-  const existing = { name: 'Blanc de Blancs', producer: 'A Maker', vintage: 'N.V.', productId: 'p1', vintageId: 'v1' };
-  const kept = applyIdentityEditRule(existing, { vintage: 'NV' }, null);
-  check('link: N.V. → NV PRESERVES the catalog link', kept.productId === 'p1' && kept.vintageId === 'v1', JSON.stringify(kept));
-  const kept2 = applyIdentityEditRule(existing, { vintage: 'non-vintage' }, null);
-  check('link: N.V. → non-vintage preserves the link', kept2.productId === 'p1', JSON.stringify(kept2));
-  // A REAL identity change must still clear it — the fix must not over-preserve.
-  const cleared = applyIdentityEditRule(existing, { vintage: '2019' }, null);
-  check('link: N.V. → 2019 CLEARS the link (real change)', cleared.productId === null && cleared.vintageId === null, JSON.stringify(cleared));
-  // And a year edit that only reformats keeps it.
-  const yr = { name: 'X', producer: 'Y', vintage: '2019', productId: 'p2', vintageId: 'v2' };
-  check('link: "2019" → " 2019 " preserves the link', applyIdentityEditRule(yr, { vintage: ' 2019 ' }, null).productId === 'p2');
-  check('link: "2019" → "2020" clears the link', applyIdentityEditRule(yr, { vintage: '2020' }, null).productId === null);
-
-  // 🔒 NON-STRING input: the comparator must model the write's TYPE handling,
-  // not just its string handling. `scrub` returns null for a non-string, so the
-  // write stores '' — while a String(v)-coercing comparator saw numeric 2019 as
-  // equal to stored '2019' and KEPT the link. Result: blank vintage, retained
-  // vintage-grain link. Same defect class as the omitted-vs-empty edit bug via a
-  // different route.
-  const numeric = applyIdentityEditRule(yr, { vintage: 2019 as unknown as string }, null);
-  check('link: NUMERIC 2019 clears the link (write would store empty)', numeric.productId === null && numeric.vintageId === null, JSON.stringify(numeric));
-  // 🔒 NAME IS ASYMMETRIC WITH VINTAGE, because the WRITES are. `name` is
-  // required, so both write paths either fall back (`scrub(name) || existing`,
-  // the check-in PATCH) or reject outright (the session path) — an invalid or
-  // blank name is IGNORED and the stored name retained. Nothing moves, so the
-  // link must SURVIVE. An earlier pin here asserted it cleared, which locked in
-  // over-clearing: the comparator's contract is to model what the write actually
-  // stores, and the write stores the old name.
-  const numName = applyIdentityEditRule(yr, { name: 123 as unknown as string }, null);
-  check('link: NUMERIC name PRESERVES the link (write keeps the old name)', numName.productId === 'p2', JSON.stringify(numName));
-  const blankName = applyIdentityEditRule(yr, { name: '' }, null);
-  check('link: BLANK name PRESERVES the link (write falls back)', blankName.productId === 'p2', JSON.stringify(blankName));
-  const realName = applyIdentityEditRule(yr, { name: 'Other Wine' }, null);
-  check('link: a REAL name change still clears the link', realName.productId === null, JSON.stringify(realName));
-  // Producer is optional and IS stored when blanked, so it is not exempt.
-  const blankProd = applyIdentityEditRule(yr, { producer: '' }, null);
-  check('link: BLANK producer clears the link (optional field, really stored)', blankProd.productId === null, JSON.stringify(blankProd));
-}
+// ── applyIdentityEditRule: RETIRED (catalogue model change step 4) ──────────
+// A bottle's identity is its catalogue link; typed identity text never becomes
+// the snapshot, so there is no free-text comparison left to model. An identity
+// edit is a re-link through the add flow: scripts/tests/catalog-every-write.mts
+// § 9 pins it (the snapshot follows a re-link, a cosmetic edit never rewrites).
 
 // ── The scanner's untrusted JSON ───────────────────────────────────────────
 // MOVED to scripts/tests/impression-payload-units.ts, which imports the
@@ -233,7 +194,7 @@ check('filter: length capped (no unbounded growth)', filterVintageInput('n'.repe
 
 // ── 🔒 THE GRAIN BOUNDARY IS EXECUTABLE, NOT JUST A COMMENT ────────────────
 // The encounter string accepts ANY structurally valid four-digit value (no
-// plausibility range at all); catalog promotion accepts only 1900..current+1.
+// plausibility range at all); catalog promotion accepts only 1900..the current year.
 // The asymmetry is deliberate (catalog review, 2026-07-26): input validation is
 // per-encounter and must never invalidate stored data, while promotion mints
 // permanent shared identity and can afford to be strict.
@@ -249,7 +210,7 @@ check('filter: length capped (no unbounded growth)', filterVintageInput('n'.repe
 // field is touched, and the comparator then reads ''-vs-'' as unchanged and
 // keeps the catalog link.
 {
-  const nextYear = new Date().getUTCFullYear() + 1;
+  const thisYear = new Date().getUTCFullYear();
   // The encounter field accepts ANY four-digit value (structural grammar only,
   // so a legacy row round-trips unharmed)...
   check('boundary: encounter string ACCEPTS 1800', normalizeVintageText('1800') === '1800');
@@ -265,10 +226,10 @@ check('filter: length capped (no unbounded growth)', filterVintageInput('n'.repe
   }
   // Both agree from 1900 up, and on the same moving upper bound.
   check('boundary: both accept 1900', normalizeVintageText('1900') === '1900' && validateYear(1900) === 1900);
-  check('boundary: both accept current+1', normalizeVintageText(String(nextYear)) === String(nextYear) && validateYear(nextYear) === nextYear);
+  check('boundary: both accept the current year', normalizeVintageText(String(thisYear)) === String(thisYear) && validateYear(thisYear) === thisYear);
   let over = false;
-  try { validateYear(nextYear + 1); } catch { over = true; }
-  check('boundary: catalog rejects current+2 (the encounter string does not)', over && normalizeVintageText(String(nextYear + 1)) === String(nextYear + 1));
+  try { validateYear(thisYear + 1); } catch { over = true; }
+  check('boundary: catalog rejects next year (no bottle carries it; the encounter string keeps it)', over && normalizeVintageText(String(thisYear + 1)) === String(thisYear + 1));
   // And NV is null at catalog grain but the literal string at encounter grain —
   // the other asymmetry that gets conflated.
   check('boundary: catalog NV is year=null', validateYear(null) === null);

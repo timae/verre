@@ -1,5 +1,5 @@
 import { useNavigation } from 'expo-router';
-import { useEffect, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 
 // Whether a fullscreen photo viewer (ui/FullscreenImage, feed/FullscreenGallery)
 // is open. The root Stack reads it to hide the status bar as a SCREEN TRAIT
@@ -10,8 +10,8 @@ import { useEffect, useSyncExternalStore } from 'react';
 // <StatusBar hidden> is never consulted on iOS). Which screen's trait counts
 // depends on the host: a transparentModal host (the feed's impression detail)
 // is skipped by the RNS trait walk, so only the ROOT screen's trait reaches
-// UIKit — that is this store; a fullScreenModal host (feed edit details) is
-// asked directly by UIKit, so the hook ALSO sets the trait on the viewer's
+// UIKit — that is this store; a fullScreenModal host (the feed edit details
+// were one until 2026-11-24) is asked directly by UIKit, so the hook ALSO sets the trait on the viewer's
 // nearest screen — imperatively, with a cleanup that restores it, because a
 // <Stack.Screen> element leaves its options behind when it unmounts (a host
 // that drops the photo while the viewer is open would strand the bar hidden,
@@ -20,6 +20,11 @@ import { useEffect, useSyncExternalStore } from 'react';
 // still showing.
 let openCount = 0;
 const listeners = new Set<() => void>();
+// The open viewers' own close (a look-in link closes them first, lib/lookInOpener.ts).
+const closers = new Set<() => void>();
+export function closeFullscreenViewers() {
+  [...closers].forEach((close) => close());
+}
 function subscribe(listener: () => void) {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -34,17 +39,23 @@ export function useFullscreenViewerOpen(): boolean {
 
 type ViewerScreenOptions = { statusBarHidden: boolean; statusBarAnimation?: 'fade' };
 
-// Called by a viewer with its open state; while true the root AND the
-// nearest screen carry the hide, both released on close or unmount.
-export function useReportFullscreenViewer(open: boolean) {
+// Called by a viewer with its open state (and its own close); while open the
+// root AND the nearest screen carry the hide, both released on close or
+// unmount, and `close` is what closeFullscreenViewers calls.
+export function useReportFullscreenViewer(open: boolean, close?: () => void) {
   const navigation = useNavigation<{ setOptions: (options: ViewerScreenOptions) => void }>();
+  const closeRef = useRef(close);
+  closeRef.current = close;
   useEffect(() => {
     if (!open) return;
     openCount += 1;
+    const closer = () => closeRef.current?.();
+    closers.add(closer);
     emit();
     navigation.setOptions({ statusBarHidden: true, statusBarAnimation: 'fade' });
     return () => {
       openCount -= 1;
+      closers.delete(closer);
       emit();
       navigation.setOptions({ statusBarHidden: false });
     };

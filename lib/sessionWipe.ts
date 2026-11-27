@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { redis, k, scanKeys } from '@/lib/redis'
-import { mutateWines, mirrorLineup, isMutateReject, type SessionMeta, type WineMeta } from '@/lib/session'
+import { mutateWines, type SessionMeta, type WineMeta } from '@/lib/session'
+import { reconcileLineup, bumpLineupRevision, renumber, recordLineup, projectLineup } from '@/lib/occurrences'
 import { withSessionMutation, type MutationCtx } from '@/lib/sessionMutation'
+import { bumpRaterVersions } from '@/lib/ratingVersions'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 import type { Identity } from '@/lib/identity'
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3'
@@ -47,12 +49,18 @@ async function reclaimImage(url: string | null | undefined) {
 //                     historical rating author with no member row is recorded
 //                     as kicked too (r1-4). Ratings stay for their own history.
 //   - 'kick-delete' → kick + delete the user's session-scoped data (ratings,
-//                     feed item, bookmarks-of-wines-in-this-session,
+//                     feed item, their cravings from this session (its
+//                     stored moment, or its bottle's) + their blind saves,
 //                     session_members).
 //   - 'ban'         → kick-delete + the ban (session_bans row = the record for
 //                     a Postgres-backed session; the Redis set is its cache).
 //   Wines the target added are orphaned (session_id NULL, never hard-deleted —
 //   other tasters' bookmarks survive) when the caller passes deleteAddedWines.
+//   🔒 When the CALLER is the target (a removed person's own "Delete my
+//   ratings", /leave?cleanup=full), the rating-action XP of the ratings it
+//   deletes is taken back, once, floored at 0 (ruled 2026-11-26, the own-clear
+//   rule of docs/dev/rating-saves.md). A host's kick or ban with delete takes
+//   nothing back. Counters and badges never go down.
 //
 // 🔒 A mutation-contract participant (redis-rehydration § 5.4; release-B plan
 // § 3): the caller's authorization and the TARGET's role/host status are
@@ -95,6 +103,8 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
   const isTombstone = identityId.startsWith('d:')
   if (isTombstone && scope !== 'kick-delete') throw new Error(`sessionWipe: ${scope} is not valid for a tombstone identity`)
   const deleteAddedWines = !isTombstone && (opts.deleteAddedWines ?? false)
+  // The person's own choice (only /leave wipes its own caller).
+  const ownChoice = userId !== null && opts.caller.id === identityId
   const reclaim: string[] = []
 
   // bumpGen: the wipe deletes rating keys — an unleased writer's late SET with
@@ -127,6 +137,7 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
       }
       if (isTombstone) {
         reclaim.push(...await ratingImages(tx, Prisma.sql`r.session_id = ${row.id} AND r.tombstone_key = ${identityId} AND r.user_id IS NULL`))
+        // rating-write: EXEMPT
         await tx.$executeRaw`DELETE FROM ratings WHERE session_id = ${row.id} AND tombstone_key = ${identityId} AND user_id IS NULL`
       } else if (userId !== null && scope === 'kick-keep') {
         await tx.$executeRaw`
@@ -139,10 +150,30 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
         // its ratings' session_id, and a surviving rating would re-admit the
         // user as an author.
         reclaim.push(...await ratingImages(tx, Prisma.sql`r.user_id = ${userId} AND r.session_id = ${row.id}`))
-        await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id = ${row.id}`
+        // The rater's versions move first (docs/dev/rating-saves.md): an entry
+        // that waited offline through this kick and a rejoin must not re-create
+        // a deleted rating on its old version.
+        await bumpRaterVersions(tx, userId, row.id)
+        // rating-write: BUMPS
+        const gone = await tx.$queryRaw<{ xp: number }[]>`
+          WITH d AS (DELETE FROM ratings WHERE user_id = ${userId} AND session_id = ${row.id} RETURNING rating_action_xp)
+          SELECT COALESCE(SUM(rating_action_xp), 0)::int AS xp FROM d`
+        // Their own choice: the action XP those ratings earned goes back, ONE
+        // debit, floored at 0 (the session's advisory lock serialises this with
+        // account deletion, whose touched set holds this moment).
+        const refund = Number(gone[0]?.xp ?? 0)
+        if (ownChoice && refund > 0) await tx.$executeRaw`UPDATE users SET xp = GREATEST(xp - ${refund}, 0) WHERE id = ${userId}`
         await tx.$executeRaw`DELETE FROM feed_items WHERE user_id = ${userId} AND session_id = ${row.id}`
+        // Their cravings from this moment: by the moment the craving stores
+        // (catalogue model change § 5: kept when its bottle is orphaned or
+        // deleted), or by its bottle's; and their saves of its bottles.
         await tx.$executeRaw`
-          DELETE FROM bookmarks b USING wines w WHERE b.wine_id = w.id AND w.session_id = ${row.id} AND b.user_id = ${userId}`
+          DELETE FROM bookmarks b WHERE b.user_id = ${userId}
+             AND (b.source_session_id = ${row.id} OR b.wine_id IN (SELECT w.id FROM wines w WHERE w.session_id = ${row.id}))`
+        await tx.$executeRaw`
+          DELETE FROM blind_saves bs WHERE bs.user_id = ${userId} AND (bs.session_id = ${row.id} OR bs.wine_id IN (
+            SELECT w.id FROM wines w WHERE w.session_id = ${row.id}
+            UNION SELECT r.wine_id FROM ratings r WHERE r.session_id = ${row.id}))`
         await tx.$executeRaw`DELETE FROM session_members WHERE user_id = ${userId} AND session_code = ${code}`
       }
     }
@@ -158,24 +189,34 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
       await fence.exec(m => { m.set(k.meta(code), JSON.stringify(stripRoles(meta, identityId)), { XX: true, KEEPTTL: true }) })
     }
 
-    // ── Wines the target brought: the ids come from the RECORD's orphan UPDATE
-    // (r3-5 — cached provenance can lag a committed reassign); in a Redis-only
-    // session the cached provenance is the authority.
+    // ── Wines the target brought. Postgres-backed: RECORD-FIRST (model change
+    // § 8a) — a NULL revision reconciled, the ids from the record's orphan
+    // UPDATE (r3-5: cached provenance can lag a committed reassign), positions
+    // renumbered, the revision bumped, the line-up projected after COMMIT.
+    // Redis-only: the cached provenance is the authority.
+    let lineup: { wines: WineMeta[]; revision: number } | null = null
     if (deleteAddedWines) {
-      const ids = row
-        ? (await tx.$queryRaw<{ id: string }[]>`
-            UPDATE wines SET session_id = NULL WHERE session_id = ${row.id} AND added_by_identity_id = ${identityId} RETURNING id`).map(r => r.id)
-        : (ctx.meta ? (JSON.parse((await redis.get(k.wines(code))) ?? '[]') as WineMeta[]) : []).filter(w => w.addedByIdentityId === identityId).map(w => w.id)
-      if (ids.length) {
-        const drop = new Set(ids)
-        const next = await mutateWines(fence, wines => wines.filter(w => !drop.has(w.id)))
-        if (!isMutateReject(next)) await mirrorLineup(tx, row?.id ?? null, next)
+      if (row) {
+        await reconcileLineup(tx, ctx)
+        const ids = await tx.$queryRaw<{ id: string }[]>`
+          UPDATE wines SET session_id = NULL WHERE session_id = ${row.id} AND added_by_identity_id = ${identityId} RETURNING id`
+        if (ids.length) {
+          await renumber(tx, row.id)
+          const revision = await bumpLineupRevision(tx, row.id)
+          if (revision !== null) lineup = { wines: await recordLineup(tx, row.id), revision }
+        }
+      } else if (ctx.meta) {
+        const drop = new Set((JSON.parse((await redis.get(k.wines(code))) ?? '[]') as WineMeta[]).filter(w => w.addedByIdentityId === identityId).map(w => w.id))
+        if (drop.size) await mutateWines(fence, wines => wines.filter(w => !drop.has(w.id)))
       }
     }
-  }, async (ctx) => {
+    return lineup
+  }, async (ctx, lineup) => {
+    if (lineup) await projectLineup(ctx.fence!, lineup.wines, lineup.revision)
     // ── After COMMIT: the rating keys of a removed rater (the record no longer
     // has those ratings). Kick-keep keeps them (the roster guard hides them).
     if (scope !== 'kick-keep') {
+      // rating-write: BUMPS
       const keys = await scanKeys(`s:${code}:r:${identityId}:*`)
       if (keys.length) await ctx.fence!.exec(m => { m.del(keys) })
     }

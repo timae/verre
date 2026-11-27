@@ -133,7 +133,7 @@ export function FullscreenGallery({
   // photo-bearing page there is no Modal, and a refetch that drops the last
   // photo while the gallery is up must release the hide with it (Codex).
   const open = visible && pages.length > 0;
-  useReportFullscreenViewer(open);
+  useReportFullscreenViewer(open, land);
   if (!pages.length) return null;
   return (
     // overFullScreen + no status-bar element logic here: see ui/FullscreenImage.
@@ -151,7 +151,7 @@ export function FullscreenGallery({
         data={pages}
         initialIndex={startIndex}
         ListComponent={FlatList}
-        listProps={{ keyExtractor: (item: GalleryPage) => item.wine.id }}
+        listProps={{ keyExtractor: (item: GalleryPage) => String(item.wine.ratingId) }}
         // Black ground + container, exactly as ui/FullscreenImage (its in-file
         // comments carry the rationale: universal photo ground, and the
         // dismiss-drag backdrop fade needs a black container behind it).

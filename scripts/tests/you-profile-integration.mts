@@ -73,6 +73,38 @@
 //        one-step sign-up (app + web), by-username = the id route, `username`
 //        on every person outside a moment and never inside one, search, the
 //        limits, the writes census
+//   Moment Visibility, step 1a (docs/dev/proposals/moment-visibility.md),
+//   scripts/tests/moment-visibility-section.mts:
+//   § 23 sessions.public_id + the CHECKs and triggers, a real create's
+//        defaults, a promotion landing closed, the visibility GET / PATCH and
+//        the look-in link (who, the flag after the entrance gate, the freeze,
+//        the secret failing closed, the shared limiter), the scrub gate on
+//        both delete paths, the migration's one-off statements run for real,
+//        guests' `shown`, blind rows without a wine id
+//   Moment Visibility, step 1b, scripts/tests/moment-lookin-section.mts:
+//   § 24 decideMoments' naming against the single-profile gate, the audience
+//        table and the cap, the look-in (one 404, the limiter first, the link
+//        vs the audience, the leak matrix, the guest reader), the by-moment
+//        read, someone's Moments' open rows and their filters, the tile, the
+//        feed's momentId and hostName (flag off too), the code / token canary
+//   Moment Visibility, step 3, scripts/tests/post-privacy-section.mts:
+//   § 25 the insider rule against the grant, every post surface with an Only
+//        Inside author and a hidden check-in, paging, the lists' strip, the
+//        impression read, tiles, the two writes and the state, flags off,
+//        1b's readers through the real write, the like routes' line-up term,
+//        the feed's network after a kick
+//   Moment Visibility, step 3b, scripts/tests/private-moment-section.mts:
+//   § 26 "Private Moment": the name only to a viewer who could open it, the
+//        leak matrix (feed, web profile, Impressions and its q, own Cravings),
+//        a nameless moment, a throwing decision, decideAdmission against
+//        decideMoments, the heavy bridge, the candidates and the top-up, the
+//        Incognito race, a deleted moment
+//   Moment Defaults, scripts/tests/moment-defaults-section.mts:
+//   § 27 seeding per writer (and the writers that must not), the check-in
+//        default, the routes, the preview by direction, the apply (K6, the
+//        scopes, the races under the locks, the lock timeout, the Redis
+//        deadlines, account deletion's lock order, the budgets, the flags),
+//        the cascade, SYSTEM_DEFAULTS, the census
 //   + the CANARY over every response of the run (no user integer leaves)
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
@@ -81,6 +113,8 @@
 //
 //   DATABASE_URL=postgres://…/<throwaway> REDIS_URL=redis://…:<throwaway> \
 //   AUTH_SECRET=… npx tsx scripts/tests/you-profile-integration.mts
+import { nanoid } from 'nanoid'
+import { linkLegacy } from './lib/catalogFixture.mts'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { registerHooks } from 'node:module'
@@ -182,11 +216,22 @@ const cravingsRoute = await import('../../app/api/users/[id]/cravings/route.ts')
 const meRatingsRoute = await import('../../app/api/me/ratings/route.ts')
 const meBookmarksRoute = await import('../../app/api/me/bookmarks/route.ts')
 const bookmarkRoute = await import('../../app/api/session/[code]/wines/[wineId]/bookmark/route.ts')
+const bookmarkByIdRoute = await import('../../app/api/me/bookmarks/[id]/route.ts')
+const postCraveRoute = await import('../../app/api/feed-items/[id]/crave/route.ts')
 const { outsideViewMatrix } = await import('./outside-view-matrix.mts')
 // § 20 the leak fixes (.local/leak-fixes/plan.md)
 const { leakFixes } = await import('./leak-fixes-section.mts')
 // § 21 usernames (docs/dev/proposals/usernames.md § 12)
 const { usernames } = await import('./usernames-section.mts')
+// § 23 Moment Visibility, step 1a; § 24 step 1b
+const { momentVisibility } = await import('./moment-visibility-section.mts')
+const { momentLookIn } = await import('./moment-lookin-section.mts')
+// § 25 step 3 (Only Inside This Moment, Hide from Feed)
+const { postPrivacy } = await import('./post-privacy-section.mts')
+// § 26 step 3b ("Private Moment")
+const { privateMoment } = await import('./private-moment-section.mts')
+// § 27 Moment Defaults
+const { momentDefaults } = await import('./moment-defaults-section.mts')
 // § 18 public user ids
 const stateRoute = await import('../../app/api/session/[code]/state/route.ts')
 const visitRoute = await import('../../app/api/session/[code]/visit/route.ts')
@@ -285,6 +330,8 @@ async function pidLookup(pid: string): Promise<number | null> {
 const pidOf = async (id: number) => (await prisma.user.findUniqueOrThrow({ where: { id }, select: { publicId: true } })).publicId
 
 async function call(handler: unknown, method: string, path: string, actor: Actor, body?: unknown, params: Record<string, string> = {}, extra: Record<string, string> = {}) {
+  // Catalogue model change step 4: a typed bottle becomes a minted entry + its pick.
+  body = await linkLegacy(method, path, body)
   const headers: Record<string, string> = { 'content-type': 'application/json', ...extra }
   if (actor.cookie) headers.cookie = actor.cookie
   if (actor.anon) headers['x-vr-anon-token'] = actor.anon
@@ -340,9 +387,12 @@ async function join(code: string, u: User) {
 }
 async function addWine(code: string, u: User, name: string) {
   await resetLimits()
-  const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, u, { name, type: 'red', image: PNG }, { code })
+  const id = nanoid()
+  const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, u, { id, name, type: 'red' }, { code })
   if (r.status !== 200) throw new Error(`add wine failed ${r.status} ${JSON.stringify(r.json)}`)
-  const id = r.json.id as string
+  // The photo has its own call since the catalogue model change (step 3).
+  const img = await call((await import('../../app/api/session/[code]/wines/[wineId]/image/route.ts')).PUT, 'PUT', `/api/session/${code}/wines/${id}/image`, u, { image: PNG }, { code, wineId: id })
+  if (img.status !== 200) throw new Error(`wine photo failed ${img.status} ${JSON.stringify(img.json)}`)
   const [w] = await prisma.$queryRaw<{ image_url: string | null }[]>`SELECT image_url FROM wines WHERE id = ${id}`
   if (!w?.image_url) throw new Error(`wine ${id} has no mirrored image_url`)
   return { id, url: w.image_url }
@@ -517,7 +567,7 @@ try {
   await holder.query('BEGIN')
   await holder.query('INSERT INTO bookmarks (user_id, wine_id) VALUES ($1, $2)', [P.id, vis.id])
   await holder.query('UPDATE users SET tile_cravings_url = $1 WHERE id = $2', [replaced, P.id])
-  const read = resolveTilePhotos(P.id, ['impressions', 'moments', 'cravings'])
+  const read = resolveTilePhotos(P.id, ['impressions', 'moments', 'cravings'], P.id)
   check('the profile read blocks on the re-pick\'s row lock', await blockedOnLock(read))
   await holder.query('COMMIT')
   await holder.end()
@@ -840,12 +890,16 @@ try {
   const setVis = (data: Vis) => prisma.user.update({ where: { id: O.id }, data })
   const VENUE = { venueName: 'Bar Olga', city: 'Basel', country: 'CH' }
   await resetLimits()
-  const ci = await call(checkinsRoute.POST, 'POST', '/api/checkins', O, {
-    wineName: `${TAG} Standalone`, score: 4, flavors: {}, imageData: PNG, ...VENUE, lat: 47.5, lng: 7.6,
+  const ci0 = await call(checkinsRoute.POST, 'POST', '/api/checkins', O, {
+    occurrenceId: nanoid(), wineName: `${TAG} Standalone`, score: 4, flavors: {}, ...VENUE, lat: 47.5, lng: 7.6,
     wineRegion: 'Douro', wineCountry: 'PT',
   })
-  if (ci.status !== 201) throw new Error(`check-in POST ${ci.status} ${JSON.stringify(ci.json)}`)
-  const postId = ci.json.id as number
+  if (ci0.status !== 201) throw new Error(`check-in POST ${ci0.status} ${JSON.stringify(ci0.json)}`)
+  const postId = ci0.json.id as number
+  // The photo attaches through the check-in's own PATCH (catalogue model change step 3).
+  await resetLimits()
+  const ci = await call((await import('../../app/api/checkins/[id]/route.ts')).PATCH, 'PATCH', `/api/checkins/${postId}`, O, { imageData: PNG }, { id: String(postId) })
+  if (ci.status !== 200) throw new Error(`check-in photo PATCH ${ci.status} ${JSON.stringify(ci.json)}`)
   check('D12 + D2: the check-in photo key is random, with nothing that points to the person', /^wines\/ci_[0-9a-f]{32}\.png$/.test(keyOf(ci.json.imageUrl)), keyOf(ci.json.imageUrl))
   const OM = await createSession(O, 'Olga Owner')
   const ow = await addWine(OM, O, 'Moment Bottle')
@@ -859,7 +913,7 @@ try {
   const oCheckin = (f: { json: Record<string, any> }) => (oItems(f) as unknown as { type: string; checkin?: Record<string, unknown> }[]).find(i => i.type === 'checkin')?.checkin // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON
   const webProfile = async (id: number, v: User | Actor) => { await resetLimits(); const pid = await pidOf(id); return call(usersRoute.GET, 'GET', `/api/users/${pid}`, v, undefined, { id: pid }) }
   const like = async (v: User, method: 'POST' | 'DELETE') => { await resetLimits(); return call(method === 'POST' ? likeRoute.POST : likeRoute.DELETE, method, `/api/feed-items/${postId}/like`, v, undefined, { id: String(postId) }) }
-  const sip = async (v: User) => { await resetLimits(); return call(checkinsRoute.POST, 'POST', '/api/checkins', v, { wineName: `${TAG} sip`, score: 3, flavors: {}, copyFromCheckinId: postId }) }
+  const sip = async (v: User) => { await resetLimits(); return call(checkinsRoute.POST, 'POST', '/api/checkins', v, { occurrenceId: nanoid(), wineName: `${TAG} sip`, score: 3, flavors: {}, copyFromCheckinId: postId }) }
 
   // Baseline: Same as Profile on a Verre Users profile.
   check('baseline: the friend and the follower see both posts in the network feed', oItems(await feedOf(Rf)).length === 2 && oItems(await feedOf(Fl)).length === 2)
@@ -970,6 +1024,26 @@ try {
   const foreignPatch = await call((await import('../../app/api/checkins/[id]/route.ts')).PATCH, 'PATCH', `/api/checkins/${postId}`, Rf, { notes: 'mine now' }, { id: String(postId) })
   const foreignDel = await call((await import('../../app/api/checkins/[id]/route.ts')).DELETE, 'DELETE', `/api/checkins/${postId}`, Rf, undefined, { id: String(postId) })
   check('D13: a non-owner PATCH / DELETE of a check-in → 404 (not 403)', foreignPatch.status === 404 && foreignDel.status === 404, [foreignPatch.status, foreignDel.status])
+
+  // Moment Visibility step 3: the same surfaces with an Only Inside author (the
+  // moment post) and a hidden check-in (raw rows here; § 25 drives the writes).
+  {
+    const omSid = (await prisma.session.findFirstOrThrow({ where: { code: OM }, select: { id: true } })).id
+    const omPost = (await prisma.feedItem.findFirstOrThrow({ where: { userId: O.id, sessionId: omSid }, select: { id: true } })).id
+    await prisma.momentPrivacy.create({ data: { sessionId: omSid, userId: O.id, onlyInside: true } })
+    await prisma.feedItem.update({ where: { id: postId }, data: { hiddenFromFeed: true } })
+    const has = (f: { json: Record<string, any> }, id: number) => ((f.json?.items ?? []) as Record<string, any>[]).some(i => (i.type === 'checkin' ? i.checkin.id : i.session.id) === id) // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON
+    const neither = (f: { json: Record<string, any> }) => !has(f, postId) && !has(f, omPost) // eslint-disable-line @typescript-eslint/no-explicit-any -- loose JSON
+    check('🔒 step 3: network feed — the friend and the follower see neither the hidden check-in nor the Only Inside post', neither(await feedOf(Rf)) && neither(await feedOf(Fl)))
+    check('🔒 step 3: ?user= — neither, for the friend and the stranger', neither(await feedOf(Rf, O.id)) && neither(await feedOf(St, O.id)))
+    check('step 3: self sees both (network and ?user=)', has(await feedOf(O), postId) && has(await feedOf(O), omPost) && has(await feedOf(O, O.id), postId) && has(await feedOf(O, O.id), omPost))
+    wp = await webProfile(O.id, Rf)
+    check('🔒 step 3: web payload for the friend — neither', !wp.json.recentCheckins.some((c: { id: number }) => c.id === postId) && !wp.json.recentSessionPosts.some((c: { id: number }) => c.id === omPost), wp.json)
+    check('🔒 step 3: like POST from the friend → 404; had a sip from the follower → 400', (await like(Rf, 'POST')).status === 404 && (await sip(Fl)).status === 400)
+    await prisma.momentPrivacy.deleteMany({ where: { sessionId: omSid, userId: O.id } })
+    await prisma.feedItem.update({ where: { id: postId }, data: { hiddenFromFeed: false } })
+    check('step 3: both choices undone, the friend sees both again', has(await feedOf(Rf), postId) && has(await feedOf(Rf), omPost))
+  }
 
   // ── § 12 (c2) no moment code in a non-participant's payloads ──────────────
   section('§ 12 no profile / feed payload a non-participant receives carries a moment code')
@@ -1175,7 +1249,7 @@ try {
   const [W1, W3] = [await mkUser('Walt Fof'), await mkUser('Wim NoA2')]
   await prisma.follow.createMany({ data: [e(W1, Ow), e(W1, Xf), e(Xf, W1), e(W3, Ow), e(W3, Xf)] })
   await resetLimits()
-  const owPost = await call(checkinsRoute.POST, 'POST', '/api/checkins', Ow, { wineName: `${TAG} circle`, score: 4, flavors: {} })
+  const owPost = await call(checkinsRoute.POST, 'POST', '/api/checkins', Ow, { occurrenceId: nanoid(), wineName: `${TAG} circle`, score: 4, flavors: {} })
   if (owPost.status !== 201) throw new Error(`owner check-in ${owPost.status}`)
   const owIn = async (v: User) => ((await feedOf(v)).json.items as { author: { id: number } }[]).some(i => i.author.id === Ow.id)
   await setOw({ profileVisibility: 'public-mutual', visibilityFof: true })
@@ -1427,7 +1501,7 @@ try {
   w = await call(friendsRoute.GET, 'GET', '/api/me/friends', Ap)
   check('friends (the tag picker): public ids', Array.isArray(w.wire) && w.wire.some((f: { id: unknown }) => f.id === Bp.pid))
   await resetLimits()
-  const ci1 = await call(checkinsRoute.POST, 'POST', '/api/checkins', Bp, { wineName: 'Public Bottle', score: 4, taggedUserIds: [Ap.pid, UNKNOWN] })
+  const ci1 = await call(checkinsRoute.POST, 'POST', '/api/checkins', Bp, { occurrenceId: nanoid(), wineName: 'Public Bottle', score: 4, taggedUserIds: [Ap.pid, UNKNOWN] })
   check('check-in POST: tags by public id (an unknown one dropped), echo userId public', ci1.status === 201 && ci1.wire.userId === Bp.pid, { status: ci1.status, userId: ci1.wire.userId, want: Bp.pid })
   const ciId = ci1.wire.id as number
   const tagRows = await prisma.feedItemTag.findMany({ where: { feedItemId: ciId }, select: { userId: true } })
@@ -1447,7 +1521,7 @@ try {
   check('…and the stored tags are intact (never wiped to [])', (await prisma.feedItemTag.count({ where: { feedItemId: ciId } })) === 1)
   const postsBefore = await prisma.feedItem.count({ where: { userId: Bp.id } })
   await resetLimits()
-  pr = await call(checkinsRoute.POST, 'POST', '/api/checkins', Bp, { wineName: 'Old Tab Bottle', score: 3, taggedUserIds: [Ap.id] })
+  pr = await call(checkinsRoute.POST, 'POST', '/api/checkins', Bp, { occurrenceId: nanoid(), wineName: 'Old Tab Bottle', score: 3, taggedUserIds: [Ap.id] })
   check('🔒 check-in POST with an integer tag → 400 and no post created', pr.status === 400 && (await prisma.feedItem.count({ where: { userId: Bp.id } })) === postsBefore, pr.wire)
   await resetLimits()
   pr = await call(checkinRoute.PATCH, 'PATCH', `/api/checkins/${ciId}`, Bp, { taggedUserIds: [Ap.pid] }, { id: String(ciId) })
@@ -1468,9 +1542,9 @@ try {
   const sr = await call(codeRoute.PATCH, 'PATCH', `/api/session/${Pm}`, Ap, { action: 'set-role', targetId: `u:${Bp.pid}`, role: 'provider' }, { code: Pm })
   check('set-role by u:<publicId>: echo meta providerIds wire', sr.status === 200 && (sr.wire.meta.providerIds as string[]).includes(`u:${Bp.pid}`) && sr.wire.meta.hostUserId === Ap.pid, sr.wire)
   await resetLimits()
-  const wb = await call(winesRoute.POST, 'POST', `/api/session/${Pm}/wines`, Bp, { name: 'Ben Brought', type: 'red' }, { code: Pm })
+  const wb = await call(winesRoute.POST, 'POST', `/api/session/${Pm}/wines`, Bp, { id: nanoid(), name: 'Ben Brought', type: 'red' }, { code: Pm })
   check('wine POST echo: addedByUserId public', wb.status === 200 && wb.wire.addedByUserId === Bp.pid, wb.wire)
-  const wa = await call(winesRoute.POST, 'POST', `/api/session/${Pm}/wines`, Ap, { name: 'Ada Brought', type: 'white' }, { code: Pm })
+  const wa = await call(winesRoute.POST, 'POST', `/api/session/${Pm}/wines`, Ap, { id: nanoid(), name: 'Ada Brought', type: 'white' }, { code: Pm })
   await rate(Pm, Bp, wb.wire.id)
   await resetLimits()
   const st = await call(stateRoute.GET, 'GET', `/api/session/${Pm}/state`, Bp, undefined, { code: Pm })
@@ -1488,6 +1562,24 @@ try {
   await resetLimits()
   const rv = await call(revealRoute.POST, 'POST', `/api/session/${Pm}/wines/${wb.wire.id}/reveal`, Ap, {}, { code: Pm, wineId: wb.wire.id })
   check('reveal echo: addedByUserId public', rv.status === 200 && rv.wire.wine.addedByUserId === Bp.pid, rv.wire)
+  // The saves (catalogue model change step 5): each answer goes through the canary.
+  await resetLimits()
+  const sv = await call(bookmarkRoute.POST, 'POST', `/api/session/${Pm}/wines/${wb.wire.id}/bookmark`, Bp, undefined, { code: Pm, wineId: wb.wire.id })
+  check('save in the moment → { ok, saved }', sv.status === 200 && sv.wire.saved === true, sv.wire)
+  const savedW = await call(meBookmarksRoute.GET, 'GET', '/api/me/bookmarks', Bp)
+  check('Saved: 200, one wine', savedW.status === 200 && Array.isArray(savedW.wire) && savedW.wire.length === 1, savedW.wire)
+  const theirC = await call(cravingsRoute.GET, 'GET', `/api/users/${Bp.pid}/cravings`, Ap, undefined, { id: Bp.pid })
+  check('someone\'s Cravings: 200, the row', theirC.status === 200 && theirC.wire.items.length === 1, theirC.wire)
+  const ciWine = (await prisma.$queryRaw<{ w: string }[]>`SELECT r.wine_id AS w FROM feed_items f JOIN ratings r ON r.id = f.rating_id WHERE f.id = ${ciId}`)[0].w
+  const pc = await call(postCraveRoute.POST, 'POST', `/api/feed-items/${ciId}/crave`, Ap, { wineId: ciWine }, { id: String(ciId) })
+  check('save from a post → { ok, saved }', pc.status === 200 && pc.wire.saved === true, pc.wire)
+  const pcu = await call(postCraveRoute.DELETE, 'DELETE', `/api/feed-items/${ciId}/crave`, Ap, { wineId: ciWine }, { id: String(ciId) })
+  check('unsave from a post → { ok, saved: false }', pcu.status === 200 && pcu.wire.saved === false, pcu.wire)
+  const bkId = (await prisma.bookmark.findFirstOrThrow({ where: { userId: Bp.id }, select: { id: true } })).id
+  const rmv = await call(bookmarkByIdRoute.DELETE, 'DELETE', `/api/me/bookmarks/${bkId}`, Bp, undefined, { id: String(bkId) })
+  check('remove a craving by its id → 200', rmv.status === 200, rmv.wire)
+  const usv = await call(bookmarkRoute.DELETE, 'DELETE', `/api/session/${Pm}/wines/${wb.wire.id}/bookmark`, Bp, undefined, { code: Pm, wineId: wb.wire.id })
+  check('unsave in the moment → { ok, saved: false }', usv.status === 200 && usv.wire.saved === false, usv.wire)
   await resetLimits()
   const se = await call(settingsRoute.PATCH, 'PATCH', `/api/session/${Pm}/settings`, Ap, { description: 'public ids' }, { code: Pm })
   check('settings echo: meta wire', se.status === 200 && se.wire.meta.hostUserId === Ap.pid && se.wire.meta.hostIdentityId === `u:${Ap.pid}`, se.wire)
@@ -1866,7 +1958,7 @@ try {
   }
   const addW = async (code: string, u: User | Actor, name: string) => {
     await resetLimits()
-    const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, u, { name, type: 'red' }, { code })
+    const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, u, { id: nanoid(), name, type: 'red' }, { code })
     if (r.status !== 200) throw new Error(`add wine failed ${r.status} ${JSON.stringify(r.json)}`)
     return r.json.id as string
   }
@@ -1900,7 +1992,7 @@ try {
 
   // ── fixture: Odile's impressions ──
   await resetLimits()
-  const ci0 = await call(checkinsRoute.POST, 'POST', '/api/checkins', Oo, { wineName: `${TAG} Solo`, score: 3, flavors: {} })
+  const ci0 = await call(checkinsRoute.POST, 'POST', '/api/checkins', Oo, { occurrenceId: nanoid(), wineName: `${TAG} Solo`, score: 3, flavors: {} })
   if (ci0.status !== 201) throw new Error(`check-in ${ci0.status}`)
   const soloPost = ci0.json.id as number
   const soloWine = (await prisma.$queryRaw<{ wine_id: string }[]>`SELECT r.wine_id FROM ratings r JOIN feed_items fi ON fi.rating_id = r.id WHERE fi.id = ${soloPost}`)[0].wine_id
@@ -1927,13 +2019,34 @@ try {
 
   // ── Impressions ──
   let r = await list('impressions', Oo, Vv)
-  const wineIds = (x: { json: J }) => (x.json.items as J[]).map(i => i.wineId)
+  // Rows key on the RATING's id; a blind row of someone else's list carries
+  // no wine id (moment-visibility step 1a), so the walks below resolve the
+  // bottle from the rating.
+  const wineOfRating = new Map((await prisma.$queryRaw<{ id: number; wine_id: string }[]>`SELECT id, wine_id FROM ratings WHERE user_id = ${Oo.id}`).map(x => [x.id, x.wine_id]))
+  // (Cravings rows carry no rating id and always their wine id.)
+  const wineOf = (i: J) => (i.wineId ?? wineOfRating.get(i.id as number)) as string | undefined
+  const wineIds = (x: { json: J }) => (x.json.items as J[]).map(wineOf)
   check('impressions for Vera: newest post first, the hidden line-up LEFT OUT (had_at, not the re-rate)',
     JSON.stringify(wineIds(r)) === JSON.stringify([wc, wb, wa, soloWine]) && !wineIds(r).includes(wd), wineIds(r))
-  const rowOf = (x: { json: J }, w: string) => (x.json.items as J[]).find(i => i.wineId === w) as J
+  const rowOf = (x: { json: J }, w: string) => (x.json.items as J[]).find(i => wineOf(i) === w) as J
   const blindRow = rowOf(r, wc)
+  check('🔒 a blind row of someone else\'s list carries NO wine id (the rating id is the key); a shown row keeps it',
+    !!blindRow && !('wineId' in blindRow) && typeof blindRow.id === 'number' && rowOf(r, wa)?.wineId === wa && !JSON.stringify(r.wire).includes(wc), blindRow)
   check('🔒 the blind row: no name / producer / vintage / photo, the moment name + score + style stay',
     blindRow?.blind === true && blindRow.name === '' && blindRow.producer === null && blindRow.vintage === null && blindRow.imageUrl === null && blindRow.score === 4 && blindRow.momentName === `${TAG} Blind night` && blindRow.type === 'red', blindRow)
+  // 🔒 A legacy alcohol-free token on a blind row is the alcohol-free mark: none
+  // there (step 7 review r1), the visible rows keep theirs.
+  {
+    await prisma.$executeRaw`UPDATE wines SET style = 'nonalc' WHERE id = ${wc}`
+    const nr = await list('impressions', Oo, Vv)
+    const nb = (nr.json.items as J[]).find(i => i.id === blindRow?.id)
+    check('🔒 a blind Impressions row of a legacy alcohol-free bottle sends no `nonalc` token', !!nb && nb.blind === true && nb.type === null, nb)
+    await prisma.$executeRaw`UPDATE wines SET style = 'red' WHERE id = ${wc}`
+  }
+  // Catalogue model change step 7 (Simon 2026-11-21): the rows carry the kind
+  // (colour + sparkling, the snapshot), the blind one too, like its style.
+  check('impression rows carry colour + sparkling (the app labels a sparkling rosé "Sparkling Rosé"), a blind row too',
+    blindRow?.colour === 'red' && blindRow?.sparkling === false && (r.json.items as J[]).every(i => 'colour' in i && typeof i.sparkling === 'boolean'), r.json.items)
   check('🔒 "both had": commonCount 1 (the blind bottle both rated never counts), yourScore on the shared one, null on the blind one',
     r.json.commonCount === 1 && rowOf(r, wa)?.yourScore === 2.75 && blindRow?.yourScore === null && rowOf(r, wb)?.yourScore === null, { cc: r.json.commonCount, a: rowOf(r, wa) })
   check('impression rows carry the post id (session = the moment post, standalone = its own)', rowOf(r, wa)?.postId === (await postOf(Oo.id, M1.code)) && rowOf(r, wb)?.postId === rowOf(r, wa)?.postId && (r.json.items as J[])[3]?.postId === soloPost, r.json.items)
@@ -1947,6 +2060,7 @@ try {
   const own = await list('impressions', Oo, Oo)
   check('your own impressions: the hidden line-up you host is there, the blind one is blind for you too, no commonCount',
     wineIds(own).includes(wd) && rowOf(own, wc)?.blind === true && !('commonCount' in own.json) && !('yourScore' in (own.json.items as J[])[0]), own.json)
+  check('🔒 …and on your OWN list the blind row keeps its wine id (Edit / Delete Rating, Crave need it)', rowOf(own, wc)?.wineId === wc, rowOf(own, wc))
   // D7: the tile count is the list's total, across the D4 states.
   let t = await tiles(Oo, Vv)
   const ownT = await tiles(Oo, Oo)
@@ -1956,7 +2070,9 @@ try {
 
   // ── Cravings ──
   const orphan = `orph${TAG.slice(-8)}`
-  await prisma.$executeRaw`INSERT INTO wines (id, name, image_url) VALUES (${orphan}, ${`${TAG} Orphan`}, ${urlOf('wines/orphan.png')})`
+  // A moment's bottle (origin 'session': the insert trigger would read a raw
+  // session-less row as a check-in's) whose moment is gone and unrecorded.
+  await prisma.$executeRaw`INSERT INTO wines (id, name, image_url, origin) VALUES (${orphan}, ${`${TAG} Orphan`}, ${urlOf('wines/orphan.png')}, 'session')`
   for (const w of [wa, we, wc, orphan]) await bookmark(Oo.id, w)
   await bookmark(Oo.id, wd)
   // Saved order ≠ id order (the first bookmark saved last), so "served as
@@ -1970,12 +2086,15 @@ try {
     rowOf(cv, wa)?.score === 3.5 && rowOf(cv, wa)?.postId === (await postOf(Oo.id, M1.code)) && rowOf(cv, we)?.score === null && rowOf(cv, we)?.postId === null
     && !/momentName|savedAt|saved_at|"key"|\d{4}-\d{2}-\d{2}T/.test(JSON.stringify(cv.wire)), cv.wire)
   const cvOwn = await list('cravings', Oo, Oo)
-  check('your own cravings: all five, the blind one blind, the orphan shown (named residual), the remove key = the wine id',
-    cIds(cvOwn).length === 5 && rowOf(cvOwn, wc)?.blind === true && rowOf(cvOwn, wc)?.name === '' && rowOf(cvOwn, orphan)?.key === orphan, cvOwn.json)
+  // Re-cast by design (catalogue model change step 5, spec § 5): a craving
+  // whose source is hidden for its OWNER is left out of their own list too
+  // (no blind row), and the remove key is the craving's id.
+  check('your own cravings: four, the blind one LEFT OUT until its reveal, the orphan shown (named residual), the remove key = the craving id',
+    cIds(cvOwn).length === 4 && !cIds(cvOwn).includes(wc) && /^\d+$/.test(String(rowOf(cvOwn, orphan)?.key)) && !('id' in (rowOf(cvOwn, orphan) ?? {})), cvOwn.json)
   t = await tiles(Oo, Vv)
-  check('🔒 D7: Cravings tile == list total (Vera 2, Odile 5)', t.cravings?.count === 2 && (await tiles(Oo, Oo)).cravings?.count === 5, { v: t.cravings })
+  check('🔒 D7: Cravings tile == list total (Vera 2, Odile 4)', t.cravings?.count === 2 && (await tiles(Oo, Oo)).cravings?.count === 4, { v: t.cravings })
   const byScore = await list('cravings', Oo, Oo, 'sort=score')
-  check('own sort=score: scored first (5, 4, 3.5), then unscored', JSON.stringify(cIds(byScore).slice(0, 3)) === JSON.stringify([wd, wc, wa]), cIds(byScore))
+  check('own sort=score: scored first (5, 3.5; the blind 4 left out), then unscored', JSON.stringify(cIds(byScore).slice(0, 2)) === JSON.stringify([wd, wa]) && !cIds(byScore).includes(wc), cIds(byScore))
   await prisma.user.update({ where: { id: Oo.id }, data: { checkinVisibility: 'only-me' } })
   const hiddenScores = await list('cravings', Oo, Vv, 'sort=score')
   const recentOrder = await list('cravings', Oo, Vv)
@@ -2167,12 +2286,12 @@ try {
   // found" and show in full on the owner's own list and tile.
   const [hlRow] = await prisma.$queryRaw<{ id: number }[]>`SELECT id FROM sessions WHERE code = ${HL.code}`
   const unhooked = `uh${TAG.slice(-8)}`
-  await prisma.$executeRaw`INSERT INTO wines (id, name, image_url, added_by_identity_id) VALUES (${unhooked}, ${`${TAG} Unhooked`}, ${urlOf('wines/unhooked.png')}, ${`u:${Hx.id}`})`
+  await prisma.$executeRaw`INSERT INTO wines (id, name, image_url, added_by_identity_id, origin) VALUES (${unhooked}, ${`${TAG} Unhooked`}, ${urlOf('wines/unhooked.png')}, ${`u:${Hx.id}`}, 'session')`
   await prisma.$executeRaw`INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, rated_at) VALUES (${unhooked}, ${Hx.id}, ${hlRow.id}, 'session', 'Hugo', 4, now())`
   await bookmark(Oo.id, unhooked)
   const ownAfter = await list('cravings', Oo, Oo)
   check('🔒 an unhooked bottle resolves its moment through its rating: hidden line-up → left out of the owner\'s own list, her tile count and someone\'s list',
-    !cIds(ownAfter).includes(unhooked) && (await tiles(Oo, Oo)).cravings?.count === 5 && !cIds(await list('cravings', Oo, Vv)).includes(unhooked), cIds(ownAfter))
+    !cIds(ownAfter).includes(unhooked) && (await tiles(Oo, Oo)).cravings?.count === 4 && !cIds(await list('cravings', Oo, Vv)).includes(unhooked), cIds(ownAfter))
   check('🔒 …and it never becomes a picked Cravings photo', !(await listPickable('cravings', Oo.id, 50)).includes(urlOf('wines/unhooked.png')))
   await prisma.bookmark.deleteMany({ where: { userId: Oo.id, wineId: unhooked } })
 
@@ -2243,11 +2362,14 @@ try {
   const mr = await call(meRatingsRoute.GET, 'GET', '/api/me/ratings', Vv)
   const mb = await call(meBookmarksRoute.GET, 'GET', '/api/me/bookmarks', Vv)
   const mrBlind = (mr.json as unknown as J[]).find(x => x.wine_id === wc)
-  const mbBlind = (mb.json as unknown as J[]).find(x => x.wine_id === wc)
+  const mbNames = (mb.json as unknown as J[]).map(x => x.name)
   check('🔒 /api/me/ratings: the hidden line-up left out, the blind bottle a blind row',
     !(mr.json as unknown as J[]).some(x => x.wine_id === hw) && mrBlind?._blind === true && mrBlind.wine_name === '' && mrBlind.image_url === null && mrBlind.score === 4, mrBlind)
-  check('🔒 /api/me/bookmarks: the same, grape + purchase link blank too',
-    !(mb.json as unknown as J[]).some(x => x.wine_id === hw) && mbBlind?._blind === true && mbBlind.name === '' && mbBlind.grape === null && mbBlind.purchase_url === null, mbBlind)
+  // Re-cast by design (catalogue model change step 5, spec § 5): Saved has no
+  // blind rows any more; a save whose bottle is hidden for you is left out
+  // until its reveal, like the hidden line-up.
+  check('🔒 /api/me/bookmarks: the hidden line-up AND the blind bottle left out (no blind row, no name)',
+    mb.status === 200 && !mbNames.includes(`${TAG} Hidden Bottle`) && !mbNames.includes(`${TAG} Gamma`) && !mbNames.includes(''), mbNames)
   check('…and a shown row stays whole', (mr.json as unknown as J[]).find(x => x.wine_id === wa)?.wine_name === `${TAG} Alpha`)
 
   // ── § 12 extended: no moment code on any of the new reads ──
@@ -2269,7 +2391,7 @@ try {
   const Vw = await mkUser('Viktor Viewer')
   const checkin = async (name: string, body: Record<string, unknown>) => {
     await resetLimits()
-    const c = await call(checkinsRoute.POST, 'POST', '/api/checkins', Pp, { wineName: `${TAG} ${name}`, type: 'red', score: 3, ...body })
+    const c = await call(checkinsRoute.POST, 'POST', '/api/checkins', Pp, { occurrenceId: nanoid(), wineName: `${TAG} ${name}`, type: 'red', score: 3, ...body })
     if (c.status !== 201) throw new Error(`check-in ${name} ${c.status} ${JSON.stringify(c.json)}`)
     const w = (await prisma.$queryRaw<{ wine_id: string }[]>`SELECT r.wine_id FROM ratings r JOIN feed_items fi ON fi.rating_id = r.id WHERE fi.id = ${c.json.id as number}`)[0].wine_id
     return { post: c.json.id as number, wine: w }
@@ -2291,12 +2413,19 @@ try {
     await resetLimits()
     return call(impressionsRoute.GET, 'GET', `/api/users/${Pp.pid}/impressions${q ? `?${q}` : ''}`, viewer, undefined, { id: Pp.pid })
   }
-  const set = (x: { json: J }) => ((x.json.items ?? []) as J[]).map(i => i.wineId as string).sort().join()
+  // By the rating (a blind row of someone else's list carries no wine id).
+  const set = async (x: { json: J }) => {
+    const items = (x.json.items ?? []) as J[]
+    const rows = items.length ? await prisma.$queryRaw<{ id: number; wine_id: string }[]>`SELECT id, wine_id FROM ratings WHERE id = ANY(${items.map(i => i.id as number)}::int[])` : []
+    const by = new Map(rows.map(x => [x.id, x.wine_id]))
+    return items.map(i => by.get(i.id as number) as string).sort().join()
+  }
   const of = (...cs: { wine: string }[]) => cs.map(c => c.wine).sort().join()
   const ar = (picks: unknown[], mode?: 'any') => `ar=${encodeURIComponent(JSON.stringify(picks))}${mode ? '&armode=any' : ''}`
   const expectSet = async (name: string, q: string, want: string, viewer: User = Vw) => {
     const x = await lst(viewer, q)
-    check(name, x.status === 200 && set(x) === want, { status: x.status, got: set(x), want })
+    const got = await set(x)
+    check(name, x.status === 200 && got === want, { status: x.status, got, want })
   }
   await expectSet('unfiltered: all five (the post-less one too)', '', of(c1, c2, c3, c4, c5))
   // Structure.
@@ -2348,7 +2477,7 @@ try {
   const gx = await lst(Vw, ar([{ a: 'grapefruit' }]))
   const gRow = ((gx.json.items ?? []) as J[])[0]
   check('🔒 a blind bottle matches by her aromas and stays blind (no name, no photo); the hidden line-up is left out',
-    gx.status === 200 && (gx.json.items as J[]).length === 1 && gRow?.wineId === wB && gRow.blind === true && gRow.name === '' && gRow.imageUrl === null, gx.json)
+    gx.status === 200 && (gx.json.items as J[]).length === 1 && (await set(gx)) === wB && !('wineId' in gRow) && gRow.blind === true && gRow.name === '' && gRow.imageUrl === null, gx.json)
   await expectSet('🔒 the same with a structure range', 'st=sweet:2-2', of({ wine: wB }, c4))
   await expectSet('her own list: she hosts the hidden line-up, so it matches there', ar([{ a: 'grapefruit' }]), of({ wine: wB }, { wine: wH }), Pp)
   // A session sparkling wine re-typed to red after she rated it: her rating
@@ -2356,17 +2485,27 @@ try {
   // the Bubbles filter must stop matching it (Codex review, 2026-11-14).
   const MS = await createSession(Hb)
   await resetLimits()
-  const ws = await call(winesRoute.POST, 'POST', `/api/session/${MS}/wines`, Hb, { name: `${TAG} Fizz`, type: 'spark' }, { code: MS })
+  const ws = await call(winesRoute.POST, 'POST', `/api/session/${MS}/wines`, Hb, { id: nanoid(), name: `${TAG} Fizz`, type: 'spark' }, { code: MS })
   await join(MS, Pp)
   await resetLimits()
   const rs = await call(rateRoute.POST, 'POST', `/api/session/${MS}/rate`, Pp, { wineId: ws.json.id, score: 4, flavors: { bubbles: 4 }, notes: 'n' }, { code: MS })
   check('fixture: the sparkling session rating landed', ws.status === 200 && rs.status === 200, { ws: ws.status, rs: rs.status })
   await expectSet('Bubbles 4–4 → the sparkling session wine', 'st=bubbles:4-4', of({ wine: ws.json.id as string }))
-  await prisma.$executeRaw`UPDATE wines SET style = 'red' WHERE id = ${ws.json.id as string}`
+  // Re-typed the way a re-link does it (catalogue model change step 4: the
+  // style token and its pair move together; the filter reads `sparkling`).
+  await prisma.$executeRaw`UPDATE wines SET style = 'red', colour = 'red', sparkling = false WHERE id = ${ws.json.id as string}`
   const kept = await prisma.$queryRaw<{ b: unknown }[]>`SELECT flavors -> 'bubbles' AS b FROM ratings WHERE wine_id = ${ws.json.id as string}`
   check('fixture: re-typed to red, her rating still holds bubbles 4', Number(kept[0]?.b) === 4, kept)
   await expectSet('🔒 …then no longer (the wheel stopped drawing Bubbles)', 'st=bubbles:0-5', of(c4))
   }
+
+  // ── § 23 Moment Visibility, step 1a ──────────────────────────────────────
+  await momentVisibility({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
+  await momentLookIn({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
+  await postPrivacy({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
+  await privateMoment({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
+  // ── § 27 Moment Defaults ─────────────────────────────────────────────────
+  await momentDefaults({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, DB })
 
   section('canary: no response carried a user integer')
   check('🔒 no response body or header carried a fixture user integer, a u:<digit>, or a public id inside a URL', canaryViolations.length === 0, [...new Set(canaryViolations)].slice(0, 20))

@@ -1,4 +1,10 @@
-import { apiFetch } from '../apiFetch';
+import { apiFetch, LocalCancel } from '../apiFetch';
+import type { RateBody, RateResult, RatingMeta, RatingsView } from './rateTypes';
+
+// The rating wire types live in ./rateTypes (dependency-free, so the pure
+// outbox modules and their node units never reach React Native); re-exported
+// here for every existing caller.
+export type { RateBody, RateResult, RatingMeta, RatingsView } from './rateTypes';
 
 // Typed fetchers for the session surfaces. Wire types mirror the server
 // builders (lib/sessionState.ts, lib/session.ts wineToWire) — keep in sync.
@@ -50,13 +56,39 @@ export const isUpcomingSession = (r: MySessionRow) => r.status === 'upcoming';
 // can be pinned). Use this for the highlight strip.
 export const isPinnedSession = (r: MySessionRow) => r.pinned;
 
+// The catalogue wine a bottle is linked to (lib/catalogEntries.ts
+// CatalogEntry, merges followed). 🔒 Label identity: `null` on a blind row,
+// which the server replaces wholesale.
+export type CatalogEntryWire = {
+  productId: string;
+  vintageId: string | null;
+  producerId: string;
+  producer: string;
+  name: string;
+  year: number | null;
+  category: string;
+  colour: string | null;
+  sparkling: boolean;
+  style: string | null;
+  abv: number | null;
+  grapes: string[];
+  region: string | null;
+  country: string | null;
+  description: string | null;
+  vinification: string | null;
+};
+
+// One bottle of the line-up (lib/session.ts wineToWire, the catalogue model
+// change): its own fields (name / producer / vintage are its snapshot of the
+// entry; About, Process and the purchase link are the bottle's own), the kind
+// as `colour` + `sparkling` (the axes read `sparkling`), the abv, and `entry`.
+// A blind row: `entry` null, `abv` null, no name; colour and sparkling stay.
 export type WireWine = {
   id: string;
   name: string;
   producer: string;
   vintage: string;
   grape: string;
-  type: string;
   image: string;
   imageUrl: string;
   description?: string;
@@ -65,11 +97,18 @@ export type WireWine = {
   vinification?: string;
   purchaseUrl?: string;
   revealedAt?: string | null;
+  colour: string | null;
+  sparkling: boolean;
+  abv: number | null;
+  entry: CatalogEntryWire | null;
   isMine: boolean;
   addedByDisplayName: string | null;
   // The adder's PUBLIC id (opaque string), null for an anonymous adder.
   addedByUserId: string | null;
   _blind?: boolean;
+  // The signed-in viewer's save (lib/cravings.ts savedFlags): on a row hidden
+  // for them only their save of THAT bottle, never whether they crave the wine.
+  saved?: boolean;
 };
 
 export type SessionParticipant = { id: string; displayName: string; imageUrl: string | null };
@@ -110,21 +149,6 @@ export type SessionMetaView = {
   banCount: number;
 };
 
-// `aromas` (PR A, aroma-layer.md §4): {a: nodeId, m: modifierId|null} pairs
-// against the @verre/core taxonomy. The node may sit at ANY tier (leaf
-// "strawberry", subfamily "fruity.berry", family "fruity" — any-tier ruling
-// 2026-07-08); resolve via core's getAromaNode. Optional on the wire —
-// ratings written before the column shipped simply lack the key. `p` =
-// pronounced flag (the note that led the impression), present only when true.
-export type RatingMeta = {
-  score: number;
-  flavors: Record<string, number>;
-  aromas?: { a: string; m: string | null; p?: boolean }[];
-  notes: string;
-  at: number;
-};
-export type RatingsView = Record<string, { displayName: string; ratings: Record<string, RatingMeta> }>;
-
 export type SessionState = {
   meta: SessionMetaView | null;
   wines: WireWine[] | null;
@@ -142,19 +166,24 @@ export type ApiErrorKind =
 export class ApiError extends Error {
   kind: ApiErrorKind;
   status: number;
-  constructor(kind: ApiErrorKind, status: number, message?: string) {
+  // The body's machine-readable `code`, when the server sent one (e.g.
+  // `link-required` from a check-in POST, lib/catalogLink.ts). Its own name:
+  // UsernameError's typed `code` is a different field.
+  errorCode?: string;
+  constructor(kind: ApiErrorKind, status: number, message?: string, errorCode?: string) {
     super(message ?? kind);
     this.kind = kind;
     this.status = status;
+    if (errorCode !== undefined) this.errorCode = errorCode;
   }
 }
 
-async function bodyError(res: Response): Promise<string | undefined> {
+async function bodyError(res: Response): Promise<{ msg?: string; code?: string }> {
   try {
     const j = await res.json();
-    return typeof j?.error === 'string' ? j.error : undefined;
+    return { msg: typeof j?.error === 'string' ? j.error : undefined, code: typeof j?.code === 'string' ? j.code : undefined };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -162,11 +191,11 @@ export async function throwApiError(res: Response): Promise<never> {
   const vrAuth = res.headers.get('X-Vr-Auth');
   if (vrAuth === 'removed') throw new ApiError('removed', res.status);
   if (vrAuth === 'invalid') throw new ApiError('invalid', res.status);
-  const msg = await bodyError(res);
-  if (res.status === 404) throw new ApiError('not-found', 404, msg);
-  if (res.status === 429) throw new ApiError('rate-limited', 429, msg);
-  if (res.status === 403 && msg === 'banned') throw new ApiError('banned', 403, msg);
-  throw new ApiError('http', res.status, msg);
+  const { msg, code } = await bodyError(res);
+  if (res.status === 404) throw new ApiError('not-found', 404, msg, code);
+  if (res.status === 429) throw new ApiError('rate-limited', 429, msg, code);
+  if (res.status === 403 && msg === 'banned') throw new ApiError('banned', 403, msg, code);
+  throw new ApiError('http', res.status, msg, code);
 }
 
 // Home screen (index.tsx) — the UNFILTERED recent page + carousel. No params =
@@ -250,6 +279,35 @@ export async function getSessionState(code: string): Promise<SessionState> {
   return res.json();
 }
 
+// The outbox's background /state read (lib/rateOutbox.ts): ONE deadline over
+// the headers AND the body (apiFetch's own timer stops at the headers, and a
+// stalled body would keep the read in flight, stranding the moment's entries),
+// and abortable through `signal` (TanStack's, so a cancel ends the request).
+export async function getSessionStateWithin(code: string, signal: AbortSignal | undefined, ms = RATE_TIMEOUT_MS, beforeSend?: (cookieSent: boolean) => boolean): Promise<SessionState> {
+  const controller = new AbortController();
+  const forward = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener('abort', forward, { once: true });
+  }
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error('timeout'));
+    }, ms);
+    controller.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+  });
+  try {
+    const res = await Promise.race([apiFetch(`/api/session/${encodeURIComponent(code)}/state`, { signal: controller.signal, timeoutMs: ms, beforeSend }), deadline]);
+    if (!res.ok) await Promise.race([throwApiError(res), deadline]);
+    return (await Promise.race([res.json(), deadline])) as SessionState;
+  } finally {
+    if (timer) clearTimeout(timer);
+    signal?.removeEventListener('abort', forward);
+  }
+}
+
 // Registers a logged-in visitor in the session's identities map — MUST run
 // (and succeed) before the first /state poll, which 401s for non-participants.
 export async function postVisit(code: string): Promise<void> {
@@ -266,50 +324,120 @@ export async function getRemovedState(code: string): Promise<'banned' | 'kicked'
   return j?.state === 'banned' || j?.state === 'kicked' ? j.state : 'none';
 }
 
-export type RateBody = {
-  wineId: string;
-  score: number; // 0..5 in 0.25 steps; 0 = not rated
-  // 0..5 integer intensities. Structure-wheel zero rule (§5): once ANY axis is
-  // rated, the rest persist as explicit 0 ("perceived none"); if EVERY axis is
-  // None the whole map is empty ({}). So a non-empty map carries zeros — do NOT
-  // assume "zeros omitted" (the pre-structure-wheel contract). The server's
-  // validateFlavors enforces this drop-all-or-keep-all shape.
-  flavors: Record<string, number>;
-  // Aroma selections. PRESENT-REPLACES / OMITTED-PRESERVES on the server:
-  // leave the field off to keep whatever is stored; send [] to clear.
-  aromas?: { a: string; m: string | null; p?: boolean }[];
-  notes: string;
-};
+const RATE_TIMEOUT_MS = 12_000;
 
-// Upserts the caller's rating. Server side-effects (no client work):
-// Postgres archival, the feed_item on first engagement, and the
-// engagement-deletion cascade when score+flavors+aromas+notes are all
-// empty — so "clear my rating" is just an empty rate POST (an OMITTED
-// aromas field preserves stored aromas, which then keep the row alive).
-export async function rateWine(code: string, body: RateBody): Promise<void> {
-  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/rate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+export function parseRetryAfter(h: string | null, now = Date.now()): number | null {
+  if (!h) return null;
+  const n = Number(h);
+  if (Number.isFinite(n) && n >= 0) return n * 1000;
+  const at = Date.parse(h);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
+// The canonical rating as the server sends it (Decimal coerced, shapes held).
+export function parseRating(r: unknown): RatingMeta | null {
+  if (!r || typeof r !== 'object') return null;
+  const o = r as Record<string, unknown>;
+  const score = Number(o.score ?? 0);
+  return {
+    score: Number.isFinite(score) ? score : 0,
+    flavors: o.flavors && typeof o.flavors === 'object' && !Array.isArray(o.flavors) ? (o.flavors as Record<string, number>) : {},
+    ...(Array.isArray(o.aromas) ? { aromas: o.aromas as RatingMeta['aromas'] } : {}),
+    notes: typeof o.notes === 'string' ? o.notes : '',
+    at: Number(o.at ?? 0) || 0,
+    ...(Number.isFinite(Number(o.v)) && o.v !== undefined && o.v !== null ? { v: Number(o.v) } : {}),
+  };
+}
+
+// The rate POST, as a typed result (no throw). The deadline covers the body
+// too: Expo's fetch resolves at the headers (lib/authClient.ts), so a stalled
+// body would otherwise outlive apiFetch's own timer. `beforeSend` runs after
+// the cookie read and may refuse the send (the outbox's viewer / auth gate).
+export async function rateWine(
+  code: string,
+  body: RateBody,
+  opts: { beforeSend?: (cookieSent: boolean) => boolean } = {},
+): Promise<RateResult> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error('timeout'));
+    }, RATE_TIMEOUT_MS);
   });
-  if (!res.ok) await throwApiError(res);
+  try {
+    let res: Response;
+    try {
+      res = await Promise.race([
+        apiFetch(`/api/session/${encodeURIComponent(code)}/rate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+          timeoutMs: RATE_TIMEOUT_MS,
+          beforeSend: opts.beforeSend,
+        }),
+        deadline,
+      ]);
+    } catch (e) {
+      if (e instanceof Error && e.message === 'update_required') return { kind: 'update-required' };
+      if (e instanceof LocalCancel) return { kind: 'cancelled', reason: 'stale' };
+      return { kind: 'network', error: e };
+    }
+    let json: Record<string, unknown> | null = null;
+    try {
+      const text = await Promise.race([res.text(), deadline]);
+      json = text ? (JSON.parse(text) as Record<string, unknown>) : null;
+    } catch (e) {
+      // A 2xx whose body never arrived may have committed: ambiguous.
+      if (res.ok || (e instanceof Error && e.message === 'timeout')) return { kind: 'network', error: e };
+      json = null;
+    }
+    if (res.ok) {
+      // An emptied merge the server reaped: no rating, at `version`.
+      const version = Number(json?.version);
+      if (json?.cleared === true && Number.isFinite(version)) return { kind: 'cleared', status: res.status, version };
+      const rating = parseRating(json?.rating);
+      if (rating) return { kind: 'rating', status: res.status, rating };
+      if (json?.unchanged === true) return { kind: 'unchanged', status: res.status };
+      return { kind: 'ok', status: res.status };
+    }
+    if (res.status === 409 && json?.wrongViewer === true) return { kind: 'wrong-viewer', status: 409 };
+    if (res.status === 409 && json?.stale === true) {
+      const version = Number(json.version);
+      return {
+        kind: 'stale',
+        status: 409,
+        rating: parseRating(json.rating),
+        version: Number.isFinite(version) ? version : 0,
+        lastOpId: typeof json.lastOpId === 'string' ? json.lastOpId : null,
+      };
+    }
+    const vr = res.headers.get('X-Vr-Auth');
+    return {
+      kind: 'error',
+      status: res.status,
+      retryAfterMs: parseRetryAfter(res.headers.get('Retry-After')),
+      auth: vr === 'removed' || vr === 'invalid' ? vr : null,
+      message: typeof json?.error === 'string' ? json.error : null,
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
-// Saved-wine ids for the Crave toggle — same shape the web SessionShell
-// consumes ([{ wine_id }] from /api/me/bookmarks).
-export async function getBookmarkedWineIds(): Promise<Set<string>> {
-  const res = await apiFetch('/api/me/bookmarks');
-  if (!res.ok) await throwApiError(res);
-  const rows: Array<{ wine_id: string }> = await res.json();
-  return new Set(rows.map((r) => r.wine_id));
-}
-
-export async function setBookmark(code: string, wineId: string, on: boolean): Promise<void> {
+// Save / unsave a bottle of the moment (signed-in participant) → the new
+// state. A refusal carries the server's sentence (409 "This bottle isn't in
+// the catalogue yet", 429 "Too many saves. Try again in …").
+export async function setBookmark(code: string, wineId: string, on: boolean): Promise<{ saved: boolean }> {
   const res = await apiFetch(
     `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/bookmark`,
     { method: on ? 'POST' : 'DELETE' },
   );
   if (!res.ok) await throwApiError(res);
+  const j = (await res.json().catch(() => null)) as { saved?: boolean } | null;
+  return { saved: typeof j?.saved === 'boolean' ? j.saved : on };
 }
 
 export type CreateMomentBody = {
@@ -326,6 +454,10 @@ export type CreateMomentBody = {
   description?: string;
   link?: string;
   blind?: boolean; // pro-gated server-side
+  // Moment Defaults (D4, ruled 2026-11-25): the six values the Privacy row
+  // showed, all sent (a field absent = your default at the time of the create,
+  // the server's rule for a client that sends none).
+  privacy?: { visibility: 'members' | 'friends' | 'followers' | 'verre'; includeGuestCircles: boolean; showPlace: boolean; showDetails: boolean; onlyInside: boolean; hiddenFromFeed: boolean };
   // No lifespan: every logged-in create is 'unlimited' server-side (a body
   // lifespan is ignored; root CLAUDE.md § Freemium split).
 };
@@ -340,45 +472,30 @@ export async function createMoment(body: CreateMomentBody): Promise<{ code: stri
   return res.json();
 }
 
-// Wine type codes the server accepts (lib/session.ts addWineToSession). The
-// design's 7-option dropdown (Orange/Dessert/Fortified…) has no backend home —
-// these 5 are the canonical set, matching the web AddWineModal. A required
-// field; the server 400s without a valid one.
-export type WineTypeCode = 'red' | 'white' | 'spark' | 'rose' | 'nonalc';
-
-// 02b·add add-impression. Adds a wine to a session line-up — host/cohost/
-// provider only (server gates on isHostByIdentity || isProviderById; providers
-// can later edit/delete only what they added). Field names map design→server:
-// Variety→grape, Process→vinification, Type→type. `position` (1-indexed) is
-// honoured for hosts only; providers always append (server ignores it for them).
-// `image` is a base64 data URL — keep it under the wine-image cap
-// (MAX_WINE_IMAGE_BYTES; sanitizeImage silently drops larger). All optional
-// except name + type.
+// 02b·add add-impression, on the catalogue (ADR-0009). Host / cohost /
+// provider. Every bottle is a catalogue wine: `productId` + `vintageId` picks
+// one, `create` adds one with the bottle (lib/catalogChoice.ts linkBody).
+// `id` is the client's (lib/clientId.ts), minted once per add screen: a retry
+// of the same id answers `{ id, alreadyAdded: true }`, someone else's id is a
+// 409. The photo is its own call after the add (putWineImage). `position`
+// (1-indexed) is honoured for hosts only.
 export type AddWineBody = {
-  name: string;
-  type: WineTypeCode;
-  producer?: string;
-  vintage?: string; // a 4-digit year OR the "NV" token; the server canonicalizes
-  //                    (exactly-4-digits-or-NV, else empty) — it does NOT truncate
-  grape?: string; // design "Variety"
-  region?: string;
-  country?: string; // ISO 3166-1 alpha-2; invalid codes drop server-side
-  vinification?: string; // design "Process"
+  id: string;
+  productId?: string;
+  vintageId?: string | null;
+  create?: Record<string, unknown>;
   description?: string;
+  vinification?: string; // design "Process"
   purchaseUrl?: string;
-  image?: string; // base64 data URL
-  position?: number; // 1-indexed insert; host-only server-side
+  position?: number;
 };
 
-export type UpdateWineBody = Omit<AddWineBody, 'position' | 'image'> & {
-  image?: string | null; // data URL replaces, null removes, omitted preserves
-};
+// An edit: a link (`productId` / `vintageId` or `create`) re-links, the three
+// own fields change only what is sent (an empty string clears). The photo has
+// its own call.
+export type UpdateWineBody = Omit<AddWineBody, 'id' | 'position'>;
 
-// Returns the created wine in the same WireWine shape as the GET/poll (isMine
-// always true — the caller is the adder). The current caller discards it and
-// just invalidates the line-up query (the poll refetches); the typed return is
-// kept so a future optimistic-splice caller has the right shape on hand.
-export async function addWine(code: string, body: AddWineBody): Promise<WireWine> {
+export async function addWine(code: string, body: AddWineBody): Promise<{ id: string; alreadyAdded?: boolean }> {
   const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -388,7 +505,7 @@ export async function addWine(code: string, body: AddWineBody): Promise<WireWine
   return res.json();
 }
 
-export async function updateWine(code: string, wineId: string, body: UpdateWineBody): Promise<WireWine> {
+export async function updateWine(code: string, wineId: string, body: UpdateWineBody): Promise<void> {
   const res = await apiFetch(
     `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}`,
     {
@@ -398,7 +515,23 @@ export async function updateWine(code: string, wineId: string, body: UpdateWineB
     },
   );
   if (!res.ok) await throwApiError(res);
-  return res.json();
+}
+
+// A bottle's photo, its own call (README: PUT / DELETE …/wines/:id/image):
+// a data URL under MAX_WINE_IMAGE_BYTES replaces it, DELETE removes it.
+export async function putWineImage(code: string, wineId: string, image: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/image`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image }) },
+  );
+  if (!res.ok) await throwApiError(res);
+}
+export async function deleteWineImage(code: string, wineId: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/image`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) await throwApiError(res);
 }
 
 // Reassign "Brought by" (host/cohost only) — an OWNERSHIP-ONLY request, sent
@@ -550,10 +683,12 @@ export type MomentPreview = {
   address: string | null;
   coverPhotoUrl: string | null;
   joined: boolean;
+  // Only when asked with `moment` (a look-in's Join): whether the code is that moment's.
+  sameMoment?: boolean;
 };
-export const momentPreviewKey = (code: string) => ['moment-preview', code] as const;
-export async function getMomentPreview(code: string): Promise<MomentPreview> {
-  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/preview`);
+export const momentPreviewKey = (code: string, moment?: string) => ['moment-preview', code, moment ?? null] as const;
+export async function getMomentPreview(code: string, moment?: string): Promise<MomentPreview> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/preview${moment ? `?moment=${encodeURIComponent(moment)}` : ''}`);
   if (!res.ok) await throwApiError(res);
   return res.json();
 }

@@ -45,7 +45,7 @@ export function NonPhotoHero({
   // wheel hero, else the bare panel. Identity masking ("Wine N", no producer/
   // vintage) happens inside FeedImpressionPanel + the wheel here draws off the
   // server's real (unblanked) flavors. No special mystery-only branch.
-  const hasFlavour = hasRatedAxes(wine.flavors, wine.type);
+  const hasFlavour = hasRatedAxes(wine.flavors, wine);
 
   // Bare: no hero, just the panel — inset by space.xs so its width MATCHES the
   // panel that rides inside the wheel hero AND the glass panel over a photo
@@ -98,7 +98,7 @@ export function NonPhotoHero({
           (subjective rating isn't masked). Identity masking is the panel's job. */}
       <View style={styles.heroBody}>
         <StructureWheel
-          axes={buildWheelAxes(wine.flavors, wine.type, axisColor)}
+          axes={buildWheelAxes(wine.flavors, wine, axisColor)}
           size={168}
           labels
           maxWidth={width - GUTTER * 2}

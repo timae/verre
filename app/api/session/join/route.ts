@@ -143,10 +143,16 @@ export async function POST(req: NextRequest) {
         async (_tx, ctx) => {
           const name = disambiguateAgainst(displayName, Object.values(await redis.hGetAll(k.identities(c))))
           const ttl = Number(await redis.pTTL(k.meta(c)))
+          // `shown` (Moment Visibility): a guest is shown to people looking
+          // in by default (flag or no flag: the default must already hold
+          // when the feature opens). 🔒 Its only two writers: this mint, and
+          // the guest's own switch (lib/postPrivacy.ts `setGuestShown`); no
+          // rename, rejoin, heal or rebuild may add a guest back.
           await ctx.fence!.exec(m => {
             m.hSet(k.identities(c), id, name)
             m.hSet(k.tokens(c), token, id)
-            if (ttl > 0) { m.pExpire(k.identities(c), ttl); m.pExpire(k.tokens(c), ttl) }
+            m.sAdd(k.shown(c), id)
+            if (ttl > 0) { m.pExpire(k.identities(c), ttl); m.pExpire(k.tokens(c), ttl); m.pExpire(k.shown(c), ttl) }
           })
           return name
         })

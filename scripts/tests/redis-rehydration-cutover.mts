@@ -15,6 +15,8 @@
 // it holds its locks, start B, ASSERT B IS BLOCKED, release A, then await B.
 // Kill schedules run the request in a child process (this file with --worker)
 // and SIGKILL it at a hook; assertions run here, in a separate process.
+import { nanoid } from 'nanoid'
+import { linkLegacy } from './lib/catalogFixture.mts'
 import { toWire, fromWire, wireParams } from './lib/wireIds.mts'
 import { fixtureUsername } from './lib/fixtureUsername.mjs'
 import { spawn } from 'node:child_process'
@@ -25,6 +27,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { NextRequest } from 'next/server'
 import { prisma } from '../../lib/prisma.ts'
 import { redis, k, scanKeys, lifespanTTL, touchHooks, touchWithMeta } from '../../lib/redis.ts'
+import { settleAfterCommit } from '../../lib/afterCommit.ts'
 import type { SessionMeta } from '../../lib/session.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -48,6 +51,8 @@ function request(method: string, path: string, actor: Actor = {}, body?: unknown
 type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>
 // Wire ids in, internal ids out (scripts/tests/lib/wireIds.mts).
 async function call(handler: unknown, method: string, path: string, actor: Actor, body?: unknown, params: Record<string, string> = {}) {
+  // Catalogue model change step 4: a typed bottle becomes a minted entry + its pick.
+  body = await linkLegacy(method, path, body)
   const res = await (handler as Handler)(request(method, path, actor, await toWire(body)), { params: Promise.resolve(await wireParams(params)) })
   let json: unknown = null
   try { json = await fromWire(await res.json()) } catch {}
@@ -151,7 +156,7 @@ async function join(code: string, actor: Actor, displayName = 'Joiner') {
 const visit = (code: string, actor: Actor) => call(visitRoute.POST, 'POST', `/api/session/${code}/visit`, actor, {}, { code })
 const enter = async (code: string, actor: Actor, name: string) => { const j = await join(code, actor, name); await visit(code, actor); return j }
 async function addWine(code: string, actor: Actor, name: string, extra: Record<string, unknown> = {}) {
-  const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, actor, { name, type: 'red', ...extra }, { code })
+  const r = await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, actor, { id: nanoid(), name, type: 'red', ...extra }, { code })
   if (r.status !== 200) throw new Error(`add wine failed ${r.status} ${JSON.stringify(r.json)}`)
   return r.json.id as string
 }
@@ -320,11 +325,15 @@ async function roundTrip() {
   check('ensureSessionLive rebuilds it', (await ensureSessionLive(s.code)) === 'live')
   const after = await snapshot(s.code)
   // Expected differences: tokens, lastseen, gen, kickv (cache-only: the Redis-only
-  // kick version — a Postgres-backed moment versions kicks by the member row), anonymous entries.
+  // kick version — a Postgres-backed moment versions kicks by the member row), anonymous entries,
+  // and `shown` (Moment Visibility: the guests without an account who are shown
+  // to people looking in — cache-only like the guests themselves; a rebuild
+  // never re-creates it, so after an eviction nobody is shown: it fails closed).
   const anon = (id: string) => id.startsWith('a:')
-  const drop = (key: string) => /:(tokens|lastseen|gen|kickv)$/.test(key) || key.includes(':r:a:')
+  const drop = (key: string) => /:(tokens|lastseen|gen|kickv|shown)$/.test(key) || key.includes(':r:a:')
   const keysB = Object.keys(before).filter(x => !drop(x)), keysA = Object.keys(after).filter(x => !drop(x))
-  check('same key set (modulo tokens / lastseen / gen / kickv / anonymous rating keys)', JSON.stringify(keysB) === JSON.stringify(keysA), { onlyBefore: keysB.filter(x => !keysA.includes(x)), onlyAfter: keysA.filter(x => !keysB.includes(x)) })
+  check('🔒 a rebuild never re-creates `shown` (a lost key hides the guests, it never shows them)', `s:${s.code}:shown` in before && !(`s:${s.code}:shown` in after), { before: `s:${s.code}:shown` in before, after: `s:${s.code}:shown` in after })
+  check('same key set (modulo tokens / lastseen / gen / kickv / shown / anonymous rating keys)', JSON.stringify(keysB) === JSON.stringify(keysA), { onlyBefore: keysB.filter(x => !keysA.includes(x)), onlyAfter: keysA.filter(x => !keysB.includes(x)) })
   const mB = before[k.meta(s.code)] as Record<string, unknown>, mA = after[k.meta(s.code)] as Record<string, unknown>
   const norm = (f: string, v: unknown) => (f === 'dateFrom' || f === 'dateTo') && typeof v === 'string' ? Date.parse(v)
     : Array.isArray(v) ? [...v].filter(x => !anon(String(x))).sort() : v ?? null
@@ -354,7 +363,12 @@ async function roundTrip() {
   // T ×2 (one chips-only), R, kicked K (kick-keep keeps them), deleted X as d:.
   check('rating keys: all five non-anonymous ratings are there to compare', ratingKeys.length === 5, ratingKeys)
   const canon = (v: unknown): string => JSON.stringify(v, (_k, x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort()) : x)
-  const rdiff = ratingKeys.filter(x => canon({ ...(before[x] as object), aromas: (before[x] as { aromas?: unknown }).aromas ?? [] }) !== canon(after[x]))
+  // A d: key (a deleted account's ratings, renamed by the d: migration) keeps the
+  // `v` its user wrote; the version row cascaded with the user, so the rebuild
+  // has none (docs/dev/rating-saves.md). Nothing reads it: `v` is shown on the
+  // caller's own rows only, and no caller is d:.
+  const noDv = (x: string, v: unknown) => (x.includes(':r:d:') && v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([f]) => f !== 'v')) : v)
+  const rdiff = ratingKeys.filter(x => canon(noDv(x, { ...(before[x] as object), aromas: (before[x] as { aromas?: unknown }).aromas ?? [] })) !== canon(noDv(x, after[x])))
   check('rating keys: same values incl. the mirror token `at` and the chips-only score 0', rdiff.length === 0, rdiff.map(x => ({ x, before: before[x], after: after[x] })))
   const ttls = async () => Object.fromEntries(await Promise.all((await scanKeys(`s:${s.code}:*`)).map(async x => [x, await redis.ttl(x)] as const)))
   const short = (t: Record<string, number>) => Object.entries(t).filter(([, v]) => !(v > 360 * 86400))
@@ -414,7 +428,7 @@ async function grants() {
   check('(4b) stale cached provider: own-wine PATCH and DELETE → 403, add → 403',
     (await editWine(s.code, { cookie: P.cookie }, wp, { name: 'edited', type: 'red' })).status === 403
     && (await delWine(s.code, { cookie: P.cookie }, wp)).status === 403
-    && (await call(winesRoute.POST, 'POST', `/api/session/${s.code}/wines`, { cookie: P.cookie }, { name: 'n', type: 'red' }, { code: s.code })).status === 403)
+    && (await call(winesRoute.POST, 'POST', `/api/session/${s.code}/wines`, { cookie: P.cookie }, { id: nanoid(), name: 'n', type: 'red' }, { code: s.code })).status === 403)
   // (5) anonymous cohost keeps host powers from meta alone
   const anon = await createSession({})
   const A2 = await join(anon.code, {}, 'Anon cohost')
@@ -542,7 +556,7 @@ async function b1() {
   const vis = visit(an.code, { cookie: V.cookie })
   await pp.entered
   lockTiming.leaseMs = 15_000
-  const add = call(winesRoute.POST, 'POST', `/api/session/${an.code}/wines`, { anon: an.anon }, { name: 'concurrent add', type: 'red' }, { code: an.code })
+  const add = call(winesRoute.POST, 'POST', `/api/session/${an.code}/wines`, { anon: an.anon }, { id: nanoid(), name: 'concurrent add', type: 'red' }, { code: an.code })
   check('(2) the anonymous add waits on the advisory lock promotion holds', await blockedOnLock(add))
   pp.release()
   const [rv, radd] = [await vis, await add]
@@ -556,7 +570,7 @@ async function b1() {
   const e1 = editWine(s.code, { cookie: H.cookie }, w1, { name: 'edited by A', type: 'red' })
   await pe.entered
   lockTiming.leaseMs = 15_000
-  const e2 = call(winesRoute.POST, 'POST', `/api/session/${s.code}/wines`, { cookie: H.cookie }, { name: 'successor', type: 'white' }, { code: s.code })
+  const e2 = call(winesRoute.POST, 'POST', `/api/session/${s.code}/wines`, { cookie: H.cookie }, { id: nanoid(), name: 'successor', type: 'white' }, { code: s.code })
   check('(3) the successor waits on the advisory lock', await blockedOnLock(e2))
   pe.release()
   await e1; await e2
@@ -859,7 +873,11 @@ async function belts() {
   await redis.del(k.wines(s.code))
   pr.release()
   const rres = await rq
-  check('wines evicted between open and the rate\'s wine check → 200 after a rebuild, never 404', rres.status === 200 && (await redisWines(s.code)).length === 1, rres.status)
+  // Since the catalogue model change (step 3) the rate decides on the RECORD's
+  // bottle in a Postgres-backed moment: it needs no cache, and the next read
+  // rebuilds the line-up.
+  const afterRate = await state(s.code, { cookie: H.cookie })
+  check('wines evicted between open and the rate\'s wine check → 200 (decided on the record), never 404; the next read rebuilds', rres.status === 200 && afterRate.status === 200 && (await redisWines(s.code)).length === 1, [rres.status, afterRate.status])
   // an invalidation (meta gone) right before a contract → 200, never 404
   await redis.del(k.meta(s.code))
   check('meta invalidated before a write → the write rebuilds and succeeds', (await addWine(s.code, { cookie: H.cookie }, 'after invalidation')).length > 0)
@@ -936,7 +954,7 @@ async function recycling() {
   check('…while the same caller against the successor\'s own snapshot is admitted', admB.status === 'ok', admB.status)
   // the wine add paused before its lock; the code is deleted and reused under it
   const pw = pauseAt('beforeLock', rb.code, 'wine-add')
-  const late = call(winesRoute.POST, 'POST', `/api/session/${rb.code}/wines`, { cookie: R.cookie }, { name: 'Late from A', type: 'red' }, { code: rb.code })
+  const late = call(winesRoute.POST, 'POST', `/api/session/${rb.code}/wines`, { cookie: R.cookie }, { id: nanoid(), name: 'Late from A', type: 'red' }, { code: rb.code })
   await pw.entered
   await call(codeRoute.DELETE, 'DELETE', `/api/session/${rb.code}`, { cookie: R.cookie }, undefined, { code: rb.code })
   codeTestQueue.push(rb.code)
@@ -1398,19 +1416,21 @@ async function round4() {
   const j1r = await j1
   check('(r4 N5) Redis-only: a paused rejoin of kick #1 does not undo kick #2', j2.status === 200 && j1r.status !== 200 && await redis.sIsMember(k.kicked(rs.code), `u:${J.id}`), { j2: j2.status, j1: j1r.status })
 
-  // P1-2: an edit whose upload did not produce a URL keeps the CURRENT image (not its stale snapshot)
+  // P1-2, re-cast for record-first bottles (catalogue model change step 3: an
+  // edit carries no photo): an edit prepared before a photo change committed
+  // keeps the CURRENT photo, the locked row's, never its stale snapshot's.
   const H = await mkUser('Host R4', { pro: true })
   const s = await createSession({ cookie: H.cookie })
   const w = await addWine(s.code, { cookie: H.cookie }, 'img wine')
-  const setUrl = async (url: string) => redis.set(k.wines(s.code), JSON.stringify((await redisWines(s.code)).map(x => x.id === w ? { ...x, imageUrl: url } : x)), { XX: true, KEEPTTL: true })
-  await setUrl('http://s3.test/verre/wines/x-snapshot.jpg')
+  await prisma.$executeRaw`UPDATE wines SET image_url = 'http://s3.test/verre/wines/x-snapshot.jpg' WHERE id = ${w}`
   const pe = pauseAt('beforeLock', s.code, 'wine-edit')
-  const ed = editWine(s.code, { cookie: H.cookie }, w, { name: 'img wine', type: 'red', image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' })
+  const ed = editWine(s.code, { cookie: H.cookie }, w, { name: 'img wine renamed', type: 'red' })
   await pe.entered
-  await setUrl('http://s3.test/verre/wines/y-current.jpg')   // a concurrent edit replaced X with Y (and reclaimed X)
+  await prisma.$executeRaw`UPDATE wines SET image_url = 'http://s3.test/verre/wines/y-current.jpg' WHERE id = ${w}`   // a photo change committed meanwhile
   pe.release()
   const er = await ed
-  check('(r4 P1-2) a failed upload keeps the CURRENT image — never the snapshot\'s already-replaced URL', er.status === 200 && (await redisWines(s.code) as { id: string; imageUrl?: string }[]).find(x => x.id === w)?.imageUrl === 'http://s3.test/verre/wines/y-current.jpg', { status: er.status, json: er.json })
+  const row = await prisma.$queryRaw<{ image_url: string | null; name: string }[]>`SELECT image_url, name FROM wines WHERE id = ${w}`
+  check('(r4 P1-2) an edit keeps the CURRENT photo (the locked row), never its snapshot\'s already-replaced URL', er.status === 200 && row[0]?.image_url === 'http://s3.test/verre/wines/y-current.jpg' && row[0]?.name === 'img wine renamed' && (await redisWines(s.code) as { id: string; imageUrl?: string }[]).find(x => x.id === w)?.imageUrl === 'http://s3.test/verre/wines/y-current.jpg', { status: er.status, json: er.json, row: row[0] })
 }
 
 // ── Code review round 5 ─────────────────────────────────────────────────────
@@ -1512,7 +1532,7 @@ function parseMonitor(lines: string[]): string[][] {
 }
 const writesIn = (cmds: string[][]) => cmds.filter(a => WRITE_CMDS.test(a[0] ?? ''))
 const zeroCounts = (c: Counts | undefined) => !!c && Object.values(c.rebuilt).every(v => v === 0 || v === false)
-  && Object.entries(c.reconciled).every(([f, v]) => (f === 'metaFields' ? (v as string[]).length === 0 : v === 0))
+  && Object.entries(c.reconciled).every(([f, v]) => (f === 'metaFields' ? (v as string[]).length === 0 : v === 0 || v === false))
 async function freePort(): Promise<number> {
   const net = await import('node:net')
   const srv = net.createServer()
@@ -1596,7 +1616,7 @@ async function operatorScript() {
   check('(1) …no write command from any client', writesIn(m1).length === 0, writesIn(m1))
   check('(1) …planned = the expected cold fill', JSON.stringify(l1?.planned) === JSON.stringify({
     rebuilt: { meta: true, lineup: true, wines: 3, members: 4, tombstones: 1, ratings: 4, bans: 2, kicked: 1 },
-    reconciled: { metaFields: [], identities: 0, ratingKeys: 0, bans: 0, kicked: 0, provenance: 0 },
+    reconciled: { metaFields: [], identities: 0, ratingKeys: 0, bans: 0, kicked: 0, provenance: 0, lineup: false },
   }), l1?.planned)
   check('(1) …meta write nx/create, info tombstone 1, lineup order kept', JSON.stringify(l1?.meta) === '{"write":"nx","expect":"create"}'
     && l1?.info?.tombstoneGroups === 1 && l1?.info?.lineupOrderLost === false, { meta: l1?.meta, info: l1?.info })
@@ -1649,7 +1669,7 @@ async function operatorScript() {
   const metaBefore4 = await metaOf(s.code)
   const want4 = {
     rebuilt: { meta: false, lineup: false, wines: 0, members: 1, tombstones: 0, ratings: 2, bans: 2, kicked: 0 },
-    reconciled: { metaFields: ['<other>', 'coHosts', 'hostIdentityId'], identities: 2, ratingKeys: 1, bans: 1, kicked: 0, provenance: 0 },
+    reconciled: { metaFields: ['<other>', 'coHosts', 'hostIdentityId'], identities: 2, ratingKeys: 1, bans: 1, kicked: 0, provenance: 0, lineup: false },
   }
   const r4d = await runScript({ codes: [s.code], force: true })
   check('(4) forced dry run plans each repair', JSON.stringify(r4d.line(s.code)?.planned) === JSON.stringify(want4) && r4d.line(s.code)?.info?.orphans === 1, r4d.line(s.code))
@@ -1691,7 +1711,10 @@ async function operatorScript() {
   const d5 = Object.keys(ids5).find(id => id.startsWith('d:'))
   check('(5) forced apply: planned the deletion repairs', JSON.stringify(l5?.planned) === JSON.stringify({
     rebuilt: { meta: false, lineup: false, wines: 0, members: 0, tombstones: 1, ratings: 2, bans: 0, kicked: 0 },
-    reconciled: { metaFields: ['coHostIds'], identities: 1, ratingKeys: 2, bans: 1, kicked: 0, provenance: 1 },
+    // The deletion's provenance tombstone bumped the line-up revision (catalogue
+    // model change step 3), so the cache is not stamped with it: the whole
+    // line-up is REPLACED from the record (lineup: true) instead of patched.
+    reconciled: { metaFields: ['coHostIds'], identities: 1, ratingKeys: 2, bans: 1, kicked: 0, provenance: 0, lineup: true },
   }) && l5?.drift === false, l5)
   check('(5) …u:Y out of identities + its rating keys gone; u:Y2 ban gone', !ids5[`u:${Y.id}`] && (await scanKeys(`s:${s5.code}:r:u:${Y.id}:*`)).length === 0
     && !(await redis.sIsMember(k.bans(s5.code), `u:${Y2.id}`)))
@@ -1881,6 +1904,9 @@ async function operatorScript() {
   await enter(s12.code, { cookie: T12.cookie }, 'Taster OS12')
   const w12 = await addWine(s12.code, { cookie: H12.cookie }, 'w12')
   await rate(s12.code, { cookie: T12.cookie }, w12, 4)
+  // The rate's refresh runs after its answer (lib/afterCommit.ts): let it end
+  // before the MONITOR window opens.
+  await settleAfterCommit()
   await wipeCache(s12.code)
   const m12 = parseMonitor(await monitored(() => runScript({ codes: [s12.code], apply: true })))
   const sig = (a: string[]) => `${a[0]} ${a.slice(1).filter(x => x.startsWith('s:') || x.startsWith('lock:')).join(' ')}`
@@ -1891,7 +1917,7 @@ async function operatorScript() {
   const at = (pred: (a: string[]) => boolean) => m12.findIndex(pred)
   const iEval = at(a => a[0] === 'EVAL' && a[3] === k.gen(s12.code))
   const planning = [at(a => a[0] === 'HGETALL' && a[1] === k.identities(s12.code)), at(a => a[0] === 'SCAN'), at(a => a[0] === 'SMEMBERS' && a[1] === k.bans(s12.code)),
-    at(a => a[0] === 'SMEMBERS' && a[1] === k.kicked(s12.code)), at(a => a[0] === 'GET' && a[1] === k.wines(s12.code))]
+    at(a => a[0] === 'SMEMBERS' && a[1] === k.kicked(s12.code)), at(a => a[0] === 'MGET' && a[1] === k.wines(s12.code) && a[2] === k.wrev(s12.code))]
   check('(12) the generation baseline precedes every planning read', iEval > 4 && planning.every(i => i > iEval), { iEval, planning })
   const iWatch = at(a => a[0] === 'WATCH'), iMulti = at(a => a[0] === 'MULTI'), iExec = at(a => a[0] === 'EXEC')
   const inMulti = m12.slice(iMulti + 1, iExec)

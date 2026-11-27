@@ -114,14 +114,18 @@ export function selectionLabel(sel: { a: string; m: string | null }): string {
 // bound, deliberately no visible counter) keeps the previous value; ops
 // return whether the write LANDED so callers never celebrate a rejected add
 // (Codex review, PR #77: the 31st add fired haptic + flash on nothing).
+// `onChange` may REFUSE a write by returning false (the impression's autosave:
+// not editable, or no baseline yet for a relative edit): `add` answers
+// 'unavailable' then, distinct from the cap (no cap hint, nothing reset).
 export type AromaOps = ReturnType<typeof useAromaOps>;
-export function useAromaOps(value: AromaSelection[], onChange: (v: AromaSelection[]) => void) {
-  const commit = (next: AromaSelection[]): boolean => {
+export type AromaAdd = 'added' | 'cap' | 'unavailable';
+export function useAromaOps(value: AromaSelection[], onChange: (v: AromaSelection[]) => void | boolean) {
+  const write = (next: AromaSelection[]): AromaAdd => {
     const gated = gateAromaSelections(next);
-    if (!gated.value) return false;
-    onChange(gated.value);
-    return true;
+    if (!gated.value) return 'cap';
+    return onChange(gated.value) === false ? 'unavailable' : 'added';
   };
+  const commit = (next: AromaSelection[]): boolean => write(next) === 'added';
   const selectionFor = (a: string) => value.find((s) => s.a === a);
   return {
     value,
@@ -129,7 +133,7 @@ export function useAromaOps(value: AromaSelection[], onChange: (v: AromaSelectio
     isSelected: (a: string) => value.some((s) => s.a === a),
     isPronounced: (a: string) => value.some((s) => s.a === a && s.p),
     modifierOf: (a: string) => selectionFor(a)?.m ?? null,
-    add: (sel: AromaSelection) => commit([...value, sel]),
+    add: (sel: AromaSelection): AromaAdd => write([...value, sel]),
     removeNode: (a: string) => commit(value.filter((s) => s.a !== a)),
     removePair: (a: string, m: string | null) => commit(value.filter((s) => s.a !== a || s.m !== m)),
     toggleNode: (a: string): boolean =>
@@ -530,8 +534,9 @@ export function usePendingAdd(target: string | null, ops: AromaOps) {
   };
   const commit = (): boolean => {
     if (!target || added) return false;
-    const ok = ops.add(pendP ? { a: target, m: pendM, p: true } : { a: target, m: pendM });
-    if (!ok) {
+    const result = ops.add(pendP ? { a: target, m: pendM, p: true } : { a: target, m: pendM });
+    if (result === 'unavailable') return false;
+    if (result === 'cap') {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       setCapHit(true);
       return false;

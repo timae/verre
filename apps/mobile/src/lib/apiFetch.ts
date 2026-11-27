@@ -8,19 +8,31 @@ import { routeToUpdateRequired } from './updateGate';
 // TCP (proposal 02 §4), so every call gets an AbortController deadline.
 const DEFAULT_TIMEOUT_MS = 12_000;
 
+// Thrown when `beforeSend` refuses: nothing went on the wire.
+export class LocalCancel extends Error {
+  constructor() {
+    super('cancelled before send');
+    this.name = 'AbortError';
+  }
+}
+
 // The single place the app talks to the Verre API: session cookie + client
 // version on every call, and the 426 update-required handshake (proposal 04).
+// `beforeSend` (optional) runs AFTER the async cookie read, right before the
+// request leaves, and may refuse it (lib/rateOutbox.ts: the viewer epoch, the
+// auth generation and the signed-out latch, checked after that read).
 export async function apiFetch(
   path: string,
-  init: RequestInit & { timeoutMs?: number } = {},
+  init: RequestInit & { timeoutMs?: number; beforeSend?: (cookieSent: boolean) => boolean } = {},
 ): Promise<Response> {
-  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...rest } = init;
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, beforeSend, ...rest } = init;
   const headers = new Headers(rest.headers);
   if (CLIENT_VERSION) headers.set(CLIENT_VERSION_HEADER, CLIENT_VERSION);
   // A cookie read while a sign-out clears it is never sent (lib/authGate.ts,
   // signed-out latch): checked again after the async read.
   const cookie = cookieWithheld() ? '' : await authClient.getCookie();
   if (cookie && !cookieWithheld()) headers.set('Cookie', cookie);
+  if (beforeSend && !beforeSend(!!cookie && !cookieWithheld())) throw new LocalCancel();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const upstream = rest.signal;

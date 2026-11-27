@@ -19,8 +19,10 @@
 //
 // ⚠️ BLIND SPOT (a grep gate, not a type system): post CONTENT also lives in
 // `ratings` / `rating_images` (scores, notes, photos), cravings in
-// `bookmarks`, memberships in `session_members`; none of those tables is
-// matched (they have many legitimate own-only / in-session readers). Those are
+// `bookmarks`, memberships in `session_members`, the per-post choices in
+// `moment_privacy` (Only Inside This Moment) and `feed_items.hidden_from_feed`
+// (Hide from Feed: a column of a matched table, but a read that forgets it
+// keeps the same count); none of those tables is matched (they have many legitimate own-only / in-session readers). Those are
 // covered by the REQUIRED gate / tile-list parameters on the profile loaders
 // (loadProfile / loadProfileHeaderExtras take the gate, resolveTilePhotos the
 // shown tiles; no defaults) and by the leak matrix in
@@ -37,13 +39,17 @@ import { readFileSync, existsSync } from 'node:fs'
 
 // file → [pinned read count, the gate those reads go through]
 const ALLOWED = {
-  'app/api/feed/route.ts': [4, 'the feed: networkAuthors (canViewPosts) / ?user= gate.sees.posts; likes of the gated page'],
-  'lib/profileLoad.ts': [4, 'the web profile posts: only when gate.sees.posts; likes of those posts'],
-  'app/api/feed-items/[id]/like/route.ts': [4, 'like POST viewerCanSeePosts / DELETE the D11 rule; the count only after the gate'],
-  'app/api/checkins/route.ts': [1, 'had a sip source: viewerCanSeePosts'],
-  'app/api/checkins/[id]/route.ts': [3, 'owner-only edit / delete lookups (wrong owner = 404)'],
+  'app/api/feed/route.ts': [4, 'the feed: networkAuthors (canViewPosts) / ?user= gate.sees.posts; the page BY THE IDS of lib/postPrivacy.ts pagePostIds (every per-post exclusion before the LIMIT); likes of the gated page'],
+  'lib/profileLoad.ts': [4, 'the web profile posts: only when gate.sees.posts, BY THE IDS of pagePostIds (per-post exclusions before the limit); likes of those posts'],
+  'app/api/feed-items/[id]/like/route.ts': [4, 'like POST viewerCanSeePost / DELETE the D11 rule + postShownTo; the count only after the gate'],
+  'app/api/feed-items/[id]/crave/route.ts': [1, 'crave from a post: the post read, then viewerCanSeePost before anything else (404)'],
+  'app/api/me/bookmarks/route.ts': [1, 'Saved (own data): the post a craving was saved from, only to ask viewerCanSeePosts (its author) + postShownSql (the post) whether its photo and purchase link still show (never on the wire)'],
+  'app/api/checkins/route.ts': [2, 'had a sip source: viewerCanSeePost; the replayed / created envelope: own only (fi.user_id = caller)'],
+  'app/api/checkins/[id]/route.ts': [4, 'owner-only edit / delete lookups (wrong owner = 404), the edit\'s own re-read inside its transaction'],
   'lib/outsideView.ts': [1, 'hiddenSessionIds: moment ids only (no post content), for the gated feed / profile authors'],
-  'lib/profileLists.ts': [3, 'the post ids of the list rows: impressions only when gate.sees.posts; a craving\'s only with gate.sees.posts (or your own)'],
+  'lib/profileLists.ts': [5, 'the post ids of the list rows (and the one impression\'s date): impressions only when gate.sees.posts, the id only while postHiddenSql says shown; a craving\'s (its session or check-in post) only with gate.sees.posts (or your own), the same rule; the post a craving was saved from, only to ask viewerCanSeePosts (author) + postShownSql (post) whether its bottle shows (never on the wire)'],
+  'lib/momentDefaults.ts': [2, 'the caller\'s OWN posts only (fi.user_id = caller, no other author): scopeSql (the moments you posted in, for the apply\'s scope of your choices) and previewDefault\'s count of your own check-ins whose Hide from Feed differs'],
+  'lib/postPrivacy.ts': [5, 'the per-post rule itself: postShownTo (one post, for viewerCanSeePost), pagePostIds (ids + times only, every exclusion before the LIMIT, for gated authors), ownPostPrivacy (the caller\'s OWN post\'s current switch, fi.user_id = caller, before a show is charged, R10), setMomentChoiceByPost + showMomentChoiceByPost (the caller\'s own moment post as the write\'s source)'],
 }
 
 const PRISMA_READ = /\b(feedItem|feedItemLike|feedItemTag)\s*\.\s*(find\w*|count|aggregate|groupBy)\b/

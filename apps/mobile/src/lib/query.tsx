@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { QueryClient, QueryClientProvider, focusManager, onlineManager } from '@tanstack/react-query';
+import { clearPostPrivacyState } from './postPrivacyState';
 
 // Native poll hardening per proposal 02 §4: RN has no visibilitychange, so
 // AppState drives focusManager — only 'active' counts as focused ('inactive'
@@ -49,10 +50,23 @@ let viewerEpoch = 0;
 export function viewerCacheEpoch(): number {
   return viewerEpoch;
 }
+// In-memory stores that belong to the viewer and live outside the query
+// cache register here (lib/rateOutbox.ts: the outbox's timers, waiters, Clear
+// generations and remembered answers; its STORED entries stay for their viewer).
+const viewerClearHooks = new Set<() => void>();
+export function onViewerCacheClear(fn: () => void): () => void {
+  viewerClearHooks.add(fn);
+  return () => {
+    viewerClearHooks.delete(fn);
+  };
+}
 export function clearViewerCache(): void {
   viewerEpoch++;
   void queryClient.cancelQueries();
   queryClient.clear();
+  // Your own posts' switches belong to this viewer too (lib/postPrivacyState.ts).
+  clearPostPrivacyState();
+  for (const fn of viewerClearHooks) fn();
 }
 
 export function QueryProvider({ children }: { children: ReactNode }) {

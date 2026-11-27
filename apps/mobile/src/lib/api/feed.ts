@@ -2,6 +2,8 @@ import { infiniteQueryOptions } from '@tanstack/react-query';
 import type { AromaSelection } from '@verre/core';
 import { apiFetch } from '../apiFetch';
 import { ApiError, throwApiError } from './sessions';
+import { stampPrivacy } from '../postPrivacyPatch';
+import { momentPlace } from '../momentVisibilityCopy';
 
 // Typed fetchers + wire types for the social feed (`/api/feed`).
 // Wire types MIRROR the server's emitted shape in app/api/feed/route.ts
@@ -22,12 +24,21 @@ export type FeedAuthor = {
 // SessionFeedWine. Blind-redacted wines arrive with `_blind: true` and
 // blanked identity + metadata (name === '', producer/region/etc null).
 export type SessionFeedWine = {
-  id: string;
+  // The author's rating row: on EVERY row, the key for lists and for finding
+  // a row (a standalone post adapts its feed_items id, checkinToWine).
+  ratingId: number;
+  // The wine's id. 🔒 ABSENT on a blind row unless you wrote that rating
+  // (Edit / Delete Rating need it): never key or match on it.
+  id?: string;
   name: string;
   producer: string | null;
   vintage: string | null;
   grape: string | null;
-  type: string | null;
+  // The bottle's kind (its snapshot): the axes read `sparkling`. Stay on a
+  // blind row; the abv does not (null there).
+  colour: string | null;
+  sparkling: boolean;
+  abv: number | null;
   imageUrl: string | null;
   score: number | null;
   flavors: Record<string, number>;
@@ -43,16 +54,21 @@ export type SessionFeedWine = {
   description: string | null;
   purchaseUrl: string | null;
   _blind?: boolean;
+  // Your save state (signed in): on a blind row only your save of THAT bottle.
+  saved?: boolean;
 };
 
 // A standalone check-in ("<name> had a wine"). One impression, one photo.
 export type CheckinPayload = {
   id: number; // feed_items.id
+  wineId: string; // the bottle (a key only)
   wineName: string;
   producer: string | null;
   vintage: string | null;
   grape: string | null;
-  type: string | null;
+  colour: string | null;
+  sparkling: boolean;
+  abv: number | null;
   score: number | null;
   notes: string | null;
   imageUrl: string | null;
@@ -77,22 +93,45 @@ export type CheckinPayload = {
   tags: { id: string; name: string }[];
   liked: boolean;
   viewerFollowsAuthor: boolean;
+  saved?: boolean;
+  // YOUR OWN check-in only, with the server's HIDE_FROM_FEED_ENABLED on
+  // (Moment Visibility step 3, R5): Hide from Feed. Absent = no ⋯ row.
+  hiddenFromFeed?: boolean;
+  // Client-side: when the request that carried this copy LEFT (getFeed), so a
+  // write recorded after it wins over it (lib/postPrivacyState.ts).
+  privacyAt?: number;
 };
 
 // A session-aggregate post ("<name> shared a moment") — mirrors
 // lib/feedTypes.ts SessionFeedPayload. Tombstoned sessions ship
 // sessionName/hostName === null + deleted === true; the wine list still
-// renders ("[deleted session]" header).
+// renders ("[deleted session]" header). `hostName` is also null on a live
+// post when the viewer wasn't in the moment and its host is hidden from them
+// (Moment Visibility step 1b); the app doesn't render it. `momentId` (the
+// moment's public id, never its code) only while Moment Visibility is on and
+// the viewer is in the moment or may look in: the place line opens the look-in
+// for a moment the viewer's own sessions don't hold (step-2 plan § 4.3).
+// `privateMoment` (step 3b, R16): a live moment whose name this viewer may not
+// see (they couldn't open it); then `sessionName`, `hostName` and `sessionId`
+// are null and the place reads "Private Moment", never tappable.
 export type SessionFeedPayload = {
   id: number; // feed_items.id
   sessionId: number | null;
+  momentId?: string;
   sessionName: string | null;
+  privateMoment?: true;
   hostName: string | null;
   deleted: boolean;
   blind: boolean;
   wines: SessionFeedWine[];
   likeCount: number;
   liked: boolean;
+  // YOUR OWN moment post only: Incognito there (Moment Visibility on; R2, R11)
+  // and Hide from Feed for it (HIDE_FROM_FEED_ENABLED on; R12). Absent = no ⋯ row.
+  onlyInside?: boolean;
+  hiddenFromFeed?: boolean;
+  // Client-side, as on CheckinPayload.
+  privacyAt?: number;
 };
 
 export type FeedItem =
@@ -112,9 +151,25 @@ export async function getFeed(cursor?: string | null, userId?: string | null): P
   const qs = [cursor ? `cursor=${encodeURIComponent(cursor)}` : '', userId != null ? `user=${encodeURIComponent(userId)}` : '']
     .filter(Boolean)
     .join('&');
+  const startedAt = Date.now();
   const res = await apiFetch(`/api/feed${qs ? `?${qs}` : ''}`);
   if (!res.ok) await throwApiError(res);
-  return (await res.json()) as FeedPage;
+  return stampPrivacy((await res.json()) as FeedPage, startedAt);
+}
+
+// The ⋯ row on your own post (PATCH /api/feed-items/:id/privacy): Hide from
+// Feed, on a moment post or a check-in (R12, R13; the route also takes
+// Incognito on a moment post, which the app no longer sends). The answer echoes
+// the field.
+export async function setPostPrivacy(postId: number, field: 'onlyInside' | 'hiddenFromFeed', on: boolean): Promise<boolean> {
+  const res = await apiFetch(`/api/feed-items/${postId}/privacy`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ [field]: on }),
+  });
+  if (!res.ok) await throwApiError(res);
+  const j = (await res.json()) as Record<string, unknown>;
+  return j[field] === true;
 }
 
 // POST|DELETE /api/feed-items/:id/like — toggle the like. Returns the
@@ -135,7 +190,7 @@ export async function setFeedItemLike(
 }
 
 // POST /api/checkins — create a standalone check-in (the mobile create form;
-// later "Had it too" rides the same call with copyFromCheckinId). Body mirrors
+// Had It Too rides the same call with copyFromCheckinId + copyPhoto). Body mirrors
 // the route's accepted fields (app/api/checkins/route.ts) minus taggedUserIds +
 // lat/lng (tagging + map UX are their own passes). `flavors` must be the
 // filled-or-empty shape (fillFlavourZeros) — the server 400s stray off-style
@@ -147,17 +202,14 @@ export async function setFeedItemLike(
 // The response (a legacy checkin envelope) is not consumed — callers surface
 // the new post via a feed refetch()-in-place instead.
 export type CreateCheckinBody = {
-  wineName: string;
-  producer?: string;
-  vintage?: string; // a 4-digit year OR the "NV" token; the server canonicalizes
-  //                    (exactly-4-digits-or-NV, else empty) — it does NOT truncate
-  grape?: string; // design "Variety"
-  type?: string; // WineTypeCode; unknown values coerce to null server-side
-  // WINE-origin metadata, landed on the minted wine row (the About block).
-  // wineRegion/wineCountry are named apart from `country` (the VENUE country)
-  // — the same split the feed payload makes.
-  wineRegion?: string;
-  wineCountry?: string; // ISO-2; invalid codes drop server-side
+  // The client's id for the new bottle (lib/clientId.ts), minted once per
+  // flow: a retry by the same person answers the existing check-in (200),
+  // someone else's id is a 409.
+  occurrenceId: string;
+  // The catalogue wine (lib/catalogChoice.ts linkBody): a pick or a `create`.
+  productId?: string;
+  vintageId?: string | null;
+  create?: Record<string, unknown>;
   vinification?: string; // design "Process"
   description?: string;
   purchaseUrl?: string; // http(s)-only server-side (cleanUrl)
@@ -168,20 +220,29 @@ export type CreateCheckinBody = {
   // Omitted = [] on create (present-replaces / omitted-preserves contract).
   aromas?: AromaSelection[];
   notes?: string;
-  imageData?: string;
   venueName?: string;
   city?: string;
   country?: string; // VENUE country, ISO-2
   copyFromCheckinId?: number;
+  // Had It Too only: false = the source's photo is NOT copied (replaced or
+  // removed; your own photo follows in the PATCH). Absent = copied.
+  copyPhoto?: boolean;
+  // Moment Defaults: this check-in's Hide from Feed (absent = your default).
+  hiddenFromFeed?: boolean;
 };
 
-export async function createCheckin(body: CreateCheckinBody): Promise<void> {
+// The post's answer: its feed item id (the photo attaches to it afterwards),
+// and whether it was a REPLAY of a check-in that had already landed (200: the
+// stored one is answered as it is, so a later edit of the draft must be sent).
+export async function createCheckin(body: CreateCheckinBody): Promise<{ id: number; replayed: boolean }> {
   const res = await apiFetch('/api/checkins', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) await throwApiError(res);
+  const j = (await res.json()) as { id: number };
+  return { id: j.id, replayed: res.status === 200 };
 }
 
 // ── Feed-post editing (2026-07-17) ───────────────────────────────────────────
@@ -191,8 +252,9 @@ export async function createCheckin(body: CreateCheckinBody): Promise<void> {
 
 // Standalone: wine metadata + rating. Everything optional — send what changed
 // (or the full truth; the server treats both the same).
-export type PatchCheckinBody = Partial<Omit<CreateCheckinBody, 'copyFromCheckinId' | 'imageData'>> & {
+export type PatchCheckinBody = Partial<Omit<CreateCheckinBody, 'copyFromCheckinId' | 'copyPhoto' | 'occurrenceId'>> & {
   // A fresh data URL replaces the photo; null removes it; omitted keeps it.
+  // A check-in's FIRST photo goes alone in its own PATCH right after the post.
   imageData?: string | null;
 };
 
@@ -205,7 +267,9 @@ export type PatchCheckinResponse = {
   producer: string | null;
   vintage: string | null;
   grape: string | null;
-  type: string | null;
+  colour: string | null;
+  sparkling: boolean;
+  abv: number | null;
   wineRegion: string | null;
   wineCountry: string | null;
   vinification: string | null;
@@ -314,9 +378,10 @@ export function feedQueryOptions(userId?: string | null) {
 // `fetchQuery`: a plain { items } entry under a ['feed', …] key breaks
 // updateFeedCaches (`data.pages.map`) for every like / edit / delete.
 export async function getFeedItem(userId: string, postId: number): Promise<FeedPage> {
+  const startedAt = Date.now();
   const res = await apiFetch(`/api/feed?user=${encodeURIComponent(userId)}&item=${postId}`);
   if (!res.ok) await throwApiError(res);
-  return (await res.json()) as FeedPage;
+  return stampPrivacy((await res.json()) as FeedPage, startedAt);
 }
 export function feedItemKey(userId: string, postId: number) {
   return ['feed', 'user', userId, 'item', postId] as const;
@@ -353,12 +418,15 @@ export function findFeedItem(pages: FeedPage[] | undefined, id: number): FeedIte
 // wine-catalog metadata, so the About block matches a session wine's.
 export function checkinToWine(c: CheckinPayload): SessionFeedWine {
   return {
+    ratingId: c.id,
     id: String(c.id),
     name: c.wineName,
     producer: c.producer,
     vintage: c.vintage,
     grape: c.grape,
-    type: c.type,
+    colour: c.colour,
+    sparkling: c.sparkling,
+    abv: c.abv,
     imageUrl: c.imageUrl,
     score: c.score,
     flavors: c.flavors,
@@ -371,6 +439,7 @@ export function checkinToWine(c: CheckinPayload): SessionFeedWine {
     vinification: c.vinification,
     description: c.description,
     purchaseUrl: c.purchaseUrl,
+    ...(c.saved !== undefined ? { saved: c.saved } : {}),
   };
 }
 
@@ -391,6 +460,7 @@ export function detailFromItem(item: FeedItem): {
   // against the viewer's own sessions (never a join code on the wire).
   momentName: string | null;
   sessionId: number | null;
+  momentId: string | null;
 } {
   if (item.type === 'session') {
     const momentName = item.session.deleted ? null : item.session.sessionName;
@@ -400,9 +470,10 @@ export function detailFromItem(item: FeedItem): {
       isSession: true,
       createdAt: item.createdAt,
       verb: 'shared a moment',
-      place: item.session.deleted ? '[deleted moment]' : momentName,
+      place: momentPlace(item.session),
       momentName,
       sessionId: item.session.sessionId,
+      momentId: item.session.deleted ? null : item.session.momentId ?? null,
     };
   }
   const c = item.checkin;
@@ -416,6 +487,7 @@ export function detailFromItem(item: FeedItem): {
     place: [c.venueName, c.city].filter(Boolean).join(', ') || null,
     momentName: null,
     sessionId: null,
+    momentId: null,
   };
 }
 

@@ -22,10 +22,14 @@ import { useForwardedStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { useFullscreenViewerOpen } from '@/lib/fullscreenViewer';
 import { dismissKeyboardOnOutsideTouch } from '@/lib/keyboardDismiss';
 import { QueryProvider, clearViewerCache } from '@/lib/query';
+import { setRateOutboxViewer } from '@/lib/rateOutbox';
+import { clearLookInLinks } from '@/lib/lookInLinks';
+import { clearLookInGates } from '@/lib/lookInDetails';
 import { bootScreen, bootState, marksResolved, needsUsername, sessionConfirmed, shouldRetryStale, staleRetryDelayMs } from '@/lib/bootGate';
 import { getPendingUpdate, markUpdateNavigationReady, subscribePendingUpdate } from '@/lib/updateGate';
 import { UpdateRequiredView } from './update-required';
 import { ThemeProvider, useTheme } from '@/theme';
+import { SessionTabRootProvider } from '@/lib/sessionStack';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -91,8 +95,14 @@ function RootNavigator() {
   const userId = viewerId;
   const lastUserId = useRef(userId);
   useEffect(() => {
-    if (lastUserId.current !== null && lastUserId.current !== userId) clearViewerCache();
+    // The look-in links' tokens and a pending link go with the viewer too
+    // (lib/lookInLinks.ts); a sign-in (null → X) keeps a pending link (R13).
+    if (lastUserId.current !== null && lastUserId.current !== userId) { clearViewerCache(); clearLookInLinks(); clearLookInGates(); }
     lastUserId.current = userId;
+    // The rating outbox (lib/rateOutbox.ts): the signed-in viewer's waiting
+    // saves are hydrated and go out by themselves (also with no session screen
+    // mounted); another viewer's stay stored for them.
+    setRateOutboxViewer(userId);
   }, [userId]);
   // 🔒 `isPending` is NOT boot-only: Better Auth's session query sets it true
   // on ANY request made while `data` is null — and the SDK refetches
@@ -199,6 +209,7 @@ function RootNavigator() {
 
   return (
     <NavThemeProvider value={navTheme}>
+      <SessionTabRootProvider>
       <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
       {/* fullScreenGestureEnabled false: edge-only back gesture — see
           moments/_layout.tsx (iOS 26 flipped the RNS default to true).
@@ -254,6 +265,7 @@ function RootNavigator() {
         <Stack.Screen name="about" />
         <Stack.Screen name="attributions" />
       </Stack>
+      </SessionTabRootProvider>
     </NavThemeProvider>
   );
 }

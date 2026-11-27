@@ -32,6 +32,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   if (p.status === 'invalid') return authInvalid('not a participant')
 
   const identities = await redis.hGetAll(k.identities(c))
-  const result = await buildRatingsView(c, identities)
+  const result = await buildRatingsView(c, identities, p.identity.id)
   return NextResponse.json(result, { headers: noStore })
 }

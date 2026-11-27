@@ -4,6 +4,8 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { decimalToNumber } from '@verre/core'
 import { outsideViewSql } from '@/lib/outsideView'
+import { entryKey, loadEntriesSoft } from '@/lib/catalogEntries'
+import { entryYear } from '@/lib/wineDisplay'
 
 // History endpoint: every rating the viewer has written. Post-rewire,
 // session context comes off the rating itself (rating.session) rather
@@ -48,7 +50,7 @@ export async function GET(req: NextRequest) {
     const ratings = await tx.rating.findMany({
       where: { userId, id: { in: flagRows.map(f => f.id) } },
       include: {
-        wine: { select: { name: true, producer: true, vintage: true, style: true, category: true, imageUrl: true } },
+        wine: { select: { name: true, producer: true, vintage: true, style: true, category: true, imageUrl: true, productId: true, vintageId: true } },
         session: { select: { id: true, code: true, deletedAt: true, createdAt: true } },
         images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { imageUrl: true } },
       },
@@ -57,6 +59,9 @@ export async function GET(req: NextRequest) {
     return { flagRows, ratings }
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead })
   const blind = new Set(flagRows.filter(f => f.redacted !== false).map(f => f.id))
+  // A visible bottle shows its catalogue entry (merges followed), else its
+  // snapshot; a blind one never reads it.
+  const entries = await loadEntriesSoft(ratings.filter(r => !blind.has(r.id)).map(r => ({ productId: r.wine.productId, vintageId: r.wine.vintageId })))
 
   return NextResponse.json(ratings.map(r => {
     const sessionDeleted = !!r.session?.deletedAt
@@ -64,6 +69,7 @@ export async function GET(req: NextRequest) {
     // captured at write time), falling back to the wine's bottle shot.
     const ratingImage = r.images[0]?.imageUrl ?? null
     const isBlind = blind.has(r.id)
+    const e = !isBlind && r.wine.productId ? entries.get(entryKey(r.wine.productId, r.wine.vintageId)) : undefined
     return {
       id: r.id,
       // wine_id surfaced for client-side cross-match against bookmarks
@@ -75,9 +81,9 @@ export async function GET(req: NextRequest) {
       flavors: r.flavors,
       notes: r.notes,
       rated_at: r.ratedAt,
-      wine_name: isBlind ? '' : r.wine.name,
-      producer: isBlind ? null : r.wine.producer,
-      vintage: isBlind ? null : r.wine.vintage,
+      wine_name: isBlind ? '' : e?.name ?? r.wine.name,
+      producer: isBlind ? null : e?.producer ?? r.wine.producer,
+      vintage: isBlind ? null : e ? (entryYear(e) || null) : r.wine.vintage,
       style: r.wine.style,
       category: r.wine.category,
       image_url: isBlind ? null : (ratingImage ?? r.wine.imageUrl),

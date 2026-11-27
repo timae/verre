@@ -112,10 +112,28 @@ function buildPoolConfig(): PoolConfig {
   // 🔒 Session TimeZone = UTC — the adapter's timestamp conversions assume it
   // (lib/pgSession.mjs; prod Postgres defaults to Europe/Zurich). Wraps the
   // COMPLETE config: the guard checks what pg will actually send.
+  // 🔒 IDLE CONNECTIONS STAY OPEN 5 MINUTES. pg-pool closes an idle client after
+  // 10 s by default, so after any quiet spell the next request paid a new TLS
+  // connection: measured from a 1/8-core container to staging (Nine), 103 ms
+  // and 20 ms of CPU each, against 5 ms for a query on a warm one (model change
+  // step 1). Kept below Nine's server-side `idle_session_timeout` (1 h, the
+  // E57P05 log lines), and no `min`: a client held idle past that is killed by
+  // the server. `max` still bounds how many are open. ⚠️ `allowExitOnIdle` goes
+  // with it: an idle client otherwise holds the event loop, and every script or
+  // suite that never calls `$disconnect()` hung for the whole 5 minutes (it was
+  // 10 s before). The server is kept alive by its HTTP listener, not the pool.
   return withSessionPin({
     connectionString: process.env.DATABASE_URL,
     ...(ssl ? { ssl } : {}),
     max: limit ?? physicalCpuCount() * 2 + 1,
+    idleTimeoutMillis: 5 * 60_000,
+    allowExitOnIdle: true,
+    // A 5-minute idle hold is only safe if a silently dropped flow (a stateful
+    // hop timing out an idle connection) is noticed: TCP keepalive probes keep
+    // such state warm and surface a dead peer as an error instead of a hang
+    // (pg sets no keepalive unless asked; `statement_timeout` is server-side).
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 30_000,
     connectionTimeoutMillis: (poolTimeout ?? 10) * 1000,
     ...(wantsTimeout ? { statement_timeout: Math.floor(statementTimeoutMs) } : {}),
   })
@@ -128,4 +146,11 @@ export const prisma =
     log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
   })
 
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+// 🔒 CACHED IN PRODUCTION TOO: ONE CLIENT, ONE POOL PER PROCESS. The build
+// compiles this module into separate chunks (API routes, server-rendered pages,
+// instrumentation), each with its own module scope; with the cache set in
+// development only, each made its own client and pool, so `DATABASE_CONNECTION_LIMIT=6`
+// meant 12 or more connections per instance (measured: an API burst then a page
+// burst on the standalone build held 12; model change step 1). The globalThis
+// cache is what makes the copies share one.
+globalForPrisma.prisma = prisma

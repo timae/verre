@@ -262,7 +262,7 @@ function StructureFilterSheet({ open, onClose, value, onChange, onReset }: {
           <VText variant="small" color="inkSoft" style={{ flexShrink: 1 }}>Drag across an axis to set a range. Tap a set axis twice to clear it.</VText>
           <IntensityScaleInfo />
         </View>
-        <StructureInput range style={FILTER_STYLE} value={value} onChange={onChange} />
+        <StructureInput range kind={FILTER_STYLE} value={value} onChange={onChange} />
       </BottomSheetScrollView>
     </Sheet>
   );

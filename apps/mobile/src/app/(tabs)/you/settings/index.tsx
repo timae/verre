@@ -11,16 +11,15 @@ import { confirmSignOut } from '@/lib/signOutConfirm';
 import { legalHref, profileEditHref, settingsHref, useSessionTab } from '@/lib/sessionStack';
 import { themes, useTheme } from '@/theme';
 import { useMeId } from '@/lib/meId';
+import { MOMENTS_AREA_TITLE } from '@/lib/momentVisibilityCopy';
 
 // Settings (handoff 04·4 `settings`): your profile card → Edit Profile, then
 // Account, Privacy, Appearance and Help & About; Tasting and Notifications
 // are "Soon". Also mounted on an opened post's stack (your own profile opened
-// from a post, settingsHref): the Dev Gallery lives on the outer You stack,
-// which must not present over an open post, so it's left out there.
+// from a post, settingsHref). The Dev Gallery row lives on Help & About.
 export default function Settings() {
   const router = useRouter();
   const mount = useSessionTab();
-  const inPost = mount.post != null;
   const { choice } = useTheme();
   const userId = useMeId();
   // Your name from the users row, never Better Auth's session copy (stale
@@ -39,7 +38,7 @@ export default function Settings() {
       <SetGroup flush>
         <SetNav icon="user" label="Account" onPress={() => router.push(settingsHref(mount, 'account'), { dangerouslySingular: true })} />
         <SetNav icon="eye" label="Privacy" onPress={() => router.push(settingsHref(mount, 'privacy'), { dangerouslySingular: true })} />
-        <SetNav icon="glass" label="Tasting" disabled soon />
+        <SetNav icon="glass" label={MOMENTS_AREA_TITLE} onPress={() => router.push(settingsHref(mount, 'defaults'), { dangerouslySingular: true })} />
       </SetGroup>
       <SetGroup flush>
         <SetNav icon="bell" label="Notifications" disabled soon />
@@ -53,13 +52,6 @@ export default function Settings() {
       <SetGroup flush>
         <SetNav icon="link" label="Help & About" onPress={() => router.push(legalHref(mount, 'about'), { dangerouslySingular: true })} />
       </SetGroup>
-      {/* Testing phase (Simon, 2026-07-16): visible in release builds too —
-          re-gate on __DEV__ before a public launch. */}
-      {!inPost ? (
-        <SetGroup flush>
-          <SetNav icon="grid" label="Dev Gallery" onPress={() => router.push('/you/dev-gallery', { dangerouslySingular: true })} />
-        </SetGroup>
-      ) : null}
       <SetGroup flush>
         <SetNav icon="logout" label="Sign Out" action critical disabled={busy} onPress={() => confirmSignOut(account.data?.email || name, setBusy)} />
       </SetGroup>

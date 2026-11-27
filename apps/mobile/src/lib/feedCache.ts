@@ -16,20 +16,21 @@ import { useSyncExternalStore } from 'react';
 const deletedPosts = new Set<number>();
 const deletedListeners = new Set<() => void>();
 export function markFeedPostDeleted(id: number) {
-  if (deletedPosts.has(id)) return;
+  if (!Number.isFinite(id) || deletedPosts.has(id)) return;
   deletedPosts.add(id);
   deletedListeners.forEach((l) => l());
 }
 export function isFeedPostDeleted(id: number): boolean {
-  return deletedPosts.has(id);
+  return Number.isFinite(id) && deletedPosts.has(id);
 }
-export function useIsFeedPostDeleted(id: number): boolean {
+// `enabled: false` (the impression page, whose id is not a post) reads false.
+export function useIsFeedPostDeleted(id: number, enabled = true): boolean {
   return useSyncExternalStore(
     (l) => {
       deletedListeners.add(l);
       return () => deletedListeners.delete(l);
     },
-    () => deletedPosts.has(id),
+    () => enabled && Number.isFinite(id) && deletedPosts.has(id),
     () => false,
   );
 }

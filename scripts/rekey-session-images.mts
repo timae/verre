@@ -32,15 +32,10 @@
 // per key FIRST, CopyObject to the current shape (`wines/<id>_<nanoid8>`,
 // `sessions/<nanoid16>`), then ONE session mutation contract (lock, advisory
 // lock, `readMeta: 'optional'`: a cold cache is never rebuilt by the script):
-//   - a warm line-up: `mutateWines` swaps the URL where it still equals the
-//     old one, then `mirrorLineup` (the house path for a wine-list change: a
-//     row CAS alone would be undone by the next wine write mirroring the cached
-//     old URL back); then a CAS of any durable row of that moment still holding
-//     the old URL (the mirror keeps rows the cached array doesn't list). A
-//     line-up evicted mid-way (`ContractCold`) falls back to the cold path;
-//   - a cold line-up: a compare-and-set of `wines.image_url` (`= old`) under
-//     the advisory lock (the named exception to the mirrorLineup rule,
-//     lib/CLAUDE.md): nothing cached to diverge from;
+//   - the bottles: RECORD-FIRST (catalogue model change § 8a) — a
+//     compare-and-set of `wines.image_url` (`= old`) under the advisory lock,
+//     a NULL line-up revision reconciled first, the revision bumped, and a
+//     cached line-up re-projected from the record after COMMIT (stamped);
 //   - the cover: a CAS of `sessions.cover_photo_url`; when meta is cached it is
 //     re-written FROM THE RECORD after COMMIT (XX + KEEPTTL, as the settings
 //     route does): no invalidation, no rebuild, no 503 for a live tasting;
@@ -115,8 +110,8 @@ export async function run(opts: RunOpts) {
 }
 
 async function runModes(opts: RunOpts) {
-  const [{ prisma }, { redis, k, scanKeys }, sess, mut, rec] = await Promise.all([
-    import('../lib/prisma.ts'), import('../lib/redis.ts'), import('../lib/session.ts'), import('../lib/sessionMutation.ts'), import('../lib/sessionRecord.ts'),
+  const [{ prisma }, { redis, k, scanKeys }, mut, rec, occ] = await Promise.all([
+    import('../lib/prisma.ts'), import('../lib/redis.ts'), import('../lib/sessionMutation.ts'), import('../lib/sessionRecord.ts'), import('../lib/occurrences.ts'),
   ])
   const bucket = opts.bucket ?? process.env.S3_BUCKET
   const endpoint = process.env.S3_ENDPOINT
@@ -352,6 +347,7 @@ async function runModes(opts: RunOpts) {
   }
 
   let updatedRows = 0, lostRaces = 0, moments = 0, momentFailed = 0, warmLineups = 0, metaRewrites = 0
+  const skippedUnreconciled: string[] = []
   const order = [...groups.keys()]
   for (let i = order.length - 1; i > 0; i--) { const j = randomInt(i + 1); [order[i], order[j]] = [order[j], order[i]] }
   for (const code of order) {
@@ -363,26 +359,26 @@ async function runModes(opts: RunOpts) {
     for (const sw of swaps) for (const [o, nu] of pairs(sw)) (sw.kind === 'wine' ? wineSwap : coverSwap).set(o, nu)
     try {
       const out = await mut.withSessionMutation(code, { label: 'rekey-images', redisLock: { waitMs: 3000 }, readMeta: 'optional' }, async (tx, ctx) => {
-        let n = 0, warm = false, coverChanged = false
-        if (!ctx.row) return { n, warm, nextMeta: null as unknown }
-        if (wineSwap.size) {
-          if (await redis.exists(k.wines(code))) {
-            try {
-              const next = await sess.mutateWines(ctx.fence!, (wines) => wines.map(w => wineSwap.has(w.imageUrl) ? { ...w, imageUrl: wineSwap.get(w.imageUrl)! } : w))
-              if (!sess.isMutateReject(next)) {
-                await sess.mirrorLineup(tx, ctx.row.id, next)
-                warm = true
-                // The bottles this swap moved (the mirror wrote their rows, so
-                // the CAS below finds them already done).
-                const moved = new Set(wineSwap.values())
-                n += next.filter(w => moved.has(w.imageUrl)).length
-              }
-            } catch (err) {
-              // Evicted between the check and the write: the cold path below.
-              if (!(err instanceof mut.ContractCold)) throw err
-            }
+        let n = 0, warm = false, coverChanged = false, unreconciled = false
+        let lineup: { wines: unknown[]; revision: number } | null = null
+        if (!ctx.row) return { n, warm, nextMeta: null as unknown, lineup, unreconciled }
+        if (wineSwap.size && ctx.row.lineupRevision === null) {
+          // An UNRECONCILED moment is skipped (review r1): reconciling here would
+          // orphan record-only rows before Simon has read them, and a CAS on the
+          // record alone would be undone by the reconciliation (the cache wins).
+          // Run scripts/warm-lineups.mts --apply first, then this again.
+          unreconciled = true
+        } else if (wineSwap.size) {
+          // RECORD-FIRST (catalogue model change § 8a): a compare-and-set of
+          // wines.image_url (`= old`; a concurrent edit wins), the revision
+          // bumped, the cached line-up projected from the record after COMMIT.
+          let moved = 0
+          for (const [o, nu] of wineSwap) moved += await tx.$executeRaw`UPDATE wines SET image_url = ${nu} WHERE session_id = ${ctx.row.id} AND image_url = ${o}`
+          n += moved
+          if (moved > 0) {
+            const revision = await occ.bumpLineupRevision(tx, ctx.row.id)
+            if (revision !== null && (await redis.exists(k.wines(code)))) { lineup = { wines: await occ.recordLineup(tx, ctx.row.id), revision }; warm = true }
           }
-          for (const [o, nu] of wineSwap) n += await tx.$executeRaw`UPDATE wines SET image_url = ${nu} WHERE session_id = ${ctx.row.id} AND image_url = ${o}`
         }
         for (const [o, nu] of coverSwap) {
           const c = await tx.$executeRaw`UPDATE sessions SET cover_photo_url = ${nu} WHERE id = ${ctx.row.id} AND cover_photo_url = ${o}`
@@ -395,14 +391,16 @@ async function runModes(opts: RunOpts) {
         // its COMMIT and this projection): the record is the truth either way.
         const staleMeta = !!ctx.meta?.coverPhotoUrl && coverSwap.has(ctx.meta.coverPhotoUrl)
         const nextMeta = ctx.meta && (coverChanged || staleMeta) ? rec.metaFromRecord((await rec.readLiveRow(tx, code))!, await rec.readRecordRoles(tx, code), ctx.meta) : null
-        return { n, warm, nextMeta }
+        return { n, warm, nextMeta, lineup, unreconciled }
       }, async (ctx, r) => {
+        if (r.lineup) await occ.projectLineup(ctx.fence!, r.lineup.wines as never, r.lineup.revision)
         if (r.nextMeta) await ctx.fence!.exec(m => { m.set(k.meta(code), JSON.stringify(r.nextMeta), { XX: true, KEEPTTL: true }) })
       })
       moments++
       updatedRows += out.n
       if (out.warm) warmLineups++
       if (out.nextMeta) metaRewrites++
+      if (out.unreconciled) { skippedUnreconciled.push(code); log({ code: 'skipped-unreconciled', moment: code }) }
       if (out.n === 0) lostRaces++
     } catch (err) {
       momentFailed++
@@ -424,7 +422,7 @@ async function runModes(opts: RunOpts) {
     updatedRows += n
     if (n === 0) lostRaces++
   }
-  const summary = { mode: 'apply', ...discovery, moments, momentFailed, warmLineups, metaRewrites, copied: copied.size, copyFailed, updatedRows, lostRaces, skippedRedisOnly: skippedRedisOnly.length, manifest: opts.manifest }
+  const summary = { mode: 'apply', ...discovery, moments, momentFailed, warmLineups, metaRewrites, copied: copied.size, copyFailed, updatedRows, lostRaces, skippedRedisOnly: skippedRedisOnly.length, skippedUnreconciled, manifest: opts.manifest }
   log(summary)
   return { ...summary, skippedRedisOnlyKeys: skippedRedisOnly }
 }

@@ -3,42 +3,39 @@ import { NextRequest, NextResponse } from 'next/server'
 import type { Prisma } from '@prisma/client'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta, scanKeys } from '@/lib/redis'
-import { isHostByIdentity, isProvider, mutateWines, isMutateReject, addWineToSession, mirrorLineup, reassignProvenance, reclaimIfUnreferenced } from '@/lib/session'
+import { isHostByIdentity, isProvider, mutateWines, isMutateReject, cleanBottleNotes, reassignProvenance } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved, authUnavailable, isTombstoneIdentityId } from '@/lib/identity'
 import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { isSameOrigin } from '@/lib/csrf'
-import { checkRate, getClientIp } from '@/lib/rateLimit'
-import { resolveCatalogLink, applyIdentityEditRule, catalogLinkRateKey, CatalogValidationError } from '@/lib/catalogWrite'
-import { withSessionMutation, admitted, refuse, bestEffortMirror, ContractCold, type MutationCtx } from '@/lib/sessionMutation'
+import { CatalogValidationError } from '@/lib/catalogWrite'
+import { prepareLink, applyRelink, PICK_WHOLE, CREATE_HIDDEN } from '@/lib/catalogLink'
+import { withSessionMutation, admitted, refuse, ContractCold, type MutationCtx } from '@/lib/sessionMutation'
 import { readGrant, grantStatus, type AuthorizedIdentity } from '@/lib/sessionGrant'
 import { contractFailure } from '@/lib/sessionRehydrate'
 import { openSessionFor } from '@/lib/sessionRoute'
+import { beforeBottleDelete, afterRelink } from '@/lib/cravings'
+import { bumpBottleVersions } from '@/lib/ratingVersions'
+import { reconcileLineup, lockOccurrence, relinkOccurrence, editOccurrenceNotes, withSnapshot, recordLineup, projectLineup, renumber, readOccurrence } from '@/lib/occurrences'
 import type { WineMeta, SessionMeta } from '@/lib/session'
 import { buildWineEcho } from '@/lib/sessionState'
 
-// A provider's own-wine check (plan § 2, G2): ownership is a privilege, so for
-// a `u:` caller with a grant it is read from the RECORD
-// (wines.added_by_identity_id) under the contract's locks; otherwise from the
-// cached provenance — Redis is the anonymous caller's and the Redis-only
-// session's authority.
-async function ownsWine(tx: Prisma.TransactionClient, ctx: MutationCtx, caller: AuthorizedIdentity, wine: WineMeta): Promise<boolean> {
-  if (caller.grant && ctx.row) {
-    const rows = await tx.$queryRaw<{ added_by_identity_id: string | null }[]>`
-      SELECT added_by_identity_id FROM wines WHERE id = ${wine.id} AND session_id = ${ctx.row.id}`
-    return rows[0]?.added_by_identity_id === caller.id
+// The target bottle under the contract's locks, and the caller's power over it
+// (host / cohost: any bottle; provider: only its own). In a Postgres-backed
+// moment both come from the RECORD (model change § 8a: the provider-ownership
+// check and the "target concurrently deleted" reject come from rows, for every
+// caller); in a Redis-only moment from the cached line-up, its authority.
+async function lockedTarget(tx: Prisma.TransactionClient, ctx: MutationCtx, wineId: string): Promise<WineMeta | null> {
+  if (ctx.row) {
+    await reconcileLineup(tx, ctx)
+    return lockOccurrence(tx, ctx.row.id, wineId)
   }
-  return wine.addedByIdentityId === caller.id
-}
-
-// The wine as the lineup holds it NOW, under the contract's locks (an absent
-// lineup is a cold cache, never "no such wine").
-async function currentWine(code: string, wineId: string): Promise<WineMeta | null> {
-  const raw = await redis.get(k.wines(code))
-  if (raw === null) throw new ContractCold(code)
+  const raw = await redis.get(k.wines(ctx.code))
+  if (raw === null) throw new ContractCold(ctx.code)
   return (JSON.parse(raw) as WineMeta[]).find(w => w.id === wineId) ?? null
 }
-
+const mayEdit = (ctx: MutationCtx, caller: AuthorizedIdentity, wine: WineMeta) =>
+  isHostByIdentity(ctx.meta!, caller) || (isProvider(ctx.meta!, caller) && wine.addedByIdentityId === caller.id)
 
 type Ctx = { params: Promise<{ code: string; wineId: string }> }
 
@@ -59,139 +56,106 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (pp.status === 'invalid') return authInvalid()
   const identity = pp.identity
 
-  const idx = wines.findIndex(w => w.id === wineId)
-  if (idx === -1) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
+  // The bottle as cached, else as recorded (a cache behind the record must not
+  // 404 a bottle that exists); re-read under the locks below.
+  const before = wines.find(w => w.id === wineId) ?? await readOccurrence(c, wineId)
+  if (!before) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
 
-  // Hosts (including cohosts) can edit any wine. Providers can edit
-  // only the wines they themselves added — matched via the wine's
-  // `addedByIdentityId`. Wines from before the provider feature have
-  // NULL provenance and aren't editable by providers.
+  // Hosts (including cohosts) can edit any wine. Providers can edit only the
+  // wines they added. Early reject only: the power and the ownership are
+  // re-decided under the locks (fresh grant, the locked row).
   const isHost = isHostByIdentity(meta, identity)
-  // Early reject only: the power and the ownership are re-decided under the
-  // locks (fresh grant, record ownership).
-  // A record-backed provider's ownership is the record's (r2 N4: cached
-  // provenance can trail a committed reassign) — the contract decides it.
-  const isOwnAsProvider = isProvider(meta, identity) && (!!identity.grant || wines[idx].addedByIdentityId === identity.id)
+  const isOwnAsProvider = isProvider(meta, identity) && (!!identity.grant || before.addedByIdentityId === identity.id)
   if (!isHost && !isOwnAsProvider) {
     return NextResponse.json({ error: 'only the host or the provider who added this wine can edit it' }, { status: 403 })
   }
 
   // ── Reassign "Brought by" — bounded v1 (docs/dev/proposals/reassign-brought-by.md).
-  // OWNERSHIP-ONLY: a PATCH carrying broughtByIdentityId may carry nothing else,
-  // so the critical section is S3-free and touches only the two provenance
-  // fields. Record-first since release B (plan D2) — see reassignBroughtBy.
+  // OWNERSHIP-ONLY: a PATCH carrying broughtByIdentityId may carry nothing else.
   if (body.broughtByIdentityId !== undefined) {
     return reassignBroughtBy({ c, wineId, body, identity, isHost, meta, showProvenance: meta.showProvenance !== false })
   }
-
-  // ── Catalog link on edit ─────────────────────────────────────────────────
-  //
-  // Two rules compose here, in this order:
-  //   1. If the caller sent productId/vintageId, validate them server-side (an
-  //      explicit re-link, or an explicit clear).
-  //   2. Otherwise apply the identity-changing-edit rule: an edit that changes
-  //      the instance's name, producer, or vintage CLEARS the link rather than
-  //      silently keeping a now-incompatible one. Cosmetic edits keep it.
-  //
-  // 🔒 Deciding this HERE, before addWineToSession, is what makes it apply to
-  // the wholesale Redis replacement below — the PATCH replaces the wine object
-  // entirely, so the link that survives is exactly the one computed now.
-  const sentLink = body.productId !== undefined || body.vintageId !== undefined
-  // Shares the POST route's counter key EXACTLY (app/api/CLAUDE.md's
-  // shared-counter pattern) so add + edit can't stack N+N against the catalog.
-  // Charged only when a link is supplied — ordinary wine edits are unaffected.
-  if (sentLink) {
-    const rl = await checkRate(catalogLinkRateKey(identity.id, getClientIp(req)), 120, 3600)
-    if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
-  }
-  let link: { productId: string | null; vintageId: string | null }
-  let linkIsDeliberate = false
-  try {
-    // The stored link is passed so a PARTIAL link edit works: sending only
-    // `{ vintageId: null }` ("drop to product grain") keeps the product rather
-    // than destroying it, because an omitted field means KEEP.
-    const explicit = sentLink
-      ? await resolveCatalogLink(body.productId, body.vintageId, wines[idx])
-      : null
-    link = applyIdentityEditRule(wines[idx], body, explicit)
-    // Did this request make a DELIBERATE decision about the link, or did the
-    // rule merely resolve to "leave it alone"? Only the former may overwrite
-    // what is live at write time — see the splice in the transform below.
-    linkIsDeliberate = sentLink
-      || link.productId !== (wines[idx].productId ?? null)
-      || link.vintageId !== (wines[idx].vintageId ?? null)
-  } catch (err) {
-    if (err instanceof CatalogValidationError) {
-      return NextResponse.json({ error: err.message }, { status: 400 })
-    }
-    throw err
+  // A photo has its own call (PUT …/image, DELETE …/image): an edit carries
+  // the bottle's fields only.
+  if (body.image !== undefined) {
+    return NextResponse.json({ error: 'change the photo with its own call' }, { status: 400 })
   }
 
-  // addWineToSession may do an S3 upload — a side effect that must run
-  // OUTSIDE the WATCH/MULTI transform (the transform can run multiple
-  // times on retry and must stay pure). Build the result here against the
-  // wine we read, then atomically splice it in by id below.
-  const result = await addWineToSession(c, { ...body, ...link }, wines[idx])
-  if ('error' in result) return NextResponse.json(result, { status: 400 })
-  // S3 effects follow the authorized commit (r3 P1): this edit's own upload is
-  // reclaimed if the write is refused; the image it replaces only after COMMIT.
-  // The image this edit decides: removal (null) or a SUCCESSFUL upload. Any
-  // other image input (an upload that failed, a non-data value) keeps the
-  // CURRENT locked imageUrl and reclaims nothing (r4 P1-2 — the snapshot's URL
-  // may already have been replaced and reclaimed by a concurrent edit).
-  const uploaded = result.imageUrl && result.imageUrl !== wines[idx].imageUrl ? result.imageUrl : null
-  const imageDecided = body.image === null || !!uploaded
-  let replacedUrl: string | null = null
-  let mirrored = false
-
-  // The write, inside the session mutation contract. The replacement was
-  // prepared before the lock (across the upload), so everything another writer
-  // may have changed since is taken from the CURRENT entry inside the transform:
-  // provenance (frozen on edits), the catalog link unless this edit set it
-  // deliberately, and 🔒 revealedAt (r3-2 — a concurrent hide must not be undone
-  // by this edit's stale copy). The lineup mirror projects the whole array.
+  // ── What an edit may change (catalogue model change step 4) ──────────────
+  //
+  // 🔒 A bottle's identity is its catalogue link: an identity edit is a RE-LINK
+  // (a pick, or a create through the add flow: signed in only), and it writes
+  // the WHOLE snapshot from the new entry. Typed identity text (name, producer,
+  // year, type, grape, region, country) is ignored: it never becomes the
+  // snapshot. A cosmetic edit writes only the bottle's own fields it SENT
+  // (About, vinification, the purchase link), decided against the row as it
+  // stands under the locks: nothing prepared before the lock is written back
+  // (the interleaved-PATCH rule, spec § 9: an edit queued behind a re-link
+  // must not put the old wine's name on the new link). A linked bottle is
+  // never unlinked (400). The link limiter (`rl:catalog-link`, shared with the
+  // POST) is charged only when a link is sent.
+  const userId = session?.user ? Number(session.user.id) : null
+  const linkReq = await prepareLink(req, body, { userId, identityId: identity.id, pickRate: true, required: false })
+  if (linkReq instanceof NextResponse) return linkReq
+  const notes = cleanBottleNotes(body)
+  // 🔒 Resolved under the locks, AFTER mayEdit, against the bottle as locked
+  // (security review r1: before the locks a partial pick on someone else's
+  // bottle answered 400 vs 403 by whether the guessed vintage was its wine's).
+  const link = async (tx: Prisma.TransactionClient, current: WineMeta) => {
+    try { return await applyRelink(tx, linkReq, userId, current) }
+    catch (err) { if (err instanceof CatalogValidationError) throw refuse(400, err.message); throw err }
+  }
+  const withNotes = (w: WineMeta): WineMeta => ({
+    ...w,
+    ...(notes.description !== undefined ? { description: notes.description || undefined } : {}),
+    ...(notes.vinification !== undefined ? { vinification: notes.vinification || undefined } : {}),
+    ...(notes.purchaseUrl !== undefined ? { purchaseUrl: notes.purchaseUrl || undefined } : {}),
+  })
   let lineup: WineMeta[]
   try {
-    lineup = await withSessionMutation(c, { label: 'wine-edit', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
-      replacedUrl = null; mirrored = false   // per attempt (r3 P1)
+    lineup = await withSessionMutation(c, { label: 'wine-edit', redisLock: { waitMs: 3000 }, caller: identity, bumpLineup: true }, async (tx, ctx) => {
       const caller = admitted(ctx)
-      const wine = await currentWine(c, wineId)
+      const wine = await lockedTarget(tx, ctx, wineId)
       if (!wine) throw refuse(404, 'wine not found')
-      if (!isHostByIdentity(ctx.meta!, caller) && !(isProvider(ctx.meta!, caller) && await ownsWine(tx, ctx, caller, wine))) {
-        throw refuse(403, 'only the host or the provider who added this wine can edit it')
+      if (!mayEdit(ctx, caller, wine)) throw refuse(403, 'only the host or the provider who added this wine can edit it')
+      // A new wine is minted only into the record (race review r1: a Redis-only
+      // moment writes its cache before COMMIT, so a rolled-back mint could stay
+      // linked there). A signed-in caller in a Redis-only moment means its
+      // promotion failed: retry.
+      if (!ctx.row && linkReq.kind === 'create') throw refuse(503, 'Try again in a moment.', { 'Retry-After': '1' })
+      // 🔒 A bottle hidden from this caller (blind, unrevealed, Blind for
+      // Everyone: the only way a caller who may edit it is masked) takes no
+      // PARTIAL pick: a missing grain would be resolved against the hidden
+      // wine (review r2: `{vintageId}` alone; r3: `{productId}` alone keeps the
+      // stored vintage). Both keys, or the one fixed refusal.
+      const blind = ctx.row ? !!ctx.row.blind : !!ctx.meta!.blind
+      const forEveryone = ctx.row ? !!ctx.row.blindForEveryone : !!ctx.meta!.blindForEveryone
+      const hidden = blind && forEveryone && !wine.revealedAt
+      if (hidden && linkReq.kind === 'pick' && (linkReq.productId === undefined || linkReq.vintageId === undefined)) throw refuse(400, PICK_WHOLE)
+      // …and no CREATE (Codex r1): its replay answer (no mint) against a miss
+      // (the mint's own validation) would tell which hidden bottle is which of
+      // the caller's wines. A whole pick still re-links it.
+      if (hidden && linkReq.kind === 'create') throw refuse(400, CREATE_HIDDEN)
+      const applied = await link(tx, wine)
+      if (ctx.row) {
+        // A re-link carries the bottle's cravings to the new wine (R3).
+        if (applied) { await relinkOccurrence(tx, ctx.row.id, wineId, applied, applied.snapshot); await afterRelink(tx, wineId) }
+        await editOccurrenceNotes(tx, ctx.row.id, wineId, notes)
+        return { lineup: await recordLineup(tx, ctx.row.id), revision: ctx.row.lineupRevision }
       }
       const out = await mutateWines(ctx.fence!, (current) => {
         const i = current.findIndex(w => w.id === wineId)
         if (i === -1) return { reject: 'wine not found' }
         const next = current.slice()
-        next[i] = {
-          ...result,
-          // An edit that did not touch the image keeps the CURRENT one (a
-          // concurrent image change must not be reverted to stale bytes).
-          ...(imageDecided ? {} : { imageUrl: current[i].imageUrl, ...(body.image === undefined ? { image: current[i].image } : {}) }),
-          revealedAt: current[i].revealedAt ?? null,
-          addedByIdentityId: current[i].addedByIdentityId,
-          addedByDisplayName: current[i].addedByDisplayName,
-          // An edit that made NO deliberate link decision keeps whatever link is
-          // live now (a concurrent link edit must not be undone by this copy).
-          ...(linkIsDeliberate
-            ? { productId: link.productId, vintageId: link.vintageId }
-            : { productId: current[i].productId ?? null, vintageId: current[i].vintageId ?? null }),
-        }
-        replacedUrl = imageDecided && current[i].imageUrl && current[i].imageUrl !== next[i].imageUrl ? current[i].imageUrl : null
+        next[i] = withNotes(applied ? withSnapshot(current[i], applied, applied.snapshot) : current[i])
         return next
       })
       if (isMutateReject(out)) throw refuse(404, out.reject)
-      mirrored = await bestEffortMirror(tx, c, 'wine-list', () => mirrorLineup(tx, ctx.row?.id ?? null, out))
-      return out
-    })
+      return { lineup: out, revision: null }
+    }, async (ctx, r) => { if (r.revision !== null) await projectLineup(ctx.fence!, r.lineup, r.revision) }).then(r => r.lineup)
   } catch (err) {
-    if (uploaded) await reclaimIfUnreferenced(c, uploaded)
     return contractFailure(err, c, { label: 'wine-edit' })
   }
-  // Only once the RECORD no longer references it (the mirror landed — r4 P1-1);
-  // a failed mirror leaves the old bytes (a leak, never a dead reference).
-  if (replacedUrl && mirrored) reclaimImages([replacedUrl])
   await touchWithMeta(c)
 
   // The same per-viewer view as the line-up read (lib/sessionState.ts
@@ -205,11 +169,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 // Reassign "Brought by" (bounded v1), RECORD-FIRST inside the session mutation
 // contract (plan D2): every check is re-made under the locks (the caller's
 // fresh grant; the target admitted in this moment — by the record for a `u:`
-// target); the lineup + the FORCED provenance commit in Postgres; the Redis
-// provenance is the projection after COMMIT. Ownership decides provider edit
-// rights, so the cache must never name an owner the record does not (A's
-// Redis-first compensation could, after a crash). v1 is limited to
-// Postgres-backed moments (docs/dev/proposals/reassign-brought-by.md).
+// target); the FORCED provenance commits in Postgres, the revision bumped; the
+// cached line-up is the projection after COMMIT. Ownership decides provider edit
+// rights, so the cache must never name an owner the record does not. v1 is
+// limited to Postgres-backed moments (docs/dev/proposals/reassign-brought-by.md).
 async function reassignBroughtBy({
   c, wineId, body, identity, isHost, meta, showProvenance,
 }: {
@@ -237,7 +200,7 @@ async function reassignBroughtBy({
     return NextResponse.json({ error: 'invalid identity' }, { status: 400 })
   }
   try {
-    const reassigned = await withSessionMutation(c, { label: 'reassign', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
+    const lineup = await withSessionMutation(c, { label: 'reassign', redisLock: { waitMs: 3000 }, caller: identity, bumpLineup: true }, async (tx, ctx) => {
       const caller = admitted(ctx)
       if (!isHostByIdentity(ctx.meta!, caller)) throw refuse(403, 'only a host or co-host can change who brought an impression')
       const provenanceShown = ctx.row ? ctx.row.showProvenance !== false : ctx.meta!.showProvenance !== false
@@ -258,29 +221,16 @@ async function reassignBroughtBy({
       if (!ctx.row) {
         throw refuse(409, 'this moment isn’t saved yet: a signed-in guest needs to rate or join before you can change who brought it')
       }
-      const raw = await redis.get(k.wines(c))
-      if (raw === null) throw new ContractCold(c)
-      const wines = JSON.parse(raw) as WineMeta[]
-      const i = wines.findIndex(w => w.id === wineId)
-      if (i === -1) throw refuse(404, 'wine not found')
-      const next = wines.slice()
-      next[i] = { ...wines[i], addedByIdentityId: target, addedByDisplayName: targetName }
-      await reassignProvenance(tx, ctx.row.id, next, next[i])
-      return { lineup: next, wine: next[i] }
-    }, async (ctx, { wine }) => {
-      await mutateWines(ctx.fence!, (current) => {
-        const i = current.findIndex(w => w.id === wineId)
-        if (i === -1) return { reject: 'gone' }
-        const next = current.slice()
-        next[i] = { ...current[i], addedByIdentityId: wine.addedByIdentityId, addedByDisplayName: wine.addedByDisplayName }
-        return next
-      })
-    })
+      await reconcileLineup(tx, ctx)
+      if (!(await lockOccurrence(tx, ctx.row.id, wineId))) throw refuse(404, 'wine not found')
+      await reassignProvenance(tx, ctx.row.id, wineId, target, targetName)
+      return { lineup: await recordLineup(tx, ctx.row.id), revision: ctx.row.lineupRevision! }
+    }, async (ctx, r) => { await projectLineup(ctx.fence!, r.lineup, r.revision) }).then(r => r.lineup)
     await touchWithMeta(c)
     // The same per-viewer view as the line-up read (Blind for All masks a
     // hidden bottle in the host's echo too; leak-fixes F6). Reaching here
     // means showProvenance is on (gated above).
-    return NextResponse.json(await buildWineEcho(c, { ...meta, showProvenance: true }, identity, reassigned.lineup, wineId))
+    return NextResponse.json(await buildWineEcho(c, { ...meta, showProvenance: true }, identity, lineup, wineId))
   } catch (err) {
     return contractFailure(err, c, { busy: 429, label: 'reassign' })
   }
@@ -301,48 +251,67 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (pp.status === 'invalid') return authInvalid()
   const identity = pp.identity
 
+  // Same provider/host rules as PATCH. Early reject only — re-decided under the
+  // locks. An unknown bottle is decided there too (already gone → 200).
   const targetWine = wines.find(w => w.id === wineId)
-  if (!targetWine) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
-  // Same provider/host rules as PATCH. Early reject only — re-decided under the locks.
-  if (!isHostByIdentity(meta, identity) && !(isProvider(meta, identity) && (!!identity.grant || targetWine.addedByIdentityId === identity.id))) {
+  if (!isHostByIdentity(meta, identity) && !(isProvider(meta, identity) && (!!identity.grant || !targetWine || targetWine.addedByIdentityId === identity.id))) {
     return NextResponse.json({ error: 'only the host or the provider who added this wine can delete it' }, { status: 403 })
   }
 
-  // Inside the session mutation contract (the power and the record ownership
-  // fresh under the locks): the fenced lineup filter (content), the mirror that
-  // deletes the wine's row (its ratings cascade) and re-positions the rest, and
-  // the wine's rating keys — every rating-key-deleting path holds the lease
-  // (plan § 3, r3-3). The S3 bytes go after COMMIT.
+  // Inside the session mutation contract (the power and the ownership fresh
+  // under the locks). Postgres-backed: the row deleted (its ratings cascade),
+  // positions renumbered, the revision bumped, the line-up projected after
+  // COMMIT; Redis-only: the fenced line-up filter. The wine's rating keys go
+  // with it (every rating-key-deleting path holds the lease, plan § 3, r3-3);
+  // the S3 bytes after COMMIT. Idempotent: a bottle already gone answers 200.
   let deletedUrl: string | null = null
-  let deleteMirrored = false
   try {
-    await withSessionMutation(c, { label: 'wine-delete', redisLock: { waitMs: 3000 }, caller: identity, bumpGen: true }, async (tx, ctx) => {
-      deletedUrl = null; deleteMirrored = false   // per attempt (r3 P1)
+    await withSessionMutation(c, { label: 'wine-delete', redisLock: { waitMs: 3000 }, caller: identity, bumpGen: true, bumpLineup: true }, async (tx, ctx) => {
+      deletedUrl = null   // per attempt (r3 P1)
       const caller = admitted(ctx)
-      const wine = await currentWine(c, wineId)
-      if (!wine) throw refuse(404, 'wine not found')
-      if (!isHostByIdentity(ctx.meta!, caller) && !(isProvider(ctx.meta!, caller) && await ownsWine(tx, ctx, caller, wine))) {
-        throw refuse(403, 'only the host or the provider who added this wine can delete it')
+      const wine = await lockedTarget(tx, ctx, wineId)
+      if (!wine) {
+        if (!isHostByIdentity(ctx.meta!, caller) && !isProvider(ctx.meta!, caller)) throw refuse(403, 'only the host or the provider who added this wine can delete it')
+        return { lineup: ctx.row ? await recordLineup(tx, ctx.row.id) : null, revision: ctx.row?.lineupRevision ?? null }
       }
-      const out = await mutateWines(ctx.fence!, (current) => {
-        const gone = current.find(w => w.id === wineId)
-        if (!gone) return { reject: 'wine not found' }
-        deletedUrl = gone.imageUrl || null
-        return current.filter(w => w.id !== wineId)
-      })
-      if (isMutateReject(out)) throw refuse(404, out.reject)
-      deleteMirrored = await bestEffortMirror(tx, c, 'wine-list', () => mirrorLineup(tx, ctx.row?.id ?? null, out, { deletedId: wineId }))
+      if (!mayEdit(ctx, caller, wine)) throw refuse(403, 'only the host or the provider who added this wine can delete it')
+      let lineup: WineMeta[] | null = null
+      if (ctx.row) {
+        // Its cravings first (lib/cravings.ts, catalogue model change § 5): the
+        // ones visible to their owner lose the bottle and keep their moment;
+        // the still-hidden ones go with the row (the key's CASCADE).
+        await beforeBottleDelete(tx, wineId)
+        // Every version row of the bottle moves BEFORE its ratings cascade
+        // (docs/dev/rating-saves.md): the add path can re-insert a supplied id,
+        // and a late save must not land on it. No XP change.
+        await bumpBottleVersions(tx, wineId)
+        // rating-write: BUMPS
+        await tx.$executeRaw`DELETE FROM wines WHERE id = ${wineId} AND session_id = ${ctx.row.id}`
+        await renumber(tx, ctx.row.id)
+        lineup = await recordLineup(tx, ctx.row.id)
+      } else {
+        const out = await mutateWines(ctx.fence!, (current) => current.some(w => w.id === wineId) ? current.filter(w => w.id !== wineId) : { reject: 'gone' })
+        if (isMutateReject(out)) return { lineup: null, revision: null }
+      }
+      deletedUrl = wine.imageUrl || null
+      // The bottle's rating keys: in a Postgres-backed moment AFTER COMMIT
+      // (Codex r1: deleted before it, a failed COMMIT would keep the bottle and
+      // lose guests' ratings, which exist only in Redis), by the contract,
+      // fenced, before the projection; in a Redis-only moment now, with the
+      // bottle (the cache is the data).
+      // rating-write: BUMPS
       const ratingKeys = await scanKeys(`s:${c}:r:*:${wineId}`)
-      if (ratingKeys.length > 0) await ctx.fence!.exec(m => { m.del(ratingKeys) })
-    })
+      // rating-write: BUMPS
+      if (ctx.row) ctx.after.dropKeys.push(...ratingKeys)
+      else if (ratingKeys.length > 0) await ctx.fence!.exec(m => { m.del(ratingKeys) })
+      return { lineup, revision: ctx.row?.lineupRevision ?? null }
+    }, async (ctx, r) => { if (r.lineup && r.revision !== null) await projectLineup(ctx.fence!, r.lineup, r.revision) })
   } catch (err) {
     return contractFailure(err, c, { busy: 429, label: 'wine-delete' })
   }
-  // The wine's S3 image after COMMIT: the URL it referenced (a legacy
-  // id-keyed photo's URL IS its key until the re-key script moves it, so this
-  // one reclaim covers both shapes). Fire-and-forget. Only when the record's
-  // wine row went too (r4 P1-1).
-  if (deleteMirrored && deletedUrl) reclaimImages([deletedUrl])
+  // The wine's S3 image after COMMIT (the record row is gone with it).
+  // Fire-and-forget.
+  if (deletedUrl) reclaimImages([deletedUrl])
   await touchWithMeta(c)
   return NextResponse.json({ ok: true })
 }

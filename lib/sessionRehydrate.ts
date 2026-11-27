@@ -8,8 +8,10 @@ import {
 } from '@/lib/sessionMutation'
 import { readLiveRow, readRecordRoles, metaFromRecord, type SessionRow } from '@/lib/sessionRecord'
 import { disambiguateAgainst } from '@/lib/displayName.server'
-import type { AuthorizedIdentity } from '@/lib/sessionGrant'
+import type { AuthorizedIdentity, GrantStatus } from '@/lib/sessionGrant'
 import type { SessionMeta, WineMeta, RatingMeta } from '@/lib/session'
+import { recordLineup, reconcileLineup, projectLineup, parseLineup } from '@/lib/occurrences'
+export { recordLineup }
 
 // Rebuild and heal (docs/dev/proposals/redis-rehydration.md § 5; release-B plan
 // § 4). For a Postgres-backed session the record is the truth and Redis a
@@ -46,6 +48,8 @@ export const WINE_META_FIELDS: Record<keyof WineMeta, 'rebuilt' | 'ephemeral'> =
 }
 export const RATING_META_FIELDS: Record<keyof RatingMeta, 'rebuilt' | 'ephemeral'> = {
   score: 'rebuilt', flavors: 'rebuilt', aromas: 'rebuilt', notes: 'rebuilt', at: 'rebuilt',
+  // From `rating_versions` (a LEFT JOIN in recordRatings; absent without a row).
+  v: 'rebuilt',
 }
 
 type Db = Prisma.TransactionClient | typeof prisma
@@ -95,49 +99,20 @@ export async function eligibleRoster(db: Db, row: Pick<SessionRow, 'id' | 'code'
 
 // ── Record → Redis values (§ 5.2) ────────────────────────────────────────────
 
-type WineRow = {
-  id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null
-  image_url: string | null; description: string | null; region: string | null; country: string | null
-  vinification: string | null; purchase_url: string | null; revealed_at: Date | null
-  added_by_identity_id: string | null; added_by_display_name: string | null; product_id: string | null; vintage_id: string | null
-}
-
-export async function recordLineup(db: Db, sessionId: number): Promise<WineMeta[]> {
-  const rows = await db.$queryRaw<WineRow[]>`
-    SELECT id, name, producer, vintage, grape, style, image_url, description, region, country, vinification,
-           purchase_url, revealed_at, added_by_identity_id, added_by_display_name, product_id, vintage_id
-      FROM wines WHERE session_id = ${sessionId}
-     ORDER BY position NULLS LAST, created_at, id`
-  return rows.map((w) => {
-    const out: WineMeta = {
-      id: w.id, name: w.name, producer: w.producer ?? '', vintage: (w.vintage ?? '').trim(), grape: w.grape ?? '',
-      type: w.style ?? '', image: '', imageUrl: w.image_url ?? '',
-      revealedAt: w.revealed_at ? w.revealed_at.toISOString() : null,
-      productId: w.product_id, vintageId: w.vintage_id,
-    }
-    if (w.description) out.description = w.description
-    if (w.region) out.region = w.region
-    if (w.country) out.country = w.country
-    if (w.vinification) out.vinification = w.vinification
-    if (w.purchase_url) out.purchaseUrl = w.purchase_url
-    if (w.added_by_identity_id) out.addedByIdentityId = w.added_by_identity_id
-    if (w.added_by_display_name) out.addedByDisplayName = w.added_by_display_name
-    return out
-  })
-}
-
 type RatingRow = {
   wine_id: string; user_id: number | null; tombstone_key: string | null; score: unknown
   flavors: unknown; aromas: unknown; notes: string | null; mirror_at: Date | null; rated_at: Date | null
+  version: number | null
 }
 
 // Ratings on the lineup, keyed by their Redis identity: `u:<id>` for a live
 // (not banned) rater, `d:<key>` for a tombstone group (§ 4.3).
 export async function recordRatings(db: Db, sessionId: number, code: string): Promise<Map<string, RatingMeta>> {
   const rows = await db.$queryRaw<RatingRow[]>`
-    SELECT r.wine_id, r.user_id, r.tombstone_key, r.score, r.flavors, r.aromas, r.notes, r.mirror_at, r.rated_at
+    SELECT r.wine_id, r.user_id, r.tombstone_key, r.score, r.flavors, r.aromas, r.notes, r.mirror_at, r.rated_at, rv.version
       FROM ratings r
       JOIN wines w ON w.id = r.wine_id AND w.session_id = r.session_id
+      LEFT JOIN rating_versions rv ON rv.user_id = r.user_id AND rv.wine_id = r.wine_id
      WHERE r.session_id = ${sessionId}
        AND (r.user_id IS NOT NULL OR r.tombstone_key IS NOT NULL)
        AND NOT EXISTS (SELECT 1 FROM session_bans b WHERE b.session_code = ${code} AND b.identity_id = 'u:' || r.user_id)
@@ -149,12 +124,14 @@ export async function recordRatings(db: Db, sessionId: number, code: string): Pr
   for (const r of rows) {
     const identity = r.user_id !== null ? `u:${r.user_id}` : r.tombstone_key!
     const at = r.mirror_at ?? r.rated_at
+    // rating-write: EXEMPT
     out.set(k.rating(code, identity, r.wine_id), {
       score: Number(r.score ?? 0),
       flavors: (r.flavors && typeof r.flavors === 'object' ? r.flavors : {}) as Record<string, number>,
       aromas: Array.isArray(r.aromas) ? r.aromas as RatingMeta['aromas'] : [],
       notes: r.notes ?? '',
       at: at ? at.getTime() : 0,
+      ...(r.version != null ? { v: Number(r.version) } : {}),
     })
   }
   return out
@@ -162,6 +139,7 @@ export async function recordRatings(db: Db, sessionId: number, code: string): Pr
 
 // Identity of a rating key `s:{C}:r:<identity>:<wineId>` (identities carry one colon).
 function ratingKeyIdentity(code: string, key: string): string | null {
+  // rating-write: EXEMPT
   const rest = key.slice(`s:${code}:r:`.length)
   const i = rest.lastIndexOf(':')
   return i > 0 ? rest.slice(0, i) : null
@@ -240,7 +218,19 @@ async function rebuildWork(
   if (!force && state === 'warm') return { outcome: 'warm', state }
   const liveMeta = force ? ctx.meta : null
   if (!publish) return { outcome: 'planned', state, plan: await planPublish(tx, ctx.row, liveMeta, !!metaRaw, 'rebuild:plan') }
-  const { plan, published } = await publishFromRecord(tx, ctx.row, ctx.fence!, liveMeta, !!metaRaw)
+  // NULL = not reconciled (model change § 8a): a present line-up is copied in
+  // and the record's unlisted rows orphaned BEFORE the record is read for the
+  // publish, so the rebuild can never drop a cache-only bottle. 🔒 A rebuild
+  // that did the NULL → 1 stamp itself publishes NO stamp (review r1 M1): it
+  // publishes before its own COMMIT, and a stamp of a revision that then fails
+  // to commit could later be served as current; the next read's refresh stamps
+  // after its COMMIT. Ids KNOWN to need a re-mint defer the reconciliation to
+  // that refresh; an id lost to a race during the copy is re-minted here (its
+  // rating keys copied, the old ones deleted after COMMIT; a rollback leaves a
+  // NULL revision and a cache the next reconciliation copies in).
+  const wasNull = ctx.row.lineupRevision === null
+  await reconcileLineup(tx, ctx, { defer: true })
+  const { plan, published } = await publishFromRecord(tx, ctx.row, ctx.fence!, liveMeta, !!metaRaw, !wasNull)
   return { outcome: 'applied', state, plan, published }
 }
 
@@ -265,13 +255,20 @@ return ARGV[1]`
 // metaFields [].
 export type RebuildCounts = {
   rebuilt: { meta: boolean; lineup: boolean; wines: number; members: number; tombstones: number; ratings: number; bans: number; kicked: number }
-  reconciled: { metaFields: string[]; identities: number; ratingKeys: number; bans: number; kicked: number; provenance: number }
+  reconciled: { metaFields: string[]; identities: number; ratingKeys: number; bans: number; kicked: number; provenance: number; lineup: boolean }
 }
 export type RebuildPlan = {
   code: string
   ttl: number
   wines: WineMeta[]
   cachedWinesRaw: string | null
+  // How the publish writes the line-up (model change § 8a): 'nx' when absent;
+  // 'replace' (XX KEEPTTL, from the record) when the cache is not stamped with
+  // the record's revision; 'keep' when it is (NX, a no-op, + the provenance
+  // patch). `revision` = the stamp written beside it (null: not reconciled — a
+  // dry run only; the apply reconciles first).
+  lineupWrite: 'nx' | 'replace' | 'keep'
+  revision: number | null
   patchedWines: WineMeta[] | null
   hset: [string, string][]
   hdel: string[]
@@ -298,6 +295,7 @@ export async function planPublish(
   liveMeta: SessionMeta | null,
   metaPresent: boolean,
   label: string,
+  stamp = true,
 ): Promise<RebuildPlan> {
   const code = row.code
   const ttl = lifespanTTL(row.lifespan ?? undefined)
@@ -328,6 +326,7 @@ export async function planPublish(
   }
   for (const d of roster.tombstones) if (!(d in identities)) hset.push([d, '[deleted]'])
   const hdel = Object.keys(identities).filter(id => (id.startsWith('u:') && !eligibleIds.has(id)) || (id.startsWith('d:') && !tombstones.has(id)))
+  // rating-write: EXEMPT
   const ratingKeys = keys.filter(key => key.startsWith(`s:${code}:r:`))
   const delRatings = ratingKeys.filter((key) => {
     const id = ratingKeyIdentity(code, key) ?? ''
@@ -346,12 +345,20 @@ export async function planPublish(
   // reassign is record-first, so a refused projection leaves the cache naming
   // the old owner while the lineup itself (content, NX) is kept. Only a
   // non-null record owner overwrites (an add whose mirror failed has none).
-  const cachedWinesRaw = await redis.get(k.wines(code))
+  const [cachedWinesRaw, cachedWrev] = await redis.mGet([k.wines(code), k.wrev(code)])
+  // `stamp` false: the line-up is written from the record but carries no stamp
+  // (a revision this transaction set itself); a present one is replaced.
+  const revision = stamp ? row.lineupRevision : null
+  const lineupWrite: RebuildPlan['lineupWrite'] = cachedWinesRaw === null ? 'nx'
+    : row.lineupRevision !== null && (!stamp || cachedWrev !== String(row.lineupRevision)) ? 'replace' : 'keep'
   let patchedWines: WineMeta[] | null = null
   let provenance = 0
-  if (cachedWinesRaw) {
+  if (cachedWinesRaw && lineupWrite === 'keep') {
     const byId = new Map(wines.map(w => [w.id, w]))
-    const cached = JSON.parse(cachedWinesRaw) as WineMeta[]
+    // Tolerant (a damaged blob must not fail the plan; review r2). A provenance
+    // patch therefore writes the PARSED entries back (unusable ones dropped,
+    // absent optional keys as ''), as the reconciliation would.
+    const cached = parseLineup(cachedWinesRaw) ?? []
     const next = cached.map((w) => {
       const r = byId.get(w.id)
       if (!r?.addedByIdentityId || (r.addedByIdentityId === w.addedByIdentityId && r.addedByDisplayName === w.addedByDisplayName)) return w
@@ -364,11 +371,11 @@ export async function planPublish(
   const cachedBans = new Set(bans), cachedKicked = new Set(kicked)
   const metaWrite = liveMeta ? { write: 'xx' as const, expect: 'rewrite' as const } : { write: 'nx' as const, expect: metaPresent ? 'noop' as const : 'create' as const }
   return {
-    code, ttl, wines, cachedWinesRaw, patchedWines, hset, hdel, ratings, delRatings,
+    code, ttl, wines, cachedWinesRaw, lineupWrite, revision, patchedWines, hset, hdel, ratings, delRatings,
     bans: roster.bans, sremBans, kickedIds: [...kickedIds], sremKicked,
     // EVERY key of the session, the readiness pair included (r1 P2-5): an
     // existing meta near its expiry must not die before its rebuilt siblings.
-    expireKeys: [...new Set([...keys, k.meta(code), k.wines(code), k.identities(code), k.bans(code), k.kicked(code), k.gen(code), ...ratings.keys()])],
+    expireKeys: [...new Set([...keys, k.meta(code), k.wines(code), k.identities(code), k.bans(code), k.kicked(code), k.gen(code), ...(revision !== null ? [k.wrev(code)] : []), ...ratings.keys()])],
     meta, liveMeta, metaWrite,
     counts: {
       rebuilt: {
@@ -384,6 +391,7 @@ export async function planPublish(
       reconciled: {
         metaFields: liveMeta ? metaFieldChanges(liveMeta, meta) : [],
         identities: hdel.length, ratingKeys: delRatings.length, bans: sremBans.length, kicked: sremKicked.length, provenance,
+        lineup: lineupWrite === 'replace',
       },
     },
     info: { tombstoneGroups: roster.tombstones.length, orphans: userIdsIn.filter(id => !liveUsers.has(`u:${id}`)).length },
@@ -414,7 +422,7 @@ export function metaFieldChanges(cached: SessionMeta, next: SessionMeta): string
 // The MULTI as a list, built ONCE from the plan; applyPublish queues it and the
 // EXEC replies are read back by the same list (they cannot drift).
 type Multi = Parameters<Parameters<Fence['exec']>[0]>[0]
-type PublishTag = 'lineup' | 'provenance' | 'member' | 'tombstone' | 'hdel' | 'rating' | 'delRatings'
+type PublishTag = 'lineup' | 'wrev' | 'provenance' | 'member' | 'tombstone' | 'hdel' | 'rating' | 'delRatings'
   | 'sAddBans' | 'sRemBans' | 'sAddKicked' | 'sRemKicked' | 'expire' | 'meta'
 export type Published = { tags: PublishTag[]; replies: unknown[] }
 
@@ -422,7 +430,9 @@ function publishCommands(plan: RebuildPlan): { tag: PublishTag; queue: (m: Multi
   const { code, ttl } = plan
   const out: { tag: PublishTag; queue: (m: Multi) => void }[] = []
   const q = (tag: PublishTag, queue: (m: Multi) => void) => { out.push({ tag, queue }) }
-  q('lineup', m => { m.set(k.wines(code), JSON.stringify(plan.wines), { NX: true, EX: ttl }) })
+  if (plan.lineupWrite === 'replace') q('lineup', m => { m.set(k.wines(code), JSON.stringify(plan.wines), { XX: true, KEEPTTL: true }) })
+  else q('lineup', m => { m.set(k.wines(code), JSON.stringify(plan.wines), { NX: true, EX: ttl }) })
+  if (plan.revision !== null) { const rev = String(plan.revision); q('wrev', m => { m.set(k.wrev(code), rev, { EX: ttl }) }) }
   if (plan.patchedWines) { const patched = plan.patchedWines; q('provenance', m => { m.set(k.wines(code), JSON.stringify(patched), { XX: true, KEEPTTL: true }) }) }
   for (const [id, name] of plan.hset) q(id.startsWith('d:') ? 'tombstone' : 'member', m => { m.hSetNX(k.identities(code), id, name) })
   if (plan.hdel.length) q('hdel', m => { m.hDel(k.identities(code), plan.hdel) })
@@ -459,13 +469,19 @@ export function confirmedEffects(plan: RebuildPlan, { tags, replies }: Published
   const num = (v: unknown) => { if (typeof v === 'number' && Number.isInteger(v) && v >= 0) return v; throw new Error('publish: unexpected count reply shape') }
   const c: RebuildCounts = {
     rebuilt: { meta: false, lineup: false, wines: 0, members: 0, tombstones: 0, ratings: 0, bans: 0, kicked: 0 },
-    reconciled: { metaFields: [], identities: 0, ratingKeys: 0, bans: 0, kicked: 0, provenance: 0 },
+    reconciled: { metaFields: [], identities: 0, ratingKeys: 0, bans: 0, kicked: 0, provenance: 0, lineup: false },
   }
   let metaAcked = false
   tags.forEach((tag, i) => {
     const v = replies[i]
     switch (tag) {
-      case 'lineup': if (set(v)) { c.rebuilt.lineup = true; c.rebuilt.wines = plan.wines.length } break
+      case 'lineup':
+        if (set(v)) {
+          if (plan.lineupWrite === 'replace') c.reconciled.lineup = true
+          else { c.rebuilt.lineup = true; c.rebuilt.wines = plan.wines.length }
+        }
+        break
+      case 'wrev': set(v); break
       case 'provenance': if (set(v)) c.reconciled.provenance = plan.counts.reconciled.provenance; break
       case 'member': if (bool(v)) c.rebuilt.members++; break
       case 'tombstone': if (bool(v)) c.rebuilt.tombstones++; break
@@ -496,12 +512,13 @@ async function publishFromRecord(
   fence: Fence,
   liveMeta: SessionMeta | null,
   metaPresent: boolean,
+  stamp = true,
 ): Promise<{ plan: RebuildPlan; published: Published }> {
   const code = row.code
   const ttl = lifespanTTL(row.lifespan ?? undefined)
   const gen = String(await redis.eval(GEN_BASELINE_SCRIPT, { keys: [k.gen(code)], arguments: [randomUUID(), String(ttl)] }))
   const label = liveMeta ? 'rebuild:force' : 'rebuild'
-  const plan = await planPublish(tx, row, liveMeta, metaPresent, label)
+  const plan = await planPublish(tx, row, liveMeta, metaPresent, label, stamp)
   await mutationHooks.at('beforePublish', code, label)
   const published = await applyPublish(fence, plan, gen)
   console.log('[rehydrate]', JSON.stringify({
@@ -514,7 +531,10 @@ async function publishFromRecord(
 
 // ── The read-path entry points (§ 5.3, plan § 4.2) ───────────────────────────
 
-export type OpenedSession = { status: 'live'; meta: SessionMeta; wines: WineMeta[] } | { status: 'absent' | 'restoring' }
+// `wrev` = the cached line-up's stamp (model change § 8a), read in the same
+// MGET; the line-up readers compare it with the record (lib/sessionRoute.ts
+// servedLineup).
+export type OpenedSession = { status: 'live'; meta: SessionMeta; wines: WineMeta[]; wrev: string | null } | { status: 'absent' | 'restoring' }
 
 // ensureSessionLive + the readiness-pair read. Replaces every meta/existence
 // read in the session routes (r1-9: an ensure followed by a raw GET meta still
@@ -522,8 +542,12 @@ export type OpenedSession = { status: 'live'; meta: SessionMeta; wines: WineMeta
 // once, then answers 'restoring' for a live row and 'absent' only without one.
 export async function openSession(code: string): Promise<OpenedSession> {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const [m, w] = await redis.mGet([k.meta(code), k.wines(code)])
-    if (m && w) return { status: 'live', meta: JSON.parse(m) as SessionMeta, wines: JSON.parse(w) as WineMeta[] }
+    const [m, w, rev] = await redis.mGet([k.meta(code), k.wines(code), k.wrev(code)])
+    // Tolerant (review r3): a damaged blob reads as [] here, never a throw in a
+    // route's early check. The read path re-projects it on a stamp mismatch; one
+    // stamped equal would be served as [] until the next bottle write (no writer
+    // produces that state: the projection writes blob and stamp together).
+    if (m && w) return { status: 'live', meta: JSON.parse(m) as SessionMeta, wines: parseLineup(w) ?? [], wrev: rev }
     const r = await ensureSessionLive(code)
     if (r !== 'live') return { status: r }
   }
@@ -535,11 +559,46 @@ export async function openSession(code: string): Promise<OpenedSession> {
 export async function loadLiveWines(code: string): Promise<WineMeta[] | 'absent' | 'restoring'> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const raw = await redis.get(k.wines(code))
-    if (raw) return JSON.parse(raw) as WineMeta[]
+    if (raw) return parseLineup(raw) ?? []
     const r = await ensureSessionLive(code)
     if (r !== 'live') return r
   }
   return (await readLiveRow(prisma, code)) ? 'restoring' : 'absent'
+}
+
+// The line-up a read found stale (model change § 8a): under the contract,
+// reconcile a NULL revision (lib/occurrences.ts), then REPLACE the cached
+// line-up from the record, stamped (XX KEEPTTL). Returns the record's line-up
+// to serve; 'busy' when another writer holds the lock (it projects on its own;
+// the caller serves what it has and the next poll re-checks).
+// `expectedCreatedAt`: the incarnation the caller opened (Codex r1) — checked
+// against the cached meta by the contract AND against the locked row here, so a
+// code deleted and reused meanwhile answers 'absent', never its successor's.
+// It also answers the settings it read under its locks and the caller
+// re-resolved there (Codex r2): a view of the newer line-up must be redacted
+// by settings and privileges at least as recent as it (a settings tightening is
+// written to the cache before its COMMIT, under the same advisory lock).
+// `callerStatus`: the caller's admission under the locks; the read refuses a
+// caller no longer admitted (Codex r4), never answers it with newer bottles.
+export type Refreshed = { lineup: WineMeta[]; meta: SessionMeta; caller: AuthorizedIdentity | null; callerStatus: GrantStatus | null }
+export async function refreshLineup(code: string, expectedCreatedAt?: number, caller?: AuthorizedIdentity): Promise<Refreshed | 'absent' | 'busy'> {
+  try {
+    const r = await withSessionMutation(code, { label: 'lineup-refresh', redisLock: { waitMs: 500 }, readMeta: 'optional', expectedCreatedAt, caller }, async (tx, ctx) => {
+      if (!ctx.row) return null
+      if (expectedCreatedAt !== undefined && ctx.row.createdAt?.getTime() !== expectedCreatedAt) throw new ContractGone(code)
+      const revision = (await reconcileLineup(tx, ctx))!
+      // No cached meta (evicted meanwhile): the settings FROM THE RECORD, never
+      // the request's earlier ones (Codex r3). Without the cache's `a:` role
+      // entries a guest cohost is redacted like a taster: the safe direction.
+      const meta = ctx.meta ?? metaFromRecord(ctx.row, await readRecordRoles(tx, code), null)
+      return { revision, lineup: await recordLineup(tx, ctx.row.id), meta, caller: ctx.caller, callerStatus: ctx.callerStatus }
+    }, async (ctx, r) => { if (r) await projectLineup(ctx.fence!, r.lineup, r.revision) })
+    return r ? { lineup: r.lineup, meta: r.meta, caller: r.caller, callerStatus: r.callerStatus } : 'absent'
+  } catch (err) {
+    if (err instanceof ContractBusy || err instanceof LockLost || err instanceof ContractCold) return 'busy'
+    if (err instanceof ContractGone) return 'absent'
+    throw err
+  }
 }
 
 export function sessionRestoring(): NextResponse {

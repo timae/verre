@@ -26,7 +26,7 @@ const instant = (v: string | null) => {
 // ?st=sweet:1-3,tannin:0-0 — structure ranges, whole 0..5, lo ≤ hi, each axis
 // once, keys from the wine registry (Bubbles included: it only matches
 // sparkling ratings).
-const AXIS_KEYS = new Set(resolveAxes('wine', 'spark').map((a) => a.k))
+const AXIS_KEYS = new Set(resolveAxes('wine', { sparkling: true }).map((a) => a.k))
 const STRUCTURE = (v: string | null): { k: string; lo: number; hi: number }[] | 'bad' => {
   if (v === null || v === '') return []
   const out: { k: string; lo: number; hi: number }[] = []

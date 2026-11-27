@@ -15,6 +15,9 @@
 import { prisma } from '@/lib/prisma'
 import { decimalToNumber } from '@verre/core'
 import { outsideViewSql } from '@/lib/outsideView'
+import { entryKey, loadEntriesSoft, type CatalogEntry } from '@/lib/catalogEntries'
+import { entryYear } from '@/lib/wineDisplay'
+import { savedFlags } from '@/lib/cravings'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 
 // One session feed_item: its author and its moment. Everything the rule needs
@@ -53,8 +56,8 @@ export async function loadSessionFeedWines(
       notes: true,
       wine: {
         select: {
-          id: true, name: true, producer: true, vintage: true,
-          grape: true, style: true, imageUrl: true,
+          id: true, name: true, producer: true, vintage: true, productId: true, vintageId: true,
+          grape: true, style: true, colour: true, sparkling: true, abv: true, imageUrl: true,
           // Catalog metadata for the feed's full impression detail page.
           // Blanked on a redacted wine (below) so blind identity can't leak.
           region: true, country: true, vinification: true,
@@ -88,6 +91,25 @@ export async function loadSessionFeedWines(
     for (const f of rows) flags.set(f.id, { redacted: f.redacted, hidden: f.hidden })
   }
 
+  // What a visible bottle shows: its catalogue entry (merges followed), else
+  // its snapshot. Never read for a redacted one.
+  const entries = await loadEntriesSoft(ratings.filter(r => flags.get(r.id)?.redacted === false).map(r => ({ productId: r.wine.productId, vintageId: r.wine.vintageId })))
+  const entryOf = (w: { productId: string | null; vintageId: string | null }): CatalogEntry | undefined => (w.productId ? entries.get(entryKey(w.productId, w.vintageId)) : undefined)
+  // The viewer's save state per bottle (one statement; a redacted row reads
+  // only the viewer's save of that bottle). Fail-soft: no flag on a failure.
+  let saved: Map<string, boolean> | null = null
+  if (viewerUserId !== null) {
+    const seen = new Map<string, { id: string; hidden: boolean; effective: { productId: string; vintageId: string | null } | null }>()
+    for (const r of ratings) {
+      const f = flags.get(r.id)
+      if (!f || f.hidden !== false || seen.has(r.wine.id)) continue
+      const e = f.redacted === false ? entryOf(r.wine) : undefined
+      seen.set(r.wine.id, { id: r.wine.id, hidden: f.redacted !== false, effective: e ? { productId: e.productId, vintageId: e.vintageId } : null })
+    }
+    try { saved = await savedFlags(viewerUserId, [...seen.values()]) }
+    catch (err) { console.error('[feed] saved flags unavailable:', err) }
+  }
+
   for (const r of ratings) {
     if (r.userId == null || r.sessionId == null) continue  // standalone tastings can't reach this loop (no matching pair)
     const key = pairKey(r.userId, r.sessionId)
@@ -101,16 +123,21 @@ export async function loadSessionFeedWines(
     const ratingImage = r.images[0]?.imageUrl ?? null
     const wireWine: SessionFeedWine = redacted
       ? {
-          id: w.id,
+          ratingId: r.id,
+          // 🔒 No wine id on a blind row, except for the rating's own author.
+          ...(viewerUserId !== null && viewerUserId === r.userId ? { id: w.id } : {}),
           name: '',     // UI renders "Wine N" via index — see SessionFeedCard
           producer: null,
           vintage: null,
           grape: null,
-          // Style (red/white/spark/rose) is NOT identity — a taster knows it's
-          // sparkling from the glass. Expose it so the structure wheel offers the
+          // The kind (colour / sparkling) is NOT identity — a taster knows it's
+          // sparkling from the glass. Exposed so the structure wheel offers the
           // right axes (e.g. Bubbles on a blind sparkling wine); the mystery slot
-          // keys on `_blind`, not type. Consistent with lib/wineRedaction.ts.
-          type: w.style,
+          // keys on `_blind`. Consistent with lib/wineRedaction.ts. The
+          // alcohol-free mark is hidden on a blind row (ruled 2026-11-20): no abv.
+          colour: w.colour,
+          sparkling: w.sparkling,
+          abv: null,
           // Hide rating photo on a redacted wine — a label-bearing pour
           // photo would leak the identity. Per rewire.md §3 line 429.
           imageUrl: null,
@@ -130,23 +157,27 @@ export async function loadSessionFeedWines(
           _blind: true,
         }
       : {
+          ratingId: r.id,
           id: w.id,
-          name: w.name,
-          producer: w.producer,
-          vintage: w.vintage,
-          grape: w.grape,
-          type: w.style,
+          name: entryOf(w)?.name ?? w.name,
+          producer: entryOf(w)?.producer ?? w.producer,
+          vintage: (() => { const e = entryOf(w); return e ? (entryYear(e) || null) : w.vintage })(),
+          grape: (() => { const e = entryOf(w); return e ? (e.grapes.join(', ') || null) : w.grape })(),
+          colour: w.colour,
+          sparkling: w.sparkling,
+          abv: w.abv === null ? null : Number(w.abv),
           imageUrl: ratingImage ?? w.imageUrl,
           score: decimalToNumber(r.score),
           flavors: (r.flavors as Record<string, number>) ?? {},
           aromas: (r.aromas as SessionFeedWine['aromas']) ?? [],
           notes: r.notes,
-          region: w.region,
-          country: w.country,
+          region: entryOf(w)?.region ?? w.region,
+          country: entryOf(w)?.country ?? w.country,
           vinification: w.vinification,
           description: w.description,
           purchaseUrl: w.purchaseUrl,
         }
+    if (saved) wireWine.saved = saved.get(w.id) ?? false
     const arr = out.get(key)
     if (arr) arr.push(wireWine)
     else out.set(key, [wireWine])

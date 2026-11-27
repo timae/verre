@@ -23,46 +23,27 @@ const check = (name: string, ok: boolean, detail = '') => {
   console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`);
 };
 
+// Since the catalogue model change the builder covers a bottle's OWN fields
+// only (About, Process, the purchase link): its identity is the catalogue wine.
 const FILLED = {
-  name: '  Test Cuvee  ',
-  type: 'white',
-  producer: '  Fixture Estate  ',
-  vintage: '2019',
-  grape: '  Fixture Grape  ',
-  region: '  Fixture Region  ',
-  country: 'IT',
   vinification: '  Skin contact  ',
   description: '  Lovely  ',
   purchaseUrl: '  https://x.test  ',
 };
-const EMPTY = {
-  name: 'Just a name',
-  type: 'red',
-  producer: '',
-  vintage: '',
-  grape: '',
-  region: '',
-  country: '',
-  vinification: '',
-  description: '',
-  purchaseUrl: '',
-};
+const EMPTY = { vinification: '', description: '', purchaseUrl: '' };
 
-// ── ADD mode: empty optionals are OMITTED ──────────────────────────────────
+// ── ADD mode: empty fields are OMITTED ─────────────────────────────────────
 {
   const p = buildImpressionPayload(EMPTY, 'add') as Record<string, unknown>;
   for (const f of OPTIONAL_IMPRESSION_FIELDS) {
     check(`add + empty ${f} → property OMITTED`, !(f in p), JSON.stringify(p[f]));
   }
-  check('add: required name is trimmed and present', p.name === 'Just a name');
-  check('add: required type present', p.type === 'red');
+  check('add: nothing but the three own fields', Object.keys(buildImpressionPayload(FILLED, 'add')).sort().join() === 'description,purchaseUrl,vinification');
 }
 
-// ── EDIT mode: empty optionals are PRESENT as '' ───────────────────────────
-// 🔒 This is the bug. Omission means "unchanged" to the server, so a cleared
-// field silently kept its old value — and for vintage the server stored the
-// empty value anyway while applyIdentityEditRule read the omission as unchanged
-// and KEPT the catalog link (blank vintage, retained vintage-grain link).
+// ── EDIT mode: empty fields are PRESENT as '' ──────────────────────────────
+// 🔒 Omission means "unchanged" to the server, so a cleared field would
+// silently keep its old value.
 {
   const p = buildImpressionPayload(EMPTY, 'edit') as Record<string, unknown>;
   for (const f of OPTIONAL_IMPRESSION_FIELDS) {
@@ -73,29 +54,10 @@ const EMPTY = {
 // ── Populated values survive, and are trimmed, in BOTH modes ───────────────
 for (const mode of ['add', 'edit'] as const) {
   const p = buildImpressionPayload(FILLED, mode) as Record<string, unknown>;
-  check(`${mode}: name trimmed`, p.name === 'Test Cuvee', String(p.name));
-  check(`${mode}: producer trimmed`, p.producer === 'Fixture Estate', String(p.producer));
-  check(`${mode}: grape trimmed`, p.grape === 'Fixture Grape', String(p.grape));
-  check(`${mode}: region trimmed`, p.region === 'Fixture Region', String(p.region));
   check(`${mode}: vinification trimmed`, p.vinification === 'Skin contact', String(p.vinification));
   check(`${mode}: description trimmed`, p.description === 'Lovely', String(p.description));
   check(`${mode}: purchaseUrl trimmed`, p.purchaseUrl === 'https://x.test', String(p.purchaseUrl));
-  check(`${mode}: country passed through (already canonical ISO-2)`, p.country === 'IT', String(p.country));
-  check(`${mode}: vintage survives`, p.vintage === '2019', String(p.vintage));
-}
-
-// ── Vintage is CANONICALIZED by the builder, not merely trimmed ─────────────
-{
-  const nv = buildImpressionPayload({ ...FILLED, vintage: 'n.v.' }, 'add') as Record<string, unknown>;
-  check('builder canonicalizes an NV token', nv.vintage === NV_DISPLAY, String(nv.vintage));
-  // A half-typed NV prefix is allowed through the per-keystroke FILTER, so the
-  // builder must drop it rather than send it to a Char(4) column.
-  const partial = buildImpressionPayload({ ...FILLED, vintage: 'non-vinta' }, 'add') as Record<string, unknown>;
-  check('builder drops a half-typed NV prefix on ADD (omitted)', !('vintage' in partial), String(partial.vintage));
-  const partialEdit = buildImpressionPayload({ ...FILLED, vintage: 'non-vinta' }, 'edit') as Record<string, unknown>;
-  check("builder drops a half-typed NV prefix on EDIT (present as '')", partialEdit.vintage === '', String(partialEdit.vintage));
-  const overlong = buildImpressionPayload({ ...FILLED, vintage: '2019-2020' }, 'edit') as Record<string, unknown>;
-  check("builder drops an overlong vintage (NOT truncated to '2019')", overlong.vintage === '', String(overlong.vintage));
+  check(`${mode}: no identity field is ever sent (the catalogue wine is the identity)`, !['name', 'type', 'producer', 'vintage', 'grape', 'region', 'country'].some((k) => k in p));
 }
 
 // ── The scanner coercion helpers (PRODUCTION, imported by AddWineModal) ─────

@@ -1,0 +1,146 @@
+// Rating auto-save for ONE impression page (tasting-feedback build 1 § 1, the
+// hook contract). A thin React wrapper over the pure controller
+// (lib/impressionAutosaveCore.ts) and the outbox owner (lib/rateOutbox.ts):
+// no router or route params inside, so build 2 (the impression layer) mounts
+// one per pager page.
+//
+// in:  code, wineId, the wine's kind (structure axes), `active` (build 1:
+//      always true; build 2: the pager's active page), `focused` (navigation
+//      focus, for the after-leave alert's VISIBLE rule), the screen's
+//      transition guard (edits wait while it is held), the alert label.
+//      The snapshot and `baselineReady` come from the owner, never the screen.
+// out: the draft + its setters, drain(), clearRating() + clearPending,
+//      discardPending(), savedState, error.
+
+import type { AromaSelection, AxisKind } from '@verre/core';
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { createAutosaveController, EMPTY_DRAFT, type AutosaveController, type ClearToken, type SavedState, type TransitionGuard } from './impressionAutosaveCore';
+import { useMeId } from './meId';
+import { rateOutbox } from './rateOutbox';
+
+let mountSeq = 0;
+const nullSelection = () => null;
+const TIMERS = { set: (fn: () => void, ms: number) => setTimeout(fn, ms), clear: (h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>) };
+
+export type ImpressionAutosave = {
+  draft: { score: number; notes: string; flavors: Record<string, number>; aromas: AromaSelection[] };
+  setScore: (v: number) => void;
+  // The score in the draft NOW (the setters update it synchronously; `draft`
+  // is the last rendered one): the score field's dedupe reads it (Codex
+  // recheck 4, components/scoring/ScoreInput.tsx).
+  scoreNow: () => number;
+  stepScore: (v: number) => void;
+  setNotes: (v: string) => void;
+  setNoteFocused: (focused: boolean) => void;
+  setFlavors: (v: Record<string, number>) => void;
+  // false = the edit was refused (not editable, or before the baseline): an
+  // aroma picker resets only on a landed add.
+  setAromas: (v: ImpressionAutosave['draft']['aromas']) => boolean;
+  // A departure (lib/impressionAutosaveCore.ts): `final: false` is a gesture's
+  // grant (an emptied draft is held), the default stages everything.
+  drain: (opts?: { final?: boolean }) => Promise<boolean>;
+  // Take the token when the Clear confirm OPENS; pass it to clearRating on Delete.
+  clearBaseline: () => ClearToken | null;
+  clearRating: (token?: ClearToken | null) => Promise<boolean>;
+  clearPending: boolean;
+  // Bare: the page's work ends, its draft is staged, the server's answer
+  // decides; `confirmed` (Delete Impression's success): deleted at once.
+  discardPending: (opts?: { confirmed?: boolean }) => void;
+  savedState: SavedState;
+  error: string | null;
+  baselineReady: boolean;
+  editable: boolean;
+  // The stale-Clear "ask again" for this page (consumed once).
+  takeClearAsk: () => boolean;
+};
+
+const noop = () => {};
+const resolvedFalse = () => Promise.resolve(false);
+
+export function useImpressionAutosave({
+  code, wineId, kind, active = true, focused = true, guard, label,
+}: {
+  code: string;
+  wineId: string;
+  kind: AxisKind;
+  active?: boolean;
+  focused?: boolean;
+  guard?: TransitionGuard;
+  label?: string | null;
+}): ImpressionAutosave {
+  const viewer = useMeId();
+  const ctrl: AutosaveController | null = useMemo(
+    () => (viewer && code && wineId ? createAutosaveController(rateOutbox, { viewer, code, wineId, kind, timers: TIMERS }) : null),
+    // `kind` is pushed in below (it can arrive after the first render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [viewer, code, wineId],
+  );
+  ctrl?.setKind(kind);
+  ctrl?.setSuspended(() => guard?.held ?? false);
+  // ONE subscription over the owner and this page's controller, read through
+  // the page's own selection: a poll that moves another bottle (or nothing of
+  // this one) returns the same object, so this page doesn't re-render.
+  const subscribe = useCallback(
+    (fn: () => void) => {
+      if (!ctrl) return () => {};
+      // An owner change may turn a held (emptied) draft non-empty: it settles again.
+      const a = rateOutbox.subscribe(() => {
+        ctrl.resumeSettle();
+        fn();
+      });
+      const b = ctrl.subscribe(fn);
+      return () => {
+        a();
+        b();
+      };
+    },
+    [ctrl],
+  );
+  const sel = useSyncExternalStore(subscribe, ctrl ? ctrl.selection : nullSelection);
+  useEffect(() => {
+    ctrl?.setActive(active);
+  }, [ctrl, active]);
+  useEffect(() => {
+    ctrl?.revive();
+    return () => ctrl?.dispose();
+  }, [ctrl]);
+  // VISIBLE = mounted, active and navigation-focused (the app's foreground is
+  // the owner's): a visible page shows a drop in its footer, else an alert.
+  useEffect(() => {
+    if (!viewer || !code || !wineId) return;
+    const mount = ++mountSeq;
+    rateOutbox.setVisible(viewer, code, wineId, mount, active && focused);
+    return () => rateOutbox.setVisible(viewer, code, wineId, mount, false);
+  }, [viewer, code, wineId, active, focused]);
+  useEffect(() => {
+    if (viewer && code && wineId) rateOutbox.setLabel(viewer, code, wineId, label ?? null);
+  }, [viewer, code, wineId, label]);
+
+  if (!ctrl || !viewer) {
+    return {
+      draft: EMPTY_DRAFT, setScore: noop, scoreNow: () => EMPTY_DRAFT.score, stepScore: noop, setNotes: noop, setNoteFocused: noop, setFlavors: noop, setAromas: () => false,
+      drain: () => Promise.resolve(true), clearBaseline: () => null, clearRating: resolvedFalse, clearPending: false, discardPending: noop,
+      savedState: null, error: null, baselineReady: false, editable: false, takeClearAsk: () => false,
+    };
+  }
+  return {
+    draft: sel?.draft ?? EMPTY_DRAFT,
+    setScore: ctrl.setScore,
+    scoreNow: () => ctrl.draft().score,
+    stepScore: ctrl.stepScore,
+    setNotes: ctrl.setNotes,
+    setNoteFocused: ctrl.setNoteFocused,
+    setFlavors: ctrl.setFlavors,
+    setAromas: ctrl.setAromas,
+    drain: ctrl.drain,
+    clearBaseline: ctrl.clearBaseline,
+    clearRating: (token) => ctrl.clearRating(token ?? undefined),
+    clearPending: sel?.clearPending ?? false,
+    discardPending: ctrl.discardPending,
+    savedState: sel?.savedState ?? null,
+    error: sel?.error ?? null,
+    baselineReady: sel?.baselineReady ?? false,
+    editable: sel?.editable ?? false,
+    takeClearAsk: () => rateOutbox.takeClearAsk(viewer, code, wineId),
+  };
+}

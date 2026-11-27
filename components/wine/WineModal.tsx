@@ -63,6 +63,8 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   const [provenanceOpen, setProvenanceOpen] = useState(false)
   const [pendingClose, setPendingClose] = useState(false)
   const [commitError, setCommitError] = useState<string | null>(null)
+  // A refused save (409: the bottle isn't in the catalogue yet; 429): its text.
+  const [saveError, setSaveError] = useState<string | null>(null)
   // Stashed `proceed` callback from the dirty guard. Null when the
   // confirm was opened by the modal's own close path (Discard just
   // calls onClose); non-null when an external nav triggered it
@@ -146,6 +148,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     }
     setBookmarked(bookmarkedIds?.has(activeWineId) || false)
     setCommitError(null)
+    setSaveError(null)
     setProvenanceOpen(false)
     setMenuOpen(false)
     // ⚠️ LOAD-BEARING — see docs/dev/ios-touch-gestures.md §6.
@@ -479,15 +482,20 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       // to {}. Also the edit-path transform (§6g) — only registry keys survive,
       // so a stale descriptor row can't 400 the write gate. Keeps web + native
       // writing ONE shape into the shared ratings.flavors column.
-      const ratedStyle = wines.find(w => w.id === ratedWineId)?.type ?? null
-      const body = { wineId: ratedWineId, ...value, flavors: fillFlavourZeros(value.flavors, 'wine', ratedStyle) }
+      // The bottle's kind: Bubbles from `sparkling` (catalogue model change step 4).
+      const ratedKind = wines.find(w => w.id === ratedWineId) ?? null
+      const body = { wineId: ratedWineId, ...value, flavors: fillFlavourZeros(value.flavors, 'wine', ratedKind) }
       const res = await sessionFetch(code, `/api/session/${code}/rate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
       if (!res.ok) {
+        // 503: the moment couldn't be saved to the record right now (its
+        // promotion failed); nothing was written and the form keeps the input.
         const msg = res.status === 429
           ? 'Rate-limited. Try again shortly.'
+          : res.status === 503
+          ? 'Couldn’t save right now. Try again in a moment.'
           : res.status === 403
           ? 'You don’t have permission to rate this wine.'
           : `Save failed (${res.status}). Try again.`
@@ -746,14 +754,19 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     const targetWineId = activeWineId
     const wasBookmarked = bookmarked
     // Optimistic flip — revert on server failure so the heart doesn't
-    // lie. On success, invalidate the in-session bookmarkedIds query
-    // AND the /me/saved page's query so the bookmark surfaces there
-    // immediately on next navigation.
+    // lie. On success, refresh the line-up (its `saved` flags) AND
+    // invalidate the /me/saved page's query so the save surfaces there
+    // immediately on next navigation. On a blind bottle this is a save of
+    // that bottle only (catalogue model change § 5): it reads saved, can be
+    // unsaved here, and shows in Saved after the reveal.
     setBookmarked(!wasBookmarked)
+    setSaveError(null)
     const res = await sessionFetch(code, `/api/session/${code}/wines/${targetWineId}/bookmark`, {
       method, headers: { 'Content-Type': 'application/json' },
     })
     if (!res.ok) {
+      const text = res.status === 409 || res.status === 429 ? ((await res.json().catch(() => null)) as { error?: string } | null)?.error : null
+      if (activeWineId === targetWineId && text) setSaveError(text)
       // Only revert if the user is still looking at the same wine.
       // If they swapped, the new wine's bookmarked state was seeded
       // by the activeWineId-change effect — overwriting it here
@@ -761,7 +774,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       if (activeWineId === targetWineId) setBookmarked(wasBookmarked)
       return
     }
-    qc.invalidateQueries({ queryKey: ['bookmarks'] })
+    refresh()
     qc.invalidateQueries({ queryKey: ['me-bookmarks'] })
   }
 
@@ -969,14 +982,11 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
         {forPane === 'rate' && (
           <RatingPane
             key={forWineId}
-            // Pass the real style even when blind-redacted: style (red/white/
-            // spark/rose) is NOT identity (the taster perceives fizz from the
-            // glass), so the structure wheel should offer the right axes — e.g.
-            // Bubbles on a blind sparkling wine. The server preserves `type` on
-            // a _blind wine (lib/wineRedaction.ts); discarding it here would
-            // give blind spark only the base 8 axes, inconsistent with feed/
-            // compare. (Was `red ? null` for the old descriptor-set hiding.)
-            wineType={w.type}
+            // The bottle's kind even when blind-redacted: colour and sparkling
+            // are NOT identity (the taster perceives fizz from the glass), so
+            // the wheel offers the right axes (Bubbles on a blind sparkling
+            // wine). The server keeps them on a _blind row (lib/wineRedaction.ts).
+            kind={w}
             value={forRating}
             onChange={interactive ? setRating : () => {}}
           />
@@ -1311,6 +1321,16 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
           background:'rgba(184,64,64,0.08)',
           color:'rgba(220,90,90,1)',fontSize:12,lineHeight:1.4,
         }}>{commitError}</div>
+      )}
+
+      {saveError && (
+        <div style={{
+          marginTop:14,padding:'10px 12px',
+          borderRadius:8,
+          border:'1px solid rgba(184,64,64,0.5)',
+          background:'rgba(184,64,64,0.08)',
+          color:'rgba(220,90,90,1)',fontSize:12,lineHeight:1.4,
+        }}>{saveError}</div>
       )}
 
       {/* Undo chip is rendered by UndoChipProvider (lib/undoChip.tsx)

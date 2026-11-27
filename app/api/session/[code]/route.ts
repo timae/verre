@@ -12,6 +12,7 @@ import { withSessionMutation, refuse } from '@/lib/sessionMutation'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 import { contractFailure } from '@/lib/sessionRehydrate'
 import { openSessionFor } from '@/lib/sessionRoute'
+import { reclaimablePhotos } from '@/lib/occurrences'
 
 // Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and
 // lib/session.ts. Adding a third named export to lib/s3.ts trips a Next 15.5 /
@@ -255,12 +256,8 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
           // from /me/saved; rated ones still show in the surviving ratings,
           // feed posts and profile tiles (and will feed the catalog's
           // pictures). Only a moderator removes such a photo.
-          const orphanImages = await tx.$queryRaw<{ image_url: string }[]>`
-            SELECT image_url FROM wines
-             WHERE session_id = ${row.id} AND image_url IS NOT NULL
-               AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = wines.id)
-               AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = wines.id)`
-          for (const r of orphanImages) if (r.image_url) urls.add(r.image_url)
+          // The predicate is lib/occurrences.ts reclaimablePhotos (one copy).
+          for (const r of await reclaimablePhotos(tx, { sessionId: row.id })) urls.add(r.imageUrl)
           // Ratings + feed_items SURVIVE (rewire § 8): their session_id still
           // points at the tombstoned row.
           // Wines orphan (session_id NULL); member + ban rows go — both are
@@ -270,14 +267,19 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
           await tx.$executeRaw`DELETE FROM session_bans WHERE session_code = ${c}`
           await tx.$executeRaw`
             INSERT INTO session_tombstones (code, created_at) VALUES (${c}, ${row.createdAt ?? new Date(meta.createdAt)}) ON CONFLICT DO NOTHING`
-          // Scrub to a tombstone: only `id` and `deleted_at` survive.
+          // Scrub to a tombstone: only `id`, `deleted_at` and `public_id`
+          // survive (the public id answers the same 404 as an unknown one).
+          // 🔒 Every other column, the Moment Visibility ones included: the
+          // suite reads the tombstone back and fails on anything non-NULL.
           await tx.$executeRaw`
             UPDATE sessions
               SET deleted_at = NOW(), code = NULL, host_user_id = NULL, host_name = NULL, blind = NULL,
                   blind_for_everyone = NULL, created_at = NULL, archived_at = NULL, name = NULL, address = NULL,
                   date_from = NULL, date_to = NULL, timezone = NULL, description = NULL, link = NULL,
                   cover_photo_url = NULL, category = NULL, lifespan = NULL, hide_lineup = NULL,
-                  hide_lineup_minutes_before = NULL, show_provenance = NULL
+                  hide_lineup_minutes_before = NULL, show_provenance = NULL, lineup_revision = NULL,
+                  visibility = NULL, include_guest_circles = NULL, show_place = NULL, show_details = NULL,
+                  link_version = NULL, link_active = NULL, link_since = NULL
              WHERE id = ${row.id}`
         }
         const keys = await scanKeys(`s:${c}:*`)

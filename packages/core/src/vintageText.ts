@@ -70,7 +70,7 @@ export function normalizeVintageText(raw: string): string {
   //
   // So: exactly four digits (or an NV token) is the shape rule, and range
   // plausibility is enforced only where a value becomes SHARED identity —
-  // `validateYear` at catalog promotion (1900..current+1). That also matches the
+  // `validateYear` at catalog promotion (1900..the current year). That also matches the
   // agreed backfill promotion rule: out-of-range legacy values are PRESERVED as
   // encounter strings and default to product grain, never auto-minted.
   return match[1]

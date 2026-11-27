@@ -22,9 +22,11 @@ from absence, because inferring it is how merged entities resurrect. So a
 deleted entity would be believed to exist, permanently, with nothing to
 contradict it.
 
-⚠️ The database will not always stop this. Eight of the nine forward FKs into
-catalog tables are `NoAction`, so deleting a referenced **producer** or
-**vintage** fails loudly. But `product_producers.product_id` is an intentional
+⚠️ The database will not always stop this. Ten of the eleven FKs into catalog
+tables are `NoAction` (the nine forward ones, plus `bookmarks.product_id` and
+`bookmarks (vintage_id, product_id)` since the catalogue model change; pinned by
+`scripts/check-catalog-inbound-fks.mjs`), so deleting a referenced **producer**,
+**vintage** or bookmarked **product** fails loudly. But `product_producers.product_id` is an intentional
 `Cascade`: a **product** whose only remaining references are its own join rows
 **deletes successfully and cascades them**. That is precisely the case this
 ledger has to catch.

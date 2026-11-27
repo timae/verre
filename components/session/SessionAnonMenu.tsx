@@ -25,6 +25,12 @@ interface Props {
 // content: a one-shot rename for the per-session display name, plus
 // sign-in / sign-up CTAs.
 //
+// Incognito (Moment Visibility step 3, R6, named in R11): a checkbox under the
+// rename, shown only when GET /api/session/<code>/visibility answers 200 with a
+// `me` (the feature is on and the moment has a record; read when the menu
+// opens). Saved on change through PATCH /api/session/<code>/me/privacy, an
+// error inline. Signed-in web users can't change it (the app only, ruled).
+//
 // Rename API: PATCH /api/session/<code>/me/name with { name }.
 // Returns { name: <possibly-suffixed-with-emoji> } — server-side
 // disambiguation may append an emoji if the typed name collides with
@@ -46,6 +52,53 @@ export function SessionAnonMenu({ displayName, code, role, onRenamed }: Props) {
   const [flash, setFlash] = useState<'changed' | 'unchanged' | null>(null)
   const ref = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const [onlyInside, setOnlyInside] = useState<boolean | null>(null)
+  const [privacyBusy, setPrivacyBusy] = useState(false)
+  const [privacyError, setPrivacyError] = useState<string | null>(null)
+  // Read ONCE per page visit, on the first open (review 2026-11-24): with the
+  // feature off the answer is a 404, and every open would ask again. Any other
+  // failure (a 503 while restoring, a 429, a thrown fetch) tries again next open.
+  const privacyRead = useRef(false)
+
+  // The guest's own choice (absent = no checkbox).
+  useEffect(() => {
+    if (!open || privacyRead.current) return
+    privacyRead.current = true
+    sessionFetch(code, `/api/session/${code}/visibility`)
+      .then(async (res) => {
+        if (!res.ok) { if (res.status !== 404) privacyRead.current = false; return }
+        const data = await res.json().catch(() => null) as { me?: { onlyInside?: unknown } | null } | null
+        if (typeof data?.me?.onlyInside === 'boolean') setOnlyInside(data.me.onlyInside)
+      })
+      .catch(() => { privacyRead.current = false })
+  }, [open, code])
+
+  async function saveOnlyInside(on: boolean) {
+    if (privacyBusy) return
+    const before = onlyInside
+    setPrivacyError(null)
+    setOnlyInside(on)
+    setPrivacyBusy(true)
+    try {
+      const res = await sessionFetch(code, `/api/session/${code}/me/privacy`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ onlyInside: on }),
+      })
+      const data = await res.json().catch(() => null) as { onlyInside?: unknown; error?: unknown } | null
+      if (!res.ok || typeof data?.onlyInside !== 'boolean') {
+        setOnlyInside(before)
+        setPrivacyError(typeof data?.error === 'string' ? data.error : 'Couldn’t save. Try again.')
+        return
+      }
+      setOnlyInside(data.onlyInside)
+    } catch {
+      setOnlyInside(before)
+      setPrivacyError('Couldn’t save. Try again.')
+    } finally {
+      setPrivacyBusy(false)
+    }
+  }
 
   useEffect(() => {
     function close(e: MouseEvent) {
@@ -194,6 +247,23 @@ export function SessionAnonMenu({ displayName, code, role, onRenamed }: Props) {
             >
               ✎  Change name
             </button>
+          )}
+
+          {onlyInside !== null && (
+            <label style={{display:'flex',gap:8,alignItems:'flex-start',padding:'9px 12px',borderBottom:'1px solid var(--border)',cursor:privacyBusy?'default':'pointer'}}>
+              <input
+                type="checkbox"
+                checked={onlyInside}
+                disabled={privacyBusy}
+                onChange={e => saveOnlyInside(e.target.checked)}
+                style={{marginTop:2,accentColor:'var(--accent)'}}
+              />
+              <span style={{minWidth:0}}>
+                <span style={{display:'block',fontSize:11,color:'var(--fg)',fontFamily:'var(--mono)',letterSpacing:'0.04em'}}>Incognito</span>
+                <span style={{display:'block',fontSize:10,color:'var(--fg-dim)',marginTop:2,lineHeight:1.35}}>Only people who joined can see your name.</span>
+                {privacyError && <span style={{display:'block',fontSize:10,color:'rgba(184,64,64,0.9)',marginTop:4}}>{privacyError}</span>}
+              </span>
+            </label>
           )}
 
           {/* Sign-in / Sign-up CTAs. Same pattern as UserMenu's Link

@@ -13,6 +13,9 @@ import { ApiError } from '@/lib/api/sessions';
 import { errorText } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
 import { settingsHref, useSessionTab } from '@/lib/sessionStack';
+import { CHECKIN_HIDE_FROM_FEED_HELPER, CHECKIN_HIDE_FROM_FEED_TITLE, MOMENT_DEFAULTS_SECTIONS, MOMENT_POSTS_HIDE_FROM_FEED_HELPER, MOMENT_POSTS_HIDE_FROM_FEED_TITLE } from '@/lib/momentVisibilityCopy';
+import { YouPrivacyRows } from '@/components/moments/MomentPrivacyRows';
+import { useMomentDefaults } from '@/lib/useMomentDefaults';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import {
   applyVisibilityChanges, canonicalPostAudience, extendedCircleApplies, extendedCircleOn, postsBroaderThanAccount, postsSameTierAsAccount,
@@ -54,10 +57,20 @@ const sameSettings = (a: VisibilitySettings, b: VisibilitySettings) =>
 // My Profile (Show Cravings, Show Moments, Show My Locations), then Blocked
 // and Muted, each a row opening its own page (ruling Q-B).
 export default function Privacy() {
+  return <PrivacySettings />;
+}
+
+// `inMoment`: the same page opened from a moment's Moment Privacy ("Outside
+// This Moment", R15), on the moment's own stack so Back returns there
+// (session/[code]/settings/my-privacy). Without People (Blocked / Muted):
+// those pages live on the You tab, and a push there would jump tabs.
+export function PrivacySettings({ inMoment = false, title = 'Privacy' }: { inMoment?: boolean; title?: string }) {
   const router = useRouter();
   const mount = useSessionTab();
   const queryClient = useQueryClient();
   const vis = useQuery({ queryKey: VISIBILITY_KEY, queryFn: getVisibility });
+  // Your Moment Defaults' privacy half (join + check-ins); its own save.
+  const defaults = useMomentDefaults();
   const blocks = useQuery({ queryKey: BLOCKS_KEY, queryFn: getBlocks });
   const mutes = useQuery({ queryKey: MUTES_KEY, queryFn: getMutes });
   const [sheet, setSheet] = useState<'profile' | 'posts' | null>(null);
@@ -154,7 +167,7 @@ export default function Privacy() {
     // BottomSheetModalProvider in-screen: the OptionSheet needs a sized host
     // across the Stack boundary (no root provider, see app/_layout.tsx).
     <BottomSheetModalProvider>
-    <SetPage title="Privacy" gap={32} bottomPad={TAB_BAR_CLEARANCE + 100} offline={failedReads(vis, blocks, mutes)}>
+    <SetPage title={title} gap={32} bottomPad={TAB_BAR_CLEARANCE + 100} offline={inMoment ? failedReads(vis, blocks, mutes) : failedReads(vis, blocks, mutes, defaults.q)}>
       {/* The settings type (ruled 2026-11-11 on device, from the design): a
           SetTitle per topic, rows `body` regular, helpers `small`, no cards. */}
       <View>
@@ -206,6 +219,27 @@ export default function Privacy() {
               onPress={() => setSheet('posts')}
             />
           ) : null}
+          {/* Your posts' default Hide from Feed (Moment Defaults; grouped
+              here, Simon 2026-11-25): copied when you check in / join or
+              create a moment, each with its "Apply to Existing …?" alert. */}
+          {!inMoment && defaults.shown ? (
+            <>
+              <ToggleRow
+                title={CHECKIN_HIDE_FROM_FEED_TITLE}
+                subtitle={CHECKIN_HIDE_FROM_FEED_HELPER}
+                value={defaults.shown.checkinHiddenFromFeed}
+                busy={defaults.saving}
+                onChange={(on) => void defaults.save('checkinHiddenFromFeed', on)}
+              />
+              <ToggleRow
+                title={MOMENT_POSTS_HIDE_FROM_FEED_TITLE}
+                subtitle={MOMENT_POSTS_HIDE_FROM_FEED_HELPER}
+                value={defaults.shown.momentHiddenFromFeed}
+                busy={defaults.saving}
+                onChange={(on) => void defaults.save('momentHiddenFromFeed', on)}
+              />
+            </>
+          ) : null}
         </View>
       ) : null}
       {/* Only once loaded: a placeholder value would show a switch you turned off as on. */}
@@ -217,11 +251,28 @@ export default function Privacy() {
           <ToggleRow title="Show My Locations" subtitle="Places on your posts" value={v.showLocations} busy={saving} onChange={(on) => void save({ showLocations: on })} />
         </View>
       ) : null}
-      <View>
-        <SetTitle>People</SetTitle>
-        <ListRow flush icon="block" label="Blocked" q={blocks} onPress={() => router.push(settingsHref(mount, 'blocked'), { dangerouslySingular: true })} />
-        <ListRow icon="eyeoff" label="Muted" q={mutes} onPress={() => router.push(settingsHref(mount, 'muted'), { dangerouslySingular: true })} />
-      </View>
+      {/* Your join default (Moment Defaults, Simon's split 2026-11-25: "who
+          can see you is a privacy setting"): Incognito, copied when you join
+          or create a moment, saved on change with the "Apply to Existing
+          Moments?" alert (the moment posts' Hide from Feed is in Post
+          Visibility). Off the in-moment copy of this page (next to that
+          moment's own Incognito it would confuse), and only once loaded. */}
+      {!inMoment && defaults.shown ? (
+        <YouPrivacyRows
+          title={MOMENT_DEFAULTS_SECTIONS.join}
+          values={{ onlyInside: defaults.shown.onlyInside, hiddenFromFeed: defaults.shown.momentHiddenFromFeed }}
+          onChange={(field, value) => { if (field === 'onlyInside') void defaults.save('onlyInside', value); }}
+          busy={defaults.saving}
+          withHideFromFeed={false}
+        />
+      ) : null}
+      {inMoment ? null : (
+        <View>
+          <SetTitle>People</SetTitle>
+          <ListRow flush icon="block" label="Blocked" q={blocks} onPress={() => router.push(settingsHref(mount, 'blocked'), { dangerouslySingular: true })} />
+          <ListRow icon="eyeoff" label="Muted" q={mutes} onPress={() => router.push(settingsHref(mount, 'muted'), { dangerouslySingular: true })} />
+        </View>
+      )}
       <OptionSheet
         open={sheet === 'profile'}
         title="Account Visible To"

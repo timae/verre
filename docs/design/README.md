@@ -79,6 +79,7 @@ next ADR/pattern has an obvious slot and the index stays maintained.
 
 **decisions/** (ADRs — append-only; supersede, never edit):
 - `0003-collapsed-bars-opaque.md` — collapsed/in-flow bars are solid opaque, no rule.
+- `0011-impression-layer.md` — the moment impression is a layer inside the line-up: grows from its row, edge paging, pull-down close.
 - (pending: `0001` terminology · `0002` native-chrome vs brand-custom — settled in prose, not yet ADRs.)
 
 **patterns/** (reusable build recipes — read before building the thing):

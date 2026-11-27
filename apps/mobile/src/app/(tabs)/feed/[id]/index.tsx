@@ -1,6 +1,5 @@
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -32,6 +31,8 @@ import Reanimated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Icon } from '@/components/ui/Icon';
+import { Gradient } from '@/components/ui/Gradient';
+import { NoTopEdgeFade } from '@/components/ui/NoTopEdgeFade';
 import { VText } from '@/components/ui/VText';
 import { ClampText } from '@/components/ui/ClampText';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
@@ -54,12 +55,18 @@ import { TAB_MOUNTS, closeOpenedPost, feedHref, feedListHref, useSessionTab } fr
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { FEED_PANEL_SCRIM, FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
-import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
+import { alcoholText } from '@/lib/bottleFacts';
+import { timeAgo, kindLabel } from '@/lib/momentFormat';
 import { scoreWord } from '@/lib/scoreWords';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { radius, space, springs, useTheme } from '@/theme';
 import { countryName, normalizePublicUserId } from '@verre/core';
 import { useMeId } from '@/lib/meId';
+import { ListGoneError, getImpression, impressionKey } from '@/lib/api/lists';
+import { isImpressionRouteId, parseImpressionRouteId } from '@/lib/impressionRoute';
+import { impressionDetail } from '@/lib/impressionDetail';
+import { useApplyReread, usePostPrivacyRow } from '@/lib/postPrivacyActions';
+import { PrivacyByline } from '@/components/feed/PrivacyByline';
 
 // Full impression detail — a NEW read-only screen (proposal 08 §3; NOT 02e,
 // which is a write interface). Reached from a feed card's glass panel. Pure
@@ -165,7 +172,15 @@ export default function FeedImpression() {
   // onto. Card mode = a post opened inside that stack (`postId`).
   const mount = useSessionTab();
   const cardMode = postId != null;
-  const feedItemId = Number(cardMode ? postId : mount.post ?? id);
+  // 🔒 THE IMPRESSION PAGE (Moment Visibility step 3, R4, T13): `r<ratingId>`
+  // on these same routes, opened from a profile list row whose post you may
+  // not open. Its id is NOT a post: never a number here (NaN keys collide in
+  // the post registries), both post hooks are off, and its read lives outside
+  // ['feed', …] (['impression', owner, ratingId]).
+  const rawPost = cardMode ? postId : mount.post ?? id;
+  const impressionMode = isImpressionRouteId(rawPost);
+  const impressionRatingId = impressionMode ? parseImpressionRouteId(rawPost) : null;
+  const feedItemId = impressionMode ? NaN : Number(rawPost);
   // The list this post was opened from: the network feed (no `user`) or one
   // person's profile feed. A card's list is a profile on the post's stack; the
   // modal's is on the outer tab stack (its edit + "gone" exits go there).
@@ -183,7 +198,16 @@ export default function FeedImpression() {
   // `source: 'item'` = opened from a profile tile list (lists plan D9): read
   // ONLY that post's own item query (it can be older than any loaded page).
   const fromList = sourceParam === 'item' ? 'item' : undefined;
-  const { feed, found } = useFeedPost(feedItemId, listUserId, fromList);
+  const { feed, found } = useFeedPost(feedItemId, listUserId, fromList, !impressionMode);
+  // A cold or restored page without its owner (`user`) or with a malformed id
+  // makes no request: "This impression isn’t available".
+  const impressionEnabled = impressionMode && listUserId != null && impressionRatingId != null;
+  const impressionQ = useQuery({
+    queryKey: impressionKey(listUserId ?? '', impressionRatingId ?? 0),
+    queryFn: () => getImpression(listUserId!, impressionRatingId!),
+    enabled: impressionEnabled,
+    retry: (n, e) => !(e instanceof ListGoneError) && n < 1,
+  });
   // Pin the last-found item (the house lastRef pattern — cf. the session
   // screens' per-section poll merge). refetchOnMount:false only covers THIS
   // observer's mount: the list observer underneath (and this one, on
@@ -196,10 +220,13 @@ export default function FeedImpression() {
   if (found) pinnedRef.current = found;
   // ...unless the post was explicitly DELETED (anywhere, any tab): then the
   // pinned copy would be an actionable ghost (lib/feedCache.ts).
-  const deleted = useIsFeedPostDeleted(feedItemId);
-  const item = deleted ? null : found ?? pinnedRef.current;
-  const detail = item ? detailFromItem(item) : null;
-  const { code: momentCode, enter: enterMoment } = useEnterableMoment(detail?.sessionId);
+  const deleted = useIsFeedPostDeleted(feedItemId, !impressionMode);
+  const item = impressionMode || deleted ? null : found ?? pinnedRef.current;
+  const detail = impressionMode
+    ? (impressionQ.data ? impressionDetail(impressionQ.data) : null)
+    : item ? detailFromItem(item) : null;
+  const pending = impressionMode ? impressionEnabled && impressionQ.isPending : feed.isPending;
+  const { enterable: momentEnterable, enter: enterMoment } = useEnterableMoment(detail?.sessionId, detail?.momentId);
   // The author → their profile, pushed on this post's own stack (a card, back
   // returns here). When the post was opened FROM that person's list, the
   // profile is the screen underneath: the tap closes the post and lands there
@@ -210,10 +237,11 @@ export default function FeedImpression() {
   const openAuthor = useCallback(() => {
     if (authorId == null) return;
     // Opened from a tile list, the screen underneath is that list, not the
-    // profile: push the profile.
-    if (authorId === listUserId && fromList !== 'item') requestCloseRef.current();
+    // profile: push the profile. The impression page closes back onto its
+    // list (T13).
+    if (impressionMode || (authorId === listUserId && fromList !== 'item')) requestCloseRef.current();
     else router.push(feedHref(mount, 'profile', { id: authorId }));
-  }, [router, mount, authorId, listUserId, fromList]);
+  }, [router, mount, authorId, listUserId, fromList, impressionMode]);
   const onAuthorPress = authorId != null ? openAuthor : undefined;
   // Clamp seam for the pager index: `index` arrives via route params (a deep
   // link can carry garbage) and onPagerScroll can round past the end on an
@@ -221,12 +249,13 @@ export default function FeedImpression() {
   const maxPage = detail ? Math.max(0, detail.wines.length - 1) : 0;
 
   const [active, setActive] = useState(startIndex);
-  // Per-page collapse/title state, keyed by WINE ID (not page index): a
+  // Per-page collapse/title state, keyed by the RATING's id (not page index,
+  // and not the wine id: a blind row of someone else's post carries none): a
   // rating delete can shrink the wines array and shift indices while a page
   // stays active — index keys would pin a stale collapsed flag/title on
   // whichever wine slid into that slot. The bar reads the active wine's flag.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [titles, setTitles] = useState<Record<string, string>>({});
+  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
+  const [titles, setTitles] = useState<Record<number, string>>({});
 
   // Fullscreen impression gallery (design gFull): hero tap opens ALL of the
   // moment's photo impressions as a swipeable fullscreen carousel; closing
@@ -390,7 +419,7 @@ export default function FeedImpression() {
   // The same value is also set as this screen's own option: the post is a
   // CONTAINED transparent modal (feed/_layout.tsx), which UIKit may ask
   // directly; whichever channel answers, it says the same thing.
-  const statusBarStyle = activeUri && !collapsed[activeWine!.id] && presentationInteractive ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark';
+  const statusBarStyle = activeUri && !collapsed[activeWine!.ratingId] && presentationInteractive ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark';
   useForwardStatusBarStyle(statusBarStyle);
   const navigation = useNavigation();
   useEffect(() => {
@@ -530,19 +559,29 @@ export default function FeedImpression() {
   closeDetailRef.current = closeDetail;
   useFocusEffect(
     useCallback(() => {
-      if (isFeedPostDeleted(feedItemId)) closeDetailRef.current();
+      if (Number.isFinite(feedItemId) && isFeedPostDeleted(feedItemId)) closeDetailRef.current();
     }, [feedItemId]),
   );
 
   // ── Header actions (overflow menu) ───────────────────────────────────────
-  // Crave, Had it too, Share, and owner Edit ALL land in the deferred column
-  // (08-feed §6/§7): Crave needs sourceRatingId + a non-membership endpoint +
-  // a Cravings list (a coherent later pass — the legacy (user,wineId) bookmark
-  // can't remember WHOSE impression you craved); Had it too needs the prefilled
-  // ciSheet; Share needs a per-impression permalink (none exists yet). So the
-  // menu is placeholders this pass — no live write from this screen.
+  // Crave and Share stay placeholders (08-feed §6/§7): Crave needs
+  // sourceRatingId + a non-membership endpoint + a Cravings list (a coherent
+  // later pass — the legacy (user,wineId) bookmark can't remember WHOSE
+  // impression you craved); Share needs a per-impression permalink (none
+  // exists yet). Had It Too (08-feed § 5a) opens its own screen on this stack,
+  // only for a standalone check-in by someone you follow, never your own.
+  // Gated on the LIVE cache copy (`found`), never the pinned one: the screen
+  // reads only the cache, so a post a refetch dropped would open on "This
+  // check-in isn't available".
   const isOwner = myUserId != null && detail?.author.id === myUserId;
+  const canHaveItToo = !isOwner && myUserId != null && item != null && found?.type === 'checkin' && found.checkin.viewerFollowsAuthor;
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
+  // Your own post's switches (step 3, R2 / R5 / R11 / R12) and the status
+  // line under your name (R3). The PINNED copy is what renders here, so the own-post store
+  // (lib/postPrivacyState.ts) carries a toggle made from this screen.
+  const privacy = usePostPrivacyRow(item);
+  // Moment Defaults' apply: a pinned copy older than it re-reads its switch.
+  useApplyReread(item);
 
   // Owner delete (Simon, 2026-07-18) — mirrors the feed list's ⋯ flow.
   // Standalone = DELETE the check-in; session = clear the ACTIVE impression's
@@ -593,7 +632,11 @@ export default function FeedImpression() {
     // the card's own alias ("Wine N") instead.
     const name = activeWine ? (activeWine._blind ? `Wine ${clampedActive + 1}` : activeWine.name) : '';
     if (detail?.isSession && activeWine) {
+      // Your own post: every row carries its wine id (a blind one too). The
+      // write needs it; the cache drop keys on the rating.
       const wineId = activeWine.id;
+      const ratingId = activeWine.ratingId;
+      if (!wineId) { Alert.alert('Couldn’t Delete', 'Try again.'); return; }
       Alert.alert(
         name ? `Delete your rating of “${name}”?` : 'Delete your rating?',
         'This resets your rating for this impression. This cannot be undone.',
@@ -609,7 +652,7 @@ export default function FeedImpression() {
                 // when that was its last impression (the server reaps it).
                 (it) => {
                   if (it.type !== 'session' || it.session.id !== feedItemId) return it;
-                  const wines = it.session.wines.filter((w) => w.id !== wineId);
+                  const wines = it.session.wines.filter((w) => w.ratingId !== ratingId);
                   if (wines.length === 0) return null;
                   return { ...it, session: { ...it.session, wines } };
                 },
@@ -793,11 +836,11 @@ export default function FeedImpression() {
     [screenW, maxPage, landCard],
   );
 
-  const reportCollapse = useCallback((wineId: string, c: boolean) => {
-    setCollapsed((prev) => (prev[wineId] === c ? prev : { ...prev, [wineId]: c }));
+  const reportCollapse = useCallback((ratingId: number, c: boolean) => {
+    setCollapsed((prev) => (prev[ratingId] === c ? prev : { ...prev, [ratingId]: c }));
   }, []);
-  const reportTitle = useCallback((wineId: string, t: string) => {
-    setTitles((prev) => (prev[wineId] === t ? prev : { ...prev, [wineId]: t }));
+  const reportTitle = useCallback((ratingId: number, t: string) => {
+    setTitles((prev) => (prev[ratingId] === t ? prev : { ...prev, [ratingId]: t }));
   }, []);
   // Each mounted page registers its "scroll to About" imperative here; the
   // collapsed-bar title tap drives the ACTIVE page's (the wine-name tap in the
@@ -812,17 +855,21 @@ export default function FeedImpression() {
     scrollFns.current[clampedActive]?.();
   }, [clampedActive]);
 
-  if (!item || !detail) {
+  if (!detail) {
     // Post not in the cache (deep link before the feed loaded, or trimmed
     // out). Solid + un-animated — there's no source frame worth honoring.
     return (
       <View style={{ flex: 1, backgroundColor: theme.bg }}>
-        <FloatBar solid title="" onBack={closeDetail} insetTop={insets.top} pending={feed.isPending} card={cardMode} />
-        <CenteredMessage
-          title="This impression is gone"
-          body="It may have been removed, or the feed hasn't loaded it yet."
-          pending={feed.isPending}
-        />
+        <FloatBar solid title="" onBack={closeDetail} insetTop={insets.top} pending={pending} card={cardMode} />
+        {impressionMode ? (
+          <CenteredMessage title="This impression isn’t available" pending={pending} />
+        ) : (
+          <CenteredMessage
+            title="This impression is gone"
+            body="It may have been removed, or the feed hasn't loaded it yet."
+            pending={pending}
+          />
+        )}
       </View>
     );
   }
@@ -832,8 +879,8 @@ export default function FeedImpression() {
   // Read-side clamp: `active` seeds from the raw route param before wines are
   // known, so index the per-page maps through the clamped value.
   const page = clampedActive;
-  const pageWineId = wines[page]?.id ?? '';
-  const barSolid = !!collapsed[pageWineId];
+  const pageRatingId = wines[page]?.ratingId ?? -1;
+  const barSolid = !!collapsed[pageRatingId];
   // Only photo-bearing impressions go fullscreen (a blind/photoless page has
   // nothing to show); wineIndex maps a gallery page back to its pager slot.
   const galleryPages: GalleryPage[] = wines
@@ -907,10 +954,10 @@ export default function FeedImpression() {
             />
           </Reanimated.View>
           <Reanimated.View style={[StyleSheet.absoluteFill, cardScrimStyle]}>
-            <LinearGradient colors={FEED_PANEL_SCRIM} style={StyleSheet.absoluteFill} />
+            <Gradient colors={FEED_PANEL_SCRIM} style={StyleSheet.absoluteFill} />
           </Reanimated.View>
           <Reanimated.View style={[StyleSheet.absoluteFill, heroScrimStyle]}>
-            <LinearGradient colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
+            <Gradient colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
           </Reanimated.View>
         </Reanimated.View>
       ) : null}
@@ -924,11 +971,12 @@ export default function FeedImpression() {
             author={author}
             createdAt={createdAt}
             place={place}
-            onPlacePress={momentCode ? enterMoment : undefined}
+            onPlacePress={momentEnterable ? enterMoment : undefined}
             onAuthorPress={onAuthorPress}
+            privacyLine={privacy.line}
             dismissible={!cardMode}
-            onCollapse={(c) => reportCollapse(wines[0].id, c)}
-            onTitle={(t) => reportTitle(wines[0].id, t)}
+            onCollapse={(c) => reportCollapse(wines[0].ratingId, c)}
+            onTitle={(t) => reportTitle(wines[0].ratingId, t)}
             onRegisterScrollToAbout={(fn) => registerScrollToAbout(0, fn)}
             insetTop={insets.top}
             bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
@@ -946,6 +994,7 @@ export default function FeedImpression() {
             deferBody={!!source}
           />
         ) : (
+          <NoTopEdgeFade style={{ flex: 1 }}>
           <ScrollView
             ref={pagerRef}
             horizontal
@@ -975,7 +1024,7 @@ export default function FeedImpression() {
                 i === entryIndex ||
                 (warmLevel >= 1 && (Math.abs(i - page) <= 1 || (i >= mountedLo && i <= mountedHi)));
               return (
-              <View key={w.id} style={{ width: screenW }}>
+              <View key={w.ratingId} style={{ width: screenW }}>
                 {mount ? (
                   <DetailPage
                     wine={w}
@@ -984,11 +1033,12 @@ export default function FeedImpression() {
                     author={author}
                     createdAt={createdAt}
                     place={place}
-                    onPlacePress={momentCode ? enterMoment : undefined}
+                    onPlacePress={momentEnterable ? enterMoment : undefined}
                     onAuthorPress={onAuthorPress}
+                    privacyLine={privacy.line}
                     dismissible={!cardMode}
-                    onCollapse={(c) => reportCollapse(w.id, c)}
-                    onTitle={(t) => reportTitle(w.id, t)}
+                    onCollapse={(c) => reportCollapse(w.ratingId, c)}
+                    onTitle={(t) => reportTitle(w.ratingId, t)}
                     onRegisterScrollToAbout={(fn) => registerScrollToAbout(i, fn)}
                     insetTop={insets.top}
                     bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
@@ -1010,6 +1060,7 @@ export default function FeedImpression() {
               );
             })}
           </ScrollView>
+          </NoTopEdgeFade>
         )}
 
       </Reanimated.View>
@@ -1067,14 +1118,14 @@ export default function FeedImpression() {
       >
         <FloatBar
           solid={barSolid}
-          title={barSolid ? titles[pageWineId] ?? '' : ''}
+          title={barSolid ? titles[pageRatingId] ?? '' : ''}
           onBack={requestClose}
           card={cardMode}
           onTitlePress={scrollActiveToAbout}
           insetTop={insets.top}
           photoless={activeWine ? !!activeWine._blind || !activeWine.imageUrl : false}
           hasDots={total > 1}
-          onMenu={setMenuAnchor}
+          onMenu={impressionMode ? undefined : setMenuAnchor}
         />
       </Reanimated.View>
 
@@ -1094,16 +1145,38 @@ export default function FeedImpression() {
       ) : null}
       </RevealWindow>
 
-      {/* Overflow menu — the shared .ir-menu dropdown (AnchoredMenu). Crave,
-          Had it too (standalone), Share, and owner Edit are all DISABLED
-          placeholders this pass (each renders a "Soon" tag via MenuItem):
-          Crave/Share/Had-it-too are deferred coherent passes (08-feed §6/§7),
-          and no standalone impression editor exists. */}
+      {/* Overflow menu — the shared .ir-menu dropdown (AnchoredMenu). Crave
+          and Share are DISABLED placeholders (each renders a "Soon" tag via
+          MenuItem), deferred coherent passes (08-feed §6/§7). Had It Too:
+          someone you follow's check-in, pushed on this post's stack. */}
       <AnchoredMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} right={16} minWidth={220}>
         <MenuItem icon="heart" label="Crave" disabled />
-        {detail.isSession === false ? <MenuItem icon="plus" label="Had It Too" disabled /> : null}
+        {canHaveItToo ? (
+          <MenuItem
+            icon="plus"
+            label="Had It Too"
+            onPress={() => {
+              setMenuAnchor(null);
+              router.push(feedHref(mount, 'had-it-too', { id: String(feedItemId), user: listUserId ?? undefined, source: fromList }));
+            }}
+          />
+        ) : null}
         <MenuItem icon="share" label="Share" disabled />
         {isOwner ? <MenuSeparator /> : null}
+        {isOwner
+          ? privacy.rows.map((row) => (
+            <MenuItem
+              key={row.field}
+              icon="eyeoff"
+              label={row.label}
+              checked={row.on}
+              onPress={() => {
+                setMenuAnchor(null);
+                row.onToggle();
+              }}
+            />
+          ))
+          : null}
         {isOwner ? (
           <MenuItem
             icon="edit"
@@ -1169,7 +1242,7 @@ function RevealWindow({ on, width, height, outer, inner, children }: {
 function HeroTitle({ wine, index, onNamePress }: { wine: SessionFeedWine; index: number; onNamePress?: () => void }) {
   const blind = !!wine._blind;
   const name = blind ? `Wine ${index + 1}` : wine.name;
-  const sub = !blind ? [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ') : '';
+  const sub = !blind ? [wine.producer, kindLabel(wine)].filter(Boolean).join(' · ') : '';
   // `box-none` when interactive (the page hero): the name Pressable takes its
   // own taps (→ scroll to About) while every other touch falls through to the
   // photo's gallery Pressable below. The traveling CLONE passes no onNamePress
@@ -1295,16 +1368,22 @@ function FloatBar({
         ) : (
           <View style={{ flex: 1 }} />
         )}
-        <Pressable
-          ref={menuBtnRef}
-          onPress={() => menuBtnRef.current?.measureInWindow((_x, y, _w, h) => onMenu?.({ top: y, bottom: y + h }))}
-          accessibilityRole="button"
-          accessibilityLabel="More"
-          hitSlop={8}
-          style={({ pressed }) => ({ ...circle, marginLeft: 2, opacity: pressed ? 0.5 : 1 })}
-        >
-          <Icon name="more" size={phone.size('compactActionIcon')} color={iconColor} />
-        </Pressable>
+        {/* No menu (the impression page, step 3 T13; the gone state): no
+            dead ⋯, a same-size spacer keeps the title where it was. */}
+        {onMenu ? (
+          <Pressable
+            ref={menuBtnRef}
+            onPress={() => menuBtnRef.current?.measureInWindow((_x, y, _w, h) => onMenu({ top: y, bottom: y + h }))}
+            accessibilityRole="button"
+            accessibilityLabel="More"
+            hitSlop={8}
+            style={({ pressed }) => ({ ...circle, marginLeft: 2, opacity: pressed ? 0.5 : 1 })}
+          >
+            <Icon name="more" size={phone.size('compactActionIcon')} color={iconColor} />
+          </Pressable>
+        ) : (
+          <View style={{ ...circle, marginLeft: 2, opacity: 0 }} pointerEvents="none" />
+        )}
       </View>
     </View>
   );
@@ -1338,12 +1417,15 @@ function CaptionByline({
   createdAt,
   onPlacePress,
   onAuthorPress,
+  privacyLine = null,
 }: {
   author: FeedAuthor;
   note: string | null;
   place: string | null;
   createdAt: string;
   onPlacePress?: () => void;
+  // Your own hidden post (step 3, R3): the eye + its words lead the meta line.
+  privacyLine?: string | null;
   // Avatar + name → the author's profile (the feed cards' pattern: a pressable
   // avatar and a pressable name span inside the caption copy).
   onAuthorPress?: () => void;
@@ -1366,8 +1448,8 @@ function CaptionByline({
       {end > author.name.length ? full.slice(Math.max(start, author.name.length), end) : null}
     </>
   );
-  const meta = place || stamp ? (
-    <VText variant="caption" color="inkSoft" numberOfLines={1} style={styles.captionMeta}>
+  const meta = place || stamp || privacyLine ? (
+    <PrivacyByline line={privacyLine} style={styles.captionMeta}>
       {place ? (
         <VText
           variant="caption"
@@ -1380,7 +1462,7 @@ function CaptionByline({
       ) : null}
       {place && stamp ? ' · ' : ''}
       {stamp}
-    </VText>
+    </PrivacyByline>
   ) : null;
 
   return (
@@ -1437,6 +1519,7 @@ function DetailPage({
   place,
   onPlacePress,
   onAuthorPress,
+  privacyLine = null,
   dismissible,
   onCollapse,
   onTitle,
@@ -1464,6 +1547,7 @@ function DetailPage({
   place: string | null;
   onPlacePress?: () => void;
   onAuthorPress?: () => void;
+  privacyLine?: string | null;
   // false in card mode: no pull-down dismiss (the edge-swipe pops the card),
   // and the top keeps its rubber-band.
   dismissible: boolean;
@@ -1720,7 +1804,7 @@ function DetailPage({
   // (score + wheel + note) stays — same contract as the feed cards.
   const name = blind ? `Wine ${index + 1}` : wine.name;
   const hasScore = wine.score != null && wine.score > 0;
-  const axes = buildWheelAxes(wine.flavors, wine.type, axisColor);
+  const axes = buildWheelAxes(wine.flavors, wine, axisColor);
   const hasPhoto = hasHeroPhoto;
   // Report the bar title up AFTER commit (never call a parent setState during
   // render). Re-runs if the name changes.
@@ -1731,7 +1815,9 @@ function DetailPage({
   return (
     // Pan OUTSIDE the scroll's native gesture, declared simultaneous — the pan
     // reads scrollY to arm only at the top; useScrollOffset + the plain JS
-    // onScroll coexist (the collapsing-hero pattern doc).
+    // onScroll coexist (the collapsing-hero pattern doc). NoTopEdgeFade: no
+    // iOS 26 haze in the page colour under the status bar (ui/NoTopEdgeFade).
+    <NoTopEdgeFade style={{ flex: 1 }}>
     <GestureDetector gesture={dismissPan}>
       <GestureDetector gesture={nativeScroll}>
         <Reanimated.ScrollView
@@ -1777,7 +1863,7 @@ function DetailPage({
               every other touch falls through to the photo's gallery Pressable.
               The gradient stays pointerEvents none. */}
           <Reanimated.View pointerEvents="box-none" style={[StyleSheet.absoluteFill, heroImgStyle]}>
-            <LinearGradient pointerEvents="none" colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
+            <Gradient pointerEvents="none" colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
             <HeroTitle wine={wine} index={index} onNamePress={scrollToAbout} />
           </Reanimated.View>
         </View>
@@ -1827,9 +1913,9 @@ function DetailPage({
               <VText variant="small" color="inkSoft" style={{ marginTop: 2 }}>
                 Hidden until the host reveals it
               </VText>
-            ) : (wine.producer || wine.type) ? (
+            ) : (wine.producer || kindLabel(wine)) ? (
               <VText numberOfLines={1} variant="small" color="inkSoft" style={{ marginTop: 2 }}>
-                {[wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
+                {[wine.producer, kindLabel(wine)].filter(Boolean).join(' · ')}
               </VText>
             ) : null}
           </View>
@@ -1865,6 +1951,7 @@ function DetailPage({
           createdAt={createdAt}
           onPlacePress={onPlacePress}
           onAuthorPress={onAuthorPress}
+          privacyLine={privacyLine}
         />
 
         {/* divider before the structure/aroma profile */}
@@ -1905,11 +1992,12 @@ function DetailPage({
         </Reanimated.ScrollView>
       </GestureDetector>
     </GestureDetector>
+    </NoTopEdgeFade>
   );
 }
 
 // About this impression — the repeated wine identity (name/vintage + producer)
-// then its description + metadata rows (Origin · Variety · Process) +
+// then its description + metadata rows (Origin · Variety · Alcohol · Process) +
 // "Where to buy". Renders the identity always (the block is the wine's own
 // record); the metadata rows/description drop when the wine carries none.
 // Only rendered for non-blind impressions (identity is real). Read-only.
@@ -1923,8 +2011,11 @@ function AboutBlock({ wine }: { wine: SessionFeedWine }) {
   const rows: Array<[string, React.ReactNode]> = [];
   if (origin) rows.push(['Origin', <VText key="v" style={{ fontFamily: 'InstrumentSans_500Medium', ...phone.text('small') }}>{origin}</VText>]);
   if (wine.grape) rows.push(['Variety', <ClampText key="v" text={wine.grape} lines={2} medium />]);
+  // The abv (ADR-0009): "13.5 %", "Alcohol-Free · 0.5 %"; none on a blind row.
+  const alcohol = alcoholText(wine.abv);
+  if (alcohol) rows.push(['Alcohol', <VText key="v" style={{ fontFamily: 'InstrumentSans_500Medium', ...phone.text('small') }}>{alcohol}</VText>]);
   if (wine.vinification) rows.push(['Process', <ClampText key="v" text={wine.vinification} lines={2} medium />]);
-  const producerLine = [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ');
+  const producerLine = [wine.producer, kindLabel(wine)].filter(Boolean).join(' · ');
   return (
     // Separator rule ABOVE the section (Simon's fixes round) — a full-width
     // hairline between the rating profile and About.

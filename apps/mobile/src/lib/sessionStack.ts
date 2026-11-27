@@ -1,4 +1,4 @@
-import { createContext, useContext, useRef } from 'react';
+import { createContext, createElement, useContext, useRef, type ReactNode } from 'react';
 import { useSegments } from 'expo-router';
 import type { Href } from 'expo-router';
 
@@ -39,23 +39,32 @@ export const TAB_MOUNTS: Readonly<Record<SessionTab, SessionMount>> = {
 // mount once the header query resolves after you switched tabs (Codex,
 // 2026-11-09).
 //
-// Fallback (no provider — called somewhere unexpected): segments look like
-// ['(tabs)', 'feed', 'session', '[code]', ...], the tab route group is the
-// second; default 'moments' (the original home of the sub-tree). That is
-// global "current route" state, not "the stack this instance is mounted in",
-// so it is PINNED at first render: an EFFECT firing on a blurred background
-// instance would otherwise resolve the FOREGROUND tab and bounce on the
-// wrong stack. A mounted instance's owning stack can never change.
+// Fallback, for screens outside every tab stack (the root About /
+// Attributions pages): `SessionTabRootProvider` around the root Stack provides
+// the tab of the CURRENT route (segments look like ['(tabs)', 'feed',
+// 'session', '[code]', ...], the tab route group is the second; default
+// 'moments', the original home of the sub-tree). That is global "current
+// route" state, not "the stack this instance is mounted in", so every mount is
+// PINNED at first render: an EFFECT firing on a blurred background instance
+// would otherwise resolve the FOREGROUND tab and bounce on the wrong stack. A
+// mounted instance's owning stack can never change. useSessionTab() itself
+// never subscribes to route state: it did (useSegments), and every caller in
+// the app re-rendered on every navigation (2026-11-17); now a navigation
+// re-renders the root provider alone, and its consumers only when the tab
+// changes (every tab stack re-provides its own value).
 const SessionTabContext = createContext<SessionMount | null>(null);
 export const SessionTabProvider = SessionTabContext.Provider;
 
+export function SessionTabRootProvider({ children }: { children: ReactNode }) {
+  const segments = useSegments();
+  const tab: SessionTab = segments[1] === 'feed' ? 'feed' : segments[1] === 'you' ? 'you' : 'moments';
+  return createElement(SessionTabContext.Provider, { value: TAB_MOUNTS[tab] }, children);
+}
+
 export function useSessionTab(): SessionMount {
   const fromLayout = useContext(SessionTabContext);
-  const segments = useSegments();
   const pinned = useRef<SessionMount | null>(null);
-  if (pinned.current === null) {
-    pinned.current = fromLayout ?? TAB_MOUNTS[segments[1] === 'feed' ? 'feed' : segments[1] === 'you' ? 'you' : 'moments'];
-  }
+  if (pinned.current === null) pinned.current = fromLayout ?? TAB_MOUNTS.moments;
   return pinned.current;
 }
 
@@ -65,7 +74,10 @@ type SessionSub =
   | 'settings'
   | 'settings/details'
   | 'settings/reveal'
-  | 'impression/[wineId]'
+  | 'settings/visibility'
+  | 'settings/my-privacy'
+  // (No 'impression/[wineId]' since build 2: the impression is a layer inside
+  // the line-up, ADR-0011.)
   | 'edit-impression/[wineId]';
 
 // The casts live here and nowhere else: every variant is a REAL route (the
@@ -81,6 +93,19 @@ export function sessionHref(
     return { pathname: `/(tabs)/${mount.tab}/[id]/${tail}`, params: { id: mount.post, ...params } } as Href;
   }
   return { pathname: `/(tabs)/${mount.tab}/${tail}`, params } as Href;
+}
+
+// The LOOK-IN (Moment Visibility step-2 plan § 4.1): a moment seen from
+// outside, by its public id, never its code. Owned by Moments
+// (`moments/look/[momentId]/…`), mirrored on Feed, You and every opened post's
+// stack, like the session sub-tree. `via: 'link'` + `h` (a handle of
+// lib/lookInLinks.ts, never the token) = opened by a look-in link.
+export type LookSub = '' | 'bottle/[key]';
+export function lookHref(mount: SessionMount, sub: LookSub, params: { momentId: string; key?: string; via?: 'link'; h?: string }): Href {
+  const tail = `look/[momentId]${sub ? `/${sub}` : ''}`;
+  const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v != null)) as Record<string, string>;
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/${tail}`, params: { id: mount.post, ...clean } } as Href;
+  return { pathname: `/(tabs)/${mount.tab}/${tail}`, params: clean } as Href;
 }
 
 // The TAB ROOT (Moments / Feed / You home). Deliberately not "the mount's
@@ -104,8 +129,8 @@ export function tabHomeHref(tab: SessionTab): Href {
 //     `[id]/u/[personId]`, `[id]/people/[personId]`), so no route tree nests
 //     inside itself;
 //   • 'edit' / 'edit/details' — from a tab stack, the OUTER edit screens
-//     (fullScreenModal there); from inside a post, the same screens on the
-//     POST's stack (`[id]/edit/[postId]`, sliding up like the modal). Nothing
+//     (plain pushes with swipe-back since 2026-11-24); from inside a post,
+//     the same screens on the POST's stack (`[id]/edit/[postId]`). Nothing
 //     may be presented on the outer stack while a post is open: a native
 //     modal over the contained post hung the app (device pass 2026-11-10).
 //     So the "post is gone" exits there are plain pops on the post's stack.
@@ -113,16 +138,19 @@ export function tabHomeHref(tab: SessionTab): Href {
 //     (lists plan): like 'people', their own route on a post's stack.
 //   • 'palate' (someone's or yours) / 'status' (yours, no id) — the status
 //     line's placeholder pages (2026-11-14): likewise.
-//   `source: 'item'` (post / edit) = opened from a tile list: those screens
-//   read ONLY that post's item query (lib/useFeedPost.ts), and the edit's
-//   "post is gone" exit is a plain pop back to the list (closePost).
-type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile' | 'people' | 'palate' | 'status' | ListSub;
+//   • 'had-it-too' — someone's check-in copied as yours (08-feed § 5a): like
+//     'edit', a plain push on the tab stack (`had-it-too/[id]`), or on the
+//     opened post's stack from inside it (`[id]/had-it-too/[postId]`).
+//   `source: 'item'` (post / edit / had-it-too) = opened from a tile list:
+//   those screens read ONLY that post's item query (lib/useFeedPost.ts), and
+//   the edit's "post is gone" exit is a plain pop back to the list (closePost).
+type FeedSub = 'post' | 'edit' | 'edit/details' | 'had-it-too' | 'profile' | 'people' | 'palate' | 'status' | ListSub;
 type ListSub = 'impressions' | 'moments' | 'cravings';
 
 export function feedHref(
   mount: SessionMount,
   sub: FeedSub,
-  params: { id?: string; index?: string; wine?: string; user?: string; tab?: string; known?: string; source?: 'item' } = {},
+  params: { id?: string; index?: string; wine?: string; user?: string; tab?: string; known?: string; source?: 'item'; edit?: string } = {},
 ): Href {
   const t = mount.tab;
   const clean = (p: Record<string, string | undefined>) => Object.fromEntries(Object.entries(p).filter(([, v]) => v != null));
@@ -169,9 +197,19 @@ export function feedHref(
         out = { id: params.id, wine: params.wine, user: params.user, source: params.source };
       }
       break;
+    case 'had-it-too':
+      if (inPost) {
+        pathname = `/(tabs)/${t}/[id]/had-it-too/[postId]`;
+        out = { id: mount.post, postId: params.id, user: params.user, source: params.source };
+      } else {
+        pathname = `/(tabs)/${t}/had-it-too/[id]`;
+        out = { id: params.id, user: params.user, source: params.source };
+      }
+      break;
     case 'edit/details':
       pathname = inPost ? `/(tabs)/${t}/[id]/edit/details` : `/(tabs)/${t}/edit/details`;
-      out = { id: mount.post, user: params.user };
+      // `edit`: the edit screen's key into the details store (lib/checkinEdit.ts).
+      out = { id: mount.post, user: params.user, edit: params.edit };
       break;
     case 'status':
       pathname = inPost ? `/(tabs)/${t}/[id]/status` : `/(tabs)/${t}/status`;
@@ -205,17 +243,48 @@ export function checkinHref(mount: SessionMount, stage?: 'rate'): Href {
 export function momentCreateHref(mount: SessionMount): Href {
   return (mount.tab === 'moments' ? '/(tabs)/moments/create' : `/(tabs)/${mount.tab}/moments/create`) as Href;
 }
+// Create Moment's Privacy page (Moment Defaults, plan § 3): a SIBLING of each
+// create mount (`<tab>/moments/create-privacy`), its state in the per-screen
+// store `lib/createPrivacy.ts` under `key`, so swipe-back keeps the choices.
+export function momentCreatePrivacyHref(mount: SessionMount, key: string): Href {
+  return { pathname: mount.tab === 'moments' ? '/(tabs)/moments/create-privacy' : `/(tabs)/${mount.tab}/moments/create-privacy`, params: { key } } as Href;
+}
 
 // Settings: the hub (no page) and its pages. Inside an opened post every one
 // is mirrored onto the post's stack: pushing /you/settings/… there would
 // present on the outer You stack, over the post (see 'edit' above). No page
-// may be named `details` / `reveal`: the tabs layout hides the pill on those
-// suffixes for the moment settings.
-export type SettingsPage = 'privacy' | 'blocked' | 'muted' | 'account' | 'change-email' | 'change-password' | 'appearance';
+// may be named `details` / `reveal` / `visibility`: the tabs layout hides the
+// pill on those suffixes for the moment settings.
+export type SettingsPage = 'privacy' | 'defaults' | 'blocked' | 'muted' | 'account' | 'change-email' | 'change-password' | 'appearance';
 export function settingsHref(mount: SessionMount, page?: SettingsPage): Href {
   const tail = page ? `settings/${page}` : 'settings';
   if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/${tail}`, params: { id: mount.post } } as Href;
   return `/you/${tail}` as Href;
+}
+
+// The "Add Wine to Catalogue" pages (ruled 2026-11-22: real pages, so the
+// bar's back and the edge swipe go back alike). They live beside their host on
+// the host's OWN stack: an opened post's stack (`[id]/catalog/…`), or the tab
+// stack (`catalog/…`), except the check-in edit's details on a tab stack,
+// whose pages live INSIDE its own boundary (`edit/details/catalog/…`; built
+// while those details were a modal, edit/details/_layout.tsx).
+export type CatalogPage = 'search' | 'producer' | 'wines' | 'new';
+export function catalogHref(mount: SessionMount, inDetails: boolean, page: CatalogPage, key: string): Href {
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/catalog/${page}`, params: { id: mount.post, key } } as Href;
+  if (inDetails) return { pathname: `/(tabs)/${mount.tab}/edit/details/catalog/${page}`, params: { key } } as Href;
+  return { pathname: `/(tabs)/${mount.tab}/catalog/${page}`, params: { key } } as Href;
+}
+
+// Where a pick goes while ADDING (ruled 2026-11-22: the details are a screen
+// of their own, pushed on top of the search or of the page the pick was made
+// on): Add Impression's details beside its search (`session/[code]/add-wine`,
+// on the moment's stack, an opened post's included), Check In's beside its own
+// (`check-in/wine`).
+export type FlowDest = { kind: 'impression'; code: string } | { kind: 'checkin' };
+export function pickedHref(mount: SessionMount, dest: FlowDest, key: string): Href {
+  if (dest.kind === 'checkin') return { pathname: `/(tabs)/${mount.tab}/check-in/wine`, params: { key } } as Href;
+  if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/session/[code]/add-wine`, params: { id: mount.post, code: dest.code, key } } as Href;
+  return { pathname: `/(tabs)/${mount.tab}/session/[code]/add-wine`, params: { code: dest.code, key } } as Href;
 }
 
 // Edit Profile (your own profile's ⋯ → Edit Profile, ruling D1): like
@@ -232,6 +301,10 @@ export function profileEditHref(mount: SessionMount): Href {
 // came out on You). The root routes stay the canonical ones.
 export function legalHref(mount: SessionMount, screen: 'about' | 'attributions'): Href {
   if (mount.post != null) return { pathname: `/(tabs)/${mount.tab}/[id]/${screen}`, params: { id: mount.post } } as Href;
+  // From the You stack (Settings): its own mirrors, so the Dev Gallery is a
+  // push on the same stack. The root routes (signed out, the auth screens:
+  // the root fallback mount is never 'you') stay the canonical ones.
+  if (mount.tab === 'you') return `/you/${screen}` as Href;
   return `/${screen}` as Href;
 }
 

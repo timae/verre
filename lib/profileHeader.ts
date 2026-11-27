@@ -103,7 +103,7 @@ export async function loadProfileHeaderExtras(
     gate.sees.cravings ? cravingsCount(profileId, viewerId) : Promise.resolve(null),
     // Photos only (pins + the automatic latest): lib/profileTiles.ts. The
     // counts above never depend on photo eligibility.
-    resolveTilePhotos(profileId, shown),
+    resolveTilePhotos(profileId, shown, viewerId),
   ])
   const count: Record<TileKey, number> = { impressions: impressionsCount, moments: moments?.[0]?.n ?? 0, cravings: cravings ?? 0 }
   const tiles: ProfileHeaderExtras['tiles'] = Object.fromEntries(shown.flatMap(k => {

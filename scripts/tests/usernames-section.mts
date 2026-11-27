@@ -20,6 +20,7 @@
 //          inside one (responses and Redis)
 //   § 21 i search
 //   § 21 j limits, no-store, the writes census
+import { nanoid } from 'nanoid'
 import { execFileSync } from 'node:child_process'
 import { dirname, join as pjoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -629,7 +630,7 @@ export async function usernames(h: UsernamesHarness) {
   await prisma.userMute.create({ data: { muterId: A.id, mutedId: Mu.id } })
   await prisma.userBlock.create({ data: { blockerId: A.id, blockedId: Bl.id } })
   await resetLimits()
-  const post = await call(checkinsRoute.POST, 'POST', '/api/checkins', B, { wineName: `${TAG} un post`, score: 4, flavors: {}, taggedUserIds: [A.pid] })
+  const post = await call(checkinsRoute.POST, 'POST', '/api/checkins', B, { occurrenceId: nanoid(), wineName: `${TAG} un post`, score: 4, flavors: {}, taggedUserIds: [A.pid] })
   check('fixture: B posts and tags A', post.status < 300 && typeof post.wire.id === 'number', post.wire)
   const get = async (handler: unknown, path: string, v: Actor, params: Record<string, string> = {}) => { await resetLimits(); return call(handler, 'GET', path, v, undefined, params) }
   const prof = await byId(A, B.pid)
@@ -664,7 +665,7 @@ export async function usernames(h: UsernamesHarness) {
   await resetLimits()
   keep(await call(joinRoute.POST, 'POST', '/api/session/join', B, { code, displayName: 'Ben Beta' }))
   await resetLimits()
-  const wine = keep(await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, A, { name: `${TAG} un wine`, type: 'red' }, { code }))
+  const wine = keep(await call(winesRoute.POST, 'POST', `/api/session/${code}/wines`, A, { id: nanoid(), name: `${TAG} un wine`, type: 'red' }, { code }))
   await resetLimits()
   keep(await call(rateRoute.POST, 'POST', `/api/session/${code}/rate`, B, { wineId: wine.wire.id, score: 4, flavors: {}, notes: 'fine' }, { code }))
   for (const [handler, path, method] of [[visitRoute.POST, `/api/session/${code}/visit`, 'POST'], [stateRoute.GET, `/api/session/${code}/state`, 'GET'], [codeRoute.GET, `/api/session/${code}`, 'GET'], [bansRoute.GET, `/api/session/${code}/bans`, 'GET']] as const) {

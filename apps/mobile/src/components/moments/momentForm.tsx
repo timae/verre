@@ -13,6 +13,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
+import { useFieldCapture } from '@/lib/fieldCapture';
 import { DATE_LOCALE } from '@/lib/locale';
 import { usePhoneTokens } from '@/lib/layout';
 import { fuzzyIncludes } from '@/lib/search';
@@ -623,7 +624,7 @@ export function DatePickerSheet({
 
 // Description textarea (.field, 2 rows) — same focus convention as TextField.
 export function NotesField({
-  label, placeholder, value, onChange, maxLength,
+  label, placeholder, value, onChange, maxLength, editable = true, onFocusChange,
 }: {
   // Optional since the rating block dropped its "Your Note" title (Simon,
   // 2026-07-12) — the placeholder carries the affordance there.
@@ -633,6 +634,10 @@ export function NotesField({
   onChange: (s: string) => void;
   // A hard cap in UTF-16 units (RN's own unit), e.g. the profile text's 200.
   maxLength?: number;
+  // false = read-only (a save that may have landed, ADR-0009).
+  editable?: boolean;
+  // Focus in / out (the impression's auto-save keeps the raw text while focused).
+  onFocusChange?: (focused: boolean) => void;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -640,6 +645,13 @@ export function NotesField({
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<TextInputInstance | null>(null);
   useRegisterInput(inputRef);
+  // The impression layer waits for the note's native edit to end before a
+  // departure (lib/fieldCapture.ts; a no-op elsewhere).
+  const fieldCapture = useFieldCapture();
+  // The last text this field reported: the end-editing's final text is applied
+  // only when it differs (an IME / dictation commit that never reached
+  // onChangeText).
+  const lastText = useRef(value);
   return (
     <View style={{ gap: 7 }}>
       {label ? (
@@ -648,13 +660,35 @@ export function NotesField({
       <TextInput
         ref={inputRef}
         value={value}
-        onChangeText={onChange}
+        onChangeText={(t) => {
+          lastText.current = t;
+          onChange(t);
+        }}
         multiline
+        editable={editable}
         maxLength={maxLength}
         placeholder={placeholder}
         placeholderTextColor={theme.inkFaint}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
+        onFocus={() => {
+          lastText.current = value;
+          fieldCapture.began();
+          setFocused(true);
+          onFocusChange?.(true);
+        }}
+        onBlur={() => {
+          setFocused(false);
+          onFocusChange?.(false);
+        }}
+        // The edit ends HERE, with the final text, on both platforms
+        // (lib/fieldCapture.ts: Android sends blur first, iOS after).
+        onEndEditing={(e) =>
+          fieldCapture.endEditing(() => {
+            const t = e.nativeEvent.text;
+            if (t === lastText.current) return;
+            lastText.current = t;
+            onChange(t);
+          })
+        }
         {...surface.textProps}
         style={{
           minHeight: surface.height(64),

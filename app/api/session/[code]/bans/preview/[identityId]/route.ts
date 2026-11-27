@@ -7,7 +7,7 @@ import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { isHostByIdentity } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { readGrant } from '@/lib/sessionGrant'
-import { openSessionFor } from '@/lib/sessionRoute'
+import { openSessionFor, servedLineup } from '@/lib/sessionRoute'
 
 type Ctx = { params: Promise<{ code: string; identityId: string }> }
 
@@ -82,11 +82,20 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   // very busy instance the iteration cost grows with total keyspace,
   // but the cost is mitigated here by issuing it in parallel with the
   // other reads.
+  // rating-write: EXEMPT
   const ratingCountP = scanKeys(`s:${c}:r:${targetId}:*`).then(keys => keys.length)
 
-  // Wines the target added — read from Redis (live state); the Postgres
-  // row may not exist yet for sessions still in their first 48h.
-  const winesP = Promise.resolve(opened.wines)
+  // Wines the target added: the line-up as the record has it in a
+  // Postgres-backed moment (the ban's delete decides on the record's rows),
+  // the cached one in a Redis-only moment.
+  const served = await servedLineup(c, opened, identity)
+  if (served instanceof NextResponse) return served
+  // The power again, with the settings and grant the line-up was read with
+  // (Codex r3: a cohost demoted meanwhile must not get the newer bottles).
+  if (!isHostByIdentity(served.meta, served.identity)) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
+  }
+  const winesP = Promise.resolve(served.wines)
 
   // Display name for the modal header. Pull from identities hash if
   // still present; fall back to the Postgres users row for logged-in

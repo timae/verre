@@ -1,11 +1,10 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Image, Pressable, ScrollView, TextInput, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
+import { Alert, BackHandler, Image, Pressable, ScrollView, TextInput, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider, BottomSheetScrollView } from '@gorhom/bottom-sheet';
-import { countryName, filterVintageInput } from '@verre/core';
 import { blockLook } from '@/lib/blockLook';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
@@ -17,29 +16,34 @@ import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { CountrySheet, Disclosure, FieldGroup, MAX_WINE_IMAGE_BYTES, NotesField, OptionSheet, pickPhoto, SelectField } from '@/components/moments/momentForm';
+import { Disclosure, FieldGroup, MAX_WINE_IMAGE_BYTES, NotesField, pickPhoto } from '@/components/moments/momentForm';
+import { BottlePicker, type PickerState } from '@/components/catalog/BottlePicker';
+import { AddSearchScreen } from '@/components/catalog/BottleSearch';
+import { Gone } from '@/components/catalog/pickerParts';
+import { flowClientId, getFlow, holdFlow, popsPast, type FlowResult } from '@/lib/pickerFlow';
+import type { ProductHit } from '@/lib/api/catalog';
 import { buildImpressionPayload } from '@/lib/impressionPayload';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
-import { ApiError, addWine, getSessionState, reassignBroughtBy, reorderWines, updateWine, type SessionParticipant, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
+import { ApiError, addWine, deleteWineImage, getSessionState, putWineImage, reassignBroughtBy, reorderWines, updateWine, type SessionParticipant, type SessionState, type WireWine } from '@/lib/api/sessions';
+import { asColour, lineupDuplicate, linkBody, writeOutcome, type BottleLabel, type CatalogChoice } from '@/lib/catalogChoice';
+import { newClientId } from '@/lib/clientId';
 import { authClient } from '@/lib/authClient';
-import { sessionHref, useSessionTab } from '@/lib/sessionStack';
+import { sessionHref, useSessionTab, type FlowDest } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
-import { WINE_TYPES } from '@/lib/momentFormat';
 import { elevation, radius, useTheme } from '@/theme';
-
-// The 5 wine types the backend accepts (lib/session.ts). FLAGGED DEVIATION
-// from the mock's 7-option dropdown (Orange/Dessert/Fortified have no backend
-// home): these match the web AddWineModal exactly (list now shared from
-// lib/momentFormat.ts — Compare's maker line reads the same labels).
-
-function isWineTypeCode(value: string): value is WineTypeCode {
-  return WINE_TYPES.some((t) => t.code === value);
-}
 
 type PhotoState =
   | { kind: 'new'; dataUrl: string; previewUri: string }
   | { kind: 'existing'; uri: string }
   | null;
+
+// Add: the form held on the flow once a save may have landed (lib/pickerFlow.ts).
+type AddHold = {
+  choice: CatalogChoice;
+  process: string; description: string; purchaseUrl: string;
+  position: number | null;
+  photo: PhotoState; photoPending: boolean; photoTried: boolean;
+};
 
 type ImpressionFormProps = {
   code: string;
@@ -69,6 +73,9 @@ type ImpressionFormProps = {
   myIdentityId?: string;
   blocksOut?: readonly string[] | null;
   blocksIn?: readonly string[] | null;
+  /** Add (the details screen): the pick it opened with, and its flow (a save that may have landed is held there). */
+  initial?: FlowResult<ProductHit> | null;
+  flowKey?: string;
 };
 
 // A participant's session role — drives the picker's role tag + the "won't be
@@ -78,53 +85,82 @@ type SessionRoleTag = 'host' | 'cohost' | 'provider' | 'taster';
 // 02b·add add-impression — a pushed full-screen form (FLAGGED DEVIATION from
 // the mock's bottom sheet, same call as 02f settings: a sticky "Add to line-up"
 // bar sticks cleanly via the create.tsx .vfoot pattern, no gorhom footer
-// gymnastics). Fields map design→server: Variety→grape, Process→vinification.
-// Reaches the existing POST /api/session/:code/wines (host/cohost/provider).
-export default function AddImpression() {
-  const { code: raw } = useLocalSearchParams<{ code: string }>();
-  const code = String(raw ?? '');
+// gymnastics). The bottle is a catalogue wine, picked inline first (ADR-0009);
+// the bottle's own fields follow (Process→vinification, Description, the
+// purchase link). POST /api/session/:code/wines (host/cohost/provider), the
+// photo its own call after it.
+// The moment as Add Impression's two screens need it: the line-up's cached
+// state (the same query the line-up polls, deduped by TanStack), the bounce to
+// the line-up on a cold deep link or a gone moment, and who may position.
+function useAddSession(code: string) {
   const router = useRouter();
   const sessionTab = useSessionTab();
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
-
-  // Read the SAME cached query the parent line-up polls (same key) — deduped by
-  // TanStack, so this gets the live wines + meta for free without a second
-  // interval. We only need the line-up length (position range) and the host
-  // check (whether to offer the position picker). The form mounts immediately;
-  // add-rights are enforced by the entry control + the server, so an unresolved
-  // cache just means "append at end, no picker yet".
+  // Normally pushed from the line-up (which already POSTed /visit), so the cache
+  // is warm. A cold deep-link has no prior /visit, so /state 401s (`invalid`):
+  // bounce to the line-up, which owns the visit + rejoin flow (same idiom as
+  // useSettingsSession). not-found / removed / rate-limited bounce there too.
   const state = useQuery({
     queryKey: ['session-state', code, myIdentityId],
     queryFn: () => getSessionState(code),
   });
   const meta = state.data?.meta ?? null;
   const wineCount = state.data?.wines?.length ?? 0;
-
-  // Normally this screen is pushed from the line-up (which already POSTed
-  // /visit), so the cache is warm and this query just serves it. But the route
-  // is URL-addressable: a cold deep-link has no prior /visit, so /state 401s
-  // (`invalid`). Rather than let the user fill out a form that will fail on
-  // submit, bounce to the line-up — it owns the visit + rejoin flow (same idiom
-  // as useSettingsSession). not-found/removed bounce there too, and so does
-  // rate-limited (a spent wrong-code budget: the line-up shows it with Try Again).
   const fatal =
     state.error instanceof ApiError &&
     (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found' || state.error.kind === 'rate-limited');
   useEffect(() => {
     if (fatal) router.replace(sessionHref(sessionTab, '', { code }));
   }, [fatal, code, router, sessionTab]);
-
-  // Position is host-only server-side (providers always append). Offer the
-  // picker only to a host/cohost — same check as the line-up's isHostViewer —
-  // so a provider isn't shown a control the server ignores.
+  // Position is host-only server-side (providers always append): offered only
+  // to a host / cohost, the line-up's isHostViewer check.
   const canPosition =
     !!meta &&
     (meta.hostIdentityId === myIdentityId ||
       (meta.hostUserId !== null && `u:${meta.hostUserId}` === myIdentityId) ||
       (meta.coHostIds ?? []).includes(myIdentityId));
+  return { wineCount, canPosition };
+}
 
-  return <ImpressionForm code={code} wineCount={wineCount} canPosition={canPosition} />;
+// Add Impression's FIRST screen: the one field (ruled 2026-11-22: a pick opens
+// its details on a screen of their own, `./add-wine`, so back returns here).
+export default function AddImpression() {
+  const { code: raw } = useLocalSearchParams<{ code: string }>();
+  const code = String(raw ?? '');
+  useAddSession(code);
+  const dest = useMemo<FlowDest>(() => ({ kind: 'impression', code }), [code]);
+  return <AddSearchScreen title="Add Impression" scope={{ code }} dest={dest} />;
+}
+
+// Add Impression's details (`./add-wine`): the pick the search (or the
+// catalogue pages) put on the flow, then the form. A cold link without its
+// flow reads "This isn't available any more".
+export function AddImpressionDetails() {
+  const { code: raw, key: rawKey } = useLocalSearchParams<{ code: string; key?: string }>();
+  const code = String(raw ?? '');
+  const key = typeof rawKey === 'string' ? rawKey : '';
+  const { wineCount, canPosition } = useAddSession(code);
+  const [initial] = useState(() => getFlow<unknown, unknown, ProductHit>(key)?.choice ?? null);
+  if (!initial) return <Gone />;
+  return <ImpressionForm code={code} wineCount={wineCount} canPosition={canPosition} initial={initial} flowKey={key} />;
+}
+
+// "Already in the line-up": Add Again (or Change Anyway) / Cancel. Resolves
+// false on Cancel or a dismiss.
+function confirmDuplicate(label: BottleLabel, position: number, mode: 'add' | 'edit'): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert('Already in the Line-Up', `“${[label.name, label.year].filter(Boolean).join(' ')}” is already Impression ${position}.`, [
+      { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+      { text: mode === 'edit' ? 'Change Anyway' : 'Add Again', onPress: () => resolve(true) },
+    ], { cancelable: true, onDismiss: () => resolve(false) });
+  });
+}
+
+// The bottle as it is (edit): its summary in the picker until Change.
+function currentLabel(w: WireWine | undefined): BottleLabel | null {
+  if (!w) return null;
+  return { name: w.entry?.name ?? w.name, producer: w.entry?.producer ?? w.producer, year: w.vintage, colour: asColour(w.colour), sparkling: w.sparkling };
 }
 
 export function ImpressionForm({
@@ -144,31 +180,43 @@ export function ImpressionForm({
   myIdentityId = '',
   blocksOut,
   blocksIn,
+  initial,
+  flowKey,
 }: ImpressionFormProps) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const navigation = useNavigation();
   const queryClient = useQueryClient();
+  // Add: a save that may have landed on an earlier visit of this details screen
+  // (back to the search and here again) is resumed WHOLE, the freeze rule
+  // across screens: the same choice, the form as it was sent, the photo's retry
+  // state (lib/pickerFlow.ts holdFlow; Codex 2026-11-22: a reopened form with
+  // empty fields would have retried without them). The id is the flow's.
+  const [held] = useState(() => (flowKey && mode === 'add' ? (getFlow(flowKey)?.hold as AddHold | null) ?? null : null));
 
-  const [photo, setPhoto] = useState<PhotoState>(() => initialWine?.imageUrl ? { kind: 'existing', uri: initialWine.imageUrl } : null);
+  const [photo, setPhoto] = useState<PhotoState>(() => held ? held.photo : initialWine?.imageUrl ? { kind: 'existing', uri: initialWine.imageUrl } : null);
   const [photoError, setPhotoError] = useState<string | null>(null);
-  const [name, setName] = useState(initialWine?.name ?? '');
-  const [vintage, setVintage] = useState(initialWine?.vintage ?? '');
-  const [producer, setProducer] = useState(initialWine?.producer ?? '');
-  const [type, setType] = useState<WineTypeCode | null>(
-    initialWine && isWineTypeCode(initialWine.type) ? initialWine.type : null,
-  );
-  const [grape, setGrape] = useState(initialWine?.grape ?? '');
-  const [region, setRegion] = useState(initialWine?.region ?? '');
-  const [country, setCountry] = useState(initialWine?.country ?? ''); // ISO-2 code, '' = unset
-  const [process, setProcess] = useState(initialWine?.vinification ?? '');
-  const [description, setDescription] = useState(initialWine?.description ?? '');
-  const [purchaseUrl, setPurchaseUrl] = useState(initialWine?.purchaseUrl ?? '');
+  // The bottle (ADR-0009): the picker's live state; `frozen` once a save MAY
+  // have landed (the freeze rule: a retry re-sends the same id and choice).
+  const [picker, setPicker] = useState<PickerState>({ status: mode === 'edit' ? 'unchanged' : 'none' });
+  const [frozen, setFrozenState] = useState<CatalogChoice | null>(held?.choice ?? null);
+  const [showErrors, setShowErrors] = useState(false);
+  // One client id per add (catalogue model change § 8a): the FLOW's, so every
+  // visit of these details shares it (Codex 2026-11-22).
+  const [clientId, setClientId] = useState(() => (flowKey && mode === 'add' ? flowClientId(flowKey, newClientId) : newClientId()));
+  const setFrozen = (c: CatalogChoice | null) => setFrozenState(c);
+  // The bottle landed (or the details saved) but its photo didn't: the screen
+  // stays with Try Again (ADR-0009), and only the photo is sent again.
+  const [photoPending, setPhotoPending] = useState(held?.photoPending ?? false);
+  const [process, setProcess] = useState(held?.process ?? initialWine?.vinification ?? '');
+  const [description, setDescription] = useState(held?.description ?? initialWine?.description ?? '');
+  const [purchaseUrl, setPurchaseUrl] = useState(held?.purchaseUrl ?? initialWine?.purchaseUrl ?? '');
   // null = "append" (follow the live count) — the user hasn't chosen a slot.
   // Kept null rather than seeded to wineCount+1 so a count that resolves AFTER
   // mount (cold deep-link before the parent poll lands) doesn't leave a stale
   // default: the pill + picker read the live maxPosition until the user picks.
-  const [position, setPosition] = useState<number | null>(null);
+  const [position, setPosition] = useState<number | null>(held?.position ?? null);
   // "Brought By" reassign (host/cohost, edit only). null = unchanged — the
   // form shows the current bringer and sends nothing. Picking stores the full
   // participant (id + name + avatar) so the resting field shows the avatar and
@@ -198,32 +246,10 @@ export function ImpressionForm({
   const shownBringerAnon = bringer
     ? lookOf(bringer.id) === 'guest'
     : initialWine?.addedByUserId == null || lookOf(`u:${initialWine.addedByUserId}`) === 'guest';
-  // Start the "Add more details" fold OPEN when editing a wine that already has
-  // data in any disclosure-hidden field (region/country/process/description/
-  // purchase link) — otherwise pre-existing values sit invisibly behind a
-  // collapsed fold. Add mode (no initialWine) always starts closed.
-  const [moreOpen, setMoreOpen] = useState(
-    () => !!(initialWine && (initialWine.region || initialWine.country || initialWine.vinification || initialWine.description || initialWine.purchaseUrl)),
-  );
-  // True only for the edit-mode auto-open above — consumed once to suppress the
-  // initial scroll-to-end so an editor lands at the top (Name), not the bottom.
-  const autoOpenedRef = useRef(moreOpen);
-  const [typeOpen, setTypeOpen] = useState(false);
-  const [countryOpen, setCountryOpen] = useState(false);
   const [posOpen, setPosOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<ScrollViewInstance>(null);
-  // Return-key field chaining. Two sub-chains, NOT one across the disclosure
-  // fold: the always-visible fields (Name→Vintage→Producer→Variety) and the
-  // disclosure fields (Region→Process→Purchase link). We don't jump into a
-  // collapsed/unmounted field. Type/Country (dropdowns) and Description
-  // (multiline — return = newline) are skipped; the last field in each chain
-  // gets returnKeyType="done".
-  const vintageRef = useRef<TextInputInstance>(null);
-  const producerRef = useRef<TextInputInstance>(null);
-  const varietyRef = useRef<TextInputInstance>(null);
-  const processRef = useRef<TextInputInstance>(null);
   const purchaseRef = useRef<TextInputInstance>(null);
 
   // Add: a new wine can land anywhere 1..count+1 (the +1 = append). Edit: the
@@ -241,93 +267,203 @@ export function ImpressionForm({
     setPhoto({ kind: 'new', ...picked });
   };
 
-  const onAdd = async () => {
-    setError(null);
-    if (!name.trim()) { setError('Give the impression a name.'); return; }
-    if (!type) { setError('Pick a type.'); return; }
-    setSaving(true);
-    // 🔒 ADD and EDIT need DIFFERENT payload shapes and the split is TESTED, not
-    // spelled inline — see lib/impressionPayload.ts for the why (an EDIT must
-    // send a cleared field explicitly, or the server reads the omission as
-    // "unchanged" while still storing the empty value). Do not re-derive this
-    // here; the wiring gate asserts this call.
-    const base = buildImpressionPayload(
-      { name, type, producer, vintage, grape, region, country, vinification: process, description, purchaseUrl },
-      mode,
-    );
+  // Leaving happens once (Codex r1: a second back() pops past the line-up).
+  const left = useRef(false);
+  const done = () => {
+    if (left.current) return;
+    left.current = true;
+    queryClient.invalidateQueries({ queryKey: ['session-state', code] });
+    // Adding leaves the whole flow (the details, any catalogue pages and the
+    // search) back to the line-up (ruled 2026-11-22: they are screens of
+    // their own); an edit leaves its own screen.
+    if (mode === 'add') {
+      const st = navigation.getState();
+      const n = st ? popsPast(st.routes.map((r) => r.name), st.index, 'session/[code]/add') : null;
+      if (n) { router.dismiss(n); return; }
+    }
+    router.back();
+  };
+  // 🔒 Once a save MAY have landed, or only the photo is left, the bottle's own
+  // fields are read-only too (Codex r1): a retry is answered "already added"
+  // (or sends only the photo), so an edit made now would be dropped silently.
+  // While a save is in flight too (Codex r2): an edit made then is not in it.
+  const locked = frozen !== null || photoPending || saving;
+  // Frozen (a save may have landed): the form as it is, held on the add flow
+  // for a later visit of these details, kept current (the photo's retry).
+  useEffect(() => {
+    if (mode !== 'add' || !flowKey || !frozen) return;
+    holdFlow(flowKey, { choice: frozen, process, description, purchaseUrl, position, photo, photoPending, photoTried: photoTried.current } satisfies AddHold);
+  }, [mode, flowKey, frozen, process, description, purchaseUrl, position, photo, photoPending]);
+  // No back while a save is in flight (Codex 2026-11-22: back and here again
+  // mid-save made a second form; the save's own exit then popped one screen
+  // too many): the arrow is hidden, the swipe and Android's back are off.
+  useEffect(() => {
+    navigation.setOptions({ gestureEnabled: !saving });
+    if (!saving) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [saving, navigation]);
+  // Start the "Add More Details" fold OPEN when editing a bottle that already
+  // has one of its own fields set, otherwise its values sit behind a closed
+  // fold; adding starts it closed (ruled 2026-11-22: the fold is back).
+  const [moreOpen, setMoreOpen] = useState(
+    () => !!(initialWine && (initialWine.vinification || initialWine.description || initialWine.purchaseUrl)),
+  );
+  // True only for the edit-mode auto-open above: consumed once to suppress the
+  // initial scroll-to-end so an editor lands at the top.
+  const autoOpenedRef = useRef(moreOpen);
+  // A photo upload was tried: a photo cleared since must be removed on the
+  // server too (the PUT may have landed without its answer, Codex r1).
+  const photoTried = useRef(held?.photoTried ?? false);
+  const failText = (e: unknown, fallback: string) => {
+    const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+    return msg && msg !== 'http' ? msg : fallback;
+  };
+
+  // The photo, its own call (README: PUT / DELETE …/wines/:id/image). False =
+  // it failed: the screen stays with Try Again.
+  const sendPhoto = async (target: string): Promise<boolean> => {
     try {
-      if (mode === 'edit') {
-        if (!wineId) throw new Error('missing wine id');
-        await updateWine(code, wineId, {
-          ...base,
-          ...(photo?.kind === 'new' ? { image: photo.dataUrl } : {}),
-          ...(photo === null && initialWine?.imageUrl ? { image: null } : {}),
-        });
-        // Reassign is an OWNERSHIP-ONLY request (the server rejects a mix with
-        // field edits), so it's a SEPARATE save after the details — same split
-        // pattern as the position change below: the details are already saved,
-        // so a reassign failure closes the form and reports honestly on its own
-        // rather than failing the whole edit. reassignBroughtBy retries once
-        // (it's idempotent) before this catch fires.
-        if (bringer) {
-          try {
-            await reassignBroughtBy(code, wineId, bringer.id);
-          } catch (e) {
-            queryClient.invalidateQueries({ queryKey: ['session-state', code] });
-            router.back();
-            const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
-            // A deterministic 4xx (not host / hidden / bad target) carries a real
-            // reason; a 5xx after the retry is the "couldn't confirm" residual.
-            Alert.alert('Details saved', msg && msg !== 'http'
-              ? `But who brought it wasn’t changed: ${msg}`
-              : 'But we couldn’t confirm who brought it. Reopen the impression and check.');
-            return;
-          }
-        }
-        // Position change rides the existing host-gated reorder endpoint (the
-        // wine PATCH body has no position field). Its failure is SPLIT from
-        // the field save (codex P2: the outer catch read "couldn't save"
-        // while the details had already persisted): the form closes with the
-        // saved edits and the position miss is reported honestly on its own.
-        if (canPosition && position !== null && initialPosition && position !== initialPosition && wineIds) {
-          try {
-            const rest = wineIds.filter((id) => id !== wineId);
-            rest.splice(Math.min(Math.max(position - 1, 0), rest.length), 0, wineId);
-            await reorderWines(code, rest);
-          } catch (e) {
-            queryClient.invalidateQueries({ queryKey: ['session-state', code] });
-            router.back();
-            const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
-            Alert.alert('Details saved', msg && msg !== 'http' ? `But the position change failed: ${msg}` : "But the position change didn't apply: the line-up may have changed. Try moving it again.");
-            return;
-          }
-        }
-      } else {
-        await addWine(code, {
-          ...base,
-          ...(photo?.kind === 'new' ? { image: photo.dataUrl } : {}),
-          // Send a position only when the host explicitly chose a non-append slot.
-          // null (untouched) or == maxPosition both mean "append", which the
-          // server does by default — so we omit it (host-only server-side anyway).
-          ...(canPosition && position !== null && position !== maxPosition ? { position } : {}),
-        });
-      }
-      // Invalidate the line-up's cached state (keyed by code + myIdentityId, so
-      // a code-prefixed invalidate covers it) — the parent poll refetches and
-      // the new/edited wine appears. router.back() returns to the previous screen.
-      queryClient.invalidateQueries({ queryKey: ['session-state', code] });
-      router.back();
+      if (photo?.kind === 'new') { photoTried.current = true; await putWineImage(code, target, photo.dataUrl); }
+      else if (photo === null && (photoTried.current || (mode === 'edit' && initialWine?.imageUrl))) { await deleteWineImage(code, target); photoTried.current = false; }
+      return true;
     } catch (e) {
+      setPhotoPending(true);
       setSaving(false);
-      const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
-      setError(msg && msg !== 'http' ? msg : `Couldn't ${mode === 'edit' ? 'save' : 'add'} it. Check your connection and try again.`);
+      setError(failText(e, mode === 'edit' ? 'Saved. The photo didn’t upload. Try again.' : 'Added. The photo didn’t upload. Try again.'));
+      queryClient.invalidateQueries({ queryKey: ['session-state', code] });
+      return false;
     }
   };
 
-  const typeLabel = type ? WINE_TYPES.find((t) => t.code === type)?.label ?? '' : '';
+  // The edit's tail, after the details and the photo: the bringer, then the
+  // position (review r1: a failed photo must not skip them; Try Again and Done
+  // both come back here).
+  const finishEdit = async (target: string) => {
+    // Reassign is an OWNERSHIP-ONLY request (the server rejects a mix with
+    // field edits), so it's a SEPARATE save after the details — same split
+    // pattern as the position change below: the details are already saved,
+    // so a reassign failure closes the form and reports honestly on its own
+    // rather than failing the whole edit. reassignBroughtBy retries once
+    // (it's idempotent) before this catch fires.
+    if (bringer) {
+      try {
+        await reassignBroughtBy(code, target, bringer.id);
+      } catch (e) {
+        done();
+        const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+        // A deterministic 4xx (not host / hidden / bad target) carries a real
+        // reason; a 5xx after the retry is the "couldn't confirm" residual.
+        Alert.alert('Details saved', msg && msg !== 'http'
+          ? `But who brought it wasn’t changed: ${msg}`
+          : 'But we couldn’t confirm who brought it. Reopen the impression and check.');
+        return;
+      }
+    }
+    // Position change rides the existing host-gated reorder endpoint (the
+    // wine PATCH body has no position field). Its failure is SPLIT from
+    // the field save (codex P2: the outer catch read "couldn't save"
+    // while the details had already persisted): the form closes with the
+    // saved edits and the position miss is reported honestly on its own.
+    if (canPosition && position !== null && initialPosition && position !== initialPosition && wineIds) {
+      try {
+        const rest = wineIds.filter((id) => id !== target);
+        rest.splice(Math.min(Math.max(position - 1, 0), rest.length), 0, target);
+        await reorderWines(code, rest);
+      } catch (e) {
+        done();
+        const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+        Alert.alert('Details saved', msg && msg !== 'http' ? `But the position change failed: ${msg}` : "But the position change didn't apply: the line-up may have changed. Try moving it again.");
+        return;
+      }
+    }
+    done();
+  };
+
+  const onAdd = async () => {
+    if (saving) return;
+    setError(null);
+    setShowErrors(true);
+    const target = mode === 'edit' ? wineId : clientId;
+    if (!target) { setError('Couldn’t save it. Go back and try again.'); return; }
+    // The bottle is in: only the photo goes again.
+    if (photoPending) {
+      setSaving(true);
+      if (!(await sendPhoto(target))) return;
+      if (mode === 'edit') await finishEdit(target);
+      else done();
+      return;
+    }
+    const choice = frozen ?? (picker.status === 'ok' ? picker.choice : null);
+    if (!choice && !(mode === 'edit' && picker.status === 'unchanged')) {
+      setError(picker.status === 'error' ? picker.error : picker.status === 'pending' ? 'One moment, the years are still loading.' : 'Choose the bottle first.');
+      return;
+    }
+    // The same wine in the same year already in the line-up: asked, never
+    // refused (ruled 2026-11-22). Not on a retry of a save that may have landed.
+    if (!frozen && choice) {
+      const lineup = queryClient.getQueriesData<SessionState>({ queryKey: ['session-state', code] })
+        .map(([, d]) => d?.wines).find((w): w is WireWine[] => Array.isArray(w)) ?? [];
+      const dup = lineupDuplicate(lineup, choice, mode === 'edit' ? wineId ?? null : null);
+      if (dup && !(await confirmDuplicate(choice.label, dup.position, mode))) return;
+    }
+    setSaving(true);
+    // 🔒 ADD and EDIT need DIFFERENT payload shapes and the split is TESTED, not
+    // spelled inline — see lib/impressionPayload.ts for the why (an EDIT must
+    // send a cleared field explicitly). Do not re-derive this here; the wiring
+    // gate asserts this call.
+    const base = buildImpressionPayload({ vinification: process, description, purchaseUrl }, mode);
+    if (mode === 'edit') {
+      try {
+        await updateWine(code, target, { ...base, ...(choice ? linkBody(choice) : {}) });
+      } catch (e) {
+        setSaving(false);
+        // A re-link that adds a wine may have landed without an answer: never
+        // send it again (it would add the wine twice). Close and say so.
+        if (choice?.kind === 'create' && writeOutcome(e instanceof ApiError && e.status > 0 ? e.status : null) === 'unknown') {
+          done();
+          Alert.alert('Not Confirmed', 'We couldn’t confirm the change. Reopen the impression and check.');
+          return;
+        }
+        setError(failText(e, 'Couldn’t save it. Check your connection and try again.'));
+        return;
+      }
+      if (!(await sendPhoto(target))) return;
+      await finishEdit(target);
+      return;
+    }
+    // ADD: the client id makes a retry safe; the freeze rule keeps it the same
+    // choice (ADR-0009).
+    try {
+      await addWine(code, {
+        id: target,
+        ...linkBody(choice!),
+        ...base,
+        // Send a position only when the host explicitly chose a non-append slot.
+        // null (untouched) or == maxPosition both mean "append", which the
+        // server does by default — so we omit it (host-only server-side anyway).
+        ...(canPosition && position !== null && position !== maxPosition ? { position } : {}),
+      });
+    } catch (e) {
+      setSaving(false);
+      const outcome = writeOutcome(e instanceof ApiError && e.status > 0 ? e.status : null);
+      if (outcome === 'unknown') {
+        setFrozen(choice);
+        setError('We couldn’t confirm it was added. Try again.');
+        return;
+      }
+      // Someone else's id (practically never): the next try gets a new one.
+      if (e instanceof ApiError && e.status === 409) setClientId(flowKey && mode === 'add' ? flowClientId(flowKey, newClientId, true) : newClientId());
+      setError(failText(e, 'Couldn’t add it. Check your connection and try again.'));
+      return;
+    }
+    setFrozen(choice);
+    if (!(await sendPhoto(target))) return;
+    done();
+  };
 
   return (
-    // BottomSheetModalProvider in-screen so the Type/Country brand sheets get a
+    // BottomSheetModalProvider in-screen so the Country / bringer sheets get a
     // sized host across the Stack boundary (same as create.tsx / index.tsx).
     <BottomSheetModalProvider>
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
@@ -336,9 +472,9 @@ export function ImpressionForm({
           the form below. */}
       <View style={{ paddingHorizontal: GUTTER, flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', zIndex: 20 }}>
         <View style={{ flex: 1 }}>
-          <VBar title={mode === 'edit' ? 'Edit Impression' : 'Add Impression'} />
+          <VBar title={mode === 'edit' ? 'Edit Impression' : 'Add Impression'} back={!saving} />
         </View>
-        {canPosition && (mode === 'edit' ? wineCount > 1 : wineCount > 0) ? (
+        {canPosition && !locked && (mode === 'edit' ? wineCount > 1 : wineCount > 0) ? (
           <PositionPicker
             value={position ?? (mode === 'edit' ? initialPosition ?? maxPosition : maxPosition)}
             max={maxPosition}
@@ -368,69 +504,35 @@ export function ImpressionForm({
         automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
+        {/* The bottle first (ADR-0009): picked from the catalogue, inline. */}
+        <BottlePicker
+          scope={{ code }}
+          locked={saving}
+          initial={mode === 'add' ? initial ?? null : null}
+          current={mode === 'edit' ? currentLabel(initialWine) : null}
+          frozen={frozen ? { label: frozen.label, isNew: frozen.kind === 'create' }
+            // Edit with only the photo left: the details are saved, the bottle
+            // stays as it now is (sending its re-link again could add a wine twice).
+            : photoPending ? (picker.status === 'ok' ? { label: picker.choice.label, isNew: picker.choice.kind === 'create' } : initialWine ? { label: currentLabel(initialWine)!, isNew: false } : null)
+            : null}
+          showErrors={showErrors}
+          onChange={setPicker}
+        />
+
+        {/* The photo and the details only once a bottle is chosen (picked,
+            being added, or the edit's own; ruled 2026-11-22). */}
         <PhotoPicker photo={photo} onPick={onPickPhoto} onClear={() => { setPhoto(null); setPhotoError(null); }} />
         {photoError ? (
           <VText variant="small" style={{ marginTop: -8, marginBottom: 8, color: theme.critical }}>{photoError}</VText>
         ) : null}
 
-        {/* .trow2-name — Name (wide) + Vintage (narrow 76). */}
-        <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
-          <View style={{ flex: 1 }}>
-            <TextField label="Name" placeholder="e.g. Oslavje" value={name} onChangeText={setName} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => vintageRef.current?.focus()} />
-          </View>
-          <View style={{ width: 76 }}>
-            {/* Accepts a year OR "NV" (non-vintage), so the keyboard must reach
-                letters — a number-pad made NV literally untypeable, and the
-                per-keystroke \D strip made it unreachable even by paste.
-                `filterVintageInput` allows an NV-token prefix through while
-                typing; `normalizeVintageText` canonicalizes on submit.
-                Dropping number-pad also gives this field a return key, so it
-                can finally continue the focus chain instead of dead-ending. */}
-            <TextField
-              ref={vintageRef}
-              label="Vintage"
-              // "Year" is the handoff spec: "Year / NV" overflowed the 76-wide field.
-              // NV stays typeable; the hint carries it for VoiceOver.
-              placeholder="Year"
-              accessibilityHint="A year, or NV for non-vintage."
-              value={vintage}
-              onChangeText={(t) => setVintage(filterVintageInput(t))}
-              autoCapitalize="characters"
-              autoCorrect={false}
-              returnKeyType="next"
-              submitBehavior="submit"
-              onSubmitEditing={() => producerRef.current?.focus()}
-            />
-          </View>
-        </View>
-
-        <View style={{ marginBottom: 14 }}>
-          <TextField ref={producerRef} label="Producer" placeholder="Maker or winery" value={producer} onChangeText={setProducer} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => varietyRef.current?.focus()} />
-        </View>
-
-        {/* Type — required. Native-chrome dropdown → brand picker sheet (the
-            create.tsx CategorySheet pattern). */}
-        <FieldGroup label="Type">
-          <SelectField
-            value={typeLabel}
-            placeholder="Choose a type"
-            onPress={() => setTypeOpen(true)}
-            accessibilityLabel={`Type${typeLabel ? `: ${typeLabel}` : ''}`}
-          />
-        </FieldGroup>
-
-        <View style={{ marginBottom: 4 }}>
-          {/* Last always-visible field — Region lives behind the disclosure fold,
-              so we stop here ("done") rather than focus an unmounted field. */}
-          <TextField ref={varietyRef} label="Variety" placeholder="Grape, bean, hops…" value={grape} onChangeText={setGrape} autoCorrect={false} returnKeyType="done" />
-        </View>
         {showBringer ? (
           <FieldGroup label="Brought By">
             <BringerField
               name={shownBringerName}
               imageUrl={shownBringer?.imageUrl ?? null}
               anon={shownBringerAnon}
-              onPress={() => setBringerOpen(true)}
+              onPress={() => { if (!locked) setBringerOpen(true); }}
             />
             {/* Warn when the SELECTED bringer can't edit the impression — only
                 host/cohost/provider can. A taster bringer is fine to attribute,
@@ -445,11 +547,10 @@ export function ImpressionForm({
           </FieldGroup>
         ) : null}
 
-        {/* .disclosure Add more details — body expands DOWN from the bar
-            (Disclosure owns the height animation); scroll into view once open.
-            Skip the scroll on the edit-mode AUTO-open (the fold starts open with
-            pre-filled data laid out in place) — only a USER expand should yank
-            the view to the bottom. */}
+        {/* .disclosure Add More Details: the bottle's own fields (its origin
+            and grapes are the catalogue wine's, ADR-0009). Body expands DOWN
+            from the bar (Disclosure owns the height animation); scroll into view
+            once open, except on the edit-mode AUTO-open. */}
         <Disclosure
           label="Add More Details"
           open={moreOpen}
@@ -459,25 +560,8 @@ export function ImpressionForm({
             scrollRef.current?.scrollToEnd({ animated: true });
           }}
         >
-          {/* .trow2-even — Region + Country. */}
-          <View style={{ flexDirection: 'row', gap: 12 }}>
-            <View style={{ flex: 1 }}>
-              <TextField label="Region" placeholder="Where it is from" value={region} onChangeText={setRegion} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => processRef.current?.focus()} />
-            </View>
-            <View style={{ flex: 1, gap: 7 }}>
-              <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Country</VText>
-              <SelectField
-                value={countryName(country) || ''}
-                placeholder="Country"
-                onPress={() => setCountryOpen(true)}
-                accessibilityLabel={`Country${country ? `: ${countryName(country)}` : ''}`}
-              />
-            </View>
-          </View>
-          {/* Process → Purchase link skips the multiline Description (return =
-              newline there, not a chain link). */}
-          <TextField ref={processRef} label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} growLines={3} />
-          <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} />
+          <TextField label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} growLines={3} editable={!locked} />
+          <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} editable={!locked} />
           <TextField
             ref={purchaseRef}
             label="Purchase Link"
@@ -488,17 +572,16 @@ export function ImpressionForm({
             autoCorrect={false}
             returnKeyType="done"
             keyboardType="url"
+            editable={!locked}
           />
         </Disclosure>
       </ScrollView>
 
-      {/* Sticky "Add to line-up" — SOLID theme.bg fill, no gradient fade. The
-          create.tsx .vfoot uses a transparent→bg gradient, but we deliberately
-          don't here (Simon's call): a plain opaque bar, matching SettingsFooter.
-          The error banner lives HERE (above the button), not in the scroll body:
-          a validation error (no name / no type) must always be visible, but the
-          body scrolls (small screen / "Add more details" expanded) and an error
-          at its end would land below the fold. (Web AddWineModal does the same.) */}
+      {/* Sticky "Add to line-up" — SOLID theme.bg fill, no gradient fade (Simon's
+          call): a plain opaque bar, matching SettingsFooter. The error banner
+          lives HERE (above the button), not in the scroll body: it must always
+          be visible. While only the photo is left, Try Again sends it and Done
+          leaves without it (ADR-0009). */}
       <View
         style={{
           position: 'absolute', left: 0, right: 0, bottom: 0,
@@ -509,18 +592,34 @@ export function ImpressionForm({
         {error ? (
           <VText variant="small" style={{ marginBottom: 10, color: theme.critical }}>{error}</VText>
         ) : null}
-        <Button
-          title={mode === 'edit' ? 'Save changes' : 'Add to line-up'}
-          loadingTitle={mode === 'edit' ? 'Saving…' : 'Adding…'}
-          loading={saving}
-          onPress={onAdd}
-          bar
-          block
-        />
+        <View style={{ flexDirection: 'row', gap: 10 }}>
+          {photoPending ? (
+            <Button
+              title="Done"
+              variant="secondary"
+              disabled={saving}
+              // Guarded like Try Again (review r2): a double tap would run the
+              // tail twice and pop past the line-up.
+              onPress={() => {
+                if (saving) return;
+                if (mode === 'edit' && wineId) { setSaving(true); void finishEdit(wineId); } else done();
+              }}
+              bar
+              style={{ flex: 1 }}
+            />
+          ) : null}
+          <Button
+            title={photoPending ? 'Try Again' : mode === 'edit' ? 'Save changes' : 'Add to line-up'}
+            loadingTitle={photoPending ? 'Uploading…' : mode === 'edit' ? 'Saving…' : 'Adding…'}
+            loading={saving}
+            onPress={onAdd}
+            bar
+            block={!photoPending}
+            style={photoPending ? { flex: 1 } : undefined}
+          />
+        </View>
       </View>
 
-      <OptionSheet open={typeOpen} title="Type" options={WINE_TYPES} selected={type} onSelect={(t) => { setType(t); setTypeOpen(false); }} onClose={() => setTypeOpen(false)} />
-      <CountrySheet open={countryOpen} selected={country} onSelect={(c) => { setCountry(c); setCountryOpen(false); }} onClose={() => setCountryOpen(false)} />
       {showBringer ? (
         <BringerPicker
           open={bringerOpen}
@@ -589,7 +688,8 @@ function PhotoPicker({
     >
       <Icon name="cam" size={24} color={theme.inkSoft} />
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add Photo</VText>
-      <VText variant="caption" color="inkSoft">Optional. A label or pour.</VText>
+      {/* No line under it (ruled 2026-11-22: not "Optional.", nothing wine-only,
+          and not "moment": an impression is not a moment). */}
     </Pressable>
   );
 }

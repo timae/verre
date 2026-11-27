@@ -232,6 +232,9 @@ export function useMomentEdit({ code, meta, stateKey, canEdit, scrollBy }: {
     if (body.dateFrom !== undefined || body.dateTo !== undefined) body.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     if (draft.cover) body.coverPhoto = draft.cover.dataUrl;
     if (Object.keys(body).length === 0) return cancel();
+    // The keyboard closes when the save STARTS (validation passed): a touch in
+    // the edit bar keeps it up (lib/keyboardDismiss.ts), so Done closes it here.
+    Keyboard.dismiss();
     savingRef.current = true;
     setSaving(true);
     const epoch = viewerCacheEpoch();

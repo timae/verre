@@ -98,39 +98,70 @@ export const facetsActive = (f: MomentFacets) =>
 // charges (the SAME key on every moments list).
 export const facetsExpensive = (f: MomentFacets) => f.q !== '' || f.people.length > 0
 
+// Friend ids the caller may filter `people` on. The picker only offers
+// friends, but a request is untrusted — intersect the requested `people`
+// ids with the caller's actual mutual-follow set so this can't become an
+// attendance oracle for an arbitrary user. Blocked pairs are excluded too.
+async function facetPeopleIds(f: MomentFacets, viewerId: number, blockedUserIds: Set<number>): Promise<number[]> {
+  if (f.people.length === 0) return []
+  // Wire identities (`u:<publicId>`); a malformed or unknown one is dropped
+  // (and a request left with none matches nothing, below).
+  const wantedPublic = f.people.flatMap((p) => {
+    const w = parseWireIdentity(p)
+    return w?.kind === 'user' ? [w.publicId] : []
+  })
+  const wanted = [...(await userIdsForPublicIds(wantedPublic)).values()]
+    .filter((n) => !blockedUserIds.has(n))
+    // Belt after the block-scrub filter (the raw `people` was already capped
+    // at parse). Each accepted friend becomes one correlated EXISTS.
+    .slice(0, FACET_MAX)
+  if (wanted.length === 0) return []
+  const mutuals = await prisma.$queryRaw<Array<{ id: number }>>`
+    SELECT f1."following_id" AS id
+    FROM follows f1
+    JOIN follows f2 ON f2."follower_id" = f1."following_id" AND f2."following_id" = ${viewerId}
+    WHERE f1."follower_id" = ${viewerId} AND f1."following_id" = ANY(${wanted})
+  `
+  return mutuals.map((m) => m.id)
+}
+
+// Someone's Moments' OPEN rows (Moment Visibility, lib/momentAudience.ts):
+// moments the viewer is not in but may look into. 🔒 On them a filter never
+// matches a hidden person: `people` only where that friend is named, `hosts`
+// and the host-name half of `q` only where the host is named (otherwise
+// "Alice was there" or a search for Alice's name is an attendance oracle).
+export type OpenRowsNaming = { hostNamed: number[]; namedFor: (userId: number) => number[] }
+
+// The `hosts=u:<publicId>` entries resolved: `unknown` = one of them is
+// malformed or names nobody.
+export type FacetHosts = { uids: number[]; unknown: boolean }
+async function facetHostIds(f: MomentFacets): Promise<FacetHosts> {
+  const entries = f.hosts.filter((h) => h.startsWith('u:'))
+  const publicIds = entries.flatMap((h) => {
+    const w = parseWireIdentity(h)
+    return w?.kind === 'user' ? [w.publicId] : []
+  })
+  const uids = [...(await userIdsForPublicIds(publicIds)).values()]
+  return { uids, unknown: entries.length > uids.length }
+}
+
+// The facets' id lookups, once per request: a caller that builds two WHEREs
+// (someone's Moments: shared rows and open rows) passes them to both.
+export type ResolvedFacets = { people: number[]; hosts: FacetHosts }
+export async function resolveFacets(f: MomentFacets, viewerId: number, blockedUserIds: Set<number>): Promise<ResolvedFacets> {
+  const [people, hosts] = await Promise.all([facetPeopleIds(f, viewerId, blockedUserIds), facetHostIds(f)])
+  return { people, hosts }
+}
+
 export async function momentFacetWhere(
   f: MomentFacets,
-  { subjectId, viewerId, blockedUserIds }: { subjectId: number; viewerId: number; blockedUserIds: Set<number> },
+  { subjectId, viewerId, blockedUserIds, resolved, open }: {
+    subjectId: number; viewerId: number; blockedUserIds: Set<number>; resolved?: ResolvedFacets; open?: OpenRowsNaming
+  },
 ): Promise<Prisma.Sql[]> {
   const where: Prisma.Sql[] = []
-
-  // Friend ids the caller may filter `people` on. The picker only offers
-  // friends, but a request is untrusted — intersect the requested `people`
-  // ids with the caller's actual mutual-follow set so this can't become an
-  // attendance oracle for an arbitrary user. Blocked pairs are excluded too.
-  let peopleIds: number[] = []
-  if (f.people.length > 0) {
-    // Wire identities (`u:<publicId>`); a malformed or unknown one is dropped
-    // (and a request left with none matches nothing, below).
-    const wantedPublic = f.people.flatMap((p) => {
-      const w = parseWireIdentity(p)
-      return w?.kind === 'user' ? [w.publicId] : []
-    })
-    const wanted = [...(await userIdsForPublicIds(wantedPublic)).values()]
-      .filter((n) => !blockedUserIds.has(n))
-      // Belt after the block-scrub filter (the raw `people` was already capped
-      // at parse). Each accepted friend becomes one correlated EXISTS.
-      .slice(0, FACET_MAX)
-    if (wanted.length > 0) {
-      const mutuals = await prisma.$queryRaw<Array<{ id: number }>>`
-        SELECT f1."following_id" AS id
-        FROM follows f1
-        JOIN follows f2 ON f2."follower_id" = f1."following_id" AND f2."following_id" = ${viewerId}
-        WHERE f1."follower_id" = ${viewerId} AND f1."following_id" = ANY(${wanted})
-      `
-      peopleIds = mutuals.map((m) => m.id)
-    }
-  }
+  const { people: peopleIds, hosts } = resolved ?? await resolveFacets(f, viewerId, blockedUserIds)
+  const hostNamed = (clause: Prisma.Sql) => (open ? Prisma.sql`(s.id = ANY(${open.hostNamed}::int[]) AND ${clause})` : clause)
 
   // Date window on COALESCE(date_from, created_at), inclusive whole days.
   if (f.from) where.push(Prisma.sql`COALESCE(s.date_from, s.created_at) >= ${f.from}`)
@@ -175,15 +206,8 @@ export async function momentFacetWhere(
   if (f.hosts.length > 0) {
     const clauses: Prisma.Sql[] = []
     if (f.hosts.includes('me')) clauses.push(Prisma.sql`s.host_user_id = ${viewerId}`)
-    const hostEntries = f.hosts.filter((h) => h.startsWith('u:'))
-    const hostPublic = hostEntries.flatMap((h) => {
-      const w = parseWireIdentity(h)
-      return w?.kind === 'user' ? [w.publicId] : []
-    })
-    const hostIds = await userIdsForPublicIds(hostPublic)
-    const uids = [...hostIds.values()]
-    if (uids.length > 0) clauses.push(Prisma.sql`s.host_user_id = ANY(${uids})`)
-    if (hostEntries.length > uids.length) clauses.push(Prisma.sql`FALSE`)
+    if (hosts.uids.length > 0) clauses.push(Prisma.sql`s.host_user_id = ANY(${hosts.uids})`)
+    if (hosts.unknown) clauses.push(Prisma.sql`FALSE`)
     // Scrub + length-cap the free-text anon-host names (NUL byte → P22021
     // 500; host_name is VarChar(64) so anything longer can't match anyway).
     const names = f.hosts
@@ -191,7 +215,7 @@ export async function momentFacetWhere(
       .map((h) => (scrub(h.slice(2)) ?? '').slice(0, HOST_NAME_MAX))
       .filter(Boolean)
     if (names.length > 0) clauses.push(Prisma.sql`s.host_name = ANY(${names})`)
-    if (clauses.length > 0) where.push(Prisma.sql`(${Prisma.join(clauses, ' OR ')})`)
+    if (clauses.length > 0) where.push(hostNamed(Prisma.sql`(${Prisma.join(clauses, ' OR ')})`))
   }
 
   // People: AND semantics — one EXISTS per selected friend ("the moments
@@ -204,14 +228,13 @@ export async function momentFacetWhere(
       where.push(Prisma.sql`FALSE`)
     } else {
       for (const pid of peopleIds) {
-        where.push(
-          // `removed_state` excludes a friend who was KICKED from the session
-          // — they aren't a participant there, so "moments Anna was at"
-          // shouldn't match a moment Anna was kicked from (matches the live
-          // identities hash, which strips kicked users, and the caller's own
-          // kicked-drop). kick-delete/ban already dropped the sm2 row.
-          Prisma.sql`EXISTS (SELECT 1 FROM session_members sm2 WHERE sm2.session_code = s.code AND sm2.user_id = ${pid} AND sm2.removed_state IS DISTINCT FROM 'kicked')`,
-        )
+        // `removed_state` excludes a friend who was KICKED from the session
+        // — they aren't a participant there, so "moments Anna was at"
+        // shouldn't match a moment Anna was kicked from (matches the live
+        // identities hash, which strips kicked users, and the caller's own
+        // kicked-drop). kick-delete/ban already dropped the sm2 row.
+        const there = Prisma.sql`EXISTS (SELECT 1 FROM session_members sm2 WHERE sm2.session_code = s.code AND sm2.user_id = ${pid} AND sm2.removed_state IS DISTINCT FROM 'kicked')`
+        where.push(open ? Prisma.sql`(s.id = ANY(${open.namedFor(pid)}::int[]) AND ${there})` : there)
       }
     }
   }
@@ -232,8 +255,8 @@ export async function momentFacetWhere(
       Prisma.sql`(
         f_unaccent(s.name) ILIKE '%' || f_unaccent(${qLike}) || '%' ESCAPE '\\'
         OR word_similarity(f_unaccent(${f.q}), f_unaccent(s.name)) >= ${SIMILARITY}
-        OR f_unaccent(s.host_name) ILIKE '%' || f_unaccent(${qLike}) || '%' ESCAPE '\\'
-        OR word_similarity(f_unaccent(${f.q}), f_unaccent(s.host_name)) >= ${SIMILARITY}
+        OR ${hostNamed(Prisma.sql`(f_unaccent(s.host_name) ILIKE '%' || f_unaccent(${qLike}) || '%' ESCAPE '\\'
+          OR word_similarity(f_unaccent(${f.q}), f_unaccent(s.host_name)) >= ${SIMILARITY})`)}
       )`,
     )
   }
