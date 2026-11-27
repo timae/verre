@@ -9,7 +9,7 @@ import { participantOrBanned, authInvalid, authRemoved, authUnavailable, isTombs
 import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { isSameOrigin } from '@/lib/csrf'
 import { CatalogValidationError } from '@/lib/catalogWrite'
-import { prepareLink, applyRelink, PICK_WHOLE, CREATE_HIDDEN } from '@/lib/catalogLink'
+import { prepareLink, applyRelink, PICK_WHOLE, CREATE_HIDDEN, ABV_HIDDEN } from '@/lib/catalogLink'
 import { withSessionMutation, admitted, refuse, ContractCold, type MutationCtx } from '@/lib/sessionMutation'
 import { readGrant, grantStatus, type AuthorizedIdentity } from '@/lib/sessionGrant'
 import { contractFailure } from '@/lib/sessionRehydrate'
@@ -122,7 +122,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       // moment writes its cache before COMMIT, so a rolled-back mint could stay
       // linked there). A signed-in caller in a Redis-only moment means its
       // promotion failed: retry.
-      if (!ctx.row && linkReq.kind === 'create') throw refuse(503, 'Try again in a moment.', { 'Retry-After': '1' })
+      if (!ctx.row && (linkReq.kind === 'create' || (linkReq.kind === 'pick' && linkReq.abv !== null))) throw refuse(503, 'Try again in a moment.', { 'Retry-After': '1' })
       // 🔒 A bottle hidden from this caller (blind, unrevealed, Blind for
       // Everyone: the only way a caller who may edit it is masked) takes no
       // PARTIAL pick: a missing grain would be resolved against the hidden
@@ -136,6 +136,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       // (the mint's own validation) would tell which hidden bottle is which of
       // the caller's wines. A whole pick still re-links it.
       if (hidden && linkReq.kind === 'create') throw refuse(400, CREATE_HIDDEN)
+      // …and no alcohol report (one fixed answer, like the create).
+      if (hidden && linkReq.kind === 'pick' && linkReq.abv !== null) throw refuse(400, ABV_HIDDEN)
       const applied = await link(tx, wine)
       if (ctx.row) {
         // A re-link carries the bottle's cravings to the new wine (R3).

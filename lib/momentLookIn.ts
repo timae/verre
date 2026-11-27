@@ -9,7 +9,7 @@ import { coverOutsideSql } from '@/lib/profileTiles'
 import { eligibleRoster } from '@/lib/sessionRehydrate'
 import { entryKey, loadEntriesSoft } from '@/lib/catalogEntries'
 import { entryYear } from '@/lib/wineDisplay'
-import { verifyMomentLinkToken } from '@/lib/momentLink'
+import { verifyMomentLinkCode } from '@/lib/momentLink'
 import type { MomentDecision } from '@/lib/momentAudience'
 
 // The look-in (docs/dev/proposals/moment-visibility.md § 7; step-1 plan § 4.1):
@@ -54,7 +54,7 @@ export type LookInRow = {
   cover: string | null; category: string | null; date_from: Date | null; date_to: Date | null; timezone: string | null
   address: string | null; description: string | null; link: string | null; blind: boolean | null
   show_place: boolean | null; show_details: boolean | null; show_provenance: boolean | null
-  created_at: Date | null; link_version: number | null; link_active: boolean | null; lineup_hidden: boolean
+  created_at: Date | null; link_active: boolean | null; link_code: string | null; lineup_hidden: boolean
   lineup_reveals_at: Date | null
 }
 
@@ -63,7 +63,7 @@ export async function readLookInRow(publicId: string): Promise<LookInRow | null>
   const rows = await prisma.$queryRaw<LookInRow[]>`
     SELECT s.id, s.code, s.public_id, s.name, s.host_name, s.host_user_id, ${coverOutsideSql('s')} AS cover, s.category,
            s.date_from, s.date_to, s.timezone, s.address, s.description, s.link, s.blind, s.show_place, s.show_details,
-           s.show_provenance, s.created_at, s.link_version, s.link_active, ${lineupHiddenNowSql('s')} AS lineup_hidden,
+           s.show_provenance, s.created_at, s.link_active, s.link_code, ${lineupHiddenNowSql('s')} AS lineup_hidden,
            -- The same expression as lineupHiddenNowSql's bound: what the date and the host's setting already imply.
            CASE WHEN COALESCE(s.hide_lineup, false) AND s.date_from IS NOT NULL
                 THEN s.date_from - make_interval(mins => COALESCE(s.hide_lineup_minutes_before, 0)) END AS lineup_reveals_at
@@ -72,13 +72,12 @@ export async function readLookInRow(publicId: string): Promise<LookInRow | null>
   return rows[0] ?? null
 }
 
-// The link rule (the HMAC is computed for an unknown id too, so a wrong id and
-// a wrong token cost the same): active, the version matches, a signed-in host,
-// the secret usable (verify fails closed without it).
-export function lookInLinkValid(publicId: string, row: LookInRow | null, token: string): boolean {
-  const version = row?.link_version ?? 0
-  const ok = verifyMomentLinkToken(publicId, Math.max(1, version), token)
-  return ok && row !== null && version >= 1 && row.link_active === true && row.host_user_id !== null
+// The link rule: the code stored on THIS moment (compared in constant time,
+// for an unknown id or a moment without a code too, so each costs what a wrong
+// code costs), the link active, a signed-in host.
+export function lookInLinkValid(row: LookInRow | null, token: string): boolean {
+  const ok = verifyMomentLinkCode(row?.link_code, token)
+  return ok && row !== null && row.link_active === true && row.host_user_id !== null
 }
 
 // ── Guests without an account (the cache) ──────────────────────────────────

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import type { Prisma } from '@prisma/client'
 import { checkRate, getClientIp } from '@/lib/rateLimit'
 import { canUseCatalog } from '@/lib/catalogGate'
-import { resolveCatalogLink, catalogLinkRateKey, CatalogValidationError, denyCatalogRef } from '@/lib/catalogWrite'
+import { resolveCatalogLink, catalogLinkRateKey, CatalogValidationError, denyCatalogRef, normalizeAbv, reportVintageAbv } from '@/lib/catalogWrite'
 import { mintEntries } from '@/lib/catalogAddFlow'
 import { loadEntries, entryKey, snapshotFromEntry, isReplayedCreate, type CatalogEntry, type EntrySnapshot } from '@/lib/catalogEntries'
 
@@ -35,6 +35,14 @@ export const CANNOT_UNLINK = 'A bottle stays linked to a wine. Choose the right 
 // whether the guess was the hidden wine's, silently re-dating it on a hit).
 export const PICK_WHOLE = 'Choose the wine and its year together.'
 export const CREATE_HIDDEN = 'Reveal this bottle before you add a new wine for it.'
+// The alcohol on a pick (0.2.0 build 2): a year the catalogue lists without
+// one. Signed in, a year named, the catalogue open; refused on a bottle hidden
+// from the caller (the wine PATCH).
+export const GUEST_ABV_REFUSED = 'Sign in to add the alcohol.'
+export const ABV_NEEDS_YEAR = 'Choose the year to add its alcohol.'
+export const ABV_CLOSED = 'Adding the alcohol is unavailable right now.'
+export const ABV_HIDDEN = 'Reveal this bottle before you add its alcohol.'
+const ABV_INVALID = 'abv must be between 0 and 25'
 
 // A pick carries the body's RAW ids: it is resolved under the writer's locks
 // (`applyLink`), against the bottle's link as it stands there, after the
@@ -43,8 +51,10 @@ export const CREATE_HIDDEN = 'Reveal this bottle before you add a new wine for i
 // learn whether a guessed vintage belongs to someone else's blind bottle, 400
 // vs 403; race review r1: a pick prepared before a concurrent re-link wrote
 // the old product back, and an entry rejected meanwhile was still linked).
+// `abv` on a pick: a year's alcohol to REPORT (lib/catalogWrite.ts
+// `reportVintageAbv`), validated here, written in `applyLink`.
 export type LinkRequest =
-  | { kind: 'pick'; productId: unknown; vintageId: unknown }
+  | { kind: 'pick'; productId: unknown; vintageId: unknown; abv: number | null }
   | { kind: 'create'; body: Record<string, unknown> }
   | { kind: 'none' }
 
@@ -78,11 +88,27 @@ export async function prepareLink(
   }
   if (!picks) return opts.required ? bad(400, LINK_REQUIRED) : { kind: 'none' }
   if (body.productId === null) return bad(400, CANNOT_UNLINK)
+  // 🔒 An alcohol on a pick is a catalogue contribution like a create: a guest
+  // gets ONE fixed refusal before anything else in it is looked at, then the
+  // year, the value, the kill switch and the create budget (shared: a report
+  // reaches the data side like a mint does). Absent, null and '' are no value;
+  // anything but a number or a numeric string is refused (review r1: `Number()`
+  // read true as 1, [12] as 12 and ' ' as 0, and the first value wins for all).
+  let abv: number | null = null
+  if (body.abv !== undefined && body.abv !== null && body.abv !== '') {
+    if (opts.userId === null) return bad(403, GUEST_ABV_REFUSED)
+    if (typeof body.vintageId !== 'string' || !body.vintageId) return bad(400, ABV_NEEDS_YEAR)
+    if (!(typeof body.abv === 'number' || (typeof body.abv === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(body.abv)))) return bad(400, ABV_INVALID)
+    try { abv = normalizeAbv(body.abv) } catch (err) { if (err instanceof CatalogValidationError) return bad(400, err.message); throw err }
+    if (!(await canUseCatalog(opts.userId))) return bad(403, ABV_CLOSED)
+    const rl = await checkRate(`rl:catalog-create:u:${opts.userId}:1h`, 60, 3600)
+    if (!rl.allowed) return bad(429, 'Too many requests')
+  }
   if (opts.pickRate) {
     const rl = await checkRate(catalogLinkRateKey(opts.identityId, getClientIp(req)), 120, 3600)
     if (!rl.allowed) return bad(429, 'Too many requests')
   }
-  return { kind: 'pick', productId: body.productId, vintageId: body.vintageId }
+  return { kind: 'pick', productId: body.productId, vintageId: body.vintageId, abv }
 }
 
 export type AppliedLink = { productId: string; vintageId: string | null; entry: CatalogEntry; snapshot: EntrySnapshot }
@@ -90,9 +116,11 @@ export type AppliedLink = { productId: string; vintageId: string | null; entry: 
 // Inside the writer's transaction, after its own power decision. A pick is
 // validated here (`resolveCatalogLink`, one generic denial); `existing` = the
 // bottle's link AS LOCKED (an edit), so a partial pick keeps the untouched
-// grain of the current row. A create mints (its review items with it). Then
-// the entry is read through the resolver for the snapshot. Throws
-// CatalogValidationError → the caller's 400.
+// grain of the current row; a pick's alcohol is reported on the vintage it
+// resolved to (ignored when that year shows one already). A create mints (its
+// review items with it). Then the entry is read through the resolver for the
+// snapshot, so a report just written is on it. Throws CatalogValidationError →
+// the caller's 400.
 export async function applyLink(
   tx: Prisma.TransactionClient, link: Exclude<LinkRequest, { kind: 'none' }>, userId: number | null,
   existing?: { productId?: string | null; vintageId?: string | null },
@@ -108,6 +136,9 @@ export async function applyLink(
     if (!r.productId) throw new CatalogValidationError(existing ? CANNOT_UNLINK : LINK_REQUIRED)
     productId = r.productId
     vintageId = r.vintageId
+    // The resolved vintage equals the body's today (a pick of a tombstone is
+    // refused); if picks ever follow merges (phase 3), this stays the effective one.
+    if (link.abv !== null && vintageId !== null && userId !== null) await reportVintageAbv(tx, vintageId, link.abv, userId)
   }
   const entry = (await loadEntries([{ productId, vintageId }], tx)).get(entryKey(productId, vintageId))
   if (!entry) throw denyCatalogRef(`entry ${productId}/${vintageId} not readable`)

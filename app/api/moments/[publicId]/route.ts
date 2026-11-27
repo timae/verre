@@ -11,7 +11,7 @@ import { buildLookIn, buildLookInDetails, lookInJson, lookInLinkValid, lookInNot
 // present, the LINK decides; absent, the AUDIENCE does (lib/momentAudience.ts).
 // Never mixed: a dead link is refused even for a member.
 // Order: flag → signed in → limiter (every request, before any lookup) → parse
-// → the link's HMAC (computed for an unknown id too) → the row → decide.
+// → the row → the link's code (compared for an unknown id too) → decide.
 // 🔒 ONE refusal (`lookInNotFound`) for everything that is not an answer.
 // Answers: `{ member: true }` (the record's rule, as the moment itself) or the
 // look-in (lib/momentLookIn.ts). Every answer `private, no-store`.
@@ -37,7 +37,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ publ
   const asked = parseBottleKeys(req.nextUrl.searchParams)
   if (!publicId || (token !== null && !TOKEN.test(token)) || asked === null) return lookInNotFound()
   const row = await readLookInRow(publicId)
-  const linked = token !== null && lookInLinkValid(publicId, row, token)
+  const linked = token !== null && lookInLinkValid(row, token)
   if (!row || (token !== null && !linked)) return lookInNotFound()
   const d = (await decideMoments(viewerId, [row.id], { everyone: true })).get(row.id)
   if (!d) return lookInNotFound()

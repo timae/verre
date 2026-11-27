@@ -20,7 +20,6 @@
 //   § 23 i blind rows: no wine id unless you wrote the rating, `ratingId` on
 //          every row
 import { spawnSync } from 'node:child_process'
-import { createHmac } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, join as pjoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -49,7 +48,8 @@ const ROOT = pjoin(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const MIGRATION = pjoin(ROOT, 'prisma', 'migrations', '20261115120000_moment_visibility', 'migration.sql')
 const PIDRE = /^[A-HJKMNP-TV-Z][0-9A-HJKMNP-TV-Z]{11}$/
 const SEVEN = ['visibility', 'include_guest_circles', 'show_place', 'show_details', 'link_version', 'link_active', 'link_since'] as const
-const SECRET = 'ci-only-moment-link-secret-0123456789-abcdef'
+// The settings a write must not touch: the seven plus the link's code (0.2.0 build 2).
+const SETTINGS = [...SEVEN, 'link_code'] as const
 const sqlErr = (p: Promise<unknown>) => p.then(() => null as string | null, (e: Error) => String(e?.message ?? e))
 
 export async function momentVisibility(h: MomentVisibilityHarness) {
@@ -71,8 +71,8 @@ export async function momentVisibility(h: MomentVisibilityHarness) {
   const { deleteAccountDurable } = await import('../../lib/accountDelete.ts')
 
   const saved = { flag: process.env.MOMENT_LOOKIN_ENABLED, secret: process.env.MOMENT_LINK_SECRET }
-  const flag = (on: boolean) => { if (on) process.env.MOMENT_LOOKIN_ENABLED = 'true'; else delete process.env.MOMENT_LOOKIN_ENABLED }
-  const secret = (v: string | null) => { if (v === null) delete process.env.MOMENT_LINK_SECRET; else process.env.MOMENT_LINK_SECRET = v }
+  // On by default since 0.2.0 build 2: on = the variable UNSET, off = 'false' (the kill switch).
+  const flag = (on: boolean) => { if (on) delete process.env.MOMENT_LOOKIN_ENABLED; else process.env.MOMENT_LOOKIN_ENABLED = 'false' }
 
   const rowOf = async (where: { code?: string; id?: number }): Promise<J> => (where.id !== undefined
     ? await prisma.$queryRaw`SELECT to_jsonb(s) AS j FROM sessions s WHERE id = ${where.id}`
@@ -111,7 +111,7 @@ export async function momentVisibility(h: MomentVisibilityHarness) {
 
   try {
     flag(false)
-    secret(SECRET)
+    delete process.env.MOMENT_LINK_SECRET
 
     // ── § 23 a schema ───────────────────────────────────────────────────────
     section('§ 23 a Moment Visibility schema: public_id, the CHECKs, the triggers')
@@ -194,11 +194,18 @@ export async function momentVisibility(h: MomentVisibilityHarness) {
     check('🔒 flag off: no limiter was charged by the three handlers (the flag sits in front of each limiter)',
       offRaw.every(r => r.status === 404) && (await scanKeys('rl:moment-visibility*')).length === 0, { status: offRaw.map(r => r.status), keys: await scanKeys('rl:moment-visibility*') })
 
+    const gate = await import('../../lib/momentGate.ts')
+    const hffBefore = process.env.HIDE_FROM_FEED_ENABLED
+    const gateAt = (v: string | undefined) => { if (v === undefined) delete process.env.MOMENT_LOOKIN_ENABLED; else process.env.MOMENT_LOOKIN_ENABLED = v; if (v === undefined) delete process.env.HIDE_FROM_FEED_ENABLED; else process.env.HIDE_FROM_FEED_ENABLED = v; return [gate.momentLookInEnabled(), gate.hideFromFeedEnabled()] }
+    const gates = [undefined, 'true', '', '0', 'off', 'FALSE', 'false'].map(v => [v, ...gateAt(v)])
+    if (hffBefore === undefined) delete process.env.HIDE_FROM_FEED_ENABLED; else process.env.HIDE_FROM_FEED_ENABLED = hffBefore
+    check('🔒 both flags ON by default (0.2.0 build 2): only the exact string \'false\' turns either off',
+      gates.every(([v, a, b]) => a === (v !== 'false') && b === (v !== 'false')), gates)
     flag(true)
     const tg = await getV(M, T)
     const mid = (await rowOf({ code: M })).id
     check('a taster reads the four settings, canEdit false, no link part; me carries the moment\'s id (signed in)',
-      tg.status === 200 && JSON.stringify(tg.wire) === JSON.stringify({ visibility: 'friends', includeGuestCircles: true, showPlace: false, showDetails: false, frozen: false, canEdit: false, me: { onlyInside: false, sessionId: mid } }) && noStore(tg), tg.wire)
+      tg.status === 200 && JSON.stringify(tg.wire) === JSON.stringify({ visibility: 'friends', includeGuestCircles: true, showPlace: false, showDetails: false, frozen: false, canEdit: false, me: { onlyInside: false, hiddenFromFeed: false, sessionId: mid } }) && noStore(tg), tg.wire)
     const hg = await getV(M, H), cg = await getV(M, C)
     check('host and cohost: canEdit, and the link part (available, not active, no url)',
       [hg, cg].every(r => r.status === 200 && r.wire.canEdit === true && r.wire.frozen === false && JSON.stringify(r.wire.link) === JSON.stringify({ available: true, active: false, url: null, since: null })), [hg.wire, cg.wire])
@@ -261,50 +268,49 @@ export async function momentVisibility(h: MomentVisibilityHarness) {
     // ── § 23 d the look-in link ─────────────────────────────────────────────
     section('§ 23 d the look-in link')
     const pid = (await rowOf({ code: M })).public_id as string
-    const t1 = link.momentLinkToken(pid, 1)!
-    check('derive: 32 hex, stable, case-insensitive on the id, different per version and per moment',
-      /^[0-9a-f]{32}$/.test(t1) && t1 === link.momentLinkToken(pid.toLowerCase(), 1) && t1 !== link.momentLinkToken(pid, 2) && t1 !== link.momentLinkToken(ins.public_id, 1))
-    check('verify: the right token only; a wrong, short, long, upper-case or non-hex one fails',
-      link.verifyMomentLinkToken(pid, 1, t1) && !link.verifyMomentLinkToken(pid, 2, t1) && !link.verifyMomentLinkToken(pid, 1, t1.slice(1) + (t1[0] === '0' ? '1' : '0'))
-      && !link.verifyMomentLinkToken(pid, 1, t1.slice(0, 31)) && !link.verifyMomentLinkToken(pid, 1, t1 + '0') && !link.verifyMomentLinkToken(pid, 1, t1.toUpperCase().replace(/[0-9]/g, 'A')) && !link.verifyMomentLinkToken(pid, 1, 'z'.repeat(32)) && !link.verifyMomentLinkToken(pid, 1, ''))
-    // An INDEPENDENT vector (the plan's formula, computed here): the checks
-    // above would also pass for an unkeyed hash of the id and the version.
-    const vector = (key: string, id: string, version: number) => createHmac('sha256', key)
-      .update(Buffer.concat([Buffer.from('verre-moment-link-v1'), Buffer.from([0]), Buffer.from(id), Buffer.from([0]), Buffer.from(String(version))])).digest().subarray(0, 16).toString('hex')
-    check('🔒 the token IS the first 16 bytes of HMAC-SHA256(secret, "verre-moment-link-v1" ‖ 0x00 ‖ PUBLICID ‖ 0x00 ‖ version)', t1 === vector(SECRET, pid, 1) && link.momentLinkToken(pid, 7) === vector(SECRET, pid, 7))
-    const OTHER = 'another-valid-moment-link-secret-9876543210'
-    secret(OTHER)
-    const tOther = link.momentLinkToken(pid, 1)
-    check('🔒 …and depends on the secret: another valid secret gives another token, and the old one no longer verifies', tOther === vector(OTHER, pid, 1) && tOther !== t1 && !link.verifyMomentLinkToken(pid, 1, t1) && link.verifyMomentLinkToken(pid, 1, tOther!))
-    secret(SECRET)
-    check('🔒 derive refuses what is not a public id or not a version from 1 up (so the framing cannot be confused, and a NULL version read as 0 never verifies)',
-      [link.momentLinkToken('1AAAAAAAAAAA', 1), link.momentLinkToken(`${pid}\0`, 1), link.momentLinkToken(pid.slice(0, 11), 1), link.momentLinkToken(pid, 0), link.momentLinkToken(pid, -1), link.momentLinkToken(pid, 1.5), link.momentLinkToken(pid, Number.NaN)].every(t => t === null)
-      && !link.verifyMomentLinkToken(pid, 0, '0'.repeat(32)) && link.momentLinkUrl(pid, 0) === null)
+    const codeOf = (url: string) => url.slice(url.lastIndexOf('.') + 1)
+    const c1 = link.newMomentLinkCode(), c2 = link.newMomentLinkCode()
+    check('a new code: 32 hex, a different one each time', /^[0-9a-f]{32}$/.test(c1) && /^[0-9a-f]{32}$/.test(c2) && c1 !== c2)
+    check('verify: the stored code only; a wrong, short, long, upper-case or non-hex one fails',
+      link.verifyMomentLinkCode(c1, c1) && !link.verifyMomentLinkCode(c1, c2) && !link.verifyMomentLinkCode(c1, c1.slice(1) + (c1[0] === '0' ? '1' : '0'))
+      && !link.verifyMomentLinkCode(c1, c1.slice(0, 31)) && !link.verifyMomentLinkCode(c1, c1 + '0') && !link.verifyMomentLinkCode(c1, c1.toUpperCase().replace(/[0-9]/g, 'A')) && !link.verifyMomentLinkCode(c1, 'z'.repeat(32)) && !link.verifyMomentLinkCode(c1, ''))
+    check('🔒 …and nothing verifies against a missing or malformed stored code (not even the same bytes, not zeros)',
+      [null, undefined, '', 'z'.repeat(32), c1.toUpperCase(), c1.slice(0, 31)].every(st => !link.verifyMomentLinkCode(st, typeof st === 'string' && st ? st : '0'.repeat(32)) && !link.verifyMomentLinkCode(st, '0'.repeat(32)))
+      && !link.verifyMomentLinkCode(null, c1) && link.momentLinkUrl(pid, null) === null && link.momentLinkUrl(pid, 'z'.repeat(32)) === null)
+    check('🔒 the database refuses a malformed code (CHECK sessions_link_code_format_chk)',
+      (await sqlErr(prisma.$executeRaw`UPDATE sessions SET link_code = ${c1.toUpperCase()} WHERE code = ${M}`))?.includes('sessions_link_code_format_chk') === true
+      && (await sqlErr(prisma.$executeRaw`UPDATE sessions SET link_code = ${c1.slice(0, 31)} WHERE code = ${M}`))?.includes('sessions_link_code_format_chk') === true)
+    const noSecret = process.env.MOMENT_LINK_SECRET === undefined
     const s1 = await postL(M, H, 'share')
     const url1 = s1.wire?.link?.url as string
-    check('share: the link is active, its URL is <base>/l/<public id, lowercase>.<token of version 1>, with a since',
-      s1.status === 200 && s1.wire.link.available === true && s1.wire.link.active === true && url1.endsWith(`/l/${pid.toLowerCase()}.${t1}`) && /^https?:\/\//.test(url1)
-      && !Number.isNaN(Date.parse(s1.wire.link.since)) && (await rowOf({ code: M })).link_version === 1, s1.wire)
+    const r1 = await rowOf({ code: M })
+    check('share (no MOMENT_LINK_SECRET anywhere): the link is active, its URL is <base>/l/<public id, lowercase>.<the code stored on the moment>, version 1, with a since',
+      noSecret && s1.status === 200 && s1.wire.link.available === true && s1.wire.link.active === true && url1.endsWith(`/l/${pid.toLowerCase()}.${r1.link_code}`) && /^https?:\/\//.test(url1)
+      && /^[0-9a-f]{32}$/.test(r1.link_code) && !Number.isNaN(Date.parse(s1.wire.link.since)) && r1.link_version === 1, s1.wire)
     check('🔒 the link carries no code', !url1.includes(M) && !url1.toUpperCase().includes(M))
     const s2 = await postL(M, C, 'share')
-    check('a second share (a cohost, another device): the SAME link, nothing changes', s2.status === 200 && s2.wire.link.url === url1 && s2.wire.link.since === s1.wire.link.since && (await rowOf({ code: M })).link_version === 1, s2.wire)
+    check('a second share (a cohost, another device): the SAME link, nothing changes', s2.status === 200 && s2.wire.link.url === url1 && s2.wire.link.since === s1.wire.link.since && (await rowOf({ code: M })).link_version === 1 && (await rowOf({ code: M })).link_code === r1.link_code, s2.wire)
     check('the GET shows host and cohost the current link; a taster none', (await getV(M, C)).wire.link.url === url1 && !('link' in (await getV(M, T)).wire))
     const o1 = await postL(M, H, 'off')
-    check('off: not active, no url, no since; the version untouched', o1.status === 200 && JSON.stringify(o1.wire.link) === JSON.stringify({ available: true, active: false, url: null, since: null }) && (await rowOf({ code: M })).link_version === 1, o1.wire)
+    check('off: not active, no url, no since; the version untouched; the code CLEARED', o1.status === 200 && JSON.stringify(o1.wire.link) === JSON.stringify({ available: true, active: false, url: null, since: null }) && (await rowOf({ code: M })).link_version === 1 && (await rowOf({ code: M })).link_code === null, o1.wire)
     const s3 = await postL(M, H, 'share')
     const url3 = s3.wire.link.url as string
-    check('🔒 off then share: a NEW link (version 2); the old token no longer verifies',
-      s3.wire.link.active === true && url3 !== url1 && url3.endsWith(`.${link.momentLinkToken(pid, 2)}`) && !link.verifyMomentLinkToken(pid, (await rowOf({ code: M })).link_version, t1), s3.wire)
+    check('🔒 off then share: a NEW code (version 2); the old one no longer verifies',
+      s3.wire.link.active === true && url3 !== url1 && codeOf(url3) === (await rowOf({ code: M })).link_code && (await rowOf({ code: M })).link_version === 2 && !link.verifyMomentLinkCode((await rowOf({ code: M })).link_code, codeOf(url1)), s3.wire)
     await new Promise(r => setTimeout(r, 15))
     const rs = await postL(M, C, 'reset')
-    check('reset: version 3, a new link, still active, a later since', rs.status === 200 && rs.wire.link.active === true && rs.wire.link.url.endsWith(`.${link.momentLinkToken(pid, 3)}`) && Date.parse(rs.wire.link.since) > Date.parse(s3.wire.link.since), rs.wire)
+    check('reset: version 3, a new code, still active, a later since', rs.status === 200 && rs.wire.link.active === true && rs.wire.link.url !== url3 && codeOf(rs.wire.link.url) === (await rowOf({ code: M })).link_code && (await rowOf({ code: M })).link_version === 3 && Date.parse(rs.wire.link.since) > Date.parse(s3.wire.link.since), rs.wire)
     await postL(M, H, 'off')
     const rs2 = await postL(M, H, 'reset')
-    check('reset on a link that is off: the version goes up, it stays off', rs2.status === 200 && rs2.wire.link.active === false && (await rowOf({ code: M })).link_version === 4, rs2.wire)
+    check('reset on a link that is off: the version goes up, it stays off, no code', rs2.status === 200 && rs2.wire.link.active === false && (await rowOf({ code: M })).link_version === 4 && (await rowOf({ code: M })).link_code === null, rs2.wire)
     check('🔒 a taster cannot manage the link (403)', (await postL(M, T, 'reset')).status === 403 && (await rowOf({ code: M })).link_version === 4)
-    await postL(M, H, 'share')
+    await prisma.$executeRaw`UPDATE sessions SET link_active = true WHERE code = ${M}`
+    const broken = await getV(M, H)
+    const healed = await postL(M, H, 'share')
+    check('🔒 an active link with no code reads as off (no url), and Share then makes a code',
+      broken.wire.link.active === false && broken.wire.link.url === null && healed.wire.link.active === true && codeOf(healed.wire.link.url) === (await rowOf({ code: M })).link_code && (await rowOf({ code: M })).link_version === 5, { broken: broken.wire.link, healed: healed.wire.link })
     const live = (await getV(M, H)).wire.link.url as string
-    const liveToken = live.slice(live.lastIndexOf('.') + 1)
+    const liveToken = codeOf(live)
     const cached: string[] = []
     for (const key of await scanKeys('*')) {
       const t = await redis.type(key)
@@ -312,22 +318,13 @@ export async function momentVisibility(h: MomentVisibilityHarness) {
         : t === 'list' ? await redis.lRange(key, 0, -1) : t === 'zset' ? await redis.zRange(key, 0, -1) : []
       if ([key, ...vals].some(v => v && String(v).includes(liveToken))) cached.push(key)
     }
-    check('🔒 the token is in no Redis key or value at all (the moment\'s keys, the limiters, the auth store)', cached.length === 0 && (await scanKeys(`s:${M}:*`)).length > 0, cached)
-    for (const [label, v] of [['absent', null], ['shorter than 32 characters', 'x'.repeat(31)]] as const) {
-      secret(v)
-      const g = await getV(M, H), p = await postL(M, H, 'reset')
-      check(`🔒 the secret ${label}: link.available false (not active, no url), the POST a 403 "This moment can't have a link", the four settings still served`,
-        g.status === 200 && JSON.stringify(g.wire.link) === JSON.stringify({ available: false, active: false, url: null, since: null }) && g.wire.visibility === 'verre'
-        && p.status === 403 && p.wire.error === 'This moment can\'t have a link' && link.momentLinkToken(pid, 1) === null && !link.verifyMomentLinkToken(pid, 1, t1), { g: g.wire, p: p.wire })
-    }
-    secret(SECRET)
-    check('…and with the secret back the same link is there again (nothing was stored)', (await getV(M, H)).wire.link.url === live)
+    check('🔒 the code is in no Redis key or value at all (the moment\'s keys, the limiters, the auth store)', cached.length === 0 && (await scanKeys(`s:${M}:*`)).length > 0, cached)
 
     // The power is decided UNDER the locks: a cohost who passes the early
     // checks and loses the role (or is kicked) before the lock is refused.
     const Dc = await mkUser('Dana Demoted'), Kc = await mkUser('Kai Kicked'), Bc = await mkUser('Bea Banned')
     for (const u of [Dc, Kc, Bc]) { await join(M, u); await setRole(M, H, `u:${u.pid}`, 'co_host') }
-    const sevenNow = async () => { const r = await rowOf({ code: M }); return JSON.stringify(SEVEN.map(col => r[col])) }
+    const sevenNow = async () => { const r = await rowOf({ code: M }); return JSON.stringify(SETTINGS.map(col => r[col])) }
     const base = await sevenNow()
     const prevHook = mutationHooks.at
     const midRequest = async (label: string, sql: () => Promise<unknown>, send: () => Promise<Res>) => {
@@ -351,14 +348,14 @@ export async function momentVisibility(h: MomentVisibilityHarness) {
     momentSettingsSeams.afterGate = async (code) => {
       if (code !== M || seamFired++ > 0) return
       await demote()
-      await prisma.$executeRaw`UPDATE sessions SET link_version = link_version + 1 WHERE code = ${M}`
+      await prisma.$executeRaw`UPDATE sessions SET link_code = ${link.newMomentLinkCode()} WHERE code = ${M}`
     }
     let raced: Res
     try { await resetLimits(); raced = await call(visibilityRoute.GET, 'GET', `/api/session/${M}/visibility`, Dc, undefined, { code: M }) } finally { momentSettingsSeams.afterGate = async () => {} }
     const linkAfter = (await getV(M, H)).wire.link.url as string
     check('🔒 a cohost demoted and the link then reset, between the GET\'s gate and its reads: no link part, canEdit false (the replacement link never reaches them)',
       seamFired === 1 && !!linkBefore && linkAfter !== linkBefore && raced.status === 200 && raced.wire.canEdit === false && !('link' in raced.wire) && !JSON.stringify(raced.wire).includes(linkAfter.slice(linkAfter.lastIndexOf('.') + 1)), { seamFired, raced: raced.wire })
-    await prisma.$executeRaw`UPDATE sessions SET link_version = link_version - 1 WHERE code = ${M}`
+    await prisma.$executeRaw`UPDATE sessions SET link_code = ${codeOf(linkBefore)} WHERE code = ${M}`
     const kickSql = () => prisma.$executeRaw`UPDATE session_members SET removed_state = 'kicked' WHERE session_code = ${M} AND user_id = ${Kc.id}`
     const k1 = await midRequest('moment-visibility', kickSql, () => patchV(M, Kc, { visibility: 'members' }))
     check('🔒 a cohost kicked between the early check and the lock: the "removed" bounce, nothing written',
@@ -401,9 +398,9 @@ export async function momentVisibility(h: MomentVisibilityHarness) {
     const dBefore = await rowOf({ code: D })
     await deleteAccountDurable(Hd.id, {})
     const d1 = await rowOf({ code: D })
-    check('🔒 …and its look-in link ended with its host, in the record itself: off, and a new version (the shared token no longer verifies)',
-      dBefore.link_active === true && dBefore.link_version === 1 && d1.link_active === false && d1.link_version === 2
-      && !link.verifyMomentLinkToken(d1.public_id, d1.link_version, link.momentLinkToken(d1.public_id, 1)!), { before: [dBefore.link_active, dBefore.link_version], after: [d1.link_active, d1.link_version] })
+    check('🔒 …and its look-in link ended with its host, in the record itself: off, its code cleared, a new version (the shared code no longer verifies)',
+      dBefore.link_active === true && dBefore.link_version === 1 && /^[0-9a-f]{32}$/.test(dBefore.link_code) && d1.link_active === false && d1.link_code === null && d1.link_version === 2
+      && !link.verifyMomentLinkCode(d1.link_code, dBefore.link_code), { before: [dBefore.link_active, dBefore.link_version], after: [d1.link_active, d1.link_version, d1.link_code] })
     check('a host deletes their account: the moment keeps its setting (the row is hostless, named [deleted])',
       !!d1 && d1.host_user_id === null && d1.host_name === '[deleted]' && d1.visibility === 'followers' && d1.show_place === true && d1.include_guest_circles === true, d1)
     const dg = await getV(D, Cd)

@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
 import { ChosenLine, labelLine, Spinner, StatusLine, YearLine, YearRow, type CatalogTarget } from '@/components/catalog/pickerParts';
 import { CatalogSearchError, listVintages, type CatalogScope, type ProductHit, type VintageHit } from '@/lib/api/catalog';
-import { newWineChoice, pickedChoice, readYear, shownAbv, yearFate, yearLine, type BottleLabel, type CatalogChoice, type NewWineDraft } from '@/lib/catalogChoice';
+import { abvEditable, newWineChoice, pickedChoice, readYear, shownAbv, yearFate, yearLine, type BottleLabel, type CatalogChoice, type NewWineDraft } from '@/lib/catalogChoice';
 import { kindLabel } from '@/lib/momentFormat';
 import { endFlow, startFlow, takeResult, type FlowResult } from '@/lib/pickerFlow';
 import { catalogHref, useSessionTab } from '@/lib/sessionStack';
@@ -112,7 +112,16 @@ export function BottlePicker({
     return () => { live = false; };
   }, [product, scope, vintagesTry]);
   const retryYears = () => { if (vintagesFailed) setVintagesTry((n) => n + 1); };
-  const onYear = (t: string) => { setYearText(t); retryYears(); };
+  // 🔒 A typed alcohol belongs to the year it was typed for: another year (NV
+  // included) empties it, or it would be sent for that year, where a report's
+  // first value is the one everyone sees (Codex build-2 r1).
+  const changeYear = (nextNv: boolean, nextText: string) => {
+    if (JSON.stringify(readYear(nv, yearText)) !== JSON.stringify(readYear(nextNv, nextText))) setAbvText('');
+    setNv(nextNv);
+    setYearText(nextText);
+    retryYears();
+  };
+  const onYear = (t: string) => changeYear(nv, t);
 
   // The state the form sends with its save.
   const state: PickerState = (() => {
@@ -166,9 +175,9 @@ export function BottlePicker({
         <View>
           <ChosenLine title={product.name} sub={[product.producerName, kindLabel(product)].filter(Boolean).join(' · ') || null} onChange={editing ? () => openChange() : undefined} />
           <YearRow
-            nv={nv} onNv={(v) => { setNv(v); if (v) setYearText(''); retryYears(); }}
+            nv={nv} onNv={(v) => changeYear(v, v ? '' : yearText)}
             yearText={yearText} onYear={onYear}
-            showAbv={fate?.fate === 'added'} abvText={abvText} onAbv={setAbvText}
+            showAbv={fate ? abvEditable(fate, vintages) : false} abvText={abvText} onAbv={setAbvText}
             knownAbv={fate ? shownAbv(fate, vintages, wineAbv) : null}
           />
           <YearLine text={fate ? yearLine(fate) : null} />

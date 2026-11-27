@@ -16,13 +16,16 @@ type VintageHit = { id: string; year: number | null; abv?: number | null };
 
 export type Colour = 'red' | 'white' | 'rose';
 export type BottleLabel = { name: string; producer: string; year: string; colour: Colour | null; sparkling: boolean };
+// `abv` on a pick: an alcohol typed for a listed year that has none, sent as a
+// report (0.2.0 build 2: the server records it for review and shows it to
+// everyone on that year; the first value wins).
 export type CatalogChoice =
-  | { kind: 'pick'; productId: string; vintageId: string | null; label: BottleLabel }
+  | { kind: 'pick'; productId: string; vintageId: string | null; abv?: number; label: BottleLabel }
   | { kind: 'create'; body: Record<string, unknown>; label: BottleLabel };
 // What a bottle write sends for its link (the session wine POST / PATCH, the
 // check-in POST / PATCH).
 export const linkBody = (c: CatalogChoice): Record<string, unknown> =>
-  c.kind === 'pick' ? { productId: c.productId, vintageId: c.vintageId } : { create: c.body };
+  c.kind === 'pick' ? { productId: c.productId, vintageId: c.vintageId, ...(c.abv !== undefined ? { abv: c.abv } : {}) } : { create: c.body };
 
 export const COLOURS: Array<{ code: Colour; label: string }> = [
   { code: 'red', label: 'Red' },
@@ -95,9 +98,18 @@ export function yearLine(f: YearFate): string | null {
 // the year is invalid. The text is the field's own (a number, the label
 // carries the %).
 export function shownAbv(f: YearFate, vintages: VintageHit[] | null, wineAbv: number | null): string | null {
-  const abv = f.fate === 'listed' ? vintages?.find((v) => v.id === f.vintageId)?.abv ?? null : f.fate === 'unknown' ? wineAbv : null;
+  const abv = f.fate === 'listed' ? listedAbv(f, vintages) : f.fate === 'unknown' ? wineAbv : null;
   return typeof abv === 'number' && Number.isFinite(abv) ? String(Number(abv.toFixed(2))) : null;
 }
+const listedAbv = (f: Extract<YearFate, { fate: 'listed' }>, vintages: VintageHit[] | null): number | null => {
+  const abv = vintages?.find((v) => v.id === f.vintageId)?.abv;
+  return typeof abv === 'number' && Number.isFinite(abv) ? abv : null;
+};
+// Where the Alcohol % field is EDITABLE: a year that will be added, and a
+// listed year without an alcohol of its own (0.2.0 build 2: the value is a
+// report; empty, never prefilled). Everywhere else it reads only (shownAbv).
+export const abvEditable = (f: YearFate, vintages: VintageHit[] | null): boolean =>
+  f.fate === 'added' || (f.fate === 'listed' && listedAbv(f, vintages) === null);
 
 // The line-up bottle a pick would duplicate (ruled 2026-11-22: asked on save,
 // never refused, since two bottles of one wine can be an ageing comparison):
@@ -115,15 +127,22 @@ export function lineupDuplicate(
   return i < 0 ? null : { position: i + 1 };
 }
 
-// The choice for a picked wine. The alcohol % only travels with a year that
-// will be added (an existing entry is never edited from here, spec § 3).
+// The choice for a picked wine. The alcohol % travels with a year that will be
+// added, or as a report on a listed year without one (abvEditable); a year
+// that has one keeps it (an existing entry is never edited from here, spec § 3).
 export function pickedChoice(product: ProductHit, vintages: VintageHit[] | null, nv: boolean, yearInput: string, abvInput: string): { choice: CatalogChoice } | { error: string } | { pending: true } {
   const f = yearFate(vintages, readYear(nv, yearInput));
   const label = (year: string): BottleLabel => ({ name: product.name, producer: product.producerName, year, colour: asColour(product.colour), sparkling: product.sparkling });
   if (f.fate === 'invalid') return { error: yearInvalid() };
   if (f.fate === 'pending') return { pending: true };
   if (f.fate === 'unknown') return { choice: { kind: 'pick', productId: product.id, vintageId: null, label: label('') } };
-  if (f.fate === 'listed') return { choice: { kind: 'pick', productId: product.id, vintageId: f.vintageId, label: label(yearText(f.year)) } };
+  if (f.fate === 'listed') {
+    const pick = { kind: 'pick' as const, productId: product.id, vintageId: f.vintageId, label: label(yearText(f.year)) };
+    if (!abvEditable(f, vintages)) return { choice: pick };
+    const typed = readAbv(abvInput);
+    if (!typed.ok) return { error: ABV_INVALID };
+    return { choice: typed.abv !== undefined ? { ...pick, abv: typed.abv } : pick };
+  }
   const abv = readAbv(abvInput);
   if (!abv.ok) return { error: ABV_INVALID };
   return { choice: { kind: 'create', body: { productId: product.id, year: f.year, ...(abv.abv !== undefined ? { abv: abv.abv } : {}) }, label: label(yearText(f.year)) } };

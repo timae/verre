@@ -2245,6 +2245,11 @@ try {
     { n1: ol1.json.items.length, n2: ol2.json.items.length })
 
   // ── someone's Moments: only shared ones, a code only where you are a member ──
+  // With Moment Visibility's kill switch on (`'false'`): the moments a viewer
+  // may look in are pinned by private-moment-section.mts; this block pins the
+  // shared rows alone (on by default since 0.2.0 build 2).
+  const mvBefore = process.env.MOMENT_LOOKIN_ENABLED
+  process.env.MOMENT_LOOKIN_ENABLED = 'false'
   const M4 = await createWith(Hx, { sessionName: `${TAG} Odile only` }); await join(M4.code, Oo)
   const M5 = await createWith(Hx, { sessionName: `${TAG} Vera kicked` }); await join(M5.code, Oo); await join(M5.code, Vv)
   await prisma.$executeRaw`UPDATE session_members SET removed_state = 'kicked', role = 'taster' WHERE session_code = ${M5.code} AND user_id = ${Vv.id}`
@@ -2279,6 +2284,7 @@ try {
   const offC = await list('cravings', Oo, Vv)
   check('🔒 Show Moments / Cravings off: 200 empty, no otherCount', off.status === 200 && off.json.items.length === 0 && !('otherCount' in off.json) && offC.status === 200 && offC.json.items.length === 0, [off.json, offC.json])
   await prisma.user.update({ where: { id: Oo.id }, data: { showMoments: true, showCravings: true } })
+  if (mvBefore === undefined) delete process.env.MOMENT_LOOKIN_ENABLED; else process.env.MOMENT_LOOKIN_ENABLED = mvBefore
 
   // The craving's moment FALLBACK (D4): a bottle unhooked from a running moment
   // (a ban / kick-delete sets wines.session_id NULL) whose rating still points

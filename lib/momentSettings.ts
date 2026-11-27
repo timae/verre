@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { momentLinksAvailable, momentLinkUrl } from '@/lib/momentLink'
+import { LINK_CODE_RE, momentLinkUrl, newMomentLinkCode } from '@/lib/momentLink'
 
 // Moment Visibility and the look-in link, read and written from the RECORD
 // (docs/dev/proposals/moment-visibility.md § 5; step-1 plan T7). The seven
@@ -33,6 +33,8 @@ export type MomentSettings = {
   showDetails: boolean
   linkVersion: number
   linkActive: boolean
+  // 🔒 The link's code (lib/momentLink.ts): never logged, never in meta.
+  linkCode: string | null
   linkSince: Date | null
 }
 
@@ -42,7 +44,7 @@ export type LinkAction = 'share' | 'off' | 'reset'
 type Row = {
   id: number; created_at: Date | null; public_id: string; host_user_id: number | null; visibility: string | null
   include_guest_circles: boolean | null; show_place: boolean | null; show_details: boolean | null
-  link_version: number | null; link_active: boolean | null; link_since: Date | null
+  link_version: number | null; link_active: boolean | null; link_code: string | null; link_since: Date | null
 }
 
 const isVisibility = (v: unknown): v is MomentVisibility => (VISIBILITIES as readonly unknown[]).includes(v)
@@ -58,13 +60,16 @@ function fromRow(r: Row): MomentSettings {
     showPlace: r.show_place === true,
     showDetails: r.show_details === true,
     linkVersion: r.link_version ?? 0,
-    linkActive: r.link_active === true,
+    // An active link without a usable code is no link (fail closed): Share
+    // then makes one.
+    linkActive: r.link_active === true && typeof r.link_code === 'string' && LINK_CODE_RE.test(r.link_code),
+    linkCode: r.link_active === true ? r.link_code : null,
     linkSince: r.link_since,
   }
 }
 
 const COLUMNS = Prisma.sql`id, created_at, public_id, host_user_id, visibility, include_guest_circles, show_place, show_details,
-  link_version, link_active, link_since`
+  link_version, link_active, link_code, link_since`
 
 // By code: the GET (no lock). null = no live row (a guest-only moment, or gone).
 export async function readMomentSettingsByCode(db: Db, code: string): Promise<MomentSettings | null> {
@@ -109,7 +114,7 @@ export function widens(current: MomentSettings, patch: VisibilityPatch): boolean
 }
 
 export const frozen = (s: MomentSettings): boolean => s.hostUserId === null
-export const linkAvailable = (s: MomentSettings): boolean => s.hostUserId !== null && momentLinksAvailable()
+export const linkAvailable = (s: MomentSettings): boolean => s.hostUserId !== null
 
 // Writes all four, not only the patched ones: `current` is the row as READ
 // (NULL = closed / off), so an unpatched column that somehow held NULL is
@@ -124,20 +129,25 @@ export async function writeVisibility(tx: Prisma.TransactionClient, current: Mom
   return next
 }
 
-// 🔒 The version only ever goes up. Share on an active link changes nothing (a
-// second device, a cohost: the same link); on a link that is off it raises the
-// version FIRST, so turning a link back on never revives an earlier one. Off
-// never touches the version. Reset raises it and keeps `active` as it is.
+// Share on an active link changes nothing (a second device, a cohost: the
+// same link); on a link that is off it makes a NEW code, so turning a link back
+// on never revives an earlier one. Off clears the code. Reset makes a new code
+// for an active link and keeps `active` as it is. The version (a count of the
+// links a moment has had) only ever goes up.
 export async function writeLinkAction(tx: Prisma.TransactionClient, current: MomentSettings, action: LinkAction): Promise<MomentSettings> {
   if (action === 'share' && current.linkActive) return current
+  const code = newMomentLinkCode()
   if (action === 'off') {
-    await tx.$executeRaw`UPDATE sessions SET link_active = false WHERE id = ${current.sessionId}`
+    await tx.$executeRaw`UPDATE sessions SET link_active = false, link_code = NULL WHERE id = ${current.sessionId}`
   } else if (action === 'share') {
     await tx.$executeRaw`
-      UPDATE sessions SET link_version = COALESCE(link_version, 0) + 1, link_active = true, link_since = now() WHERE id = ${current.sessionId}`
+      UPDATE sessions SET link_version = COALESCE(link_version, 0) + 1, link_active = true, link_code = ${code}, link_since = now()
+       WHERE id = ${current.sessionId}`
   } else {
     await tx.$executeRaw`
-      UPDATE sessions SET link_version = COALESCE(link_version, 0) + 1, link_since = now() WHERE id = ${current.sessionId}`
+      UPDATE sessions SET link_version = COALESCE(link_version, 0) + 1, link_since = now(),
+             link_code = CASE WHEN link_active IS TRUE THEN ${code} END
+       WHERE id = ${current.sessionId}`
   }
   return (await readMomentSettings(tx, current.sessionId))!
 }
@@ -182,7 +192,7 @@ export function momentVisibilityView(settings: MomentSettings | null, canEdit: b
   view.link = {
     available,
     active,
-    url: active ? momentLinkUrl(settings.publicId, settings.linkVersion) : null,
+    url: active ? momentLinkUrl(settings.publicId, settings.linkCode) : null,
     since: active && settings.linkSince ? settings.linkSince.toISOString() : null,
   }
   return view

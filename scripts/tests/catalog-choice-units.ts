@@ -7,7 +7,7 @@
 
 import { clientIdFromUuids } from '../../apps/mobile/src/lib/clientIdFormat';
 import {
-  lineupDuplicate, linkBody, newWineChoice, pickedChoice, readAbv, readYear, shownAbv, writeOutcome, yearFate, yearLine,
+  abvEditable, lineupDuplicate, linkBody, newWineChoice, pickedChoice, readAbv, readYear, shownAbv, writeOutcome, yearFate, yearLine,
   ABV_INVALID, KIND_MISSING, maxYear, NAME_MISSING, yearInvalid, type NewWineDraft,
 } from '../../apps/mobile/src/lib/catalogChoice';
 import { alcoholText, bottleGrapes, bottleOrigin } from '../../apps/mobile/src/lib/bottleFacts';
@@ -106,7 +106,17 @@ check('line: nothing while empty, loading or invalid', [{ fate: 'unknown' }, { f
   const unknown = pickedChoice(P, V, false, '', '');
   check('pick: year unknown → the product alone (vintageId null)', 'choice' in unknown && eq(linkBody(unknown.choice), { productId: 'prod_1', vintageId: null }), unknown);
   const listed = pickedChoice(P, V, false, '2019', '14');
-  check('pick: a listed year → that vintage, and NO abv (an existing entry is never edited)', 'choice' in listed && eq(linkBody(listed.choice), { productId: 'prod_1', vintageId: 'vin_2019' }), listed);
+  check('pick: a listed year WITHOUT an alcohol + a typed one → that vintage with abv (a report, 0.2.0 build 2)', 'choice' in listed && eq(linkBody(listed.choice), { productId: 'prod_1', vintageId: 'vin_2019', abv: 14 }), listed);
+  const listedEmpty = pickedChoice(P, V, false, '2019', '');
+  check('pick: …the field left empty → that vintage, no abv', 'choice' in listedEmpty && eq(linkBody(listedEmpty.choice), { productId: 'prod_1', vintageId: 'vin_2019' }), listedEmpty);
+  check('pick: …a bad alcohol there names the fix', eq(pickedChoice(P, V, false, '2019', '26'), { error: ABV_INVALID }));
+  const VA = [{ id: 'vin_2019', year: 2019, abv: 13 }, { id: 'vin_nv', year: null, abv: null }];
+  const listedOwn = pickedChoice(P, VA, false, '2019', '14');
+  check('pick: a listed year WITH its own alcohol → that vintage and NO abv, whatever the hidden field holds (an existing value is never edited)', 'choice' in listedOwn && eq(linkBody(listedOwn.choice), { productId: 'prod_1', vintageId: 'vin_2019' }), listedOwn);
+  check('pick: …and a stale bad text there is no error (the field is not shown)', 'choice' in pickedChoice(P, VA, false, '2019', 'x'));
+  const ed = (vs: typeof VA, nv: boolean, t: string) => abvEditable(yearFate(vs, readYear(nv, t)), vs);
+  check('abvEditable: an added year and a listed year without an alcohol; never a year with one, an unknown year, loading or invalid',
+    ed(VA, false, '2018') && ed(VA, true, '') && !ed(VA, false, '2019') && !ed(VA, false, '') && !abvEditable(yearFate(null, readYear(false, '2019')), null) && !ed(VA, false, '1850'));
   const nvListed = pickedChoice(P, V, true, '', '');
   check('pick: NV ticked, the wine has NV → the NV vintage', 'choice' in nvListed && eq(linkBody(nvListed.choice), { productId: 'prod_1', vintageId: 'vin_nv' }) && nvListed.choice.label.year === 'NV', nvListed);
   const added = pickedChoice(P, V, false, '2018', '13,5');

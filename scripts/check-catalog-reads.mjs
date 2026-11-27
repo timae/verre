@@ -48,7 +48,9 @@ const EXPECTED = {
   // (indexProducer / indexProduct). A doc keeps a tombstone lead's own name AND
   // its effective survivor's (both searchable; the read resolves the match),
   // so it reads the chain raw on purpose; nothing shown or counted.
-  'lib/catalogWrite.ts': 16,
+  // A reported alcohol (0.2.0 build 2, `reportVintageAbv`): the vintage's own
+  // delivered abv decides whether the report is written; nothing shown.
+  'lib/catalogWrite.ts': 17,
   // The search rebuild's drift report (step 7b): whether a doc's source row
   // still exists; existence only, nothing shown or counted.
   'scripts/lib/catalogSearchRebuild.mjs': 3,

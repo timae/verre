@@ -249,8 +249,10 @@ export async function modelChangeExpandSection({ prisma, ok, rejects, accepts, r
   await accepts('the resolver\'s account is deleted', `DELETE FROM users WHERE id=900952`)
   const kept = await one(`SELECT resolved_at IS NOT NULL AS resolved, resolved_by FROM catalog_review_items WHERE entity_id='test_vMC1'`)
   ok(kept?.resolved === true && kept.resolved_by === null, '…the item stays, resolved, its resolver SET NULL')
-  const rfk = await q(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'catalog_review_items'::regclass AND contype = 'f'`)
-  ok(Array.isArray(rfk) && rfk.length === 1 && rfk[0].def === 'FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL',
+  // Two keys, both into `users` (the reporter of an alcohol joined the resolver
+  // in 0.2.0 build 2, 20261127120100), none into the catalogue.
+  const rfk = await q(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid = 'catalog_review_items'::regclass AND contype = 'f' ORDER BY 1`)
+  ok(Array.isArray(rfk) && JSON.stringify(rfk.map(r => r.def)) === JSON.stringify(['FOREIGN KEY (reported_by) REFERENCES users(id) ON DELETE SET NULL', 'FOREIGN KEY (resolved_by) REFERENCES users(id) ON DELETE SET NULL']),
     '🔒 no key into the catalogue (polymorphic entity; a purge deletes the entity and its item together); the data side\'s replace mode LOCKS it instead')
 
   console.log('\n22f. The FK pin: every key into the catalogue is NO ACTION (spec § 5a)')

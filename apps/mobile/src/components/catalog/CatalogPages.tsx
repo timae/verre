@@ -52,7 +52,7 @@ export function ProducerPage() {
   });
   return (
     <PageShell title="Producer">
-      <TextField label="Producer" placeholder="Search producers" value={s.text} onChangeText={(text) => d({ type: 'text', text })} autoCorrect={false} returnKeyType="search" autoFocus />
+      <TextField label="Producer" placeholder="Search producers" value={s.text} onChangeText={(text) => d({ type: 'text', text })} autoCorrect={false} returnKeyType="search" autoFocus clearable />
       {s.status !== 'idle' ? (
         <ResultList>
           {rows.rows.map((p) => (
@@ -94,7 +94,7 @@ export function WinesPage() {
   });
   return (
     <PageShell title={producer.name}>
-      <TextField label="Wine" placeholder="Search its wines" value={s.text} onChangeText={(text) => d({ type: 'text', text })} autoCorrect={false} returnKeyType="search" />
+      <TextField label="Wine" placeholder="Search its wines" value={s.text} onChangeText={(text) => d({ type: 'text', text })} autoCorrect={false} returnKeyType="search" clearable />
       <ResultList>
         {s.more && s.text.trim().length < 3 && rows.selectable ? <ListNote text="The first 20. Type to narrow the list." /> : null}
         {rows.rows.map((p) => (

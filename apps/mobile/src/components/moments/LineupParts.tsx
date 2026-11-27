@@ -21,6 +21,7 @@ import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { VText } from '@/components/ui/VText';
 import { type RatingsView, type SessionState, type WireWine } from '@/lib/api/sessions';
 import { SheetSearchField } from '@/components/ui/SheetSearchField';
+import { measureTopOf, type MeasureTop } from '@/lib/measureTop';
 import { DraggableRows, type RowMoveActions } from '@/components/moments/DraggableRows';
 import { AnchoredMenu, MenuItem, MenuSeparator } from '@/components/ui/AnchoredMenu';
 import { SessionTabs, type SessionTab } from '@/components/moments/SessionTabs';
@@ -66,9 +67,13 @@ export type LineupScrollApi = {
   band: () => Promise<Band | null>;
   scrollY: () => number;
   maxY: () => number;
-  // Instant: the layer covers the line-up while it moves.
-  scrollTo: (y: number) => void;
+  // Instant by default: the layer covers the line-up while it moves.
+  scrollTo: (y: number, animated?: boolean) => void;
+  // The window y a toolbar pins at (under the tabs): a focused toolbar search
+  // is scrolled up to it, so it and its results stay above the keyboard.
+  pinTop: () => Promise<number | null>;
 };
+
 // A row's measurable handle, keyed by wine id (the profile list's RowHandle:
 // `measure` + an inert `face`); the returned function unregisters it.
 export type RegisterRow = (wineId: string, handle: RowHandle) => () => void;
@@ -538,7 +543,8 @@ export function CoverHeroLineup({
       band: async () => ({ top: PIN_Y + tabsH.value + lineupToolbarHRef.current, bottom: windowH - TAB_BAR_CLEARANCE }),
       scrollY: () => lastYRef.current,
       maxY: () => heroMaxScroll.value,
-      scrollTo: (y) => aref.current?.scrollTo({ y, animated: false }),
+      scrollTo: (y, animated = false) => aref.current?.scrollTo({ y, animated }),
+      pinTop: async () => PIN_Y + tabsH.value,
     };
     scrollApiRef.current = api;
     return () => {
@@ -1074,9 +1080,13 @@ export type LuToolbarProps = {
   /** RENDER-TIME suppression: true while a tab transition is armed/running, so
    *  both local menus are force-unmounted before motion starts (codex R2-2). */
   menusSuppressed?: boolean;
+  /** The search field's focus: the screen pins the toolbar above the keyboard. */
+  onSearchFocus?: (measureTop: MeasureTop) => void;
+  onSearchBlur?: () => void;
 };
 export function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
-  const { reveal, query, onQuery, sort, onSort, deniedTick, menusSuppressed } = toolbar;
+  const { reveal, query, onQuery, sort, onSort, deniedTick, menusSuppressed, onSearchFocus, onSearchBlur } = toolbar;
+  const rootRef = useRef<ViewInstance | null>(null);
   const { theme } = useTheme();
   // Denied-reorder feedback: a short explainer line + an accent flash on the
   // control that blocks the drag (sort chip / search pill), ~2.6s.
@@ -1131,7 +1141,7 @@ export function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
   return (
     // Horizontal inset comes from the HOST (plain: the list's GUTTER content
     // padding; hero: the strip wrapper) — none here, or it would double up.
-    <View style={{ paddingTop: 4, paddingBottom: 8, gap: 6 }}>
+    <View ref={rootRef} collapsable={false} style={{ paddingTop: 4, paddingBottom: 8, gap: 6 }}>
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
       {reveal.hostRevealUi ? (
       <Pressable
@@ -1195,7 +1205,8 @@ export function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
         <Icon name="sort" size={16} color={sorted ? theme.accent : theme.inkSoft} />
       </Pressable>
       <View style={{ flex: 1 }}>
-        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions" highlight={deniedShown && searching} />
+        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions" highlight={deniedShown && searching}
+          onFocus={() => onSearchFocus?.(measureTopOf(rootRef))} onBlur={onSearchBlur} />
       </View>
       <AnchoredMenu anchor={sortAnchor} onClose={() => setSortAnchor(null)} right={sortMenuRight} minWidth={190}>
         {LU_SORTS.map((o) => (

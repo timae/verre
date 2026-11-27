@@ -248,7 +248,7 @@ export async function POST(req: NextRequest) {
   //   - ratings.id: autoincrement.
   const wineId = occurrenceId
   const linkReq = sourceLink
-    ? { kind: 'pick' as const, ...sourceLink }
+    ? { kind: 'pick' as const, ...sourceLink, abv: null }
     : await prepareLink(req, body, { userId, identityId: `u:${userId}`, pickRate: false, required: true })
   if (linkReq instanceof NextResponse) {
     if (imageUrl) reclaimImage(imageUrl)

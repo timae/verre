@@ -410,12 +410,12 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
             // 🔒 The look-in link ends with its host (Moment Visibility): a
             // hostless moment never has a link, and nobody could turn this
             // one off any more (lib/momentSettings.ts refuses every link
-            // action without a signed-in host). Off AND a new version, so the
-            // tokens people hold are dead in the record itself, not only
+            // action without a signed-in host). Off AND its code cleared, so
+            // the links people hold are dead in the record itself, not only
             // behind the reader's hostless check. The visibility stays (ruled).
             await tx.$executeRaw`
               UPDATE sessions SET host_user_id = NULL, host_name = ${TOMBSTONE_NAME},
-                     link_active = false, link_version = COALESCE(link_version, 0) + 1
+                     link_active = false, link_code = NULL, link_version = COALESCE(link_version, 0) + 1
                WHERE id = ${row.id}`
           }
           await tx.$executeRaw`DELETE FROM session_bans WHERE session_code = ${code} AND identity_id = ${uid}`
@@ -572,6 +572,7 @@ async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession
           show_details = NULL,
           link_version = NULL,
           link_active = NULL,
+          link_code = NULL,
           link_since = NULL
      WHERE id = ${row.id}`
   await durable.step(`wipe ${row.code}`, async (c) => {

@@ -176,7 +176,7 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
     // on the bottle, like the purchase link).
     const fields = { description, vinification, purchaseUrl }
     const linkBody = (c: CatalogChoice | null) => !c || c === appliedChoice.current ? {}
-      : c.kind === 'pick' ? { productId: c.productId, vintageId: c.vintageId } : { create: c.body }
+      : c.kind === 'pick' ? { productId: c.productId, vintageId: c.vintageId, ...(c.abv !== undefined ? { abv: c.abv } : {}) } : { create: c.body }
     const creating = !isEdit && !savedId.current
     const body: Record<string, unknown> = { ...fields, ...linkBody(linkChange) }
     if (creating) body.id = newId.current

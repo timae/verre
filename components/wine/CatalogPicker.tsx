@@ -21,13 +21,15 @@ import { ChosenWine } from '@/components/wine/ChosenWine'
 // picks (never the top hit automatically).
 
 export type PickedLabel = { name: string; producer: string; year: string; colour: string | null; sparkling: boolean }
+// `abv` on a pick: an alcohol typed for a listed year that has none (0.2.0
+// build 2: a report, shown to everyone on that year; signed in only).
 export type CatalogChoice =
-  | { kind: 'pick'; productId: string; vintageId: string | null; label: PickedLabel }
+  | { kind: 'pick'; productId: string; vintageId: string | null; abv?: number; label: PickedLabel }
   | { kind: 'create'; body: Record<string, unknown>; label: PickedLabel }
 
 type Producer = { id: string; name: string; country: string | null; region: string | null }
 type Product = { id: string; name: string; colour: string | null; sparkling: boolean; region: string | null; producerId: string; producerName: string }
-type Vintage = { id: string; year: number | null }
+type Vintage = { id: string; year: number | null; abv?: number | null }
 export type ScanPrefill = { producer?: string; name?: string; grape?: string; year?: string; type?: string }
 
 const KINDS = [
@@ -111,6 +113,7 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
   const [country, setCountry] = useState('')
   const [addYear, setAddYear] = useState('')
   const [addNv, setAddNv] = useState(false)
+  const [reportText, setReportText] = useState('')
   const [notice, setNotice] = useState('')
   const [more, setMore] = useState(false)
   const seq = useRef(0)
@@ -195,12 +198,22 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
   }, [creating, producer, wineQ, kind, nv, yearText, abvText, grapes, region, country])
 
   function reset() {
-    setProducer(null); setProduct(null); setVintages(null); setCreating(false); setAddYear(''); setAddNv(false); onChange(null)
+    setProducer(null); setProduct(null); setVintages(null); setCreating(false); setAddYear(''); setAddNv(false); setReportText(''); setNotice(''); onChange(null)
   }
-  const pickYear = (p: Product, v: Vintage | null) => onChange({
+  const pickYear = (p: Product, v: Vintage | null) => { setReportText(''); setNotice(''); onChange({
     kind: 'pick', productId: p.id, vintageId: v?.id ?? null,
     label: { name: p.name, producer: p.producerName, year: v ? (v.year === null ? 'NV' : String(v.year)) : '', colour: p.colour, sparkling: p.sparkling },
-  })
+  }) }
+  // The alcohol of a listed year without one (signed in): '' = none, else a
+  // number 0 to 25 put on the pick; a bad value is named and not sent.
+  function setReport(pickValue: Extract<CatalogChoice, { kind: 'pick' }>, t: string) {
+    setReportText(t)
+    const n = t.trim() === '' ? undefined : Number(t.replace(',', '.'))
+    const ok = n === undefined || (Number.isFinite(n) && n >= 0 && n <= 25)
+    setNotice(ok ? '' : 'Alcohol must be between 0 and 25 %.')
+    const rest: Extract<CatalogChoice, { kind: 'pick' }> = { kind: 'pick', productId: pickValue.productId, vintageId: pickValue.vintageId, label: pickValue.label }
+    onChange(ok && n !== undefined ? { ...rest, abv: Math.round(n * 100) / 100 } : rest)
+  }
   // "add a year" offers NV only once the years are in and none is NV (that
   // one is a chip); a tick from before they arrived counts for nothing.
   const nvAddable = vintages !== null && !vintages.some(v => v.year === null)
@@ -219,8 +232,21 @@ export function CatalogPicker({ search, canCreate, value, onChange, prefill }: P
 
   // A choice made: its summary, and a way back.
   if (value && !creating) {
-    return <ChosenWine label="wine *" name={value.label.name} year={value.label.year} producer={value.label.producer}
-      note={value.kind === 'create' ? 'new' : undefined} action="change" onAction={reset} />
+    const picked = value.kind === 'pick' && value.vintageId ? vintages?.find(v => v.id === value.vintageId) : undefined
+    const canReport = canCreate && value.kind === 'pick' && !!picked && (picked.abv === null || picked.abv === undefined)
+    return (
+      <>
+        <ChosenWine label="wine *" name={value.label.name} year={value.label.year} producer={value.label.producer}
+          note={value.kind === 'create' ? 'new' : undefined} action="change" onAction={reset} />
+        {canReport && value.kind === 'pick' && (
+          <div className="field" style={{maxWidth:110}}>
+            <div className="fl">alcohol %</div>
+            <input className="fi" value={reportText} onChange={e => setReport(value, e.target.value)} inputMode="decimal" placeholder="13.5" />
+          </div>
+        )}
+        {notice && <p style={{fontSize:11,color:'var(--danger)',margin:'0 0 10px'}}>{notice}</p>}
+      </>
+    )
   }
 
   const listStyle: React.CSSProperties = { display:'flex',flexDirection:'column',gap:4,marginTop:6 }
