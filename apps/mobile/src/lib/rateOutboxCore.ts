@@ -197,6 +197,12 @@ function withFields(r: RatingMeta, b: Partial<Pick<RateBody, 'score' | 'flavors'
 function unsent(e: Entry): Field[] {
   return FIELDS.filter((f) => e.fields[f] !== undefined && e.fields[f]!.rev > (e.ackRev[f] ?? 0));
 }
+// Every unsent field at its latest value: what the next send would carry.
+function unsentValues(e: Entry) {
+  const out: Partial<Pick<RateBody, 'score' | 'flavors' | 'aromas' | 'notes'>> = {};
+  for (const f of unsent(e)) (out as Record<string, unknown>)[f] = e.fields[f]!.value;
+  return out;
+}
 // Something to send on its own: an unsent revision an `unchanged` didn't park.
 function hasSendable(e: Entry): boolean {
   return unsent(e).some((f) => e.parked[f] !== e.fields[f]!.rev);
@@ -959,9 +965,7 @@ export function createRateOutbox(deps: OutboxDeps) {
         // staged behind an unanswered op goes out with the rebase), and then
         // ALL of those revisions retire.
         const pending = unsent(e);
-        const sends: Partial<Pick<RateBody, 'score' | 'flavors' | 'aromas' | 'notes'>> = {};
-        for (const f of pending) (sends as Record<string, unknown>)[f] = e.fields[f]!.value;
-        if (newer && isEmptyRating(withFields(newer, sends))) {
+        if (newer && isEmptyRating(withFields(newer, unsentValues(e)))) {
           e.baseVersion = res.version;
           e.baseHadRating = true;
           foreign.set(s.key, (foreign.get(s.key) ?? 0) + 1); // a Clear token taken before it asks again
@@ -1220,6 +1224,10 @@ export function createRateOutbox(deps: OutboxDeps) {
   };
   // The base-less entries of a moment take theirs from a ratings section
   // (`only`: the dedicated read's covered entries). A KNOWN base never moves.
+  // 🔒 An entry whose fields over the stored rating would leave it EMPTY is
+  // dropped, never sent (release gate 2026-11-27): its draft was made on a page
+  // that didn't show that rating, and the server would reap it. Every delete
+  // rests on a baseline the page displayed (Clear My Rating's rule).
   const adoptBases = (v: string, code: string, ratings: RatingsView, only?: Set<Slot>) => {
     for (const s of slots.values()) {
       const e = s.mem;
@@ -1230,7 +1238,7 @@ export function createRateOutbox(deps: OutboxDeps) {
         e.baseVersion = 0;
         e.baseHadRating = false;
         commit(s);
-      } else if (e.waited) dropSilently(s);
+      } else if (e.waited || isEmptyRating(withFields(row, unsentValues(e)))) dropSilently(s);
       else {
         e.baseVersion = row.v ?? 0;
         e.baseHadRating = true;

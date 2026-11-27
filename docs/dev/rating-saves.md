@@ -383,7 +383,9 @@ then persisted); (3) else the fields whose rev > `ackRev` become ONE merge (a ne
   out or replaced viewer (entries are keyed by the viewer's public id and sent
   only for the signed-in viewer, never with another's cookie).
 - Dropped, silently: 404 / 403 / removed, a waited entry meeting a newer rating,
-  a waited entry with an unknown base when a rating exists, and
+  a waited entry with an unknown base when a rating exists, a live one whose
+  fields would leave that rating EMPTY (its page never showed the rating, so it
+  never reaps it: every delete rests on a baseline the page displayed), and
   `discardPending({ confirmed: true })` (a successful Delete Impression only).
   A bare `discardPending()` (a present line-up without the wine, a confirmed
   removal) ends the page's work and stages its draft into the entry, which is
@@ -426,6 +428,10 @@ then persisted); (3) else the fields whose rev > `ackRev` become ONE merge (a ne
   merge whose fields empty the stored row on their own, which the server reaps.
 - A page change that stays after a storage failure still sends its emptying
   merge later, once the write lands (the page shows it empty meanwhile).
+- An edit made before the baseline, then a deliberate emptying once the page
+  shows the rating but before the entry's base is read: the entry is still
+  base-less, so it is dropped whole (the earlier edit with it) and the rating
+  stays (the safe side; the page shows the rating again).
 - Every merge whose supplied fields are all empty-valued takes the Redis lease,
   so a busy lease can answer 503 and pause the moment's entries (accepted; the
   alternative was the `ContractNeedsLease` re-run).

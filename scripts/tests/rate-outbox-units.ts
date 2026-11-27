@@ -931,6 +931,31 @@ async function main() {
     check('an unknown baseline: the merge carries only the touched score, the stored note stays', fullSaves(e).length === 0 && e.server.row('w1').rating?.score === 0 && e.server.row('w1').rating?.notes === 'keep me', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
   }
   {
+    // Release gate (2026-11-27): an emptying draft made on an UNKNOWN baseline
+    // never reaps the rating the page didn't show.
+    const e = env();
+    e.server.webSave('w1', { score: 4 });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setScore(0);
+    await c.drain();
+    e.setRead(() => ({ kind: 'ok', ratings: e.server.section() }));
+    await e.advance(10_000);
+    check('🔒 an unknown baseline: a score put back to 0 over a score-only rating is dropped, nothing sent, the rating stays', e.sent.length === 0 && e.server.row('w1').rating?.score === 4, { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
+    const e = env();
+    e.server.webSave('w1', { notes: 'keep me' });
+    await e.start();
+    const c = e.ctl('w1');
+    c.setNotes('x');
+    c.setNotes('');
+    await c.drain();
+    e.setRead(() => ({ kind: 'ok', ratings: e.server.section() }));
+    await e.advance(10_000);
+    check('🔒 an unknown baseline: a note typed and deleted over a note-only rating is dropped, the note stays', e.sent.length === 0 && e.server.row('w1').rating?.notes === 'keep me', { sent: e.sent.map((x) => x.body), row: e.server.row('w1') });
+  }
+  {
     const e = env();
     e.poll();
     await e.start();
