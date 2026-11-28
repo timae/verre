@@ -476,13 +476,34 @@ export async function createVintage(
 // not written: an existing vintage keeps its own).
 export function assertAbv(raw: unknown): void { normalizeAbv(raw) }
 
-function normalizeAbv(raw: unknown): number | null {
+export function normalizeAbv(raw: unknown): number | null {
   if (raw === null || raw === undefined || raw === '') return null
   const n = Number(raw)
   if (!Number.isFinite(n) || n < 0 || n > 25) {
     throw new CatalogValidationError('abv must be between 0 and 25')
   }
   return Math.round(n * 100) / 100
+}
+
+// ── A reported alcohol (0.2.0 build 2) ─────────────────────────────────────
+//
+// 🔒 NEVER written into `wine_vintages.abv` (ruled 2026-11-27 with the
+// catalogue-maintenance side): an alcohol typed on a listed year that has none
+// is a review item (reason 'user-abv', the value, the vintage, the reporter)
+// they pull and deliver back as a normal value. Until then every read shows it
+// on that year (lib/catalogEntries.ts `vintageAbvSql`), with no marker.
+// 🔒 The FIRST value wins: at most one open report per vintage (the partial
+// unique `catalog_review_items_open_abv_key`), so a second report, or one on a
+// year that already carries an alcohol, is ignored without an error. Inside the
+// bottle write's transaction (lib/catalogLink.ts `applyLink`), on the EFFECTIVE
+// vintage the pick resolved to, before the entry is read for the snapshot: the
+// reporter's bottle carries the value through the normal snapshot.
+export async function reportVintageAbv(tx: Prisma.TransactionClient, vintageId: string, abv: number, userId: number): Promise<void> {
+  await tx.$executeRaw`
+    INSERT INTO catalog_review_items (entity_type, entity_id, reason, abv, reported_by)
+    SELECT 'vintage', v.id, 'user-abv', ${abv}::numeric, ${userId}
+      FROM wine_vintages v WHERE v.id = ${vintageId} AND v.abv IS NULL
+    ON CONFLICT (entity_id) WHERE reason = 'user-abv' AND resolved_at IS NULL DO NOTHING`
 }
 
 // The product kind, as three attributes (20261109120000). App-side mirrors of

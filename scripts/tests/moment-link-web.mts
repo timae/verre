@@ -49,8 +49,9 @@ async function withServer(flag: boolean, run: (base: string) => Promise<void>) {
   const port = await freePort()
   const BASE = `http://127.0.0.1:${port}`
   const env: NodeJS.ProcessEnv = { ...process.env, PORT: String(port), HOSTNAME: '127.0.0.1', NODE_ENV: 'production', AUTH_URL: BASE, AUTH_TRUST_HOST: 'true' }
-  if (flag) env.MOMENT_LOOKIN_ENABLED = 'true'
-  else delete env.MOMENT_LOOKIN_ENABLED
+  // On = the variable UNSET (on by default since 0.2.0 build 2), off = 'false'.
+  if (flag) delete env.MOMENT_LOOKIN_ENABLED
+  else env.MOMENT_LOOKIN_ENABLED = 'false'
   let server: ChildProcess | null = null
   let log = ''
   try {

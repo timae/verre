@@ -29,7 +29,7 @@ function BottleSearchBody({ scope, onPick, onAdd }: { scope: CatalogScope; onPic
   };
   return (
     <View>
-      <TextField label="Wine" placeholder="Search wines" value={bottle.text} onChangeText={(text) => bottleDo({ type: 'text', text })} autoCorrect={false} returnKeyType="search" autoFocus accessibilityHint="Producer, wine, region or year, in any order." />
+      <TextField label="Wine" placeholder="Search wines" value={bottle.text} onChangeText={(text) => bottleDo({ type: 'text', text })} autoCorrect={false} returnKeyType="search" autoFocus clearable accessibilityHint="Producer, wine, region or year, in any order." />
       {bottle.status !== 'idle' ? (
         <ResultList>
           {closeNote(bottle) ? <ListNote text={closeNote(bottle)!} /> : null}

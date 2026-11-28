@@ -53,8 +53,8 @@ export const labelLine = (l: BottleLabel) => [l.name, l.year].filter(Boolean).jo
 
 // The year field, its NV tick chip with the ⓘ, and the alcohol % beside it.
 // `knownAbv`: the catalogue's alcohol for the picked wine and year, shown in
-// the same place, not editable (ruled 2026-11-22); `showAbv` (a new year) is
-// the editable field instead.
+// the same place, not editable (ruled 2026-11-22); `showAbv` (a new year, or a
+// listed year without an alcohol: abvEditable) is the editable field instead.
 export function YearRow({
   nv, onNv, yearText, onYear, showAbv, abvText, onAbv, knownAbv,
 }: {

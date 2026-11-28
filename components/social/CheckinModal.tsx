@@ -161,7 +161,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
     const firstPost = !isEdit && postedId.current === null
     if (firstPost && linkChange && !firstPosted.current) firstPosted.current = linkChange
     const link = !linkChange ? {} : linkChange.kind === 'pick'
-      ? { productId: linkChange.productId, vintageId: linkChange.vintageId } : { create: linkChange.body }
+      ? { productId: linkChange.productId, vintageId: linkChange.vintageId, ...(linkChange.abv !== undefined ? { abv: linkChange.abv } : {}) } : { create: linkChange.body }
     const editing = isEdit || postedId.current !== null
     const url = isEdit ? `/api/checkins/${editCheckin!.id}` : postedId.current !== null ? `/api/checkins/${postedId.current}` : '/api/checkins'
     const method = editing ? 'PATCH' : 'POST'

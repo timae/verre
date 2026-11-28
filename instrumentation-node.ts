@@ -11,10 +11,8 @@
 // (conditional-import-by-runtime pattern).
 import { ensureGeoData } from '@/lib/geoData'
 import { scheduleNativeSessionPrune } from '@/lib/nativeSessionPrune'
-import { warnIfMomentLinksOff } from '@/lib/momentLink'
 
 export async function register() {
   await ensureGeoData()
   scheduleNativeSessionPrune()
-  warnIfMomentLinksOff()
 }

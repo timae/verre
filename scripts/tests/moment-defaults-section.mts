@@ -47,8 +47,8 @@ export async function momentDefaults(h: MomentVisibilityHarness) {
 
   const saved = { mv: process.env.MOMENT_LOOKIN_ENABLED, hff: process.env.HIDE_FROM_FEED_ENABLED }
   const flags = (mv: boolean, hff: boolean) => {
-    if (mv) process.env.MOMENT_LOOKIN_ENABLED = 'true'; else delete process.env.MOMENT_LOOKIN_ENABLED
-    if (hff) process.env.HIDE_FROM_FEED_ENABLED = 'true'; else delete process.env.HIDE_FROM_FEED_ENABLED
+    if (mv) process.env.MOMENT_LOOKIN_ENABLED = 'true'; else process.env.MOMENT_LOOKIN_ENABLED = 'false'
+    if (hff) process.env.HIDE_FROM_FEED_ENABLED = 'true'; else process.env.HIDE_FROM_FEED_ENABLED = 'false'
   }
   const noHooks = () => { mutationHooks.at = async () => {}; momentDefaultsSeams.redis = async () => {}; momentDefaultsSeams.afterParentLocks = async () => {} }
   flags(true, true)

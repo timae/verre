@@ -279,7 +279,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
                   cover_photo_url = NULL, category = NULL, lifespan = NULL, hide_lineup = NULL,
                   hide_lineup_minutes_before = NULL, show_provenance = NULL, lineup_revision = NULL,
                   visibility = NULL, include_guest_circles = NULL, show_place = NULL, show_details = NULL,
-                  link_version = NULL, link_active = NULL, link_since = NULL
+                  link_version = NULL, link_active = NULL, link_code = NULL, link_since = NULL
              WHERE id = ${row.id}`
         }
         const keys = await scanKeys(`s:${c}:*`)

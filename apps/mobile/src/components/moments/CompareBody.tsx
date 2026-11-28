@@ -29,6 +29,7 @@ import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { SheetSearchField } from '@/components/ui/SheetSearchField';
+import { measureTopOf, type MeasureTop } from '@/lib/measureTop';
 import { Thumb } from '@/components/ui/Thumb';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
@@ -142,7 +143,7 @@ function searchHay(it: CmpItem): string {
 // same sticky slot the rail used. ────────────────────────────────────────────
 
 export function CompareToolbar({
-  people, hidden, onPick, sort, onSort, query, onQuery, menusSuppressed,
+  people, hidden, onPick, sort, onSort, query, onQuery, menusSuppressed, onSearchFocus, onSearchBlur,
 }: {
   people: ComparePerson[];
   hidden: Set<string>;
@@ -155,9 +156,13 @@ export function CompareToolbar({
    *  menu is force-unmounted (not merely scheduled-closed via effect) so it is
    *  provably gone in the arm commit — before motion starts (codex R2-2). */
   menusSuppressed?: boolean;
+  /** The search field's focus: the screen pins the toolbar above the keyboard. */
+  onSearchFocus?: (measureTop: MeasureTop) => void;
+  onSearchBlur?: () => void;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const rootRef = useRef<ViewInstance | null>(null);
   const { width: screenW } = useWindowDimensions();
   const sortBtn = useRef<ViewInstance>(null);
   const [sortAnchorRaw, setSortAnchor] = useState<MenuAnchor | null>(null);
@@ -195,7 +200,7 @@ export function CompareToolbar({
     });
   };
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: GUTTER, paddingVertical: 8 }}>
+    <View ref={rootRef} collapsable={false} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: GUTTER, paddingVertical: 8 }}>
       {/* People — hidden on a roster of one (nothing to select). */}
       {people.length > 1 ? (
         <Pressable
@@ -225,7 +230,8 @@ export function CompareToolbar({
         <Icon name="sort" size={16} color={sorted ? theme.accent : theme.inkSoft} />
       </Pressable>
       <View style={{ flex: 1 }}>
-        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions" />
+        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions"
+          onFocus={() => onSearchFocus?.(measureTopOf(rootRef))} onBlur={onSearchBlur} />
       </View>
       <AnchoredMenu anchor={sortAnchor} onClose={() => setSortAnchor(null)} right={sortRight} minWidth={190}>
         {COMPARE_SORTS.map((o) => (

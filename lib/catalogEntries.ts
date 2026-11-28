@@ -117,6 +117,13 @@ const PRODUCT_FROM = `wine_products wp
   JOIN product_producers pp ON pp.product_id = wp.id AND pp.role = 'lead'
   JOIN producers pr ON pr.id = pp.producer_id`
 const SHARED = `wp.scope = 'shared'`
+// 🔒 A YEAR's alcohol on every read: the delivered value, else its open reported
+// one (reason 'user-abv', lib/catalogWrite.ts `reportVintageAbv`; at most one
+// per vintage by the partial unique, which serves this lookup). One definition
+// for the entry read, the merge fetch and the year lookup, so the picker, the
+// line-up's entry and a bottle's snapshot agree.
+const vintageAbvSql = (v: string) => `COALESCE(${v}.abv, (SELECT r.abv FROM catalog_review_items r
+  WHERE r.entity_id = ${v}.id AND r.reason = 'user-abv' AND r.resolved_at IS NULL))`
 
 // The entries of these links, keyed by `entryKey` of the STORED link. A link
 // whose product row is gone (a hard purge nulls the link; a cached guest
@@ -134,7 +141,7 @@ export async function loadEntries(links: CatalogLink[], db: Db = prisma): Promis
     `SELECT 'p' AS kind, ${PRODUCT_COLS}, NULL::text AS product_id, NULL::int AS year, false AS grapes_override
        FROM ${PRODUCT_FROM} WHERE wp.id = ANY($1) AND ${SHARED}
      UNION ALL
-     SELECT 'v', v.id, NULL, NULL, NULL, NULL, false, v.abv, v.grapes, NULL, NULL, NULL, NULL, v.status, NULL, NULL, NULL,
+     SELECT 'v', v.id, NULL, NULL, NULL, NULL, false, ${vintageAbvSql('v')}, v.grapes, NULL, NULL, NULL, NULL, v.status, NULL, NULL, NULL,
             v.product_id, v.year, v.grapes_override
        FROM wine_vintages v WHERE v.id = ANY($2)`,
     pids, vids,
@@ -149,7 +156,7 @@ export async function loadEntries(links: CatalogLink[], db: Db = prisma): Promis
   const effProduct = await followMerges('wine_products', [...products.values()], products, db, async (ids) =>
     db.$queryRawUnsafe<ProductRow[]>(`SELECT ${PRODUCT_COLS} FROM ${PRODUCT_FROM} WHERE wp.id = ANY($1) AND ${SHARED}`, ids))
   const effVintage = await followMerges('wine_vintages', [...vintages.values()], vintages, db, async (ids) =>
-    db.$queryRawUnsafe<VintageRow[]>(`SELECT id, product_id, year, abv, grapes, grapes_override, status FROM wine_vintages WHERE id = ANY($1)`, ids))
+    db.$queryRawUnsafe<VintageRow[]>(`SELECT v.id, v.product_id, v.year, ${vintageAbvSql('v')} AS abv, v.grapes, v.grapes_override, v.status FROM wine_vintages v WHERE v.id = ANY($1)`, ids))
   const mergedProducers = [...new Set([...products.values()].filter(p => p.producer_status === 'linked').map(p => p.producer_id))]
   const effProducer = mergedProducers.length ? await resolveEffectiveIds('producers', mergedProducers, db) : new Map<string, string>()
   const producerNames = new Map<string, string>()
@@ -256,17 +263,18 @@ const LINKABLE = ['provisional', 'confirmed', 'archived']
 // § Product × vintage merges compose), so adding it again under the survivor
 // mints a second row of that year: phase 3's merge screens decide whether the
 // lookup should list the tombstones' years too.
-// A wine's linkable years, each with its OWN alcohol, and the wine's alcohol
-// (the picker shows the year's, else the wine's: ruled 2026-11-22, read-only).
+// A wine's linkable years, each with its OWN alcohol (delivered, else its open
+// reported one: `vintageAbvSql`), and the wine's alcohol (the picker shows the
+// year's read-only, and offers the field on a listed year without one).
 // 🔒 Decimal columns: coerced to numbers here (root CLAUDE.md, the wire trap).
 export async function productVintages(productId: string, db: Db = prisma): Promise<{ abv: number | null; vintages: { id: string; year: number | null; abv: number | null }[] } | null> {
   const eff = (await resolveEffectiveIds('wine_products', [productId], db)).get(productId)!
   const p = (await db.$queryRaw<{ status: string; scope: string; abv: unknown }[]>`SELECT status, scope, abv FROM wine_products WHERE id = ${eff}`)[0]
   if (!p || !LINKABLE.includes(p.status) || p.scope !== 'shared') return null
-  const rows = await db.$queryRaw<{ id: string; year: number | null; abv: unknown }[]>`
-    SELECT id, year, abv FROM wine_vintages
-     WHERE product_id = ${eff} AND status = ANY(${LINKABLE}::text[])
-     ORDER BY year DESC NULLS FIRST, id`
+  const rows = await db.$queryRawUnsafe<{ id: string; year: number | null; abv: unknown }[]>(
+    `SELECT v.id, v.year, ${vintageAbvSql('v')} AS abv FROM wine_vintages v
+      WHERE v.product_id = $1 AND v.status = ANY($2::text[])
+      ORDER BY v.year DESC NULLS FIRST, v.id`, eff, LINKABLE)
   const num = (v: unknown) => (v === null || v === undefined ? null : Number(v))
   return { abv: num(p.abv), vintages: rows.map(r => ({ id: r.id, year: r.year, abv: num(r.abv) })) }
 }

@@ -28,7 +28,6 @@ type Actor = { cookie?: string; anon?: string }
 type User = { id: number; pid: string; cookie: string; email: string; password: string }
 type Res = { status: number; json: J; wire: J; headers: Headers }
 
-const SECRET = 'ci-only-moment-link-secret-0123456789-abcdef'
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 const sqlErr = (p: Promise<unknown>) => p.then(() => null as string | null, (e: Error) => String(e?.message ?? e))
 
@@ -65,10 +64,10 @@ export async function postPrivacy(h: MomentVisibilityHarness) {
   const { loadSessionFeedWines } = await import('../../lib/sessionFeedWines.ts')
   const { Prisma } = await import('@prisma/client')
 
-  const saved = { mv: process.env.MOMENT_LOOKIN_ENABLED, hff: process.env.HIDE_FROM_FEED_ENABLED, secret: process.env.MOMENT_LINK_SECRET }
+  const saved = { mv: process.env.MOMENT_LOOKIN_ENABLED, hff: process.env.HIDE_FROM_FEED_ENABLED }
   const flags = (mv: boolean, hff: boolean) => {
-    if (mv) process.env.MOMENT_LOOKIN_ENABLED = 'true'; else delete process.env.MOMENT_LOOKIN_ENABLED
-    if (hff) process.env.HIDE_FROM_FEED_ENABLED = 'true'; else delete process.env.HIDE_FROM_FEED_ENABLED
+    if (mv) process.env.MOMENT_LOOKIN_ENABLED = 'true'; else process.env.MOMENT_LOOKIN_ENABLED = 'false'
+    if (hff) process.env.HIDE_FROM_FEED_ENABLED = 'true'; else process.env.HIDE_FROM_FEED_ENABLED = 'false'
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
@@ -144,7 +143,6 @@ export async function postPrivacy(h: MomentVisibilityHarness) {
 
   try {
     flags(true, true)
-    process.env.MOMENT_LINK_SECRET = SECRET
 
     // ── the fixture ──────────────────────────────────────────────────────────
     const H = await mkUser('Pia Host'), A = await mkUser('Ada Author'), M = await mkUser('Max Member'), K = await mkUser('Kai Kicked')
@@ -791,7 +789,6 @@ export async function postPrivacy(h: MomentVisibilityHarness) {
   } finally {
     if (saved.mv === undefined) delete process.env.MOMENT_LOOKIN_ENABLED; else process.env.MOMENT_LOOKIN_ENABLED = saved.mv
     if (saved.hff === undefined) delete process.env.HIDE_FROM_FEED_ENABLED; else process.env.HIDE_FROM_FEED_ENABLED = saved.hff
-    if (saved.secret === undefined) delete process.env.MOMENT_LINK_SECRET; else process.env.MOMENT_LINK_SECRET = saved.secret
   }
   void follows
 }

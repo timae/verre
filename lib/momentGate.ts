@@ -7,19 +7,19 @@
 // the feature, not the fact that a route exists. Read per call, so a suite can
 // flip it.
 //
-// 🔒 No staff bypass (unlike lib/catalogGate.ts): a staff looker would see old
-// moments before the go-live image gate has run.
+// ON BY DEFAULT since 0.2.0 build 2 (the lib/catalogGate.ts pattern): only the
+// exact string 'false' turns it off, the kill switch. No staff bypass.
 export function momentLookInEnabled(): boolean {
-  return process.env.MOMENT_LOOKIN_ENABLED === 'true'
+  return process.env.MOMENT_LOOKIN_ENABLED !== 'false'
 }
 
 // Hide from Feed's release fence (Moment Visibility step 3, R9; the
-// lib/catalogGate.ts pattern, but OFF by default): only the literal 'true'
-// opens its WRITE (`PATCH /api/feed-items/:id/privacy` with `hiddenFromFeed`)
+// lib/catalogGate.ts pattern, ON by default since 0.2.0 build 2): only the
+// literal 'false' closes its WRITE (`PATCH /api/feed-items/:id/privacy` with `hiddenFromFeed`)
 // and the feed's `hiddenFromFeed` field on your own check-ins. 🔒 Its READERS
 // are always on (lib/postPrivacy.ts): once anyone has hidden a post, no deploy
 // may go below this step, and turning the flag off must not reopen a post.
 // Read per call, so a suite can flip it.
 export function hideFromFeedEnabled(): boolean {
-  return process.env.HIDE_FROM_FEED_ENABLED === 'true'
+  return process.env.HIDE_FROM_FEED_ENABLED !== 'false'
 }

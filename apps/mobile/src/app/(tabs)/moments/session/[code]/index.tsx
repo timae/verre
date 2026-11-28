@@ -3,7 +3,7 @@ import { getMomentVisibility, momentVisibilityKey } from '@/lib/api/moments';
 import { getVisibility, VISIBILITY_KEY } from '@/lib/api/settings';
 import { StatusBar } from 'expo-status-bar';
 import { Stack, useIsFocused, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, useWindowDimensions, View, type ViewInstance } from 'react-native';
 import Reanimated, { useAnimatedRef, useAnimatedScrollHandler, useSharedValue } from 'react-native-reanimated';
 
@@ -37,6 +37,7 @@ import { momentStatusLine } from '@/lib/momentVisibilityCopy';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { useTheme } from '@/theme';
 
+import { type MeasureTop } from '@/lib/measureTop';
 import { type LineupScrollApi, type LuSort, luSearchHay, type RevealProps, swapIn, swapOut, useTabTransition, CoverHeroLineup, HeroTopBar, type LuToolbarProps, LineupToolbar, OvcAbout, LockCard, EmptyLineup, AddImpressionRow, LuRow, CollapsingAdd, LineupAddButton } from '@/components/moments/LineupParts';
 
 // 02b line-up to the vero-screens pixel spec: .sess-meta line, .ovc about
@@ -125,6 +126,42 @@ export default function SessionLineup() {
   // toolbar) must exist even while `tab` is momentarily line-up on a reversal.
   const compareMounted = tab === 'compare' || transition.active !== null;
 
+  // A toolbar search focused (the line-up's or Compare's, 0.2.0 build 2: the
+  // field and its results hid behind the keyboard): the toolbar is scrolled up
+  // to where it pins, and the list keeps a screen's height of room below while
+  // the field is focused OR its tab's query holds text, so fewer results can't
+  // pull the toolbar back down, and a drag or a tap on a result (both blur the
+  // field) doesn't make the list jump under the finger (review r1).
+  const [searchFocused, setSearchFocused] = useState(false);
+  // The room a focus scroll needed to reach the pin line, KEPT after the blur
+  // with an empty search (a row tap blurs the field: without it a short
+  // line-up would clamp back under the tap; Codex build-2 r2). Reset when the
+  // pane or the layout changes, kept across the impression layer.
+  const [searchPinPad, setSearchPinPad] = useState(0);
+  // 🔒 One run per focus: a blur or a layout change (below) cancels a pending
+  // scroll, so a late measure never moves the list under a row tap, the
+  // impression layer's landing or the in-place edit (Codex build-2 r1).
+  const searchRun = useRef(0);
+  const onSearchBlur = useCallback(() => { searchRun.current++; setSearchFocused(false); }, []);
+  const onSearchFocus = useCallback((measureTop: MeasureTop) => {
+    const run = ++searchRun.current;
+    setSearchFocused(true);
+    // Plain Compare's toolbar is its own scroll view's first child, already
+    // pinned under the fixed tabs: nothing to scroll.
+    if (!heroShown && tab === 'compare') return;
+    // Two frames: the room below is laid out before the scroll asks for it.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (run !== searchRun.current) return;
+      const api = heroShown ? coverScrollApi.current : plainScrollApi.current;
+      if (!api) return;
+      void Promise.all([measureTop(), api.pinTop()]).then(([top, pin]) => {
+        if (run !== searchRun.current || top === null || pin === null || top - pin <= 1) return;
+        const y = api.scrollY() + (top - pin);
+        setSearchPinPad(Math.min(windowH, Math.max(0, windowH + y - api.maxY())));
+        api.scrollTo(y, true);
+      });
+    }));
+  }, [heroShown, tab, windowH]);
   // 02d people-selector — ONE hidden set drives every compare view (picker
   // sheet rows/presets, person rows, cards). The sticky slot under the bar
   // holds the CompareToolbar (People + sort + search on one line — Simon's
@@ -171,6 +208,8 @@ export default function SessionLineup() {
       query={cmpQuery}
       onQuery={setCmpQuery}
       menusSuppressed={transition.active !== null}
+      onSearchFocus={onSearchFocus}
+      onSearchBlur={onSearchBlur}
     />
   ) : null;
 
@@ -518,6 +557,8 @@ export default function SessionLineup() {
     onSort: setLuSort,
     deniedTick,
     menusSuppressed: transition.active !== null,
+    onSearchFocus,
+    onSearchBlur,
   };
 
   // Plain-layout scroll plumbing for drag-to-reorder: the rows need a live
@@ -548,7 +589,13 @@ export default function SessionLineup() {
     }),
     scrollY: () => plainScrollY.value,
     maxY: () => plainMaxScroll.value,
-    scrollTo: (y) => plainRef.current?.scrollTo({ y, animated: false }),
+    scrollTo: (y, animated = false) => plainRef.current?.scrollTo({ y, animated }),
+    pinTop: () => new Promise((resolve) => {
+      const node = plainTabsRef.current;
+      if (!node) return resolve(null);
+      const t = setTimeout(() => resolve(null), 120);
+      node.measureInWindow((_x, y, _w, h) => { clearTimeout(t); resolve(h > 0 ? y + h : null); });
+    }),
   };
   // The plain layout's scroll for the in-place edit (the hero installs its own).
   useEffect(() => {
@@ -556,7 +603,18 @@ export default function SessionLineup() {
     scrollByRef.current = (dy) => plainRef.current?.scrollTo({ y: plainScrollY.value + dy, animated: true });
   }, [heroShown, plainRef, plainScrollY]);
   // While editing: the pill is hidden and the list clears the keyboard + bar.
-  const listBottom = Math.max(TAB_BAR_CLEARANCE, edit?.bottomInset ?? 0);
+  // The search's room (above): the line-up's query on the line-up, Compare's on Compare.
+  const searchRoom = searchFocused || (tab === 'compare' ? cmpQuery !== '' : luQuery !== '');
+  const listBottom = Math.max(TAB_BAR_CLEARANCE, edit?.bottomInset ?? 0, searchRoom ? windowH : searchPinPad);
+  useLayoutEffect(() => { setSearchPinPad(0); }, [tab, lock, heroShown, lineupFocused]);
+  // A blur that never comes (the toolbar unmounted while focused: a tab swap, a
+  // lock card) must not keep the room, and a layout change cancels a pending
+  // scroll: the tab, the lock, the layout, the in-place edit, the impression
+  // layer and the screen's focus reset both.
+  useLayoutEffect(() => {
+    onSearchBlur();
+    return () => { searchRun.current++; };
+  }, [tab, lock, heroShown, editing, layerOpen, lineupFocused, onSearchBlur]);
   // Everything but the fields dims and goes inert IN PLACE while editing (a
   // tap there shakes the edit bar); never a remount (no wrapper that comes and goes).
   const inertProps = {
@@ -773,7 +831,7 @@ export default function SessionLineup() {
                 stickyHeaderIndices={cmpRail ? [0] : undefined}
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode="on-drag"
-                contentContainerStyle={{ flexGrow: 1, paddingBottom: TAB_BAR_CLEARANCE }}
+                contentContainerStyle={{ flexGrow: 1, paddingBottom: searchRoom ? windowH : TAB_BAR_CLEARANCE }}
               >
                 {cmpRail ? <View style={{ backgroundColor: theme.bg }}>{cmpRail}</View> : null}
                 <CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} sort={cmpSort} query={cmpQuery} />

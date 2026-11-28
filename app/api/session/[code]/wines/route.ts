@@ -184,8 +184,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       // A new wine is minted only into the record (race review r1: this branch
       // writes the cache before COMMIT, so a rolled-back mint could stay linked
       // in it). A signed-in caller lands here only when its promotion failed:
-      // retry. Picks are fine.
-      if (linkReq.kind === 'create') throw refuse(503, 'Try again in a moment.', { 'Retry-After': '1' })
+      // retry. Picks are fine; a pick that reports an alcohol is a catalogue
+      // write too (lib/catalogLink.ts), so it waits like a create.
+      if (linkReq.kind === 'create' || linkReq.abv !== null) throw refuse(503, 'Try again in a moment.', { 'Retry-After': '1' })
       // The cached line-up is this moment's authority, and this contract holds
       // its lock: a retry is read here, before anything is minted.
       const cached = await redis.get(k.wines(c))

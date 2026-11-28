@@ -387,6 +387,13 @@ clean up, claimed entries lock), plus one guard for the case Untappd does not do
   "this was the wrong wine" — it breaks the link and requires an explicit re-link through
   the add flow. Already specified in the RFC; it removes the dangerous half of user
   editing, leaving genuinely cosmetic corrections.
+- **An alcohol on a listed year that has none is a REPORT, not an edit** (0.2.0 build 2,
+  ruled 2026-11-27 with the catalogue-maintenance side): a pick may carry `abv`, which
+  becomes a `catalog_review_items` row (reason `user-abv`, the value, the vintage, the
+  reporter); `wine_vintages.abv` is never written from here. That side pulls it, decides
+  it and delivers it back as a normal value. Until then every read shows it on that year,
+  with no marker (Simon); the first value wins (one open report per vintage); a resolved
+  report frees the year. A year that already has an alcohol offers no field.
 
 ### Change proposals are their own table
 

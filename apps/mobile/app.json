@@ -10,7 +10,7 @@
     "ios": {
       "bundleIdentifier": "io.verre.app",
       "icon": "./assets/images/icon.png",
-      "buildNumber": "1",
+      "buildNumber": "2",
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false

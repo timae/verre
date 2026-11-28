@@ -16,6 +16,7 @@
     "moment_defaults.moment_defaults_visibility_chk": "CHECK (((visibility IS NULL) OR ((visibility)::text = ANY ((ARRAY['members'::character varying, 'friends'::character varying, 'followers'::character varying, 'verre'::character varying])::text[]))))",
     "ratings.ratings_session_rater_known": "CHECK (((session_id IS NULL) OR (user_id IS NOT NULL) OR (tombstone_key IS NOT NULL)))",
     "session_bans.session_bans_identity_id_chk": "CHECK ((((identity_id)::text ~ '^u:[0-9]+$'::text) OR ((identity_id)::text ~* '^a:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text) OR ((identity_id)::text ~* '^d:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'::text)))",
+    "sessions.sessions_link_code_format_chk": "CHECK (((link_code IS NULL) OR ((link_code)::text ~ '^[0-9a-f]{32}$'::text)))",
     "sessions.sessions_public_id_format_chk": "CHECK (((public_id)::text ~ '^[A-HJKMNP-TV-Z][0-9A-HJKMNP-TV-Z]{11}$'::text))",
     "sessions.sessions_visibility_chk": "CHECK (((visibility IS NULL) OR ((visibility)::text = ANY ((ARRAY['members'::character varying, 'friends'::character varying, 'followers'::character varying, 'verre'::character varying])::text[]))))",
     "wines.wines_abv_range_check": "CHECK (((abv IS NULL) OR ((abv >= (0)::numeric) AND (abv <= (25)::numeric))))",

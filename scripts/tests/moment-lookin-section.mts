@@ -35,7 +35,6 @@ type Bare = { id: number; pid: string }
 type Res = { status: number; json: J; wire: J; headers: Headers }
 type Tier = 'public-internet' | 'public-users' | 'public-followers' | 'public-mutual'
 
-const SECRET = 'ci-only-moment-link-secret-0123456789-abcdef'
 const PIDRE = /^[A-HJKMNP-TV-Z][0-9A-HJKMNP-TV-Z]{11}$/
 
 export async function momentLookIn(h: MomentVisibilityHarness) {
@@ -57,9 +56,8 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
   const { readGrant, readGrantByPublicId, grantStatus } = await import('../../lib/sessionGrant.ts')
   const { loadProfile } = await import('../../lib/profileLoad.ts')
 
-  const saved = { flag: process.env.MOMENT_LOOKIN_ENABLED, secret: process.env.MOMENT_LINK_SECRET }
-  const flag = (on: boolean) => { if (on) process.env.MOMENT_LOOKIN_ENABLED = 'true'; else delete process.env.MOMENT_LOOKIN_ENABLED }
-  const secret = (v: string | null) => { if (v === null) delete process.env.MOMENT_LINK_SECRET; else process.env.MOMENT_LINK_SECRET = v }
+  const saved = { flag: process.env.MOMENT_LOOKIN_ENABLED }
+  const flag = (on: boolean) => { if (on) process.env.MOMENT_LOOKIN_ENABLED = 'true'; else process.env.MOMENT_LOOKIN_ENABLED = 'false' }
 
   // Fixture people with no session of their own (decided on, never calling).
   let seq = 0
@@ -138,7 +136,6 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
   const shape = (r: Res) => JSON.stringify([r.status, r.wire, [...r.headers.entries()].sort()])
 
   try {
-    secret(SECRET)
     flag(true)
 
     // ── § 24 a parity ───────────────────────────────────────────────────────
@@ -311,9 +308,9 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
     const nRow = await rowOf(N)
     await prisma.$executeRaw`UPDATE sessions SET visibility = NULL WHERE id = ${nRow.id}`
     const hostless = await rawMoment(null, { visibility: 'verre' })
-    await prisma.$executeRaw`UPDATE sessions SET visibility = 'verre', link_version = 1, link_active = true WHERE id = ${hostless.id}`
-    const { momentLinkToken } = await import('../../lib/momentLink.ts')
-    const hostlessTok = momentLinkToken(hostless.pid, 1)!
+    const { newMomentLinkCode } = await import('../../lib/momentLink.ts')
+    const hostlessTok = newMomentLinkCode()
+    await prisma.$executeRaw`UPDATE sessions SET visibility = 'verre', link_version = 1, link_active = true, link_code = ${hostlessTok} WHERE id = ${hostless.id}`
     tokens.add(hostlessTok)
     const unknown = 'ZZZZZZZZZZZZ'
     const refusals: [string, () => Promise<Res>][] = [
@@ -335,13 +332,13 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
     ]
     const ans: [string, Res][] = []
     for (const [label, f] of refusals) ans.push([label, await f()])
-    // The link turned off, reset, and the secret gone.
+    // The link turned off, reset, and another moment's code.
     await share(L, Hl, 'off'); ans.push(['the link turned off', await look(lRow.public_id, Sl, tok)])
     const tok2 = (await share(L, Hl))!
     await share(L, Hl, 'reset'); ans.push(['the old token after a reset', await look(lRow.public_id, Sl, tok2)])
-    const tok3 = (await rowOf(L)).link_active ? momentLinkToken(lRow.public_id, (await rowOf(L)).link_version)! : ''
+    const tok3 = (await rowOf(L)).link_active ? (await rowOf(L)).link_code as string : ''
     tokens.add(tok3)
-    secret(null); ans.push(['the secret absent', await look(lRow.public_id, Sl, tok3)]); secret(SECRET)
+    ans.push(['another moment\'s code', await look(lRow.public_id, Sl, hostlessTok)])
     flag(false); ans.push(['the flag off', await look(lRow.public_id, Ol)]); flag(true)
     const ref = shape(ans[0][1])
     check(`🔒 ONE refusal: ${ans.length} cases answer the same 404 { error: "not found" }, byte for byte with the same headers`,
@@ -897,6 +894,5 @@ export async function momentLookIn(h: MomentVisibilityHarness) {
       noUrls.find(t => allWineIds.some(w => t.includes(w)) || /[aud]:/.test(t))?.slice(0, 300))
   } finally {
     if (saved.flag === undefined) delete process.env.MOMENT_LOOKIN_ENABLED; else process.env.MOMENT_LOOKIN_ENABLED = saved.flag
-    if (saved.secret === undefined) delete process.env.MOMENT_LINK_SECRET; else process.env.MOMENT_LINK_SECRET = saved.secret
   }
 }

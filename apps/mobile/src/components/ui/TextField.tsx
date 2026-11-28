@@ -19,6 +19,10 @@ interface Props extends TextInputProps {
    *  field in a side-by-side row must stay single-line so its height tracks its
    *  row partner (Simon, 2026-07-21). Omit for the default fixed single line. */
   growLines?: number;
+  /** A clear × inside the field while it holds text (a search field: the
+   *  bottle search, the catalogue pages). Tapping it keeps the keyboard up and
+   *  sends `onChangeText('')`. Not for secure or grow fields. */
+  clearable?: boolean;
 }
 
 // .field: 14px h-padding, 1px rule border at rest; focus = accent border + inset
@@ -26,7 +30,7 @@ interface Props extends TextInputProps {
 // (borders draw inside the bounds: no sibling layout shift) and the padding
 // compensates by 1px so the text doesn't nudge.
 export const TextField = forwardRef<TextInputInstance, Props>(function TextField(
-  { label, error, invalid, surface: surfaceName = 'formControl', style, onFocus, onBlur, editable, growLines, ...rest },
+  { label, error, invalid, surface: surfaceName = 'formControl', style, onFocus, onBlur, editable, growLines, clearable, ...rest },
   ref,
 ) {
   const { theme } = useTheme();
@@ -62,8 +66,16 @@ export const TextField = forwardRef<TextInputInstance, Props>(function TextField
   // eye toggle must not bounce the keyboard when tapped.
   const innerRef = useRef<TextInputInstance | null>(null);
   const eyeRef = useRef<ViewInstance | null>(null);
+  // The clear × (SheetSearchField's): shown while the field holds text. 🔒 The
+  // WRAPPER is decided by `clearable` alone (constant per field), only the ×
+  // comes and goes: a wrapper that appeared with the first character remounted
+  // the focused input (keyboard dropped, the new node unregistered; review r1).
+  const clearSlot = !!clearable && !secure && !grows;
+  const clears = clearSlot && editable !== false && !!rest.value;
+  const clearRef = useRef<ViewInstance | null>(null);
   useRegisterInput(innerRef);
   useRegisterInput(eyeRef, secure);
+  useRegisterInput(clearRef, clears);
   const isInvalid = !!(error || invalid);
   const borderColor = isInvalid ? theme.critical : focused ? theme.accent : theme.rule;
   // Grow mode seats line 1 by symmetric vertical padding (a multiline box can't
@@ -127,7 +139,7 @@ export const TextField = forwardRef<TextInputInstance, Props>(function TextField
           borderColor,
           borderRadius: radius.sm,
           paddingLeft: focused ? 13 : 14,
-          paddingRight: secure ? 42 : focused ? 13 : 14,
+          paddingRight: secure || clearSlot ? 42 : focused ? 13 : 14,
           opacity: editable === false ? 0.55 : 1,
           // GROW: multiline box bounded min→max lines, clip past that + seat line
           // 1 by symmetric padding. NON-GROW: the original fixed single-line box
@@ -160,6 +172,22 @@ export const TextField = forwardRef<TextInputInstance, Props>(function TextField
           >
             <Icon name={revealed ? 'eyeoff' : 'eye'} size={18} color={theme.inkSoft} />
           </Pressable>
+        </View>
+      ) : clearSlot ? (
+        <View>
+          {input}
+          {clears ? (
+            <Pressable
+              ref={clearRef}
+              accessibilityRole="button"
+              accessibilityLabel="Clear Search"
+              hitSlop={8}
+              onPress={() => rest.onChangeText?.('')}
+              style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 42, alignItems: 'center', justifyContent: 'center' }}
+            >
+              <Icon name="x" size={14} color={theme.inkFaint} />
+            </Pressable>
+          ) : null}
         </View>
       ) : (
         input

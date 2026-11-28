@@ -271,6 +271,15 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   try {
     txResult = await prisma.$transaction(async (tx) => {
     mintTx = tx
+    // 🔒 A link that writes to the catalogue (a create, a reported alcohol)
+    // takes the author's user row FOR KEY SHARE FIRST: account deletion holds
+    // that row FOR UPDATE before it deletes their standalone ratings, and the
+    // mint's / the report's key into `users` would otherwise be taken after
+    // this rating's lock below: a deadlock (Codex build-2 r1). Gone → the 404.
+    if (linkReq.kind === 'create' || (linkReq.kind === 'pick' && linkReq.abv !== null)) {
+      const me = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM users WHERE id = ${userId} FOR KEY SHARE`
+      if (!me[0]) throw Object.assign(new Error('gone'), { code: 'P2025' })
+    }
     // 🔒 The rating and its bottle as they stand NOW, locked (Codex r1, r2):
     // every value this edit derives (the flavour shape for the kind) comes
     // from these rows, never from the request's pre-read.

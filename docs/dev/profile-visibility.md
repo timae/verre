@@ -58,7 +58,7 @@ The full profile payload (`/api/users/<id>`, header view included) carries `chec
 
 ## Moment Visibility: who may look in, who is named (`lib/momentAudience.ts`)
 
-Dark behind `MOMENT_LOOKIN_ENABLED` except the `hostName` rule (live). Proposal: `docs/dev/proposals/moment-visibility.md` § 6 / § 7.
+Behind `MOMENT_LOOKIN_ENABLED` (on by default since 0.2.0 build 2; `'false'` = the kill switch) except the `hostName` rule (always live). Proposal: `docs/dev/proposals/moment-visibility.md` § 6 / § 7.
 
 - **ONE entry point**, `decideMoments(viewerId, sessionIds, { everyone?, also? })` → per moment `{ member, refused, open, named, hostNamed }`, for the look-in, the feed's `momentId` / `hostName` and someone's Moments' open rows. Never re-derive any of it in a route.
 - 🔒 **NAMED to V** = a current member (or the strict host), not kicked, not banned, not `only_inside`, no block pair with V either way, Show Moments on, and the post gate admits V (`canViewPosts` through the bulk path: `batchLoadVisibilities` + `resolveProfileViewerBulk` + `viewerFofAuthorSet`). Pinned against the single-profile gate (`resolveProfileViewer(...).sees.posts && sees.moments`) for every tier × circle × posts audience × Show Moments × relation × block direction (`scripts/tests/moment-lookin-section.mts` § 24 a).

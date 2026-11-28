@@ -149,7 +149,8 @@ model User {
   productsCurated           WineProduct[]          @relation("ProductCurator")
   vintagesAdded             WineVintage[]          @relation("VintageAdder")
   vintagesCurated           WineVintage[]          @relation("VintageCurator")
-  reviewItemsResolved       CatalogReviewItem[]
+  reviewItemsResolved       CatalogReviewItem[]    @relation("ReviewItemResolver")
+  reviewItemsReported       CatalogReviewItem[]    @relation("ReviewItemReporter")
 
   // pg_trgm GIN index for fast substring search in /api/users/search.
   // The `raw("gin_trgm_ops")` operator class is what makes ILIKE queries
@@ -453,10 +454,13 @@ model Session {
   includeGuestCircles Boolean?  @default(true) @map("include_guest_circles")
   showPlace           Boolean?  @default(false) @map("show_place")
   showDetails         Boolean?  @default(false) @map("show_details")
-  // The look-in link's state (lib/momentLink.ts): nothing secret is stored.
-  // 🔒 The version only ever goes up (Reset, and Share on a link that is off).
+  // The look-in link's state (lib/momentLink.ts). `linkCode` = the active
+  // link's random code (32 hex, CHECK `sessions_link_code_format_chk`), stored
+  // as is, NULL while off; a new one at Share-when-off and Reset. 🔒 Never in
+  // meta, a cache or a log. The version (links a moment has had) only goes up.
   linkVersion         Int?      @default(0) @map("link_version")
   linkActive          Boolean?  @default(false) @map("link_active")
+  linkCode            String?   @map("link_code") @db.VarChar(32)
   linkSince           DateTime? @map("link_since") @db.Timestamptz(6)
   host        User?      @relation(fields: [hostUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   wines       Wine[]
@@ -1682,7 +1686,14 @@ model CatalogReviewItem {
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   resolvedAt DateTime? @map("resolved_at") @db.Timestamptz(6)
   resolvedBy Int?      @map("resolved_by")
-  resolver   User?     @relation(fields: [resolvedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  // A reported alcohol (reason 'user-abv', 0.2.0 build 2): the value and who
+  // typed it (SET NULL on deletion: the value stays). At most ONE open report
+  // per vintage (partial unique `catalog_review_items_open_abv_key`, not in the
+  // datamodel); the CHECKs tie `abv` to the reason and the reason to a vintage.
+  abv        Decimal?  @db.Decimal(4, 2)
+  reportedBy Int?      @map("reported_by")
+  resolver   User?     @relation("ReviewItemResolver", fields: [resolvedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  reporter   User?     @relation("ReviewItemReporter", fields: [reportedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@index([entityType, entityId])
   @@map("catalog_review_items")

@@ -947,10 +947,156 @@ async function codexFixes4() {
   check('(18a) …and the current line-up (Q, now theirs) shows it to them (the owner bypass still works)', frow?._blind !== true && frow?.name === `${TAG} Own New Wine`, frow)
 }
 
+
+// ── § 19 Alcohol on a listed year without one: a review item, shown to all ──
+async function abvReports() {
+  section('§ 19 alcohol on a listed year: a user-abv review item (never wine_vintages.abv), shown to everyone, first value wins')
+  const H = await mkUser('Abv Host', { pro: true })
+  const O = await mkUser('Abv Other')
+  const s = await createSession(as(H))
+  await enter(s.code, as(O), 'Abv Other')
+  await setRole(s.code, as(H), `u:${O.id}`, 'co_host')
+  const reports = async (vid: string) => prisma.$queryRaw<{ abv: string; reported_by: number | null; entity_type: string; resolved_at: Date | null }[]>`
+    SELECT abv::text AS abv, reported_by, entity_type, resolved_at FROM catalog_review_items WHERE entity_id = ${vid} AND reason = 'user-abv' ORDER BY id`
+  const vintageAbv = async (vid: string) => (await prisma.$queryRaw<{ abv: string | null }[]>`SELECT abv::text AS abv FROM wine_vintages WHERE id = ${vid}`)[0]?.abv ?? null
+  const yearsOf = async (u: User, pid: string) => ((await globalSearch(as(u), `kind=vintages&productId=${pid}`)).json?.results as { id: string; abv: unknown }[] | undefined) ?? []
+  const createRl = async (u: User) => Number((await redis.get(`rl:catalog-create:u:${u.id}:1h`)) ?? 0)
+
+  const e = await mintEntry({ producer: `${TAG} Abv P`, name: `${TAG} Abv W`, colour: 'red', year: 2019, abv: 11 })
+  await resetLimits()
+  const id1 = nanoid()
+  const r1 = await postWine(s.code, as(H), { id: id1, ...pick(e), abv: '12,5'.replace(',', '.') })
+  const rep1 = await reports(e.vintageId!)
+  check('(19a) a pick with an alcohol on a year without one: 200, ONE open user-abv report (the value, the reporter, a vintage)',
+    r1.status === 200 && rep1.length === 1 && rep1[0].abv === '12.50' && rep1[0].reported_by === H.id && rep1[0].entity_type === 'vintage' && rep1[0].resolved_at === null, [r1.status, r1.json, rep1])
+  check('(19a) 🔒 …wine_vintages.abv is NOT written', (await vintageAbv(e.vintageId!)) === null)
+  check('(19a) …the reporter\'s bottle carries it through the normal snapshot (not the wine\'s 11)', (await rowOf(id1))?.abv === '12.50', await rowOf(id1))
+  check('(19a) …and the create budget is charged once (a report reaches the data side like a mint)', (await createRl(H)) === 1, await createRl(H))
+  const ys = await yearsOf(O, e.productId)
+  const en = wiresOf(await winesGet(s.code, as(O))).find(w => w.id === id1)?.entry as Record<string, unknown> | undefined
+  check('(19b) shown to EVERYONE on that year: the vintage lookup (another person) and the line-up\'s entry read 12.5, a number',
+    ys.find(v => v.id === e.vintageId)?.abv === 12.5 && en?.abv === 12.5, { ys, en })
+
+  await resetLimits()
+  const id2 = nanoid()
+  const r2 = await postWine(s.code, as(O), { id: id2, ...pick(e), abv: 14 })
+  check('(19c) 🔒 a second report on the same year: 200, ignored (first value wins), still one report',
+    r2.status === 200 && (await reports(e.vintageId!)).length === 1 && (await reports(e.vintageId!))[0].abv === '12.50' && (await rowOf(id2))?.abv === '12.50', [r2.status, await reports(e.vintageId!), await rowOf(id2)])
+
+  const filled = await mintEntry({ producer: `${TAG} Abv P2`, name: `${TAG} Abv Filled`, colour: 'white', year: 2020, vintageAbv: 13 })
+  const id3 = nanoid()
+  const r3 = await postWine(s.code, as(H), { id: id3, ...pick(filled), abv: 9 })
+  check('(19d) a year with a delivered alcohol: 200, no report, the delivered value on the bottle',
+    r3.status === 200 && (await reports(filled.vintageId!)).length === 0 && (await vintageAbv(filled.vintageId!)) === '13.00' && (await rowOf(id3))?.abv === '13.00', [r3.status, await rowOf(id3)])
+
+  await prisma.$executeRaw`UPDATE catalog_review_items SET resolved_at = now(), resolved_by = ${H.id} WHERE entity_id = ${e.vintageId} AND reason = 'user-abv'`
+  const afterResolve = (await yearsOf(O, e.productId)).find(v => v.id === e.vintageId)?.abv
+  const id4 = nanoid()
+  const r4 = await postWine(s.code, as(O), { id: id4, ...pick(e), abv: 14 })
+  const rep4 = await reports(e.vintageId!)
+  check('(19e) a resolved report no longer shows, and frees the year for a new one (which then shows)',
+    afterResolve === null && r4.status === 200 && rep4.length === 2 && rep4[1].abv === '14.00' && rep4[1].resolved_at === null && (await yearsOf(H, e.productId)).find(v => v.id === e.vintageId)?.abv === 14, { afterResolve, rep4 })
+  check('(19e) …a bottle snapshotted before keeps its value (point in time)', (await rowOf(id1))?.abv === '12.50')
+
+  const fresh = await mintEntry({ producer: `${TAG} Abv P3`, name: `${TAG} Abv Fresh`, colour: 'red', year: 2021 })
+  const bad: [string, Record<string, unknown>, number, string][] = [
+    ['no year (product grain)', { productId: fresh.productId, abv: 12 }, 400, 'Choose the year to add its alcohol.'],
+    ['a null year', { productId: fresh.productId, vintageId: null, abv: 12 }, 400, 'Choose the year to add its alcohol.'],
+    ['over 25', { ...pick(fresh), abv: 26 }, 400, 'abv must be between 0 and 25'],
+    ['negative', { ...pick(fresh), abv: -1 }, 400, 'abv must be between 0 and 25'],
+    ['not a number', { ...pick(fresh), abv: 'strong' }, 400, 'abv must be between 0 and 25'],
+    ['true (Number() reads 1)', { ...pick(fresh), abv: true }, 400, 'abv must be between 0 and 25'],
+    ['[12] (Number() reads 12)', { ...pick(fresh), abv: [12] }, 400, 'abv must be between 0 and 25'],
+    ['a blank string (Number() reads 0)', { ...pick(fresh), abv: '  ' }, 400, 'abv must be between 0 and 25'],
+    ['false', { ...pick(fresh), abv: false }, 400, 'abv must be between 0 and 25'],
+  ]
+  const badAns = []
+  for (const [label, body, st, msg] of bad) { await resetLimits(); const r = await postWine(s.code, as(H), { id: nanoid(), ...body }); badAns.push([label, r.status, r.json?.error, r.status === st && r.json?.error === msg]) }
+  check('(19f) the shape: an alcohol needs a year, 0 to 25, a number; each a 400 with its message, nothing written',
+    badAns.every(a => a[3]) && (await reports(fresh.vintageId!)).length === 0, badAns)
+  await resetLimits()
+  const empty = await postWine(s.code, as(H), { id: nanoid(), ...pick(fresh), abv: '' })
+  const nul = await postWine(s.code, as(H), { id: nanoid(), ...pick(fresh), abv: null })
+  check('(19f) …an empty or null alcohol is no value (a plain pick, nothing charged)', empty.status === 200 && nul.status === 200 && (await reports(fresh.vintageId!)).length === 0 && (await createRl(H)) === 0, [empty.status, nul.status])
+
+  await resetLimits()
+  await redis.set(`rl:catalog-create:u:${H.id}:1h`, '60', { EX: 3600 })
+  const spent = await postWine(s.code, as(H), { id: nanoid(), ...pick(fresh), abv: 12 })
+  check('(19f) the create budget spent: 429, nothing written', spent.status === 429 && (await reports(fresh.vintageId!)).length === 0, [spent.status, spent.json])
+  await resetLimits()
+  const twin = await mintEntry({ producer: `${TAG} Abv Twin P`, name: `${TAG} Abv Twin`, colour: 'red', year: 2015 })
+  const [ta, tb] = await Promise.all([
+    postWine(s.code, as(H), { id: nanoid(), ...pick(twin), abv: 11 }),
+    postWine(s.code, as(O), { id: nanoid(), ...pick(twin), abv: 13 }),
+  ])
+  const twinReps = await reports(twin.vintageId!)
+  check('(19f) 🔒 two reports on one year AT ONCE: both adds land, ONE report stands (11 or 13), never two',
+    ta.status === 200 && tb.status === 200 && twinReps.length === 1 && ['11.00', '13.00'].includes(twinReps[0].abv), [ta.status, tb.status, twinReps])
+
+  const g = await createSession({})
+  const gAns: string[] = []
+  for (const abv of [12, 99, 'x']) { await resetLimits(); const r = await postWine(g.code, { anon: g.anon }, { id: nanoid(), ...pick(fresh), abv }); gAns.push(`${r.status} ${r.text}`) }
+  check('(19g) 🔒 a guest\'s alcohol → ONE fixed 403 whatever the value (before anything else is looked at), nothing written',
+    gAns[0].startsWith('403') && gAns.every(a => a === gAns[0]) && gAns[0].includes('Sign in to add the alcohol.') && (await reports(fresh.vintageId!)).length === 0, gAns)
+
+  process.env.CATALOG_PUBLIC_ENABLED = 'false'
+  try {
+    await resetLimits()
+    const closed = await postWine(s.code, as(O), { id: nanoid(), ...pick(fresh), abv: 12 })
+    const plain = await postWine(s.code, as(O), { id: nanoid(), ...pick(fresh) })
+    check('(19h) the kill switch on: an alcohol is refused (403), a plain pick still adds', closed.status === 403 && closed.json?.error === 'Adding the alcohol is unavailable right now.' && plain.status === 200 && (await reports(fresh.vintageId!)).length === 0, [closed.status, closed.json, plain.status])
+  } finally { delete process.env.CATALOG_PUBLIC_ENABLED }
+
+  const hid = nanoid()
+  await postWine(s.code, as(H), { id: hid, ...pick(filled) })
+  await settings(s.code, as(H), { blind: true, blindForEveryone: true })
+  await resetLimits()
+  const hidAbv = await editWine(s.code, as(H), hid, { ...pick(fresh), abv: 12 })
+  await resetLimits()
+  const hidPlain = await editWine(s.code, as(H), hid, { ...pick(fresh) })
+  check('(19i) 🔒 a bottle hidden from the caller (Blind for Everyone): a pick with an alcohol → one fixed 400, nothing written; the whole pick alone still re-links',
+    hidAbv.status === 400 && hidAbv.json?.error === 'Reveal this bottle before you add its alcohol.' && (await reports(fresh.vintageId!)).length === 0 && hidPlain.status === 200 && (await rowOf(hid))?.product_id === fresh.productId, [hidAbv.status, hidAbv.json, hidPlain.status])
+  await settings(s.code, as(H), { blind: false })
+
+  const ck = await mintEntry({ producer: `${TAG} Abv Ck P`, name: `${TAG} Abv Ck W`, colour: 'rose', year: 2018 })
+  const ck2 = await mintEntry({ producer: `${TAG} Abv Ck P2`, name: `${TAG} Abv Ck W2`, colour: 'red', year: 2017 })
+  await resetLimits()
+  const oid = nanoid()
+  const c = await postCheckin(as(O), { occurrenceId: oid, ...pick(ck), abv: 11.5 })
+  const ce = await patchCheckin(as(O), c.json.id as number, { ...pick(ck2), abv: 13.25 })
+  check('(19j) check-ins too: the POST and a PATCH re-link report on their year, the snapshot carries it',
+    c.status === 201 && (await reports(ck.vintageId!))[0]?.abv === '11.50' && ce.status === 200 && (await reports(ck2.vintageId!))[0]?.abv === '13.25' && (await rowOf(oid))?.abv === '13.25', [c.status, ce.status, await rowOf(oid)])
+
+  // Merges (phase 3 writes them; set by hand here): a bottle stored on a year merged away reads the survivor's report.
+  const loser = await mintEntry({ producer: `${TAG} Abv ML P`, name: `${TAG} Abv ML W`, colour: 'red', year: 2016 })
+  const surv = await mintEntry({ producer: `${TAG} Abv MS P`, name: `${TAG} Abv MS W`, colour: 'red', year: 2016 })
+  const mid = nanoid()
+  await postWine(s.code, as(H), { id: mid, ...pick(loser) })
+  await resetLimits()
+  await postWine(s.code, as(O), { id: nanoid(), ...pick(surv), abv: 12.75 })
+  await prisma.$executeRaw`UPDATE wine_vintages SET status = 'linked', links_to = ${surv.vintageId} WHERE id = ${loser.vintageId}`
+  const men = wiresOf(await winesGet(s.code, as(H))).find(w => w.id === mid)?.entry as Record<string, unknown> | undefined
+  check('(19k) a year merged away reads as its survivor, the survivor\'s report included (the merge fetch shows it too)', men?.vintageId === surv.vintageId && men?.abv === 12.75, men)
+
+  const fk = (await prisma.$queryRaw<{ d: string }[]>`SELECT confdeltype::text AS d FROM pg_constraint WHERE conname = 'catalog_review_items_reported_by_fkey'`)[0]?.d
+  const errs = [] as (string | null)[]
+  const sqlErr = (q: Promise<unknown>) => q.then(() => null, (err: Error) => String(err?.message ?? err))
+  for (const q of [
+    () => prisma.$executeRaw`INSERT INTO catalog_review_items (entity_type, entity_id, reason) VALUES ('vintage', ${fresh.vintageId}, 'user-abv')`,
+    () => prisma.$executeRaw`INSERT INTO catalog_review_items (entity_type, entity_id, reason, abv) VALUES ('vintage', ${fresh.vintageId}, 'user-mint', 12)`,
+    () => prisma.$executeRaw`INSERT INTO catalog_review_items (entity_type, entity_id, reason, abv) VALUES ('product', ${fresh.productId}, 'user-abv', 12)`,
+    () => prisma.$executeRaw`INSERT INTO catalog_review_items (entity_type, entity_id, reason, abv) VALUES ('vintage', ${fresh.vintageId}, 'user-abv', 26)`,
+    () => prisma.$executeRaw`INSERT INTO catalog_review_items (entity_type, entity_id, reason, abv) VALUES ('vintage', ${e.vintageId}, 'user-abv', 10)`,
+    () => prisma.$executeRaw`INSERT INTO catalog_review_items (entity_type, entity_id, reason) VALUES ('vintage', ${fresh.vintageId}, 'user-other')`,
+  ]) errs.push(await sqlErr(q()))
+  check('(19l) 🔒 the database: no user-abv without a value, no value on another reason, only a vintage, 0 to 25, ONE open report per year, no unknown reason; the reporter key is SET NULL',
+    errs.every(x => x !== null) && fk === 'n' && !!errs[4]?.includes('catalog_review_items_open_abv_key') && !!errs[5]?.includes('catalog_review_items_reason_check'), { errs, fk })
+}
+
 const SECTIONS: [string, () => Promise<void>][] = [
   ['gate', gate], ['link', linkRequired], ['wire', wire], ['create', create], ['guests', guests], ['vintages', vintages],
   ['blind', blind], ['merges', merges], ['relink', relink], ['interleaved', interleaved], ['checkins', checkins],
-  ['badges', badges], ['core', coreRules], ['fixes', reviewFixes], ['merges2', mergesMore], ['codex', codexFixes], ['codex2', codexFixes2], ['codex4', codexFixes4],
+  ['badges', badges], ['core', coreRules], ['fixes', reviewFixes], ['merges2', mergesMore], ['codex', codexFixes], ['codex2', codexFixes2], ['codex4', codexFixes4], ['abv', abvReports],
 ]
 try {
   for (const [name, fn] of SECTIONS) {

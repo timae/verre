@@ -48,7 +48,7 @@ export async function privateMoment(h: MomentVisibilityHarness) {
   const { resolveProfileViewer } = await import('../../lib/profileVisibility.ts')
 
   const saved = process.env.MOMENT_LOOKIN_ENABLED
-  const flag = (on: boolean) => { if (on) process.env.MOMENT_LOOKIN_ENABLED = 'true'; else delete process.env.MOMENT_LOOKIN_ENABLED }
+  const flag = (on: boolean) => { if (on) process.env.MOMENT_LOOKIN_ENABLED = 'true'; else process.env.MOMENT_LOOKIN_ENABLED = 'false' }
 
   // ── helpers ────────────────────────────────────────────────────────────────
   let seq = 0
