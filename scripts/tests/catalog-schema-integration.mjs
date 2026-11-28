@@ -171,6 +171,98 @@ async function makeProduct(id, producerId, extra = '') {
   })
 }
 
+// § 23: the trigger that settles a year's open alcohol report when the year gets
+// its alcohol (20261128120000, asked by the catalogue-maintenance side). Its own
+// fixtures; reset() clears them (review items and vintages by the test_ prefix,
+// users from 900000).
+async function abvSettleSection() {
+  const q = async (sql, params) => { try { return await raw(sql, params) } catch (e) { return { error: String(e.message || e).split('\n')[0] } } }
+  const SENTINEL = 'test rollback sentinel'
+  await prisma.$executeRawUnsafe(`INSERT INTO users (id,name,email,updated_at,created_at) VALUES
+    (900970,'Ra','ra@example.invalid',now(),now()), (900971,'Rb','rb@example.invalid',now(),now())`)
+  await prisma.$executeRawUnsafe(`INSERT INTO producers (id,name,status) VALUES ('test_pAS','AS Estate','confirmed')`)
+  await makeProduct('test_wpAS', 'test_pAS')
+  await prisma.$executeRawUnsafe(`INSERT INTO wine_vintages (id,product_id,year,status,abv) VALUES
+    ('test_vAS1','test_wpAS',2018,'confirmed',NULL), ('test_vAS2','test_wpAS',2019,'confirmed',NULL),
+    ('test_vAS3','test_wpAS',2020,'confirmed',13)`)
+  // vAS1: an open report, an earlier resolved one, a user-mint item. vAS2: an open
+  // report. vAS3: an open report on a year that already has a value (by hand).
+  await prisma.$executeRawUnsafe(`INSERT INTO catalog_review_items (entity_type,entity_id,reason,abv,reported_by,resolved_at,resolved_by) VALUES
+    ('vintage','test_vAS1','user-abv',13.5,900970,NULL,NULL),
+    ('vintage','test_vAS1','user-abv',12,900970,'2026-01-01T00:00:00Z',900971),
+    ('vintage','test_vAS2','user-abv',11,900971,NULL,NULL),
+    ('vintage','test_vAS3','user-abv',14,900970,NULL,NULL)`)
+  await prisma.$executeRawUnsafe(`INSERT INTO catalog_review_items (entity_type,entity_id,reason) VALUES ('vintage','test_vAS1','user-mint')`)
+  const open = async () => {
+    const r = await q(`SELECT entity_id || ':' || reason AS k FROM catalog_review_items WHERE entity_id LIKE 'test_vAS%' AND resolved_at IS NULL`)
+    return Array.isArray(r) ? r.map(x => x.k).sort().join(',') : JSON.stringify(r)
+  }
+  const ALL_OPEN = 'test_vAS1:user-abv,test_vAS1:user-mint,test_vAS2:user-abv,test_vAS3:user-abv'
+  ok(await open() === ALL_OPEN, `fixtures: four open items (${await open()})`)
+
+  await prisma.$executeRawUnsafe(`UPDATE wine_vintages SET abv = NULL WHERE id IN ('test_vAS1','test_vAS2')`)
+  ok(await open() === ALL_OPEN, 'an update that leaves abv NULL settles nothing')
+  await prisma.$executeRawUnsafe(`UPDATE wine_vintages SET abv = 14.5 WHERE id = 'test_vAS3'`)
+  ok(await open() === ALL_OPEN, 'a value changed to another value settles nothing (only NULL to a value fires)')
+
+  let inside = null
+  try {
+    await prisma.$transaction(async tx => {
+      await tx.$executeRawUnsafe(`UPDATE wine_vintages SET abv = 12.5 WHERE id IN ('test_vAS1','test_vAS2')`)
+      inside = await tx.$queryRawUnsafe(`SELECT entity_id, resolved_at = now() AS same_txn, resolved_by FROM catalog_review_items
+        WHERE entity_id IN ('test_vAS1','test_vAS2') AND reason = 'user-abv' AND abv IN (13.5, 11) ORDER BY entity_id`)
+      throw new Error(SENTINEL)
+    })
+  } catch (e) { if (!String(e.message).includes(SENTINEL)) inside = { error: String(e.message).split('\n')[0] } }
+  ok(Array.isArray(inside) && inside.length === 2 && inside.every(r => r.same_txn === true && r.resolved_by === null),
+    `🔒 one UPDATE filling two years settles both open reports in the SAME transaction (resolved_at = its now(), resolved_by NULL)${Array.isArray(inside) ? '' : ` (${JSON.stringify(inside)})`}`)
+  ok(await open() === ALL_OPEN, '…and a rolled-back delivery leaves them open')
+
+  await prisma.$executeRawUnsafe(`UPDATE wine_vintages SET abv = 12.5 WHERE id IN ('test_vAS1','test_vAS2')`)
+  ok(await open() === 'test_vAS1:user-mint,test_vAS3:user-abv',
+    `committed: both filled years' reports settled; another reason on the same year and a report on a year that already had a value stay open (${await open()})`)
+  const rows = await q(`SELECT entity_id, abv::text AS abv, reported_by, resolved_at, resolved_by FROM catalog_review_items
+    WHERE entity_id IN ('test_vAS1','test_vAS2') AND reason = 'user-abv' ORDER BY entity_id, abv`)
+  const by = k => Array.isArray(rows) ? rows.find(r => `${r.entity_id}:${r.abv}` === k) : null
+  ok(by('test_vAS1:13.50')?.resolved_at && by('test_vAS1:13.50').resolved_by === null && by('test_vAS1:13.50').reported_by === 900970
+     && by('test_vAS2:11.00')?.resolved_at && by('test_vAS2:11.00').resolved_by === null && by('test_vAS2:11.00').reported_by === 900971,
+    `a settled report keeps its value and its reporter, with a time and no resolver (${JSON.stringify(rows)})`)
+  ok(by('test_vAS1:12.00') && new Date(by('test_vAS1:12.00').resolved_at).toISOString() === '2026-01-01T00:00:00.000Z' && by('test_vAS1:12.00').resolved_by === 900971,
+    'an earlier resolved report is untouched (its time and resolver)')
+
+  await prisma.$executeRawUnsafe(`UPDATE wine_vintages SET abv = NULL WHERE id = 'test_vAS1'`)
+  await accepts('the year back to NULL: a new report on it is accepted (the settled one freed the year)',
+    `INSERT INTO catalog_review_items (entity_type,entity_id,reason,abv,reported_by) VALUES ('vintage','test_vAS1','user-abv',10,900970)`)
+  await prisma.$executeRawUnsafe(`UPDATE wine_vintages SET abv = 13 WHERE id = 'test_vAS1'`)
+  ok(await open() === 'test_vAS1:user-mint,test_vAS3:user-abv', '…and filling the year again settles that one too')
+
+  // Negative control: the same delivery with the trigger off (rolled back).
+  await prisma.$executeRawUnsafe(`UPDATE wine_vintages SET abv = NULL WHERE id = 'test_vAS2'`)
+  await prisma.$executeRawUnsafe(`INSERT INTO catalog_review_items (entity_type,entity_id,reason,abv,reported_by) VALUES ('vintage','test_vAS2','user-abv',9,900970)`)
+  let without = null
+  try {
+    await prisma.$transaction(async tx => {
+      await tx.$executeRawUnsafe(`ALTER TABLE wine_vintages DISABLE TRIGGER wine_vintages_abv_settles_report`)
+      await tx.$executeRawUnsafe(`UPDATE wine_vintages SET abv = 12 WHERE id = 'test_vAS2'`)
+      without = await tx.$queryRawUnsafe(`SELECT count(*)::int AS n FROM catalog_review_items WHERE entity_id = 'test_vAS2' AND reason = 'user-abv' AND resolved_at IS NULL`)
+      throw new Error(SENTINEL)
+    })
+  } catch (e) { if (!String(e.message).includes(SENTINEL)) without = { error: String(e.message).split('\n')[0] } }
+  ok(Array.isArray(without) && without[0]?.n === 1,
+    `negative control: with the trigger disabled the same delivery leaves the report open${Array.isArray(without) ? '' : ` (${JSON.stringify(without)})`}`)
+  await prisma.$executeRawUnsafe(`UPDATE wine_vintages SET abv = 12 WHERE id = 'test_vAS2'`)
+  ok(await open() === 'test_vAS1:user-mint,test_vAS3:user-abv', '…and with it on again (the rollback), the delivery settles it')
+
+  const trg = await q(`SELECT t.tgname, pg_get_triggerdef(t.oid) AS def, p.proconfig, p.prosecdef
+    FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WHERE t.tgrelid = 'wine_vintages'::regclass AND NOT t.tgisinternal ORDER BY t.tgname`)
+  const mine = Array.isArray(trg) ? trg.find(t => t.tgname === 'wine_vintages_abv_settles_report') : null
+  ok(Array.isArray(trg) && trg.map(t => t.tgname).join(',') === 'wine_vintages_abv_settles_report,wine_vintages_touch_updated_at',
+    `the triggers on wine_vintages are these two (a new one changes the catalogue-maintenance side's schema fingerprint: tell them) (${Array.isArray(trg) ? trg.map(t => t.tgname).join(',') : JSON.stringify(trg)})`)
+  ok(mine?.def === 'CREATE TRIGGER wine_vintages_abv_settles_report AFTER UPDATE OF abv ON public.wine_vintages FOR EACH ROW WHEN (((old.abv IS NULL) AND (new.abv IS NOT NULL))) EXECUTE FUNCTION catalog_abv_report_settle()'
+     && (mine.proconfig ?? []).includes('search_path=pg_catalog, public') && mine.prosecdef === false,
+    `its shape: AFTER UPDATE OF abv, per row, NULL to a value only; the function's search_path pinned, run as the caller (${mine ? JSON.stringify([mine.def, mine.proconfig, mine.prosecdef]) : 'missing'})`)
+}
+
 async function main() {
   await reset()
 
@@ -972,6 +1064,9 @@ async function main() {
 
   console.log('\n22. The catalogue model change: the expand migration (build step 2)')
   await modelChangeExpandSection({ prisma, ok, rejects, accepts, raw, makeProduct })
+
+  console.log('\n23. A year that gets its alcohol settles its open report (20261128120000)')
+  await abvSettleSection()
 
   await reset()
   console.log(`\n${pass} passed, ${failures.length} failed`)

@@ -494,7 +494,9 @@ export function normalizeAbv(raw: unknown): number | null {
 // on that year (lib/catalogEntries.ts `vintageAbvSql`), with no marker.
 // 🔒 The FIRST value wins: at most one open report per vintage (the partial
 // unique `catalog_review_items_open_abv_key`), so a second report, or one on a
-// year that already carries an alcohol, is ignored without an error. Inside the
+// year that already carries an alcohol, is ignored without an error. The year
+// getting its own alcohol settles the open report in the database (the trigger
+// `wine_vintages_abv_settles_report`, 20261128120000). Inside the
 // bottle write's transaction (lib/catalogLink.ts `applyLink`), on the EFFECTIVE
 // vintage the pick resolved to, before the entry is read for the snapshot: the
 // reporter's bottle carries the value through the normal snapshot.
@@ -682,7 +684,8 @@ const LINKABLE_STATUSES = ['provisional', 'confirmed', 'archived']
 //   • a VINTAGE: the bottles and the cravings fall back to product grain; a
 //     craving that then collides with the same person's "any year" craving of
 //     that wine is merged (keep the row visible to its owner, else the earlier
-//     saved_at, lib/cravings.ts); its review item goes; the row is deleted.
+//     saved_at, lib/cravings.ts); the row is deleted, then its review item
+//     (that order: below).
 //   • a PRODUCT: its vintages first, then the bottles and cravings unlinked
 //     (each keeps its snapshot, so it still renders; an unlinked craving is
 //     exempt from the one-per-wine unique; a blind save that already counts as
@@ -762,9 +765,13 @@ async function purgeReferences(tx: Prisma.TransactionClient, productId: string |
     await tx.$executeRaw`UPDATE bookmarks SET vintage_id = NULL WHERE vintage_id = ${vintageId} AND user_id = ANY(${owners}::int[])`
   }
   if (productId) await tx.$executeRaw`UPDATE bookmarks SET product_id = NULL WHERE product_id = ${productId} AND user_id = ANY(${owners}::int[])`
+  // The vintage row BEFORE its review items: the abv-settle trigger
+  // (20261128120000) locks the vintage, then its open report, so the other
+  // order deadlocks against a delivery filling that year (Codex 2026-11-28).
+  // entity_id has no key, so the order is free otherwise.
   for (const vintageId of vintageIds) {
-    await tx.$executeRaw`DELETE FROM catalog_review_items WHERE entity_type = 'vintage' AND entity_id = ${vintageId}`
     await tx.$executeRaw`DELETE FROM wine_vintages WHERE id = ${vintageId}`
+    await tx.$executeRaw`DELETE FROM catalog_review_items WHERE entity_type = 'vintage' AND entity_id = ${vintageId}`
   }
   if (productId) {
     await tx.$executeRaw`DELETE FROM catalog_review_items WHERE entity_type = 'product' AND entity_id = ${productId}`

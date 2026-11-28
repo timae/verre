@@ -393,7 +393,10 @@ clean up, claimed entries lock), plus one guard for the case Untappd does not do
   reporter); `wine_vintages.abv` is never written from here. That side pulls it, decides
   it and delivers it back as a normal value. Until then every read shows it on that year,
   with no marker (Simon); the first value wins (one open report per vintage); a resolved
-  report frees the year. A year that already has an alcohol offers no field.
+  report frees the year. A year that already has an alcohol offers no field. When the
+  year gets its alcohol (that side's update, a hand fix), its open report is settled in
+  the same transaction by a trigger on `wine_vintages` (`20261128120000`, asked by that
+  side, ruled in the database 2026-11-28): `resolved_at` set, `resolved_by` NULL.
 
 ### Change proposals are their own table
 
