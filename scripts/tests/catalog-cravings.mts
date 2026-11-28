@@ -1310,6 +1310,53 @@ async function purgeLocks() {
     check('(38e) a save in a moment the purge does not hold: refused, nothing written', out === false && (await rowsOf(T)).length === 0 && ((await markersOf(T)) ?? []).length === 1, { out, rows: await rowsOf(T) })
     check('(38e) …and the purge itself exports the refusal (PurgeRaced)', typeof catalogWrite.PurgeRaced === 'function')
   }
+  // (38f) Codex 2026-11-28: the abv-settle trigger (20261128120000) locks the
+  // vintage, then its open report. A purge must take them in that order (the
+  // vintage row first), or it deadlocks against a delivery filling that year.
+  // With a delivery holding both, the purge's first wait is on the VINTAGE.
+  {
+    const e = await entry('Purge abv settle')
+    const vid = e.vintageId!
+    await prisma.$executeRaw`UPDATE wine_vintages SET abv = NULL WHERE id = ${vid}`
+    await prisma.$executeRaw`INSERT INTO catalog_review_items (entity_type, entity_id, reason, abv) VALUES ('vintage', ${vid}, 'user-abv', 12)`
+    const holder = new pg.Client({ connectionString: process.env.DATABASE_URL })
+    await holder.connect()
+    try {
+      await holder.query('BEGIN')
+      await holder.query('UPDATE wine_vintages SET abv = 13 WHERE id = $1', [vid])
+      let purgeErr = ''
+      let finished = false
+      // Polled from pg_locks (always live; pg_stat_activity is frozen for the
+      // rest of the holder's open transaction once read), for THIS purge's
+      // backend, blocked by the holder: its granted TUPLE lock is the row it is
+      // queued on (Codex 2026-11-28 r2).
+      let purgePid: number | undefined
+      const pending = prisma.$transaction(async tx => {
+        const [backend] = await tx.$queryRaw<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`
+        purgePid = backend.pid
+        await pv(tx, vid)
+      }).catch(err => { purgeErr = String((err as Error).message) }).finally(() => { finished = true })
+      let on: string[] = []
+      for (let i = 0; i < 150 && !finished; i++) {
+        if (purgePid !== undefined) {
+          const { rows } = await holder.query<{ rel: string }>(`
+            SELECT DISTINCT l.relation::regclass::text AS rel FROM pg_locks l
+             WHERE l.pid = $1::int AND l.locktype = 'tuple' AND l.granted
+               AND pg_backend_pid() = ANY (pg_blocking_pids(l.pid))`, [purgePid])
+          on = rows.map(r => r.rel)
+          if (on.length) break
+        }
+        await pause(20)
+      }
+      const waited = on.length > 0
+      await holder.query('COMMIT')
+      await pending
+      const left = await prisma.$queryRaw<{ v: number; r: number }[]>`
+        SELECT (SELECT count(*)::int FROM wine_vintages WHERE id = ${vid}) AS v, (SELECT count(*)::int FROM catalog_review_items WHERE entity_id = ${vid}) AS r`
+      check('(38f) a purge beside a delivery filling the year: it waits on the vintage row first (the trigger\'s order), then removes the year and its report',
+        waited && JSON.stringify(on) === '["wine_vintages"]' && !purgeErr && left[0].v === 0 && left[0].r === 0, { waited, on, purgeErr, left })
+    } finally { await holder.end() }
+  }
 }
 
 // ── § 32 A blind save from a redacted post follows the post rule too ────────

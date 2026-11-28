@@ -1690,6 +1690,9 @@ model CatalogReviewItem {
   // typed it (SET NULL on deletion: the value stays). At most ONE open report
   // per vintage (partial unique `catalog_review_items_open_abv_key`, not in the
   // datamodel); the CHECKs tie `abv` to the reason and the reason to a vintage.
+  // The year getting its own abv settles its open report (the trigger
+  // `wine_vintages_abv_settles_report`, 20261128120000: resolvedAt set,
+  // resolvedBy NULL; a hand resolution whose resolver was deleted looks the same).
   abv        Decimal?  @db.Decimal(4, 2)
   reportedBy Int?      @map("reported_by")
   resolver   User?     @relation("ReviewItemResolver", fields: [resolvedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)

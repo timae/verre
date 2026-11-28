@@ -256,7 +256,7 @@ const { canonicalPostAudience, applyVisibilityChanges } = await import('../../pa
 const { ensureBadgesSeedOnce } = await import('../../lib/badgeService.ts')
 const { ALL_BADGES } = await import('../../lib/badges.ts')
 const { resolveUser } = await import('../../lib/resolveUser.ts')
-const { listPickable, resolveTilePhotos, isLegacyOwnTileUpload, isOwnTile } = await import('../../lib/profileTiles.ts')
+const { listPickable, resolveTilePhotos, isOwnTile } = await import('../../lib/profileTiles.ts')
 const { replaceProfileImage } = await import('../../lib/profileImage.ts')
 const { deleteAccountDurable, executeAccountDelete, AccountDeleteTooManyWipesError } = await import('../../lib/accountDelete.ts')
 
@@ -675,9 +675,7 @@ try {
   // ── § 5b a tile's own photo ───────────────────────────────────────────────
   section('§ 5b a tile\'s own photo: upload, always live, reclaimed only when owned')
   const T = await mkUser('Tilda Tiles')
-  const ownKey = (k: string) => isLegacyOwnTileUpload(urlOf(k), 'impressions', T.id)
-  check('legacy own key (until the re-key): this tile + this user, the last path segment only', ownKey(`avatars/tile_impressions_u_${T.id}_1_ab.png`) && !ownKey(`avatars/tile_impressions_u_${T.id}5_1_ab.png`) && !ownKey(`avatars/tile_moments_u_${T.id}_1_ab.png`) && !ownKey(`avatars/tile_impressions_u_${T.id}_/x.png`) && !isLegacyOwnTileUpload(null, 'impressions', T.id))
-  check('isOwnTile: url = own_url, or the legacy key; null / another url never', isOwnTile('x', 'x', 'impressions', T.id) && !isOwnTile('x', 'y', 'impressions', T.id) && !isOwnTile(null, null, 'impressions', T.id) && isOwnTile(urlOf(`avatars/tile_impressions_u_${T.id}_1_ab.png`), null, 'impressions', T.id))
+  check('isOwnTile: url = own_url only; null, another url, or an old user-bearing key never', isOwnTile('x', 'x') && !isOwnTile('x', 'y') && !isOwnTile(null, null) && !isOwnTile(urlOf(`avatars/tile_impressions_u_${T.id}_1_ab.png`), null))
   const postTile = async (u: User, tile: string, imageData = PNG) => { await resetLimits(); return call(tilesRoute.POST, 'POST', `/api/me/profile/tiles/${tile}`, u, { imageData }, { tile }) }
   let tr = await postTile(T, 'impressions')
   const own1 = tr.json.tiles?.impressions?.imageUrl as string

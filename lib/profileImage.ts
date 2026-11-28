@@ -87,7 +87,7 @@ export async function replaceProfileImage(
 // A tile's own photo (POST /api/me/profile/tiles/<tile>): pinned as it
 // uploads. The prior is reclaimed only when it was the tile's own upload too.
 export async function replaceTilePhoto(userId: number, tile: TileKey, dataUrl: string): Promise<ReplaceResult> {
-  return replaceColumn(userId, TILE_COLUMN[tile], { key: imageKey(`tile_${tile}`), dataUrl }, (prior, priorOwn) => isOwnTile(prior, priorOwn, tile, userId))
+  return replaceColumn(userId, TILE_COLUMN[tile], { key: imageKey(`tile_${tile}`), dataUrl }, isOwnTile)
 }
 
 async function replaceColumn(
@@ -148,7 +148,7 @@ export async function writeProfileFields(userId: number, data: ProfileFields, ti
     const ownCleared: Partial<Record<OwnField, null>> = {}
     for (const t of tiles) {
       const prior = rows[0][t]
-      if (isOwnTile(prior, rows[0][`${t}_own`], t, userId) && prior !== data[TILE_COLUMN[t].field as keyof ProfileFields]) owned.push(prior)
+      if (isOwnTile(prior, rows[0][`${t}_own`]) && prior !== data[TILE_COLUMN[t].field as keyof ProfileFields]) owned.push(prior)
       ownCleared[TILE_COLUMN[t].own!.field] = null
     }
     await tx.user.update({ where: { id: userId }, data: { ...data, ...ownCleared } })

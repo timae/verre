@@ -456,8 +456,8 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
       // a session rating or hosted session missed above makes this refuse.
       await tx.$executeRaw`DELETE FROM users WHERE id = ${userId}`
       for (const u of [me[0].image_url, me[0].cover_photo_url]) if (u) reclaimUrls.push(u)
-      for (const [t, u, own] of [['impressions', me[0].tile_impressions_url, me[0].tile_impressions_own_url], ['moments', me[0].tile_moments_url, me[0].tile_moments_own_url], ['cravings', me[0].tile_cravings_url, me[0].tile_cravings_own_url]] as const) {
-        if (isOwnTile(u, own, t, userId)) reclaimUrls.push(u)
+      for (const [u, own] of [[me[0].tile_impressions_url, me[0].tile_impressions_own_url], [me[0].tile_moments_url, me[0].tile_moments_own_url], [me[0].tile_cravings_url, me[0].tile_cravings_own_url]] as const) {
+        if (isOwnTile(u, own)) reclaimUrls.push(u)
       }
       // 🔒 D8 / D9 phase 2, AFTER the rating deletes / tombstones (the wipe
       // deletes the host's own ratings) AND the users cascade (the host's own

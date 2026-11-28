@@ -1,6 +1,6 @@
 # Usernames
 
-**Status:** APPROVED 2026-11-13 (decisions D1 to D5, § 14; one Claude reviewer converged after two rounds, Codex approved after three, § 17). **SERVER HALF BUILT 2026-11-14** on `feature/usernames-server` (as built: § 18). The UI session is next (§ 13).
+**Status:** SHIPPED in 0.1.5 (2026-11-15, PR #116), server and UI (as built: § 18 and § 19). This file stays as the rationale-of-record. Approved 2026-11-13 (decisions D1 to D5, § 14; one Claude reviewer converged after two rounds, Codex approved after three, § 17).
 
 Three sessions: this plan (one reviewer), the server build, the UI build. Where the username shows in the UI is NOT decided here (§ 13 lists what the UI session gets).
 
