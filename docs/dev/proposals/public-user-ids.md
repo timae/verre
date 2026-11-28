@@ -1,6 +1,6 @@
 # Public user ids
 
-**Status:** BUILT on `feature/public-user-ids` (2026-11-12), not merged: the rollout (§ 10 steps 4 to 8) is still ahead. Approved 2026-11-12; decisions D1 to D6 ruled (§ 12); five Claude review rounds and two Codex rounds (§ 13). As-built deviations: § 14.
+**Status:** SHIPPED in 0.1.5 (2026-11-15, PR #116); the image re-key ran on prod and its reclaim on 2026-11-27, after which the legacy own-tile rule was dropped. This file stays as the rationale-of-record. Approved 2026-11-12; decisions D1 to D6 ruled (§ 12); five Claude review rounds and two Codex rounds (§ 13). As-built deviations: § 14.
 
 ## 1. Why
 

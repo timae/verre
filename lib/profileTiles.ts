@@ -54,26 +54,10 @@ export function isTileKey(v: unknown): v is TileKey {
   return typeof v === 'string' && (TILE_KEYS as readonly string[]).includes(v)
 }
 
-// ⚠️ LEGACY (drop once `scripts/rekey-user-images.mts` has run in prod, § 8):
-// the key prefix today's own uploads were stored under, `avatars/tile_<tile>_
-// u_<id>_…`. Until the re-key, such a URL still counts as own (the rule before
-// tile_*_own_url, which the migration backfilled with exactly this test).
-// Matched on the key part only, so it holds whatever S3 endpoint the URL was
-// stored under.
-export const LEGACY_OWN_TILE_PREFIX = true
-export function isLegacyOwnTileUpload(url: string | null | undefined, tile: TileKey, userId: number): url is string {
-  if (!url) return false
-  const prefix = `/avatars/tile_${tile}_u_${userId}_`
-  const at = url.indexOf(prefix)
-  return at >= 0 && !url.slice(at + prefix.length).includes('/')
-}
-
-// own ⇔ the pin IS the tile's own upload (url = own_url), or (until the
-// re-key) a legacy own key of this user and tile.
-export function isOwnTile(url: string | null | undefined, ownUrl: string | null | undefined, tile: TileKey, userId: number): url is string {
-  if (!url) return false
-  if (url === ownUrl) return true
-  return LEGACY_OWN_TILE_PREFIX && isLegacyOwnTileUpload(url, tile, userId)
+// own ⇔ the pin IS the tile's own upload: url = own_url (both written in the
+// same update, read under the same lock), never the key.
+export function isOwnTile(url: string | null | undefined, ownUrl: string | null | undefined): url is string {
+  return !!url && url === ownUrl
 }
 
 export const OWN_COLUMN: Record<TileKey, Prisma.Sql> = {
@@ -230,9 +214,8 @@ export async function readPins(profileId: number): Promise<Record<TileKey, Pin>>
            tile_impressions_own_url AS io, tile_moments_own_url AS mo, tile_cravings_own_url AS co
     FROM users WHERE id = ${profileId}`
   const r = rows[0]
-  const pin = (tile: TileKey, url: string | null | undefined, own: string | null | undefined): Pin =>
-    ({ url: url ?? null, own: isOwnTile(url, own, tile, profileId) })
-  return { impressions: pin('impressions', r?.i, r?.io), moments: pin('moments', r?.m, r?.mo), cravings: pin('cravings', r?.c, r?.co) }
+  const pin = (url: string | null | undefined, own: string | null | undefined): Pin => ({ url: url ?? null, own: isOwnTile(url, own) })
+  return { impressions: pin(r?.i, r?.io), moments: pin(r?.m, r?.mo), cravings: pin(r?.c, r?.co) }
 }
 
 // A pin that read as dead: clear it under the users-row lock. The liveness
@@ -248,7 +231,7 @@ async function clearDeadPin(tile: TileKey, profileId: number, dead: string): Pro
       SELECT ${COLUMN[tile]} AS pin, ${OWN_COLUMN[tile]} AS own FROM users WHERE id = ${profileId} FOR UPDATE`
     if (rows[0]?.pin !== dead) return null
     // Own under the lock (an own upload landed since the read): live, keep it.
-    if (isOwnTile(dead, rows[0].own, tile, profileId)) return dead
+    if (isOwnTile(dead, rows[0].own)) return dead
     // 🔒 LIVE, never SHOWN: an Only Inside switch never clears a pin.
     if (await inPool(tx, tile, profileId, dead, 'live')) return dead
     await tx.$executeRaw`UPDATE users SET ${COLUMN[tile]} = NULL WHERE id = ${profileId}`
