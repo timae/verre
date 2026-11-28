@@ -1,6 +1,8 @@
 # Moment Visibility
 
-**Status:** PROPOSED 2026-11-15, REVIEWED: Claude reviewers CONVERGED after three rounds (privacy, plan solidity, security), then Codex xhigh r1–r4 → "No material findings" (§ 17). Rulings from the planning interviews in § 2. Two naming questions open (§ 14). Next: the step-1 plan.
+**Status:** SHIPPED. Built in steps 1a to 3b, released dark in 0.2.0 (2026-11-27), ON since 0.2.0 build 2 (2026-11-28: `MOMENT_LOOKIN_ENABLED` / `HIDE_FROM_FEED_ENABLED` on by default, `'false'` is the kill switch, `lib/momentGate.ts`). This file stays as the rationale-of-record; where the build deviates, `lib/CLAUDE.md` § Moment Visibility and `docs/dev/deployment.md` § Moment Visibility are the record. As built: the link carries a stored random code, not an HMAC (§ 4); the two naming questions (§ 14) were settled as "Verre Users" (ruled 2026-11-24) and "Hide Description and Link".
+
+Proposed 2026-11-15, reviewed: Claude reviewers CONVERGED after three rounds (privacy, plan solidity, security), then Codex xhigh r1–r4 → "No material findings" (§ 17). Rulings from the planning interviews in § 2.
 
 People can **look into** a moment without its code: the line-up, who was there, their scores and notes. Joining still needs the code, typed or scanned, which you get from someone in the tasting. A look-in is read-only, lives in the **app only**, and never shows the code.
 
@@ -47,10 +49,11 @@ They must be separate: if the in-app id were the link, everyone who sees the mom
 
 - **`public_id`**: minted by a trigger and immutable, like `users.public_id` (`prisma/schema.prisma:31`); kept on a deleted moment's tombstone (it answers the same 404 as an unknown id). The feed keeps its integer `sessionId` (`app/api/feed/route.ts:321`): the app matches it against your own moments to enter one (`apps/mobile/src/lib/useEnterableMoment.ts:40`), and it grants nothing.
 - **The link** is `…/l/<publicId>.<token>`, with `token = HMAC-SHA256(MOMENT_LINK_SECRET, "verre-moment-link-v1" ‖ 0x00 ‖ publicId ‖ 0x00 ‖ link_version)`, truncated to 128 bits. Nothing secret is stored. The state is two columns: `link_version` and `link_active`.
+  - **As built (0.2.0 build 2, ruled 2026-11-27):** the HMAC and `MOMENT_LINK_SECRET` are gone. The token is a random code per link (16 bytes, 32 hex), stored on the moment as is (`sessions.link_code`, NULL while the link is off), so Share on an active link and the host's or cohost's settings read show the stored link again. Share on a link that is off creates a code, Reset replaces the code of an active link (Reset on a link that is off leaves it off, with no code), Turn Off clears it, and the presented code is compared in constant time (`lib/momentLink.ts`, `writeLinkAction` in `lib/momentSettings.ts`). The link format is unchanged. `link_version` stays, as a counter. The secret's fail-closed rule below no longer applies; the never-logged rule does.
   - 🔒 **The version only ever goes up.** **Reset** increments it. **Turn Off** sets `link_active` false and never touches the version. **Share** on a link that is off increments the version first, so turning a link back on never revives an earlier one (pinned in the suite: off → on validates no older link).
   - A read for host and cohosts (the grant) returns the current link, so a second Share (another device, a cohost) shows the same link without killing the first.
-  - The server checks a link by recomputing the token, with a constant-time compare. The limiter is charged before the `public_id` lookup, and the HMAC is computed for unknown ids too, so every refusal costs the same.
-  - 🔒 **The secret fails closed:** absent or shorter than 32 bytes → every link route answers 404 and the app logs it at boot. There is no fallback. It must be identical on every instance; rotating it kills every link (`docs/dev/deployment.md`).
+  - (As planned; as built the stored code is compared, see above.) The server checks a link by recomputing the token, with a constant-time compare. The limiter is charged before the `public_id` lookup, and the HMAC is computed for unknown ids too, so every refusal costs the same.
+  - (As planned; no secret as built, see above.) 🔒 **The secret fails closed:** absent or shorter than 32 bytes → every link route answers 404 and the app logs it at boot. There is no fallback. It must be identical on every instance; rotating it kills every link (`docs/dev/deployment.md`).
   - 🔒 The token never enters meta, any cache, the app's logs or error reports: `/l/` paths are redacted where requests are logged. The static page's URL carries a live token, so it sends `Referrer-Policy: no-referrer` and loads no third-party resource. The platform proxy's own access logs are outside the app's reach (§ 13).
 - 🔒 **No look-in or link route ever returns `code`** (the one exception is the member-only read below, which answers a member about their own membership). A member who opens a look-in or a link gets `member: true` and nothing else. The app takes the code from the caller's own membership through a member-only read, `GET /api/me/sessions/by-moment/:publicId`, which admits by the record's rule: a current, non-kicked, non-banned member gets their row; everyone else, kick-keep included, the same 404. This also covers a member whose moment is beyond the loaded page (`useEnterableMoment.ts:39-41` only matches rows already loaded).
 
@@ -222,7 +225,7 @@ Hiding is deny-direction (it may precede COMMIT), showing follows it.
 - **The line-up** can trail the room until the next line-up write (§ 7).
 - **Guests without an account** are counted only after an eviction (§ 5).
 
-## 14. Open questions
+## 14. Open questions (settled as built: see the status line)
 
 1. **Tier label:** "Everyone on Verre" here vs "Verre Users" in Account Visibility.
 2. **The name of the description-and-link switch.**
